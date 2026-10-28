@@ -25,6 +25,8 @@
 
 在线更新使用 Tauri 官方 updater 签名校验，自动检查与下载在后台完成，安装仍须用户明确确认；关闭窗口或正常退出不自动安装。macOS 继续使用 ad-hoc 签名，首次安装用 DMG、应用内更新用 Universal `.app.tar.gz`；updater 签名不等于 Apple Developer ID 签名或公证。分发前须核对 Gatekeeper、覆盖安装、重启及钥匙串体验；Windows 须验证旧版到新版的真实安装以及 WebView2 安装行为。macOS 的安装限制见[构建与安装说明](macos试用版构建.md)。
 
+本机向 GitHub 上传较大的 macOS 文件发生超时，可手动运行 [Upload existing macOS release assets](../.github/workflows/upload-macos-release.yml)，填写版本 `tag`、同一 tag 的成功 `Build macOS` 运行 `run_id`，以及已有草稿的 `release_id`。工作流复用未过期的构建 Artifact，只上传 Universal `.app.tar.gz` 和 DMG，不重新编译或签名；它核对运行、tag、提交、包元数据和远端摘要，遇到同名未完成上传或内容不一致时停止，不覆盖附件。Windows 包、签名、清单和许可文件仍按上述流程补齐，全部核验后再正式发布；该工作流本身不创建或发布 Release。
+
 ## 编译阻塞项的修复授权
 
 用户已授权：在一次明确指定版本及范围的发版编译中，Agent 可以自主修复测试、构建和打包阻塞项，并直接提交这些修复，持续处理到 Windows 与 macOS 均编译成功，无需逐笔请求用户确认。修复仍须通过 `checkai` 独立审查、主 Agent 复核和相关验证，并由 `commitsplitter` 整理提交范围与完整中文提交信息；本授权替代上述链路中对这些阻塞修复的逐笔确认，不扩展到无关功能或其他任务的改动。

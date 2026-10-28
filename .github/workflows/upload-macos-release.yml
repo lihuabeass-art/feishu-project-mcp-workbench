@@ -1,0 +1,177 @@
+name: Upload existing macOS release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已有版本 tag（不移动 tag）"
+        required: true
+        type: string
+      run_id:
+        description: "已成功完成的 Build macOS run ID"
+        required: true
+        type: string
+      release_id:
+        description: "同一 tag 的已有草稿 Release ID"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: upload-macos-release-${{ inputs.release_id }}
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    if: github.repository == 'lihuabeass-art/feishu-project-mcp-workbench'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      BUILD_RUN_ID: ${{ inputs.run_id }}
+      TARGET_RELEASE_ID: ${{ inputs.release_id }}
+    steps:
+      - name: Verify build, download artifact and upload to existing draft
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import tempfile
+          from urllib.parse import quote
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          def gh_json(*args):
+              result = subprocess.run(
+                  ["gh", "api", "-H", "X-GitHub-Api-Version: 2022-11-28", *args],
+                  check=True, capture_output=True, text=True,
+              )
+              return json.loads(result.stdout)
+
+          def pages(endpoint):
+              values = []
+              page = 1
+              while True:
+                  batch = gh_json(f"{endpoint}?per_page=100&page={page}")
+                  require(isinstance(batch, list), "Expected an API list")
+                  values.extend(batch)
+                  if len(batch) < 100:
+                      return values
+                  page += 1
+
+          repo = os.environ["GH_REPO"]
+          repository_id = int(os.environ["EXPECTED_REPOSITORY_ID"])
+          tag = os.environ["RELEASE_TAG"]
+          run_id = os.environ["BUILD_RUN_ID"]
+          release_id = os.environ["TARGET_RELEASE_ID"]
+          require(re.fullmatch(r"[1-9][0-9]*", run_id), "run_id must be a positive integer")
+          require(re.fullmatch(r"[1-9][0-9]*", release_id), "release_id must be a positive integer")
+          version = tag.removeprefix("v")
+          number = r"(?:0|[1-9][0-9]*)"
+          prerelease = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+          semver = rf"{number}\.{number}\.{number}(?:-{prerelease}(?:\.{prerelease})*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+          require(re.fullmatch(semver, version), "tag must identify a semantic version")
+          prefix = f"repos/{repo}"
+
+          def tag_commit():
+              obj = gh_json(f"{prefix}/git/ref/tags/{quote(tag, safe='')}")["object"]
+              seen = set()
+              while obj["type"] == "tag":
+                  require(obj["sha"] not in seen, "Annotated tag contains a cycle")
+                  seen.add(obj["sha"])
+                  obj = gh_json(f"{prefix}/git/tags/{obj['sha']}")["object"]
+              require(obj["type"] == "commit", "Tag must resolve to a commit")
+              return obj["sha"]
+
+          commit = tag_commit()
+          workflow = gh_json(f"{prefix}/actions/workflows/build-macos.yml")
+          run = gh_json(f"{prefix}/actions/runs/{run_id}")
+          require(run["repository"]["id"] == repository_id, "Build run belongs to a different repository")
+          require(run["workflow_id"] == workflow["id"] and run["name"] == "Build macOS", "Run must use the Build macOS workflow")
+          require(run["status"] == "completed" and run["conclusion"] == "success", "Build macOS run must have succeeded")
+          require(run["head_sha"] == commit and run["head_branch"] == tag, "Build run must match the exact tag and commit")
+
+          def verify_draft():
+              release = gh_json(f"{prefix}/releases/{release_id}")
+              require(release["draft"] is True and release["tag_name"] == tag, "Target must remain an existing draft for this tag")
+              require(tag_commit() == commit, "Tag commit changed during upload")
+
+          verify_draft()
+          artifacts = []
+          page = 1
+          while True:
+              batch = gh_json(f"{prefix}/actions/runs/{run_id}/artifacts?per_page=100&page={page}")["artifacts"]
+              artifacts.extend(batch)
+              if len(batch) < 100:
+                  break
+              page += 1
+          artifact_name = f"FSTODO-{version}-macos-universal"
+          matches = [item for item in artifacts if item["name"] == artifact_name]
+          require(len(matches) == 1 and matches[0]["expired"] is False, "Expected exactly one unexpired macOS artifact")
+
+          def verify_asset(asset, name, size, digest):
+              require(asset["name"] == name and asset["state"] == "uploaded", f"Asset is not fully uploaded: {name}")
+              require(asset["size"] == size and asset.get("digest") == f"sha256:{digest}", f"Asset size or SHA256 differs: {name}")
+
+          with tempfile.TemporaryDirectory(prefix="fstodo-macos-") as directory:
+              subprocess.run(
+                  ["gh", "run", "download", run_id, "--repo", repo,
+                   "--name", artifact_name, "--dir", directory], check=True,
+              )
+              root = Path(directory)
+              metadata = json.loads((root / "release.json").read_text(encoding="utf-8"))
+              require(metadata.get("version") == version and metadata.get("tag") == tag
+                      and metadata.get("commit") == commit, "Artifact release.json does not match version, tag and commit")
+              names = ["FSTODO.app.tar.gz", f"FSTODO_{version}_universal.dmg"]
+              files = []
+              for name in names:
+                  path = root / name
+                  require(path.is_file() and not path.is_symlink(), f"Artifact is missing a regular file: {name}")
+                  size = path.stat().st_size
+                  require(size > 0, f"Artifact file is empty: {name}")
+                  digest = hashlib.file_digest(path.open("rb"), "sha256").hexdigest()
+                  files.append((name, path, size, digest))
+
+              # Check all conflicts before the first write; never replace an existing asset.
+              existing = pages(f"{prefix}/releases/{release_id}/assets")
+              for name, path, size, digest in files:
+                  matches = [asset for asset in existing if asset["name"] == name]
+                  require(len(matches) <= 1, f"Duplicate release asset names: {name}")
+                  if matches:
+                      verify_asset(matches[0], name, size, digest)
+
+              for name, path, size, digest in files:
+                  verify_draft()
+                  matches = [asset for asset in pages(f"{prefix}/releases/{release_id}/assets") if asset["name"] == name]
+                  require(len(matches) <= 1, f"Duplicate release asset names: {name}")
+                  if matches:
+                      verify_asset(matches[0], name, size, digest)
+                      asset_id = matches[0]["id"]
+                      print(f"Already uploaded with matching SHA256: {name}")
+                  else:
+                      asset = gh_json(
+                          "--method", "POST",
+                          f"https://uploads.github.com/{prefix}/releases/{release_id}/assets?name={quote(name, safe='')}",
+                          "--header", "Content-Type: application/octet-stream",
+                          "--header", f"Content-Length: {size}", "--input", str(path),
+                      )
+                      verify_asset(asset, name, size, digest)
+                      asset_id = asset["id"]
+                  remote = gh_json(f"{prefix}/releases/assets/{asset_id}")
+                  verify_asset(remote, name, size, digest)
+                  print(f"Verified remote asset: {name}, bytes={size}, sha256={digest}, state={remote['state']}")
+              verify_draft()
+          PY
