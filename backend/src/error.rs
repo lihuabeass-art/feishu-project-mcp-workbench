@@ -28,7 +28,7 @@ pub enum BackendError {
     #[error("连接失败: 无法与 {endpoint} 建立 MCP 会话（{detail}）")]
     Connection { endpoint: String, detail: String },
 
-    /// 服务端拒绝凭证：401 挑战、scope 不足等。
+    /// 服务端未接受认证（HTTP 401）；HTTP 403 / scope 不足使用 Permission。
     #[error("鉴权失败: {endpoint} 拒绝了当前凭证（{detail}）{}",
         challenge.as_deref().map(|c| format!("，WWW-Authenticate: {c}")).unwrap_or_default())]
     Auth {

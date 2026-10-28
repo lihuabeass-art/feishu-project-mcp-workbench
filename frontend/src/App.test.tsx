@@ -14,6 +14,7 @@ import App from "./App";
 import { typeColor } from "./model";
 import {
   executeWorkflowAction,
+  checkConnection,
   getWorkflowActions,
   loadSnapshot,
   saveToken,
@@ -26,7 +27,7 @@ import {
   cachedItemDetail,
   refreshItemDetail,
 } from "./api";
-import type { CachedItem, ItemDetail, Snapshot, WorkflowResult } from "./types";
+import type { CachedItem, ConnectionInfo, ItemDetail, Snapshot, WorkflowResult } from "./types";
 
 vi.mock("./api", () => ({
   desktop: true,
@@ -117,6 +118,138 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+});
+
+describe("连接检查与可重复查看的教程", () => {
+  const connected: ConnectionInfo = { session_established: true, server_name: "Meego MCP Server", server_version: "1.0.0" };
+  const intro = "打开飞书项目 MCP 配置，选择 HTTP Header，复制 Token 后粘贴到下方。";
+
+  async function openSettings() {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("需求甲");
+    await user.click(screen.getByRole("button", { name: "连接与配置" }));
+    return user;
+  }
+
+  it("已保存凭证仍显示引导，展开教程跨页面和保存保留且不会误提交草稿", async () => {
+    const user = await openSettings();
+    expect(screen.getByText("Token 已保存")).toBeTruthy();
+    expect(screen.getByText(/^尚未检查连接/)).toBeTruthy();
+    expect(screen.getByText((_, element) => element?.tagName === "P" && element.textContent === intro)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "查看教程" }));
+    await user.click(screen.getByRole("button", { name: /我的工作/ }));
+    await user.click(screen.getByRole("button", { name: "连接与配置" }));
+    expect(screen.getByRole("region", { name: "获取飞书项目 MCP Token" })).toBeTruthy();
+
+    const input = screen.getByLabelText("MCP Token") as HTMLInputElement;
+    await user.type(input, "replacement-test-token");
+    expect((screen.getByRole("button", { name: "检查连接" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("请先保存下方 Token，再检查连接。")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "收起教程" }));
+    await user.click(screen.getByRole("button", { name: "查看教程" }));
+    expect(input.value).toBe("replacement-test-token");
+    expect(saveToken).not.toHaveBeenCalled();
+    vi.mocked(saveToken).mockResolvedValue("新本地凭证摘要");
+    await user.click(screen.getByRole("button", { name: "保存 Token" }));
+    await screen.findByText("新本地凭证摘要");
+    expect(input.value).toBe("");
+    expect((screen.getByRole("button", { name: "检查连接" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole("region", { name: "获取飞书项目 MCP Token" })).toBeTruthy();
+  });
+
+  it.each([
+    ["auth", "凭证未通过验证", true],
+    ["permission", "飞书侧权限不足", false],
+    ["connection", "暂时无法连接", false],
+    ["tool", "连接检查未完成", false],
+    ["credential", "本机凭证不可用", true],
+  ] as const)("按 %s 分类显示检查失败，不用其他失败冒充凭证问题", async (kind, title, hasGuideAction) => {
+    vi.mocked(checkConnection).mockRejectedValue({ kind, message: `${kind} 测试失败详情` });
+    const user = await openSettings();
+    await user.click(screen.getByRole("button", { name: "检查连接" }));
+    await screen.findByText(title);
+    expect(screen.getByText(`${kind} 测试失败详情`)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "查看教程" })).toBeTruthy();
+    if (hasGuideAction) {
+      await user.click(screen.getByRole("button", { name: "查看获取教程" }));
+      expect(screen.getByRole("region", { name: "获取飞书项目 MCP Token" })).toBeTruthy();
+    } else {
+      expect(screen.queryByText("凭证未通过验证")).toBeNull();
+      expect(screen.queryByText("本机凭证不可用")).toBeNull();
+      expect(screen.queryByRole("button", { name: "查看获取教程" })).toBeNull();
+    }
+    await user.click(screen.getByRole("button", { name: /我的工作/ }));
+    await user.click(screen.getByRole("button", { name: "连接与配置" }));
+    expect(screen.getByText(title)).toBeTruthy();
+  });
+
+  it("重试检查时保留上次错误，成功后替换旧结论且教程始终可访问", async () => {
+    vi.mocked(checkConnection).mockRejectedValueOnce({ kind: "connection", message: "网络暂时不可达" });
+    const user = await openSettings();
+    await user.click(screen.getByRole("button", { name: "检查连接" }));
+    await screen.findByText("暂时无法连接");
+    let finish!: (value: ConnectionInfo) => void;
+    vi.mocked(checkConnection).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await user.click(screen.getByRole("button", { name: "检查连接" }));
+    expect(screen.getByText("正在检查连接…")).toBeTruthy();
+    expect(screen.getByText("网络暂时不可达")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "查看教程" }));
+    expect(screen.getByRole("region", { name: "获取飞书项目 MCP Token" })).toBeTruthy();
+    await act(async () => finish(connected));
+    await screen.findByText("连接已通过检查");
+    expect(screen.queryByText("网络暂时不可达")).toBeNull();
+    expect(screen.queryByText("暂时无法连接")).toBeNull();
+    expect(screen.getByRole("button", { name: "收起教程" })).toBeTruthy();
+  });
+
+  it("检查成功后的本地回读失败不会覆盖为凭证错误", async () => {
+    vi.mocked(checkConnection).mockResolvedValue(connected);
+    const user = await openSettings();
+    vi.mocked(loadSnapshot).mockRejectedValueOnce({ kind: "auth", message: "本地页面回读测试失败" });
+    await user.click(screen.getByRole("button", { name: "检查连接" }));
+    await screen.findByText("连接已通过检查");
+    await waitFor(() => expect((screen.getByRole("button", { name: "检查连接" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByText("凭证未通过验证")).toBeNull();
+    expect(screen.queryByText("本机凭证不可用")).toBeNull();
+  });
+
+  it("替换 Token 失败保留上次检查结论，保存成功后回到待检查", async () => {
+    vi.mocked(checkConnection).mockRejectedValue({ kind: "auth", message: "原凭证未通过验证" });
+    const user = await openSettings();
+    await user.click(screen.getByRole("button", { name: "检查连接" }));
+    await screen.findByText("凭证未通过验证");
+    await user.type(screen.getByLabelText("MCP Token"), "next-test-token");
+    vi.mocked(saveToken).mockRejectedValueOnce({ kind: "credential", message: "本机保存测试失败" });
+    await user.click(screen.getByRole("button", { name: "保存 Token" }));
+    await screen.findByText(/Token 保存失败：本机保存测试失败/);
+    expect(screen.getByText("凭证未通过验证")).toBeTruthy();
+    vi.mocked(saveToken).mockResolvedValueOnce("新凭证摘要");
+    await user.click(screen.getByRole("button", { name: "保存 Token" }));
+    await screen.findByText("新凭证摘要");
+    expect(screen.getByText(/^尚未检查连接/)).toBeTruthy();
+    expect(screen.queryByText("凭证未通过验证")).toBeNull();
+  });
+
+  it("连接设置保存失败保留检查结论，成功保存后清除旧结论", async () => {
+    const settings = { endpoint: "https://project.feishu.cn/mcp_server/v1" };
+    vi.mocked(loadSnapshot).mockResolvedValue({ ...snapshot(), settings });
+    vi.mocked(checkConnection).mockResolvedValue(connected);
+    const user = await openSettings();
+    await user.click(screen.getByRole("button", { name: "检查连接" }));
+    await screen.findByText("连接已通过检查");
+    vi.mocked(saveConnectionSettings).mockRejectedValueOnce({ kind: "config", message: "配置写入测试失败" });
+    fireEvent.change(screen.getByLabelText("MCP 服务地址"), { target: { value: "https://next.example.com/mcp" } });
+    await screen.findByText(/配置写入测试失败/);
+    expect(screen.getByText("连接已通过检查")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "检查连接" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("服务地址尚未保存，保存后再检查连接。")).toBeTruthy();
+    vi.mocked(saveConnectionSettings).mockResolvedValueOnce();
+    vi.mocked(loadSnapshot).mockResolvedValue({ ...snapshot(), settings: { endpoint: "https://next.example.com/mcp" } });
+    await user.click(screen.getByRole("button", { name: "重试自动保存" }));
+    await screen.findByText(/^尚未检查连接/);
+    expect(screen.queryByText("连接已通过检查")).toBeNull();
+  });
 });
 
 describe("工作台交互", () => {
@@ -461,6 +594,11 @@ describe("工作台交互", () => {
       credential_description: masked,
     });
     await user.type(input, "test-only-token");
+    await user.click(screen.getByRole("button", { name: "查看教程" }));
+    expect(screen.getByRole("button", { name: "放大：选择 HTTP Header 并复制 Token" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "收起教程" }));
+    expect(input.value).toBe("test-only-token");
+    expect(saveToken).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "保存 Token" }));
     await screen.findByText(masked);
     expect(saveToken).toHaveBeenCalledWith("test-only-token");

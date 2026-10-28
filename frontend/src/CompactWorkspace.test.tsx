@@ -130,7 +130,7 @@ describe("清单模式", () => {
     expect(screen.queryByRole("button", { name: "切换到完整模式" })).toBeNull();
   });
 
-  it("切到清单继承搜索与类型，条件可见可取消，返回完整模式继续使用", async () => {
+  it("切到清单以 Tab 继承类型，搜索独立显示，返回完整模式继续使用", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("需求甲");
@@ -142,10 +142,14 @@ describe("清单模式", () => {
     expect(within(list).queryByText("需求甲")).toBeNull();
     expect(within(list).getByText("缺陷乙")).toBeTruthy();
     expect(screen.getByRole("button", { name: "取消搜索：缺陷" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "取消事项类型：缺陷" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /^缺陷\s*1$/ }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByRole("button", { name: "取消事项类型：缺陷" })).toBeNull();
+    expect(screen.getByRole("button", { name: "清单筛选" }).textContent).toBe("筛选1");
     expect(screen.getByText("1 / 2 项")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "取消搜索：缺陷" }));
     expect(within(list).queryByText("需求甲")).toBeNull();
+    expect(screen.getByRole("button", { name: "清单筛选" }).textContent).toBe("筛选");
+    expect(screen.queryByRole("group", { name: "当前筛选条件" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "切换到完整模式" }));
     expect((screen.getByRole("textbox", { name: "搜索工作" }) as HTMLInputElement).value).toBe("");
     expect(screen.queryByRole("combobox", { name: "事项类型" })).toBeNull();
@@ -261,13 +265,14 @@ describe("清单模式", () => {
     await user.click(screen.getByRole("button", { name: "切换到清单模式" }));
     let list = screen.getByRole("region", { name: "工作清单" });
     expect(within(list).getByText("已完成缺陷")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "取消事项类型：缺陷" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /^缺陷\s*2$/ }).getAttribute("aria-selected")).toBe("true");
     view.unmount();
     render(<App />);
     list = await screen.findByRole("region", { name: "工作清单" });
     await within(list).findByText("需求甲");
     expect(within(list).getAllByRole("button")).toHaveLength(4);
     expect(screen.queryByRole("group", { name: "当前筛选条件" })).toBeNull();
+    expect(screen.getByRole("tab", { name: /^全部\s*4$/ }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByRole("button", { name: "清单筛选" }).textContent).toBe("筛选");
     await user.click(screen.getByRole("button", { name: "清单筛选" }));
     expect((screen.getByRole("textbox", { name: "清单搜索工作" }) as HTMLInputElement).value).toBe("");
@@ -324,9 +329,10 @@ describe("清单模式", () => {
     const list = screen.getByRole("region", { name: "工作清单" });
     expect(within(list).getByText("没有符合条件的事项")).toBeTruthy();
     expect(screen.getByText("0 / 4 项")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "清单筛选" }).textContent).toBe("筛选5");
+    expect(screen.getByRole("button", { name: "清单筛选" }).textContent).toBe("筛选4");
     const chips = screen.getByRole("group", { name: "当前筛选条件" });
-    expect(within(chips).getAllByRole("button")).toHaveLength(6);
+    expect(within(chips).getAllByRole("button")).toHaveLength(5);
+    expect(screen.getByRole("tab", { name: /^缺陷\s*2$/ }).getAttribute("aria-selected")).toBe("true");
     await user.click(screen.getByRole("button", { name: "切换到完整模式" }));
     expect(screen.getByRole("combobox", { name: "空间" }).textContent).toContain("等 2 项");
     expect(screen.getByRole("combobox", { name: "所属项目" }).textContent).toBe("项目甲");
@@ -334,12 +340,15 @@ describe("清单模式", () => {
     await user.click(screen.getByRole("button", { name: "切换到清单模式" }));
     await user.click(within(screen.getByRole("region", { name: "工作清单" })).getByRole("button", { name: "清除筛选" }));
     expect(screen.queryByRole("group", { name: "当前筛选条件" })).toBeNull();
+    expect(screen.getByRole("tab", { name: /^缺陷\s*2$/ }).getAttribute("aria-selected")).toBe("true");
     await user.click(screen.getByRole("button", { name: "切换到完整模式" }));
-    expect(screen.getByText("需求甲")).toBeTruthy();
-    expect(screen.getByText("跨空间需求")).toBeTruthy();
+    expect(screen.queryByText("需求甲")).toBeNull();
+    expect(screen.queryByText("跨空间需求")).toBeNull();
+    expect(screen.getByText("已完成缺陷")).toBeTruthy();
+    expect(screen.getByText("未归项目缺陷")).toBeTruthy();
   });
 
-  it("清单中可以取消本次从完整模式继承的类型条件", async () => {
+  it("清单 Tab 可切换继承的类型并同步到完整模式，全部 Tab 恢复所有类型", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("需求甲");
@@ -347,9 +356,118 @@ describe("清单模式", () => {
     const list = await enterListMode(user);
     expect(within(list).getByText("需求甲")).toBeTruthy();
     expect(within(list).queryByText("缺陷乙")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "取消事项类型：需求" }));
+    expect(screen.getByRole("tab", { name: /^需求\s*1$/ }).getAttribute("aria-selected")).toBe("true");
     expect(screen.queryByRole("button", { name: "取消事项类型：需求" })).toBeNull();
+    await user.click(screen.getByRole("tab", { name: /^缺陷\s*1$/ }));
+    expect(within(list).queryByText("需求甲")).toBeNull();
+    expect(within(list).getByText("缺陷乙")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "切换到完整模式" }));
+    expect(within(screen.getByRole("group", { name: "我的类型" })).getByRole("button", { name: /^缺陷\s*1$/ }).classList.contains("chosen")).toBe(true);
+    await user.click(screen.getByRole("button", { name: "切换到清单模式" }));
+    await user.click(screen.getByRole("tab", { name: /^全部\s*2$/ }));
+    expect(screen.getByRole("tab", { name: /^全部\s*2$/ }).getAttribute("aria-selected")).toBe("true");
+    expect(within(screen.getByRole("region", { name: "工作清单" })).getAllByRole("button")).toHaveLength(2);
+  });
+
+  it("类型 Tab 沿用侧栏的别名、排序和显示范围，并保留零项类型入口", async () => {
+    const data = snapshot();
+    data.items.push(item("3", "隐藏事项", "hidden-type"));
+    data.total = data.items.length;
+    data.type_order = ["empty-type", "issue", "story", "hidden-type"];
+    data.sources[0].type_scope = {
+      configured: false, selected_count: 0,
+      types: [
+        { type_key: "story", type_name: "需求" },
+        { type_key: "issue", type_name: "缺陷" },
+        { type_key: "empty-type", type_name: "设计任务" },
+        { type_key: "hidden-type", type_name: "隐藏类型" },
+      ].map((type) => ({ ...type, project_key: "space-a", project_name: "空间甲", selected: true })),
+    };
+    localStorage.setItem("fstodo.source-type-preferences.v2", JSON.stringify({
+      "source-a": {
+        story: { enabled: true, alias: "需求开发" },
+        issue: { enabled: true, alias: "缺陷跟踪" },
+        "hidden-type": { enabled: false, alias: "" },
+      },
+    }));
+    vi.mocked(loadSnapshot).mockResolvedValue(data);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("需求甲");
+    const sidebarTypes = within(screen.getByRole("group", { name: "我的类型" })).getAllByRole("button")
+      .map((button) => button.textContent?.replace(/\s+/g, ""));
+    const list = await enterListMode(user);
+    const tabs = within(screen.getByRole("tablist", { name: "事项类型" })).getAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent?.replace(/\s+/g, ""))).toEqual(["全部2", ...sidebarTypes]);
+    expect(sidebarTypes).toEqual(["设计任务0", "缺陷跟踪1", "需求开发1"]);
+    expect(screen.queryByRole("tab", { name: /隐藏类型/ })).toBeNull();
+    expect(within(list).queryByText("隐藏事项")).toBeNull();
+    await user.click(screen.getByRole("tab", { name: /^设计任务\s*0$/ }));
+    expect(screen.getByRole("tab", { name: /^设计任务\s*0$/ }).getAttribute("aria-selected")).toBe("true");
+    expect(within(list).getByText("当前类型暂无事项")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "清单筛选" }).textContent).toBe("筛选");
+    expect(screen.queryByRole("button", { name: "清除" })).toBeNull();
+    await user.click(within(list).getByRole("button", { name: "查看全部类型" }));
+    expect(screen.getByRole("tab", { name: /^全部\s*2$/ }).getAttribute("aria-selected")).toBe("true");
     expect(within(list).getAllByRole("button")).toHaveLength(2);
+  });
+
+  it("类型 Tab 支持方向键循环和 Home/End，并关联当前清单面板", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const list = await enterListMode(user);
+    const tabs = within(screen.getByRole("tablist", { name: "事项类型" })).getAllByRole("tab");
+    const expectActive = (index: number) => {
+      expect(document.activeElement).toBe(tabs[index]);
+      expect(tabs[index].getAttribute("aria-selected")).toBe("true");
+      expect(tabs.filter((tab) => tab.getAttribute("tabindex") === "0")).toEqual([tabs[index]]);
+      const panel = within(list).getByRole("tabpanel");
+      expect(tabs[index].getAttribute("aria-controls")).toBe(panel.id);
+      expect(panel.getAttribute("aria-labelledby")).toBe(tabs[index].id);
+    };
+    tabs[0].focus();
+    await user.keyboard("{ArrowLeft}");
+    expectActive(tabs.length - 1);
+    await user.keyboard("{ArrowRight}");
+    expectActive(0);
+    expect(within(list).getAllByRole("button")).toHaveLength(2);
+    await user.keyboard("{End}");
+    expectActive(tabs.length - 1);
+    expect(within(list).getAllByRole("button")).toHaveLength(1);
+    await user.keyboard("{Home}{ArrowRight}");
+    expectActive(1);
+    expect(within(list).getAllByRole("button")).toHaveLength(1);
+  });
+
+  it("切换类型保留普通筛选，清除筛选及调整空间项目保留当前类型", async () => {
+    vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
+    const user = userEvent.setup();
+    render(<App />);
+    const list = await enterListMode(user);
+    await user.click(screen.getByRole("button", { name: "清单筛选" }));
+    await chooseFilter(user, "清单空间", "空间甲");
+    await chooseFilter(user, "清单所属项目", "项目甲");
+    await user.type(screen.getByRole("textbox", { name: "清单搜索工作" }), "需求");
+    await user.click(screen.getByRole("tab", { name: /^缺陷\s*2$/ }));
+    expect(screen.getByRole("button", { name: "取消搜索：需求" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "取消空间：空间甲" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "取消所属项目：项目甲" })).toBeTruthy();
+    expect(within(list).getByText("没有符合条件的事项")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "清除" }));
+    expect(screen.getByRole("tab", { name: /^缺陷\s*2$/ }).getAttribute("aria-selected")).toBe("true");
+    expect(within(list).getAllByRole("button")).toHaveLength(2);
+    expect(screen.queryByRole("group", { name: "当前筛选条件" })).toBeNull();
+    await chooseFilter(user, "清单空间", "空间甲");
+    await chooseFilter(user, "清单所属项目", "项目甲");
+    expect(screen.getByRole("tab", { name: /^缺陷\s*2$/ }).getAttribute("aria-selected")).toBe("true");
+    expect(within(list).getByText("已完成缺陷")).toBeTruthy();
+    expect(within(list).queryByText("需求甲")).toBeNull();
+    expect(within(list).queryByText("未归项目缺陷")).toBeNull();
+    await user.click(screen.getByRole("tab", { name: /^需求\s*2$/ }));
+    expect(screen.getByRole("combobox", { name: "清单空间" }).textContent).toBe("空间甲");
+    expect(screen.getByRole("combobox", { name: "清单所属项目" }).textContent).toBe("项目甲");
+    expect(within(list).getByText("需求甲")).toBeTruthy();
+    expect(within(list).queryByText("跨空间需求")).toBeNull();
   });
 
   it.each([

@@ -68,6 +68,8 @@ import { Select } from "./Select";
 import { LinkSettings } from "./LinkSettings";
 import { DesktopSettings, useDesktopSettings } from "./DesktopSettings";
 import { ConnectionSettings } from "./ConnectionSettings";
+import { McpTokenGuide } from "./McpTokenGuide";
+import { McpConnectionStatus, type ConnectionCheckResult } from "./McpConnectionStatus";
 import { SettingsSaveStatus, type SaveFeedback } from "./SettingsSaveStatus";
 import { ThemeProvider } from "./ThemeProvider";
 import { ThemeControl } from "./ThemeControl";
@@ -236,6 +238,8 @@ function Workspace() {
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const busy = operation || (workflowBusy ? "workflow" : null);
   const [tokenDraft, setTokenDraft] = useState("");
+  const [tokenGuideOpen, setTokenGuideOpen] = useState(false);
+  const [connectionCheck, setConnectionCheck] = useState<ConnectionCheckResult | null>(null);
   const [error, setError] = useState<AppError | null>(null);
   const [settingsRefreshFailed, setSettingsRefreshFailed] = useState(false);
   const [connectionFeedback, setConnectionFeedback] = useState<SaveFeedback | null>(null);
@@ -562,6 +566,7 @@ function Workspace() {
     setNotice(null);
     try {
       const description = await saveToken(tokenDraft);
+      setConnectionCheck(null);
       setTokenDraft("");
       setData((previous) =>
         previous
@@ -596,6 +601,7 @@ function Workspace() {
     try {
       await saveConnectionSettings(settings);
       saved = true;
+      setConnectionCheck(null);
       await reload();
       setSelectedKey(null);
       setPolicies(retryFailedPolicies);
@@ -704,16 +710,13 @@ function Workspace() {
           };
       } else {
         const info = await checkConnection();
-        setNotice({
-          tone: info.session_established ? "success" : "warning",
-          text: info.session_established
-            ? `连接成功 · ${info.server_name || "飞书项目"} ${info.server_version || ""}`
-            : "连接未建立，请重试。",
-        });
+        setConnectionCheck(info.session_established
+          ? { state: "success", server: [info.server_name || "飞书项目", info.server_version].filter(Boolean).join(" ") }
+          : { state: "failed", error: { kind: "connection", message: "连接未建立，请重试。" } });
       }
     } catch (e) {
       if (action === "sync") failure = asError(e);
-      else setError(asError(e));
+      else setConnectionCheck({ state: "failed", error: asError(e) });
     } finally {
       // 同步中途失败也可能已落库部分页，必须回读缓存和失败台账。
       try {
@@ -1113,6 +1116,9 @@ function Workspace() {
               : "暂无工作。先在完整模式中选择工作来源并同步飞书。"
         }
         typeName={displayItemType}
+        typeOptions={[...new Set([...types, ...type])].map((key) => ({
+          key, label: displayType(key), count: items.filter((item) => item.id.work_item_type_key === key).length,
+        }))}
         selectedKey={selectedKey}
         select={setSelectedKey}
         detail={selected ? detailFor(selected, true) : null}
@@ -1614,26 +1620,23 @@ function Workspace() {
               <div className="section-heading">
                 <div>
                   <h2>飞书连接</h2>
-                  <p>保存 MCP token 后，即可连接飞书项目。</p>
+                  <p>保存 MCP Token，再检查与飞书项目的连接。</p>
                 </div>
                 <button
                   className="secondary"
-                  disabled={!desktop || !!busy}
+                  disabled={!desktop || !!busy || !!tokenDraft.trim() || connectionUnsaved}
                   onClick={() => void run("check")}
                 >
                   <Cloud size={16} />
                   {busy === "check" ? "检查中…" : "检查连接"}
                 </button>
               </div>
-              <div className="connection-status">
-                <span
-                  className={`status-dot ${data?.credential_ready ? "" : "amber"}`}
-                />
-                <strong>
-                  {data?.credential_ready ? "凭证已就绪" : "凭证未就绪"}
-                </strong>
-                <span>{data?.credential_description}</span>
-              </div>
+              <McpConnectionStatus configured={!!data?.credential_ready}
+                description={data?.credential_description} result={connectionCheck}
+                checking={busy === "check"} onOpenGuide={() => setTokenGuideOpen(true)} />
+              {(!!tokenDraft.trim() || connectionUnsaved) && <p className="hint">
+                {tokenDraft.trim() ? "请先保存下方 Token，再检查连接。" : "服务地址尚未保存，保存后再检查连接。"}
+              </p>}
               {view === "settings" && <form
                 className="token-form"
                 onSubmit={(event) => {
@@ -1641,7 +1644,7 @@ function Workspace() {
                   void saveCredential();
                 }}
               >
-                <label htmlFor="mcp-token">MCP Token</label>
+                <McpTokenGuide open={tokenGuideOpen} onOpenChange={setTokenGuideOpen} inputId="mcp-token">
                 <div className="token-input-row">
                   <input
                     id="mcp-token"
@@ -1670,6 +1673,7 @@ function Workspace() {
                 <p id="token-help" className="hint">
                   加密保存在本机，仅显示脱敏信息。留空不会修改已保存的 token。
                 </p>
+                </McpTokenGuide>
               </form>}
               {data?.settings && <ConnectionSettings
                 settings={data.settings}
