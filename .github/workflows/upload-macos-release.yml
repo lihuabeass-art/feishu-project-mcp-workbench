@@ -15,6 +15,14 @@ on:
         description: "同一 tag 的已有草稿 Release ID"
         required: true
         type: string
+      windows_sha256:
+        description: "可选：Windows 正式安装包 SHA256，须与 windows_bytes 同时填写"
+        required: false
+        type: string
+      windows_bytes:
+        description: "可选：Windows 正式安装包字节数，须与 windows_sha256 同时填写"
+        required: false
+        type: string
 
 permissions:
   actions: read
@@ -36,6 +44,8 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
       BUILD_RUN_ID: ${{ inputs.run_id }}
       TARGET_RELEASE_ID: ${{ inputs.release_id }}
+      WINDOWS_SHA256: ${{ inputs.windows_sha256 }}
+      WINDOWS_BYTES: ${{ inputs.windows_bytes }}
     steps:
       - name: Verify build, download artifact and upload to existing draft
         shell: bash
@@ -46,6 +56,7 @@ jobs:
           import os
           from pathlib import Path
           import re
+          import shutil
           import subprocess
           import tempfile
           from urllib.parse import quote
@@ -79,6 +90,14 @@ jobs:
           release_id = os.environ["TARGET_RELEASE_ID"]
           require(re.fullmatch(r"[1-9][0-9]*", run_id), "run_id must be a positive integer")
           require(re.fullmatch(r"[1-9][0-9]*", release_id), "release_id must be a positive integer")
+          windows_sha256 = os.environ["WINDOWS_SHA256"]
+          windows_bytes = os.environ["WINDOWS_BYTES"]
+          require(bool(windows_sha256) == bool(windows_bytes), "windows_sha256 and windows_bytes must both be supplied or both be empty")
+          if windows_sha256:
+              require(re.fullmatch(r"[0-9A-Fa-f]{64}", windows_sha256), "windows_sha256 must contain exactly 64 hexadecimal characters")
+              require(re.fullmatch(r"[1-9][0-9]*", windows_bytes), "windows_bytes must be a positive integer")
+              windows_sha256 = windows_sha256.lower()
+              windows_bytes = int(windows_bytes)
           version = tag.removeprefix("v")
           number = r"(?:0|[1-9][0-9]*)"
           prerelease = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
@@ -126,7 +145,7 @@ jobs:
               require(asset["name"] == name and asset["state"] == "uploaded", f"Asset is not fully uploaded: {name}")
               require(asset["size"] == size and asset.get("digest") == f"sha256:{digest}", f"Asset size or SHA256 differs: {name}")
 
-          with tempfile.TemporaryDirectory(prefix="fstodo-macos-") as directory:
+          with tempfile.TemporaryDirectory(prefix="fstodo-release-") as directory:
               subprocess.run(
                   ["gh", "run", "download", run_id, "--repo", repo,
                    "--name", artifact_name, "--dir", directory], check=True,
@@ -142,8 +161,45 @@ jobs:
                   require(path.is_file() and not path.is_symlink(), f"Artifact is missing a regular file: {name}")
                   size = path.stat().st_size
                   require(size > 0, f"Artifact file is empty: {name}")
-                  digest = hashlib.file_digest(path.open("rb"), "sha256").hexdigest()
+                  with path.open("rb") as source:
+                      digest = hashlib.file_digest(source, "sha256").hexdigest()
                   files.append((name, path, size, digest))
+
+              if windows_sha256:
+                  chunk_size = 524288
+                  part_count = (windows_bytes + chunk_size - 1) // chunk_size
+                  windows_name = f"FSTODO_{version}_x64-setup.exe"
+                  windows_path = root / windows_name
+                  parts_directory = root / "windows-parts"
+                  parts_directory.mkdir()
+                  existing = pages(f"{prefix}/releases/{release_id}/assets")
+                  parts = []
+                  for index in range(part_count):
+                      part_name = f"{windows_name}.part-{index:04d}"
+                      matches = [asset for asset in existing if asset["name"] == part_name]
+                      require(len(matches) == 1, f"Expected exactly one Windows part: {part_name}")
+                      asset = matches[0]
+                      expected_size = min(chunk_size, windows_bytes - index * chunk_size)
+                      require(asset["state"] == "uploaded" and asset["size"] == expected_size, f"Windows part is incomplete or has a different size: {part_name}")
+                      parts.append((asset, parts_directory / part_name, expected_size))
+                  for asset, part_path, expected_size in parts:
+                      with part_path.open("wb") as destination:
+                          subprocess.run(
+                              ["gh", "api", "-H", "X-GitHub-Api-Version: 2022-11-28",
+                               "-H", "Accept: application/octet-stream",
+                               f"{prefix}/releases/assets/{asset['id']}"],
+                              check=True, stdout=destination, stderr=subprocess.PIPE,
+                          )
+                      require(part_path.stat().st_size == expected_size, f"Downloaded Windows part has a different size: {asset['name']}")
+                  with windows_path.open("wb") as destination:
+                      for asset, part_path, expected_size in parts:
+                          with part_path.open("rb") as source:
+                              shutil.copyfileobj(source, destination)
+                  require(windows_path.stat().st_size == windows_bytes, "Reassembled Windows installer has a different byte count")
+                  with windows_path.open("rb") as source:
+                      digest = hashlib.file_digest(source, "sha256").hexdigest()
+                  require(digest == windows_sha256, "Reassembled Windows installer SHA256 differs from the supplied checksum")
+                  files.append((windows_name, windows_path, windows_bytes, digest))
 
               # Check all conflicts before the first write; never replace an existing asset.
               existing = pages(f"{prefix}/releases/{release_id}/assets")

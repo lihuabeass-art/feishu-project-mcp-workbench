@@ -25,7 +25,11 @@
 
 在线更新使用 Tauri 官方 updater 签名校验，自动检查与下载在后台完成，安装仍须用户明确确认；关闭窗口或正常退出不自动安装。macOS 继续使用 ad-hoc 签名，首次安装用 DMG、应用内更新用 Universal `.app.tar.gz`；updater 签名不等于 Apple Developer ID 签名或公证。分发前须核对 Gatekeeper、覆盖安装、重启及钥匙串体验；Windows 须验证旧版到新版的真实安装以及 WebView2 安装行为。macOS 的安装限制见[构建与安装说明](macos试用版构建.md)。
 
-本机向 GitHub 上传较大的 macOS 文件发生超时，可手动运行 [Upload existing macOS release assets](../.github/workflows/upload-macos-release.yml)，填写版本 `tag`、同一 tag 的成功 `Build macOS` 运行 `run_id`，以及已有草稿的 `release_id`。工作流复用未过期的构建 Artifact，只上传 Universal `.app.tar.gz` 和 DMG，不重新编译或签名；它核对运行、tag、提交、包元数据和远端摘要，遇到同名未完成上传或内容不一致时停止，不覆盖附件。Windows 包、签名、清单和许可文件仍按上述流程补齐，全部核验后再正式发布；该工作流本身不创建或发布 Release。
+本机向 GitHub 上传较大的 macOS 文件发生超时，可手动运行 [Upload existing macOS release assets](../.github/workflows/upload-macos-release.yml)，填写版本 `tag`、同一 tag 的成功 `Build macOS` 运行 `run_id`，以及已有草稿的 `release_id`。工作流复用未过期的构建 Artifact，上传 Universal `.app.tar.gz` 和 DMG，不重新编译或签名；它核对运行、tag、提交、包元数据和远端摘要，已有同名完整附件且字节数、SHA256 一致时跳过，同名未完成上传或内容不一致时停止，不覆盖附件。
+
+Windows 正式 NSIS 安装包上传同样超时，可先在本机记录原始文件的 SHA256 和总字节数，按每段 524288 字节（512 KiB）拆分，最后一段保留剩余字节，并上传至同一草稿。分段资产必须依次命名为 `FSTODO_<版本>_x64-setup.exe.part-0000`、`part-0001` 等，序号从零开始、至少四位；分段数为总字节数除以 524288 后向上取整。再次运行上述工作流，同时填写 `windows_sha256`（64 位十六进制）与 `windows_bytes`（正整数）；两项全空则跳过 Windows，不能只填其中一项。工作流只读取计算得出的确切分段名称，要求各段均已完整上传且大小正确，下载到临时目录依序拼接，核对总字节数与原始 SHA256 后，才按相同的冲突与回读规则上传正式 `.exe`；它不会执行安装包或删除远端分段。
+
+分段仅用于草稿中转，不能出现在正式 Release。正式 Windows 包回读核验通过后，由操作者按明确资产 ID 清理本次分段并核对草稿附件；签名、清单、说明和许可文件仍须补齐，全部核验后再正式发布。清理分段后再次运行工作流时，将两项 Windows 输入留空；macOS 已有匹配附件可重复运行并跳过。该工作流本身不创建或发布 Release。
 
 ## 编译阻塞项的修复授权
 
