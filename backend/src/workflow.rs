@@ -484,6 +484,27 @@ async fn node_entries(session: &Session, id: &WorkItemId, detail: &crate::detail
                         form: progress,
                     });
                 }
+                if let Some(schedule) = form.schedule_only() {
+                    out.push(DiscoveredAction {
+                        view: WorkflowAction {
+                            id: format!("node:schedule:{node_key}"),
+                            label: format!("仅同步日期「{name}」"),
+                            kind: ActionKind::Node,
+                            description: Some("仅同步排期的开始和结束日期，保持当前节点进行中。".into()),
+                            disabled_reason: None,
+                            fields: schedule.fields(),
+                        },
+                        tool: crate::mcp::feishu::TOOL_UPDATE_NODE,
+                        args: args.clone(),
+                        expect: Expectation::NodeNot {
+                            node_key: node_key.clone(),
+                            status: status.clone(),
+                        },
+                        ledger_kind: "node_schedule",
+                        target: node_key.clone(),
+                        form: schedule,
+                    });
+                }
                 args.insert("action".to_string(), json!("confirm"));
                 out.push(DiscoveredAction {
                     view: WorkflowAction {
@@ -918,8 +939,8 @@ fn check_updated_fields(
 ) -> Result<(), FieldCheckFailure> {
     let (project, type_key, item) = request.item_id.key_tuple();
     let mut values = plan.fields.clone();
-    if entry.ledger_kind == "node_progress" {
-        // 进度未改时也要回读当前值和节点状态，不能跳过核验直接报成功。
+    if matches!(entry.ledger_kind, "node_progress" | "node_schedule") {
+        // 未改字段也要回读；排期两端及节点状态必须全部符合本次核对值。
         for field in &entry.view.fields {
             values.entry(field.key.clone()).or_insert_with(|| {
                 field.settings.initial_value.clone().unwrap_or_default()
@@ -957,7 +978,7 @@ fn check_updated_fields(
             node_field_labels(node)
         }
     };
-    if entry.ledger_kind == "node_progress" {
+    if matches!(entry.ledger_kind, "node_progress" | "node_schedule") {
         return Ok(());
     }
     let ready = (|| -> Result<(), BackendError> {
@@ -1062,7 +1083,11 @@ pub fn execute(
             args.insert(field.key.clone(), json!(value));
         }
     }
-    let plan = entry.form.plan(&request.fields)?;
+    let plan = if entry.ledger_kind == "node_schedule" {
+        entry.form.schedule_plan(&request.fields)?
+    } else {
+        entry.form.plan(&request.fields)?
+    };
 
     // 幂等登记：这一步之前，本次调用一个字节的写请求都没发出去。
     let record = ActionRecord {
@@ -1131,6 +1156,41 @@ pub fn execute(
 
     let (project, _, item) = request.item_id.key_tuple();
     let calls = plan.calls(&project, &item, &entry.target);
+    if entry.ledger_kind == "node_schedule" {
+        // 排期仅产生一次节点更新；无论回执能否识别，最终结果都由两端日期回读决定。
+        let receipt_error = calls.iter().try_for_each(|(tool, args)| {
+            session.call_tool_any(tool, args, true).map(|_| ())
+        }).err().map(|error| error.safe_message(secret.as_deref()));
+        match check_updated_fields(session, request, entry, &plan) {
+            Ok(()) => {
+                let note = finish("verified", true, receipt_error);
+                let resynced = session.sync_personal_todos(None, crate::store::RunTrigger::Manual).is_ok();
+                return Ok(WorkflowResult {
+                    outcome: ActionOutcome::Verified,
+                    verified: true,
+                    message: format!("开始和结束日期已同步到飞书并回读确认，当前节点保持进行中。{}{note}",
+                        if resynced { "本地缓存已刷新。" } else { "本地缓存暂未刷新，下次同步会更新。" }),
+                    request_id: request.request_id.clone(),
+                    action_id: entry.view.id.clone(),
+                    resynced,
+                });
+            }
+            Err(failure) => {
+                let detail = failure.error.safe_message(secret.as_deref());
+                let ledger_detail = receipt_error.map(|receipt| format!("{receipt}；{detail}"))
+                    .unwrap_or_else(|| detail.clone());
+                let note = finish("unknown", false, Some(ledger_detail));
+                return Ok(WorkflowResult {
+                    outcome: ActionOutcome::Unknown,
+                    verified: false,
+                    message: format!("日期同步结果不确定，尚未发送流程推进请求：{detail}。草稿已保留，请先核对飞书后再处理。{note}"),
+                    request_id: request.request_id.clone(),
+                    action_id: entry.view.id.clone(),
+                    resynced: false,
+                });
+            }
+        }
+    }
     let submitted = if entry.ledger_kind == "node_progress" && calls.is_empty() {
         check_updated_fields(session, request, entry, &plan)
             .map(|_| Value::Null)
@@ -1330,6 +1390,10 @@ mod performance_tests;
 #[cfg(test)]
 #[path = "workflow_progress_tests.rs"]
 mod progress_tests;
+
+#[cfg(test)]
+#[path = "workflow_schedule_tests.rs"]
+mod schedule_tests;
 
 #[cfg(test)]
 #[path = "workflow_transition_tests.rs"]

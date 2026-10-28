@@ -426,6 +426,7 @@ export function Workflow({
         merged.conflicts.some(
           (key) =>
             nextAction.fields.some((field) => field.key === key) &&
+            !!merged.base_fields[key]?.trim() &&
             (!previous.conflicts.includes(key) ||
               previous.baseFields[key] !== merged.base_fields[key]),
         )
@@ -805,32 +806,76 @@ export function Workflow({
     );
   }
   const flowActions = options?.actions.filter(
-    (candidate) => !candidate.id.startsWith("node:progress:"),
+    (candidate) =>
+      !candidate.id.startsWith("node:progress:") &&
+      !candidate.id.startsWith("node:schedule:"),
   );
   const progressOnly = action?.id.startsWith("node:progress:") ?? false;
-  function progressFor(candidate: WorkflowAction) {
+  const scheduleOnly = action?.id.startsWith("node:schedule:") ?? false;
+  function syncFor(candidate: WorkflowAction, kind: "progress" | "schedule") {
     return candidate.id.startsWith("node:confirm:")
       ? options?.actions.find(
           (next) =>
             !next.disabled_reason &&
-            next.id === candidate.id.replace("node:confirm:", "node:progress:"),
+            next.id === candidate.id.replace("node:confirm:", `node:${kind}:`),
         )
       : undefined;
   }
-  const progressAction = action ? progressFor(action) : undefined;
+  const progressAction = action ? syncFor(action, "progress") : undefined;
+  const scheduleAction = action ? syncFor(action, "schedule") : undefined;
+  const segments = layoutFields(action?.fields ?? []);
+  const scheduleKeys = new Set(
+    scheduleAction?.fields.map((field) => field.key),
+  );
+  const scheduleSegment = segments.reduce((last, segment, index) => {
+    const segmentFields =
+      segment.kind === "field"
+        ? [segment.field]
+        : Object.values(segment.table.cells);
+    return segmentFields.some((field) => scheduleKeys.has(field.key))
+      ? index
+      : last;
+  }, -1);
+  function scheduleButton() {
+    if (!scheduleAction) return null;
+    return (
+      <button
+        type="button"
+        className="secondary"
+        disabled={locked || blocked}
+        onClick={() =>
+          choose(
+            scheduleAction,
+            Object.fromEntries(
+              scheduleAction.fields.map((field) => [
+                field.key,
+                fields[field.key] ?? "",
+              ]),
+            ),
+          )
+        }
+      >
+        仅同步此日期
+      </button>
+    );
+  }
   const acknowledgement = progressOnly
     ? "我已核对进度，本次仅同步进度并保留当前节点"
-    : "我已核对填写内容，理解提交后的修改限制";
+    : scheduleOnly
+      ? "我已核对开始和结束日期，本次仅同步日期并保留当前节点"
+      : "我已核对填写内容，理解提交后的修改限制";
   const rollback = action?.id.startsWith("node:rollback:") ?? false;
   const confirmLabel = progressOnly
     ? "确认同步进度"
-    : rollback
-      ? "确认回滚节点"
-      : action?.id.startsWith("node:confirm:")
-        ? "确认完成节点"
-        : action?.kind === "state"
-          ? `确认${action.label}`
-          : "确认提交并执行";
+    : scheduleOnly
+      ? "确认同步日期"
+      : rollback
+        ? "确认回滚节点"
+        : action?.id.startsWith("node:confirm:")
+          ? "确认完成节点"
+          : action?.kind === "state"
+            ? `确认${action.label}`
+            : "确认提交并执行";
   const fieldIndex = new Map(
     action?.fields.map((field, index) => [field.key, index]),
   );
@@ -980,7 +1025,10 @@ export function Workflow({
                   <button
                     className="secondary"
                     disabled={
-                      locked || (!!a.disabled_reason && !progressFor(a))
+                      locked ||
+                      (!!a.disabled_reason &&
+                        !syncFor(a, "progress") &&
+                        !syncFor(a, "schedule"))
                     }
                     onClick={() => choose(a)}
                   >
@@ -989,11 +1037,19 @@ export function Workflow({
                   {a.disabled_reason && (
                     <p className="hint">{a.disabled_reason}</p>
                   )}
-                  {a.disabled_reason && progressFor(a) && (
-                    <p className="hint">
-                      可进入表单同步进度；完成节点前仍需补齐上述必填项。
-                    </p>
-                  )}
+                  {a.disabled_reason &&
+                    (syncFor(a, "progress") || syncFor(a, "schedule")) && (
+                      <p className="hint">
+                        可进入表单同步
+                        {[
+                          syncFor(a, "progress") && "进度",
+                          syncFor(a, "schedule") && "日期",
+                        ]
+                          .filter(Boolean)
+                          .join("、")}
+                        ；完成节点前仍需补齐上述必填项。
+                      </p>
+                    )}
                   {!a.disabled_reason && a.fields.some((f) => f.required) && (
                     <p className="hint">
                       需填写：
@@ -1036,7 +1092,7 @@ export function Workflow({
                     <p className="hint">{action.disabled_reason}</p>
                   )}
                   {!review ? (
-                    layoutFields(action.fields).map((segment) =>
+                    segments.map((segment, index) =>
                       segment.kind === "owners" ? (
                         <div
                           className="workflow-owner-table"
@@ -1127,6 +1183,7 @@ export function Workflow({
                               {hint}
                             </small>
                           ))}
+                          {index === scheduleSegment && scheduleButton()}
                         </div>
                       ) : (
                         <div
@@ -1173,6 +1230,7 @@ export function Workflow({
                                 仅同步此进度
                               </button>
                             )}
+                          {index === scheduleSegment && scheduleButton()}
                         </div>
                       ),
                     )
@@ -1198,6 +1256,7 @@ export function Workflow({
                         remote={baseFields}
                       />
                       {!progressOnly &&
+                        !scheduleOnly &&
                         Object.keys(review.fields).length === 0 && (
                           <p className="hint">字段无修改，仅执行流程操作。</p>
                         )}
@@ -1259,7 +1318,9 @@ export function Workflow({
                             ? "正在检查…"
                             : progressOnly
                               ? "同步进度"
-                              : "提交"}
+                              : scheduleOnly
+                                ? "同步日期"
+                                : "提交"}
                         </button>
                       </div>
                     </>
@@ -1270,9 +1331,11 @@ export function Workflow({
                         <p className="workflow-warning">
                           {progressOnly
                             ? "仅同步以上进度并保持当前节点，不提交其他字段；进度达到 100% 也不会自动进入下一个节点。"
-                            : rollback
-                              ? "提交后将回滚节点；未修改的字段沿用云端值，请核对目标节点和填写内容。"
-                              : "未修改的字段沿用云端值；流程操作后可能无法返回或再次修改。"}
+                            : scheduleOnly
+                              ? "仅同步以上开始和结束日期，保留当前节点；未修改的日期沿用云端值。"
+                              : rollback
+                                ? "提交后将回滚节点；未修改的字段沿用云端值，请核对目标节点和填写内容。"
+                                : "未修改的字段沿用云端值；流程操作后可能无法返回或再次修改。"}
                         </p>
                       </div>
                       <button

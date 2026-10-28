@@ -104,6 +104,41 @@ impl NodeForm {
         Some(Self { inputs: vec![input], blocked: vec![] })
     }
 
+    /// 节点排期始终按开始、结束两个日期核对；不带入估分、工时或流转必填项。
+    pub fn schedule_only(&self) -> Option<Self> {
+        let inputs: Vec<_> = self.inputs.iter().filter(|input| {
+            matches!(&input.route, Route::Schedule { property, .. }
+                if matches!(property.as_str(), "estimate_start_date" | "estimate_end_date"))
+                && input.field.kind == FieldKind::Date
+        }).cloned().map(|mut input| {
+            input.field.required = true;
+            input
+        }).collect();
+        if inputs.is_empty() { return None; }
+        Some(Self { inputs, blocked: vec![] })
+    }
+
+    pub fn schedule_plan(&self, values: &BTreeMap<String, String>) -> Result<UpdatePlan, BackendError> {
+        let plan = self.plan(values)?;
+        // 沿用两端云端值时也校验完整日期范围，不能因没有差异写入而跳过。
+        for start in self.inputs.iter().filter(|input| matches!(&input.route,
+            Route::Schedule { property, .. } if property == "estimate_start_date")) {
+            let Route::Schedule { owner, .. } = &start.route else { unreachable!() };
+            let end = self.inputs.iter().find(|input| matches!(&input.route,
+                Route::Schedule { property, owner: end_owner }
+                    if property == "estimate_end_date" && end_owner == owner))
+                .ok_or_else(|| BackendError::validation("排期缺少结束日期"))?;
+            let effective = |input: &Input| {
+                date_ms(values.get(&input.field.key).map(String::as_str)
+                    .or(input.field.settings.initial_value.as_deref()).unwrap_or("").trim())
+            };
+            if effective(start)? > effective(end)? {
+                return Err(BackendError::validation("排期结束日期不能早于开始日期"));
+            }
+        }
+        Ok(plan)
+    }
+
     /// 状态流必填项只按工作项字段 key 建表，不能把目标状态当节点写入。
     pub fn build_state(
         transition: &Value,
