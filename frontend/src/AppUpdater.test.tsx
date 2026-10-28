@@ -20,17 +20,13 @@ import {
   within,
 } from "@testing-library/react";
 import { isTauri } from "@tauri-apps/api/core";
-import {
-  check,
-  type Update,
-  type DownloadEvent,
-} from "@tauri-apps/plugin-updater";
+import { check, type Update, type DownloadEvent } from "./updaterClient";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useAppUpdater } from "./useAppUpdater";
 import { AppUpdateDialog, AppUpdateSettings } from "./AppUpdater";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: vi.fn() }));
-vi.mock("@tauri-apps/plugin-updater", () => ({ check: vi.fn() }));
+vi.mock("./updaterClient", () => ({ check: vi.fn() }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
 vi.mock("./ExternalLink", () => ({
   ExternalLink: ({
@@ -104,6 +100,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.stubEnv("DEV", false);
   localStorage.clear();
   vi.mocked(isTauri).mockReturnValue(true);
   vi.mocked(check).mockResolvedValue(null);
@@ -111,6 +108,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
 });
 afterAll(() => {
@@ -144,6 +142,38 @@ it("未配置更新源和浏览器预览均不请求更新服务", async () => {
     await vi.advanceTimersByTimeAsync(7 * 60 * 60 * 1000);
   });
   expect(check).not.toHaveBeenCalled();
+});
+
+it("npm run dev 的开发模式禁用自动检查、手动检查、下载与安装，即使存在 Tauri 桥接", async () => {
+  vi.stubEnv("DEV", true);
+  vi.useFakeTimers();
+  const update = candidate();
+  vi.mocked(check).mockResolvedValue(update as unknown as Update);
+  const host = renderHook(() => useAppUpdater({ configured: true }));
+  render(<Host />);
+  expect(
+    screen.getByText("开发模式已禁用软件更新，请在正式安装版中更新。"),
+  ).toBeTruthy();
+  expect(
+    (screen.getByRole("button", { name: "检查更新" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  expect(
+    (
+      screen.getByRole("switch", {
+        name: "自动检查并下载更新",
+      }) as HTMLInputElement
+    ).disabled,
+  ).toBe(true);
+  await act(async () => {
+    host.result.current.check();
+    host.result.current.retry();
+    host.result.current.install();
+    await vi.advanceTimersByTimeAsync(7 * 60 * 60 * 1000);
+  });
+  expect(check).not.toHaveBeenCalled();
+  expect(update.download).not.toHaveBeenCalled();
+  expect(update.install).not.toHaveBeenCalled();
 });
 
 it("StrictMode 启动延迟只检查一次，每六小时再检查，无更新时不弹窗", async () => {
@@ -280,6 +310,42 @@ it("后台下载失败保留可见重试入口，未知大小使用不确定进�
   );
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(document.activeElement).toBe(view);
+});
+
+it("断线自动重试显示原因与次数，续传从已完成字节恢复且仍等待验签结果", async () => {
+  const update = candidate();
+  const transfer = deferred<void>();
+  let event!: (event: DownloadEvent) => void;
+  update.download.mockImplementation((listener) => {
+    event = listener;
+    return transfer.promise;
+  });
+  vi.mocked(check).mockResolvedValue(update as unknown as Update);
+  render(<Host />);
+  fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+  await waitFor(() => expect(update.download).toHaveBeenCalledOnce());
+  fireEvent.click(screen.getByRole("button", { name: "查看更新" }));
+  act(() => {
+    event({ event: "Started", data: { contentLength: 100, downloaded: 50 } });
+    event({ event: "Retrying", data: { attempt: 2, maxAttempts: 3 } });
+  });
+  expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe(
+    "50",
+  );
+  expect(screen.getAllByText(/正在自动重试（2\/3）/).length).toBeGreaterThan(0);
+  act(() => {
+    event({ event: "Started", data: { contentLength: 100, downloaded: 50 } });
+    event({ event: "Progress", data: { chunkLength: 50 } });
+    event({ event: "Finished" });
+  });
+  expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe(
+    "100",
+  );
+  expect(screen.queryByText(/正在自动重试/)).toBeNull();
+  expect(screen.queryByRole("button", { name: "退出并安装" })).toBeNull();
+  await act(async () => transfer.resolve());
+  expect(screen.getByRole("button", { name: "退出并安装" })).toBeTruthy();
+  expect(update.install).not.toHaveBeenCalled();
 });
 
 it("关闭后台提示保留验签安装包与设置入口，轮询或关开自动更新不会重新提示或下载", async () => {

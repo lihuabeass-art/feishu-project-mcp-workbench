@@ -9,11 +9,14 @@ import "./AppUpdater.css";
 
 function status(updater: AppUpdaterController) {
   const { phase, release, failureStage } = updater.state;
+  if (updater.development)
+    return "开发模式已禁用软件更新，请在正式安装版中更新。";
   if (!updater.desktop) return "请在桌面应用中检查和安装更新。";
   if (!updater.configured) return "更新源尚未配置。";
   if (phase === "checking") return "正在检查新版本…";
   if (phase === "current") return "当前已是最新版本。";
-  if (phase === "downloading") return "正在后台下载完整安装包并校验签名…";
+  if (phase === "downloading")
+    return updater.state.downloadMessage || "正在后台下载完整安装包并校验签名…";
   if (phase === "ready")
     return `v${release?.version} 已下载并通过签名校验，等待安装。`;
   if (phase === "installing") return "正在准备安装，请稍候…";

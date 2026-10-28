@@ -3,6 +3,7 @@
 mod external_links;
 mod desktop_workspaces;
 mod display_mode;
+mod update_download;
 
 use fstodo_backend::api::Session;
 use fstodo_backend::config::{Config, ConnectionSettings};
@@ -414,8 +415,11 @@ fn prepare_app_update(app: tauri::AppHandle) {
 }
 
 fn main() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_updater::Builder::new().build())
+    let builder = tauri::Builder::default();
+    // Debug builds must never download or replace the development executable.
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    builder
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             display_mode::restore(app);
@@ -434,6 +438,9 @@ fn main() {
             display_mode::set_compact_pinned,
             display_mode::window_action,
             prepare_app_update,
+            update_download::begin_update_download,
+            update_download::download_update,
+            update_download::install_verified_update,
             cached_item_detail,
             refresh_item_detail,
             load_field_image,

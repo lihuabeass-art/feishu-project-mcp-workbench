@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import { check, type Update } from "./updaterClient";
 import { relaunch } from "@tauri-apps/plugin-process";
 
 const preferenceKey = "fstodo.automatic-updates.v1";
@@ -30,6 +30,7 @@ export interface AppUpdateState {
   release: UpdateRelease | null;
   downloaded: number;
   total: number | null;
+  downloadMessage: string;
   error: string;
   failureStage: FailureStage | null;
 }
@@ -50,7 +51,8 @@ export function useAppUpdater({
   prepareInstall,
   configured = __UPDATER_CONFIGURED__,
 }: { prepareInstall?: () => Promise<() => void>; configured?: boolean } = {}) {
-  const desktop = isTauri();
+  const development = import.meta.env.DEV;
+  const desktop = isTauri() && !development;
   const [automatic, setAutomaticState] = useState(loadAutomatic);
   const automaticRef = useRef(automatic);
   const [preferenceError, setPreferenceError] = useState("");
@@ -61,6 +63,7 @@ export function useAppUpdater({
     release: null,
     downloaded: 0,
     total: null,
+    downloadMessage: "",
     error: "",
     failureStage: null,
   });
@@ -190,6 +193,7 @@ export function useAppUpdater({
       noticeVisible: false,
       downloaded: 0,
       total: null,
+      downloadMessage: "",
       error: "",
       failureStage: null,
     });
@@ -197,14 +201,22 @@ export function useAppUpdater({
       await candidate.download((event) => {
         if (!mounted.current) return;
         if (event.event === "Started")
-          publish({ total: event.data.contentLength || null });
+          publish({
+            total: event.data.contentLength || null,
+            downloaded: "downloaded" in event.data ? event.data.downloaded : 0,
+          });
         if (event.event === "Progress")
           publish({
             downloaded: snapshot.current.downloaded + event.data.chunkLength,
+            downloadMessage: "",
+          });
+        if (event.event === "Retrying")
+          publish({
+            downloadMessage: `下载连接中断，正在自动重试（${event.data.attempt}/${event.data.maxAttempts}）…`,
           });
       });
-      // Finished reports transfer completion before signature verification. Only
-      // the fulfilled download promise confirms that installation can be offered.
+      // A progress event alone cannot authorize installation. Wait for the native
+      // command to return the resource created after complete-package verification.
       if (!disposed.current) publish({ phase: "ready", noticeVisible: true });
     } catch (error) {
       publish({
@@ -290,6 +302,7 @@ export function useAppUpdater({
   }
 
   return {
+    development,
     desktop,
     configured,
     automatic,

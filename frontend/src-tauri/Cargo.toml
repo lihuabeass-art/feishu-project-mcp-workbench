@@ -17,6 +17,10 @@ tauri-plugin-process = "=2.3.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fstodo-backend = { path = "../../backend" }
+base64 = "0.22"
+minisign-verify = "=0.2.5"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+tokio = { version = "1", features = ["sync", "time"] }
 
 [target.'cfg(windows)'.dependencies]
 winvd = "=0.0.49"

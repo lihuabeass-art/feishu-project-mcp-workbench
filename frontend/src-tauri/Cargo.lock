@@ -1365,7 +1365,10 @@ dependencies = [
 name = "fstodo-desktop"
 version = "0.4.3"
 dependencies = [
+ "base64 0.22.1",
  "fstodo-backend",
+ "minisign-verify",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tauri",
@@ -1373,6 +1376,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "tokio",
  "windows 0.58.0",
  "windows-sys 0.61.2",
  "winvd",
