@@ -4,8 +4,8 @@
 //! JSON-RPC 编解码、`tools/call` 都由 SDK 负责，本模块只做三件事：
 //!
 //! 1. **带上凭证**：以 `X-Mcp-Token` 自定义头发送（调查结论 1 节实测路径）。
-//! 2. **翻译错误**：把 SDK 的错误类型映射成 [`BackendError`] 的四类
-//!    （连接 / 鉴权 / 工具 / 解析），保证「鉴权失败」不会被当成「网络失败」处理。
+//! 2. **翻译错误**：把 SDK 的错误类型映射成 [`BackendError`] 的对应类别
+//!    （连接 / 鉴权 / 权限 / 工具 / 解析），避免把权限或网络故障当作凭证错误。
 //! 3. **收敛会话生命周期**：连接可复用、失败即作废重建、关闭可重复调用。
 //!
 //! 凭证只在 [`FeishuMcp::headers`] 里被读一次用于构造 HTTP 头，
@@ -609,17 +609,16 @@ fn capability_names(caps: &ServerCapabilities) -> Vec<String> {
 /// `initialize` 阶段的错误翻译。
 ///
 /// 分类原则：**服务端明确拒绝凭证 → 鉴权**（用户要去看 token）；
+/// **服务端明确拒绝访问 → 权限**（不能认定凭证无效）；
 /// **服务端返回 JSON-RPC 错误 → 工具错误**（请求已送达，问题在服务端逻辑）；
 /// **其余（DNS/TCP/TLS/超时/协议中断）→ 连接**（用户要去看网络）。
 pub(crate) fn map_initialize_error(endpoint: &str, error: ClientInitializeError) -> BackendError {
-    // rmcp 3.5.1 的 is_authorization_required 只认 AuthRequired，不认 InsufficientScope；
-    // auth_challenge 两者都查，取"任一命中即鉴权"
-    if error.is_authorization_required() || error.auth_challenge().is_some() {
-        return BackendError::Auth {
-            endpoint: endpoint.to_string(),
-            challenge: error.auth_challenge().map(str::to_string),
-            detail: error.to_string(),
-        };
+    let source: &(dyn std::error::Error + 'static) = match &error {
+        ClientInitializeError::TransportError { error, .. } => error,
+        _ => &error,
+    };
+    if let Some(mapped) = map_authorization_error(endpoint, source, &error.to_string()) {
+        return mapped;
     }
     if let ClientInitializeError::JsonRpcError(data) = &error {
         return map_mcp_error("initialize", data.clone());
@@ -646,7 +645,7 @@ pub(crate) fn map_mcp_error(tool: &str, data: ErrorData) -> BackendError {
 /// 会话建立之后、单次请求期间的错误翻译。
 ///
 /// 注意 `ServiceError::McpError` 由调用方单独处理（会话仍可用），
-/// 这里剩下的是传输层与协议层故障——一律作废会话后按连接/鉴权归类。
+/// 这里剩下的是传输层与协议层故障——一律作废会话后按连接/鉴权/权限归类。
 pub(crate) fn map_service_error(endpoint: &str, tool: &str, error: ServiceError) -> BackendError {
     match &error {
         ServiceError::McpError(data) => return map_mcp_error(tool, data.clone()),
@@ -659,19 +658,15 @@ pub(crate) fn map_service_error(endpoint: &str, tool: &str, error: ServiceError)
         _ => {}
     }
 
-    // 会话中途收到 401/403：凭证问题必须和「网络抖动」分开，否则用户会去查网线。
+    // 会话中途收到 401/403：认证、权限与网络故障保持独立。
     // 注意 TransportSend(DynamicTransportError) 在 rmcp 3.5.1 未声明 #[source]，
     // source 链在这一层是断的，必须显式进入 DynamicTransportError 再往下走。
-    let challenge = match &error {
-        ServiceError::TransportSend(dte) => auth_challenge(dte),
-        _ => auth_challenge(&error),
+    let source: &(dyn std::error::Error + 'static) = match &error {
+        ServiceError::TransportSend(dte) => dte,
+        _ => &error,
     };
-    if let Some(challenge) = challenge {
-        return BackendError::Auth {
-            endpoint: endpoint.to_string(),
-            challenge: Some(challenge),
-            detail: error.to_string(),
-        };
+    if let Some(mapped) = map_authorization_error(endpoint, source, &error.to_string()) {
+        return mapped;
     }
 
     BackendError::Connection {
@@ -680,19 +675,30 @@ pub(crate) fn map_service_error(endpoint: &str, tool: &str, error: ServiceError)
     }
 }
 
-/// 在任意错误的 `source` 链里找鉴权挑战原文。
+/// 在错误的 `source` 链中按结构化类型区分认证失败与权限不足，不从错误文字猜测。
 ///
 /// SDK 会把传输层错误逐层装箱（`ClientInitializeError` → `DynamicTransportError` →
 /// `StreamableHttpError` → `AuthRequiredError`），逐层 downcast 比匹配每层的变体更稳：
 /// 中间层增减不影响识别。
-fn auth_challenge(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+fn map_authorization_error(
+    endpoint: &str,
+    error: &(dyn std::error::Error + 'static),
+    detail: &str,
+) -> Option<BackendError> {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(e) = current {
         if let Some(a) = e.downcast_ref::<AuthRequiredError>() {
-            return Some(a.www_authenticate_header.clone());
+            return Some(BackendError::Auth {
+                endpoint: endpoint.to_string(),
+                challenge: (!a.www_authenticate_header.is_empty())
+                    .then(|| a.www_authenticate_header.clone()),
+                detail: detail.to_string(),
+            });
         }
-        if let Some(s) = e.downcast_ref::<InsufficientScopeError>() {
-            return Some(s.www_authenticate_header.clone());
+        if e.is::<InsufficientScopeError>() {
+            return Some(BackendError::Permission {
+                detail: format!("{endpoint} 拒绝访问: {detail}"),
+            });
         }
         current = e.source();
     }
@@ -996,13 +1002,13 @@ mod tests {
     }
 
     #[test]
-    fn insufficient_scope_is_also_auth() {
+    fn insufficient_scope_is_permission_not_invalid_credentials() {
         let e = InsufficientScopeError::new(
             "Bearer error=\"insufficient_scope\"".to_string(),
             Some("read".into()),
         );
         let mapped = map_initialize_error(EP, init_transport_err(e));
-        assert_eq!(mapped.kind(), crate::error::ErrorKind::Auth);
+        assert_eq!(mapped.kind(), crate::error::ErrorKind::Permission);
     }
 
     #[test]
@@ -1061,6 +1067,20 @@ mod tests {
         assert_eq!(
             map_service_error(EP, TOOL_LIST_TODO, mid_session_auth).kind(),
             crate::error::ErrorKind::Auth
+        );
+
+        let mid_session_permission = ServiceError::TransportSend(boxed_transport(
+            rmcp::transport::streamable_http_client::StreamableHttpError::<std::io::Error>::InsufficientScope(
+                InsufficientScopeError::new("Bearer error=\"insufficient_scope\"".to_string(), None),
+            ),
+        ));
+        assert_eq!(
+            map_service_error(EP, TOOL_LIST_TODO, mid_session_permission).kind(),
+            crate::error::ErrorKind::Permission
+        );
+        assert_eq!(
+            map_service_error(EP, TOOL_LIST_TODO, ServiceError::Timeout { timeout: Duration::from_secs(30) }).kind(),
+            crate::error::ErrorKind::Connection
         );
     }
 

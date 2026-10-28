@@ -1,5 +1,5 @@
-//! 保留 HTTP 429 的 Retry-After；其余会话、JSON-RPC 与 SSE 生命周期仍由 rmcp 管理。
-//! POST 响应适配遵循 rmcp 3.5.1 的 reqwest 客户端，额外保留频控头。
+//! 保留 HTTP 认证、权限状态与 429 的 Retry-After；其余会话、JSON-RPC 与 SSE 生命周期仍由 rmcp 管理。
+//! POST 响应适配遵循 rmcp 3.5.1 的 reqwest 客户端，额外保留状态分类与频控头。
 use futures_util::{stream::BoxStream, StreamExt};
 use http::{HeaderName, HeaderValue};
 use rmcp::{
@@ -107,21 +107,22 @@ impl StreamableHttpClient for HttpClient {
                     .and_then(retry_after),
             }));
         }
-        if let Some(challenge) = response
+        let challenge = response
             .headers()
             .get("www-authenticate")
             .and_then(|v| v.to_str().ok())
-        {
-            if status == http::StatusCode::UNAUTHORIZED {
-                return Err(StreamableHttpError::AuthRequired(AuthRequiredError::new(
-                    challenge.into(),
-                )));
-            }
-            if status == http::StatusCode::FORBIDDEN {
-                return Err(StreamableHttpError::InsufficientScope(
-                    InsufficientScopeError::new(challenge.into(), None),
-                ));
-            }
+            .unwrap_or_default();
+        // HTTP 状态已明确认证/权限失败，不依赖服务端是否附带挑战头或 JSON-RPC 响应体。
+        // SDK 要求字符串；空串只表示没有挑战头，业务映射仍会还原为 None。
+        if status == http::StatusCode::UNAUTHORIZED {
+            return Err(StreamableHttpError::AuthRequired(AuthRequiredError::new(
+                challenge.into(),
+            )));
+        }
+        if status == http::StatusCode::FORBIDDEN {
+            return Err(StreamableHttpError::InsufficientScope(
+                InsufficientScopeError::new(challenge.into(), None),
+            ));
         }
         if matches!(
             status,
@@ -303,6 +304,58 @@ mod tests {
 
     fn message() -> ClientJsonRpcMessage {
         serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_todo","arguments":{}}})).unwrap()
+    }
+
+    #[tokio::test]
+    async fn http_auth_and_permission_statuses_survive_missing_challenges_and_jsonrpc_bodies() {
+        use crate::error::{BackendError, ErrorKind};
+        use rmcp::{service::ClientInitializeError, transport::DynamicTransportError};
+
+        for (wire, expected, has_challenge) in [
+            ("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer error=\"invalid_token\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", ErrorKind::Auth, true),
+            ("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", ErrorKind::Auth, false),
+            ("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"request rejected\"}}", ErrorKind::Auth, false),
+            ("HTTP/1.1 403 Forbidden\r\nWWW-Authenticate: Bearer error=\"insufficient_scope\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", ErrorKind::Permission, true),
+            ("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", ErrorKind::Permission, false),
+            ("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"request rejected\"}}", ErrorKind::Permission, false),
+        ] {
+            let (uri, server) = endpoint(wire);
+            let error = HttpClient::new().unwrap()
+                .post_message(uri.clone(), message(), None, None, HashMap::new())
+                .await.err().expect("HTTP 拒绝必须保留错误分类");
+            let mapped = super::super::feishu::map_initialize_error(&uri, ClientInitializeError::TransportError {
+                error: DynamicTransportError::from_parts("streamable_http", std::any::TypeId::of::<()>(), Box::new(error)),
+                context: "send initialize request".into(),
+            });
+            assert_eq!(mapped.kind(), expected, "{wire}");
+            if let BackendError::Auth { challenge, .. } = mapped {
+                assert_eq!(challenge.is_some(), has_challenge);
+            }
+            server.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn http_server_failures_are_not_credential_errors() {
+        use rmcp::{service::ClientInitializeError, transport::DynamicTransportError};
+
+        let (uri, server) = endpoint("HTTP/1.1 500 Internal Server Error\r\nWWW-Authenticate: Bearer error=\"invalid_token\"\r\nConnection: close\r\n\r\nauthentication service unavailable");
+        let error = HttpClient::new().unwrap()
+            .post_message(uri.clone(), message(), None, None, HashMap::new())
+            .await.err().expect("HTTP 500 必须保留服务失败");
+        let mapped = super::super::feishu::map_initialize_error(&uri, ClientInitializeError::TransportError {
+            error: DynamicTransportError::from_parts("streamable_http", std::any::TypeId::of::<()>(), Box::new(error)),
+            context: "send initialize request".into(),
+        });
+        assert_eq!(mapped.kind(), crate::error::ErrorKind::Connection);
+        server.join().unwrap();
+
+        let (uri, server) = endpoint("HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"token expired\"}}");
+        let result = HttpClient::new().unwrap()
+            .post_message(uri, message(), None, None, HashMap::new()).await.unwrap();
+        assert!(matches!(result, StreamableHttpPostResponse::Json(JsonRpcMessage::Error(_), _)),
+            "未知 JSON-RPC 错误保留为协议消息，不能按文字猜测凭证无效");
+        server.join().unwrap();
     }
 
     #[tokio::test]
