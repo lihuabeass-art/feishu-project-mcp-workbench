@@ -234,23 +234,7 @@ export function WorkflowConflict({
   }
 
   if (!remote.trim()) {
-    return (
-      <div
-        className="workflow-field-note is-conflict"
-        role="group"
-        aria-label={`${field.label}冲突处理`}
-      >
-        <CircleAlert
-          className="workflow-field-note-icon"
-          size={12}
-          aria-hidden="true"
-        />
-        <span className="workflow-field-note-text">
-          {captionText}
-          云端已清空此字段，本机填写已保留，请核对后提交。
-        </span>
-      </div>
-    );
+    return null;
   }
 
   return (

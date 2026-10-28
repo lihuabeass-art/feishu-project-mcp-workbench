@@ -320,12 +320,14 @@ it("云端估分原本为空时，填写本机值不提示云端修改", async (
 it.each([
   ["切回窗口", "1"],
   ["提交前检查", "1"],
+  ["切回窗口", "0"],
+  ["提交前检查", "0"],
   ["切回窗口", ""],
   ["提交前检查", ""],
   ["切回窗口", " \n "],
   ["提交前检查", " \n "],
 ])(
-  "%s 发现负责人估分云端变为「%s」时保留本机值并提示真实冲突，其他负责人同值不重复写入",
+  "%s 发现负责人估分云端变为「%s」时保留本机值，空值不提示清空，其他负责人同值不重复写入",
   async (trigger, value) => {
     remote = estimates("2", "2");
     vi.mocked(getWorkflowActions).mockImplementation(async () => remote);
@@ -341,10 +343,10 @@ it.each([
     remote = estimates(value, "1.5", "v2");
     if (trigger === "切回窗口") fireEvent.focus(window);
     else await user.click(screen.getByRole("button", { name: "提交" }));
-    const conflict = await screen.findByRole("group", {
-      name: "估分 · 甲冲突处理",
-    });
     if (value.trim()) {
+      const conflict = await screen.findByRole("group", {
+        name: "估分 · 甲冲突处理",
+      });
       expect(conflict.textContent).toContain("云端也有修改");
       expect(conflict.textContent).toContain(`云端最新值：${value}`);
       expect(
@@ -356,24 +358,35 @@ it.each([
         within(conflict).queryByRole("button", { name: /恢复为原值/ }),
       ).toBeNull();
     } else {
-      expect(conflict.textContent).toContain(
-        "云端已清空此字段，本机填写已保留",
+      await waitFor(() =>
+        expect(readDraft(key)?.base_fields?.["points:0"]).toBe(value),
       );
-      expect(conflict.querySelector(".workflow-conflict-remote")).toBeNull();
-      expect(conflict.textContent).not.toContain("（空）");
-      expect(within(conflict).queryByRole("button")).toBeNull();
+      expect(
+        screen.queryByRole("group", { name: "估分 · 甲冲突处理" }),
+      ).toBeNull();
+      expect(screen.queryByText(/云端已清空此字段/)).toBeNull();
     }
-    expect((screen.getByLabelText("估分 · 甲") as HTMLInputElement).value).toBe(
-      "1.5",
-    );
+    expect(readDraft(key)?.fields["points:0"]).toBe("1.5");
     expect(
       screen.queryByRole("group", { name: "估分 · 乙冲突处理" }),
     ).toBeNull();
     expect(
       screen.queryByRole("group", { name: "估分 · 乙云端对照" }),
     ).toBeNull();
-    expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "提交" }));
+    if (trigger === "提交前检查" && !value.trim()) {
+      // 云端空值不制造无提示的首次提交阻断。
+      expect(
+        screen.getByRole("region", { name: "提交前二次确认" }),
+      ).toBeTruthy();
+    } else {
+      expect(
+        (screen.getByLabelText("估分 · 甲") as HTMLInputElement).value,
+      ).toBe("1.5");
+      expect(
+        screen.queryByRole("region", { name: "提交前二次确认" }),
+      ).toBeNull();
+      await user.click(screen.getByRole("button", { name: "提交" }));
+    }
     await screen.findByRole("region", { name: "提交前二次确认" });
     expect(readDraft(key)?.fields).toEqual({
       "points:0": "1.5",
@@ -394,7 +407,6 @@ it.each([
     });
   },
 );
-
 it("退出表单后去飞书修改，再次进入会自动读取最新值并显示真实冲突", async () => {
   const submit = vi.fn();
   const user = userEvent.setup();
