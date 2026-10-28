@@ -386,15 +386,8 @@ impl NodeForm {
                 let missing_owners = needed
                     .and_then(|v| v["not_finished_owner"].as_array())
                     .filter(|a| !a.is_empty());
-                let missing_owners: BTreeSet<Option<String>> = missing_owners
-                    .map(|a| a.iter().map(|v| Some(text(v))).collect())
-                    .unwrap_or_else(|| {
-                        if needed.is_some() {
-                            BTreeSet::from([None])
-                        } else {
-                            BTreeSet::new()
-                        }
-                    });
+                let missing_owners: Option<BTreeSet<Option<String>>> = missing_owners
+                    .map(|a| a.iter().map(|v| Some(text(v))).collect());
                 let has_value = |schedule: &Value| {
                     if key == "schedule" {
                         ["estimate_start_time", "estimate_finish_time"]
@@ -411,20 +404,27 @@ impl NodeForm {
                         .is_empty()
                     }
                 };
-                let mut owners = missing_owners.clone();
-                if !missing_owners.contains(&None) {
-                    for row in node["assignee_schedule_list"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                    {
-                        let owner = text(&row["assignee"]["user_key"]);
-                        if !owner.is_empty() && has_value(&row["schedule_info"]) {
+                let configured = items.iter().any(|item| item["field_key"] == key);
+                let mut owners = missing_owners.clone().unwrap_or_default();
+                let mut has_personal_schedule = false;
+                // 必填接口省略负责人不代表节点总排期；归属以节点实际返回的个人排期为准。
+                // 已配置字段即使尚空也保留个人身份，避免 unfinished 清单变化使草稿字段消失。
+                for row in node["assignee_schedule_list"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    let owner = text(&row["assignee"]["user_key"]);
+                    if !owner.is_empty() {
+                        has_personal_schedule = true;
+                        if needed.is_some() || configured || has_value(&row["schedule_info"]) {
                             owners.insert(Some(owner));
                         }
                     }
                 }
-                if owners.is_empty() && has_value(&node["schedule"]) {
+                if owners.is_empty() && !has_personal_schedule
+                    && (needed.is_some() || configured || has_value(&node["schedule"]))
+                {
                     owners.insert(None);
                 }
                 for owner in owners {
@@ -437,7 +437,8 @@ impl NodeForm {
                         .map(|o| format!(" · {}", owner_labels[o]))
                         .unwrap_or_default();
                     let schedule = schedule_source(node, owner.as_deref());
-                    let required = missing_owners.contains(&owner);
+                    let required = needed.is_some() && missing_owners.as_ref()
+                        .is_none_or(|missing| missing.contains(&owner));
                     let owner_label = owner.as_ref().and_then(|o| owner_labels.get(o).cloned());
                     if key == "schedule" {
                         for (property, caption) in [
@@ -766,10 +767,12 @@ impl NodeForm {
                 _ => observed.trim() == raw.trim(),
             };
             if !matches {
-                return Err(BackendError::conflict(format!(
-                    "{}的回读值与本次填写不一致，停止推进",
-                    input.field.label
-                )));
+                let detail = if observed.trim().is_empty() {
+                    format!("未读取到{}的有效云端值，尚不能确认字段已保存", input.field.label)
+                } else {
+                    format!("{}的回读值与本次填写不一致，尚不能确认字段已保存", input.field.label)
+                };
+                return Err(BackendError::unknown_result(detail));
             }
         }
         Ok(())
@@ -1404,6 +1407,98 @@ mod tests {
     }
 
     #[test]
+    fn personal_schedule_identity_survives_missing_owner_metadata_and_finished_requirements() {
+        let configs = vec![
+            json!({"field_key":"actual_work_time","field_name":"实际工时","field_type":"number"}),
+            json!({"field_key":"schedule","field_name":"排期","field_type":"schedule"}),
+        ];
+        for owners in [vec!["a"], vec!["a", "b"]] {
+            let node = json!({
+                "assignees":{"owners":owners.iter().map(|owner| json!({"user_key":owner})).collect::<Vec<_>>()},
+                "assignee_schedule_list":owners.iter().map(|owner| json!({
+                    "assignee":{"user_key":owner}, "schedule_info":{
+                        "actual_work_time":null,"estimate_start_time":null,"estimate_finish_time":null
+                    }
+                })).collect::<Vec<_>>(),
+                "form_items":[
+                    {"field_key":"actual_work_time","form_item_type":"node_field"},
+                    {"field_key":"schedule","form_item_type":"node_field"}
+                ],
+                "schedule":{"actual_work_time":99,"estimate_start_time":1792684800000i64,"estimate_finish_time":1792771200000i64}
+            });
+            let mut previous_keys = None;
+            for owner_metadata in [None, Some(json!([])), Some(json!(owners)), Some(json!([owners[0]]))] {
+                let mut required = json!({"node_fields":[
+                    {"field_key":"actual_work_time"}, {"field_key":"schedule"}
+                ]});
+                if let Some(owner_metadata) = owner_metadata {
+                    for field in required["node_fields"].as_array_mut().unwrap() {
+                        field["not_finished_owner"] = owner_metadata.clone();
+                    }
+                }
+                let form = NodeForm::build(&node, &required, &configs, &[], &json!({})).unwrap();
+                let fields = form.fields();
+                assert_eq!(fields.len(), owners.len() * 3);
+                assert!(fields.iter().all(|field| field.settings.scope.as_deref() == Some("assignee")));
+                assert!(fields.iter().all(|field| field.settings.initial_value.as_deref() == Some("")),
+                    "个人空值不得沿用节点总排期");
+                let keys = fields.iter().map(|field| field.key.clone()).collect::<Vec<_>>();
+                if let Some(previous) = &previous_keys { assert_eq!(&keys, previous); }
+                previous_keys = Some(keys);
+            }
+            let form = NodeForm::build(&node, &json!({}), &configs, &[], &json!({})).unwrap();
+            assert_eq!(form.fields().iter().map(|field| field.key.clone()).collect::<Vec<_>>(), previous_keys.unwrap());
+            assert!(form.fields().iter().all(|field| !field.required));
+            let submitted = form.inputs.iter().map(|input| {
+                let value = match &input.route {
+                    Route::Schedule { property, .. } if property == "actual_work_time" => "1",
+                    Route::Schedule { property, .. } if property == "estimate_start_date" => "2026-10-27",
+                    _ => "2026-10-28",
+                };
+                (input.field.key.clone(), value.into())
+            }).collect();
+            let plan = form.plan(&submitted).unwrap();
+            assert!(plan.node_schedule.is_none());
+            assert_eq!(plan.schedules.len(), owners.len());
+            for (schedule, owner) in plan.schedules.iter().zip(&owners) {
+                assert_eq!(schedule["owners"], json!([owner]));
+                assert_eq!(schedule["actual_work_time"], 1.0);
+                assert_eq!(schedule["estimate_start_date"], 1793030400000i64);
+                assert_eq!(schedule["estimate_end_date"], 1793116800000i64);
+            }
+            assert!(form.verify(&node, None, &submitted).is_err(),
+                "必填清单消失不代表个人工时和排期已保存");
+        }
+    }
+
+    #[test]
+    fn total_schedule_is_used_only_without_personal_schedule_scope() {
+        let configs = vec![json!({"field_key":"actual_work_time","field_type":"number"})];
+        let node = json!({"form_items":[{"field_key":"actual_work_time"}],"schedule":{"actual_work_time":2}});
+        for required in [
+            json!({"node_fields":[{"field_key":"actual_work_time"}]}),
+            json!({"node_fields":[{"field_key":"actual_work_time","not_finished_owner":[]}]}),
+            json!({}),
+        ] {
+            let form = NodeForm::build(&node, &required, &configs, &[], &json!({})).unwrap();
+            assert_eq!(form.fields().len(), 1);
+            let field = &form.fields()[0];
+            assert_eq!(field.settings.scope.as_deref(), Some("node"));
+            assert_eq!(field.settings.initial_value.as_deref(), Some("2"));
+            let plan = form.plan(&BTreeMap::from([(field.key.clone(), "3".into())])).unwrap();
+            assert_eq!(plan.node_schedule.unwrap()["actual_work_time"], 3.0);
+            assert!(plan.schedules.is_empty());
+        }
+        let personal = json!({
+            "assignee_schedule_list":[{"assignee":{"user_key":"a"},"schedule_info":{"actual_work_time":null}}],
+            "schedule":{"actual_work_time":99}
+        });
+        assert!(NodeForm::build(&personal, &json!({}), &configs, &[], &json!({})).unwrap().fields().is_empty(),
+            "只有个人归属但未配置的空字段不得被节点总值替代");
+        assert!(NodeForm::build(&json!({}), &json!({}), &configs, &[], &json!({})).unwrap().fields().is_empty());
+    }
+
+    #[test]
     fn sole_owner_is_omitted_from_labels_but_preserved_in_submission() {
         let owner = "7629164372933233864";
         let nc =
@@ -1558,6 +1653,33 @@ mod tests {
         assert_eq!(form.blocked.len(), 1);
         assert!(NodeForm::build(&n, &json!({"node_fields":[{}]}), &[], &[], &json!({})).is_err());
     }
+    #[test]
+    fn schedule_readback_distinguishes_missing_values_from_mismatch_and_preserves_owner_scope() {
+        let configs = [json!({"field_key":"actual_work_time","field_name":"实际工时","field_type":"number"})];
+        let node = json!({
+            "assignees":{"owners":[{"user_key":"owner"}]},
+            "assignee_schedule_list":[{"assignee":{"user_key":"owner"},"schedule_info":{"actual_work_time":0}}]
+        });
+        let form = NodeForm::build(&node, &json!({}), &configs, &[], &json!({})).unwrap();
+        let key = form.fields()[0].key.clone();
+        let expected = BTreeMap::from([(key.clone(), "1".into())]);
+        for actual in [Value::Null, json!(""), json!("   "), json!(2)] {
+            let mut readback = node.clone();
+            readback["assignee_schedule_list"][0]["schedule_info"]["actual_work_time"] = actual.clone();
+            // 同值的总工时或其他负责人不能代替本次负责人的回读结果。
+            readback["schedule"] = json!({"actual_work_time":1});
+            readback["assignee_schedule_list"].as_array_mut().unwrap().push(
+                json!({"assignee":{"user_key":"other"},"schedule_info":{"actual_work_time":1}}),
+            );
+            let error = form.verify(&readback, None, &expected).unwrap_err();
+            assert_eq!(error.kind(), crate::ErrorKind::UnknownResult);
+            let message = error.to_string();
+            assert!(!message.contains("流程已变更"));
+            assert!(message.contains(if actual == json!(2) { "回读值与本次填写不一致" } else { "未读取到实际工时的有效云端值" }));
+        }
+        assert!(form.verify(&node, None, &BTreeMap::from([(key, "0".into())])).is_ok(), "有效零值可以通过核验");
+    }
+
     #[test]
     fn readback_mismatch_prevents_advancement() {
         let form = NodeForm::build(

@@ -1,5 +1,9 @@
 import { expect, it } from "vitest";
-import { changedFields, reconcileDraft } from "./workflowDrafts";
+import {
+  changedFields,
+  migrateScheduleDraft,
+  reconcileDraft,
+} from "./workflowDrafts";
 import type { WorkflowAction } from "./types";
 
 const action = (remote: string): WorkflowAction => ({
@@ -120,7 +124,7 @@ it("不同字段各自合并，新字段采用云端值", () => {
 });
 
 it.each(["本机修改", ""])(
-  "云端表单移除字段后保留草稿 %s 并阻止提交",
+  "云端表单移除字段后继续保留草稿 %s 供界面核对",
   (local) => {
     const next = { ...action(""), fields: [] };
     const merged = reconcileDraft(
@@ -137,3 +141,125 @@ it.each(["本机修改", ""])(
     ).toEqual(["shared"]);
   },
 );
+
+const scheduleKey = (property: string, owner: string | null = null) =>
+  JSON.stringify({ Schedule: { property, owner } });
+const scheduleAction = (owners = ["a"], remote = "4"): WorkflowAction => ({
+  id: "node:confirm:n",
+  label: "完成节点",
+  kind: "node",
+  fields: owners.map((owner) => ({
+    key: scheduleKey("actual_work_time", owner),
+    label: `远端定义名称 ${owner}`,
+    kind: "number",
+    required: true,
+    initial_value: remote,
+    scope: "assignee",
+  })),
+});
+
+it.each(["1", "0", ""])(
+  "旧总排期修改值 %s 按属性恢复到唯一个人字段并核对当前云端",
+  (local) => {
+    const old = scheduleKey("actual_work_time");
+    const target = scheduleKey("actual_work_time", "a");
+    const next = scheduleAction();
+    const saved = {
+      fields: { [old]: local },
+      base_fields: { [old]: "原总排期" },
+      version: "v1",
+      updated_at: 1,
+    };
+    const merged = reconcileDraft(next, saved, "v2");
+    expect(merged.fields).toEqual({ [target]: local });
+    expect(merged.base_fields).toEqual({ [target]: "4" });
+    expect(merged.conflicts).toEqual([target]);
+    expect(saved.fields).toEqual({ [old]: local });
+    expect(changedFields(next, merged.fields, merged.base_fields)).toEqual(
+      local ? { [target]: local } : {},
+    );
+  },
+);
+
+it("未改过的节点总汇总值不复制给个人，云端相同值迁移后无需重写", () => {
+  const old = scheduleKey("actual_work_time");
+  const target = scheduleKey("actual_work_time", "a");
+  const saved = {
+    fields: { [old]: "1" },
+    base_fields: { [old]: "1" },
+    version: "v1",
+    updated_at: 1,
+  };
+  expect(reconcileDraft(scheduleAction(), saved, "v2").fields).toEqual({
+    [target]: "4",
+  });
+  const merged = reconcileDraft(
+    scheduleAction(["a"], "2"),
+    { ...saved, fields: { [old]: "2" } },
+    "v2",
+  );
+  expect(merged.fields).toEqual({ [target]: "2" });
+  expect(merged.conflicts).toEqual([]);
+  expect(
+    changedFields(
+      scheduleAction(["a"], "2"),
+      merged.fields,
+      merged.base_fields,
+    ),
+  ).toEqual({});
+});
+
+it("多负责人或目标已有不同本机修改时不猜测归属、不覆盖任意一份草稿", () => {
+  const old = scheduleKey("actual_work_time");
+  const target = scheduleKey("actual_work_time", "a");
+  const saved = {
+    fields: { [old]: "1" },
+    base_fields: { [old]: "" },
+    version: "v1",
+    updated_at: 1,
+  };
+  const multiple = reconcileDraft(scheduleAction(["a", "b"]), saved, "v2");
+  expect(multiple.fields[old]).toBe("1");
+  expect(multiple.fields[target]).toBe("4");
+  expect(multiple.fields[scheduleKey("actual_work_time", "b")]).toBe("4");
+  const occupied = reconcileDraft(
+    scheduleAction(),
+    {
+      ...saved,
+      fields: { ...saved.fields, [target]: "3" },
+      base_fields: { ...saved.base_fields, [target]: "4" },
+    },
+    "v2",
+  );
+  expect(occupied.fields).toEqual({ [old]: "1", [target]: "3" });
+});
+
+it("待核实快照在重新读取恢复前不迁移，不按相同名称迁移其他范围或属性", () => {
+  const old = scheduleKey("actual_work_time");
+  const saved = {
+    fields: { [old]: "1" },
+    base_fields: { [old]: "" },
+    version: "v1",
+    updated_at: 1,
+  };
+  const pending = {
+    ...saved,
+    pending: {
+      item_id: {
+        project_key: "p",
+        work_item_type_key: "story",
+        work_item_id: "1",
+      },
+      action_id: "node:confirm:n",
+      version: "v1",
+      request_id: "r",
+      fields: saved.fields,
+    },
+  };
+  expect(migrateScheduleDraft(scheduleAction(), pending)).toBe(pending);
+  const unrelated = scheduleAction();
+  unrelated.fields[0].key = scheduleKey("points", "a");
+  const merged = reconcileDraft(unrelated, saved, "v2");
+  expect(merged.fields[old]).toBe("1");
+  expect(merged.fields[scheduleKey("points", "a")]).toBe("4");
+});

@@ -12,7 +12,9 @@ import { layoutFields, ownerCell } from "./workflowLayout";
 import {
   changedFields,
   draftKey,
+  migrateScheduleDraft,
   reconcileDraft,
+  scheduleDraftTargets,
   readDraft,
   writeDraft,
 } from "./workflowDrafts";
@@ -278,7 +280,7 @@ export function Workflow({
     try {
       const saved = readDraft(draftKey(identity, next.id));
       const transferred = Object.keys(values);
-      const draft =
+      const previousDraft =
         !saved?.pending && transferred.length
           ? {
               fields: { ...saved?.fields, ...values },
@@ -299,6 +301,13 @@ export function Workflow({
               updated_at: Date.now(),
             }
           : saved;
+      const draft = migrateScheduleDraft(next, previousDraft);
+      if (
+        (transferred.length || draft !== previousDraft) &&
+        draft &&
+        !draft.pending
+      )
+        writeDraft(draftKey(identity, next.id), draft);
       const initial = reconcileDraft(next, null, options.version);
       // 先恢复上次编辑快照，后台读取后再推进基线，避免旧缓存制造冲突。
       const restored =
@@ -329,8 +338,6 @@ export function Workflow({
             ? "已恢复本机草稿"
             : "修改会自动保存为本机草稿",
       );
-      if (transferred.length && draft && !draft.pending)
-        writeDraft(draftKey(identity, next.id), draft);
       if (draft && !draft.pending)
         setOptions({ ...options, version: draft.version });
       setAction(next);
@@ -358,30 +365,6 @@ export function Workflow({
     } catch {
       setDraftStatus("");
       setError("草稿自动保存失败，当前输入仅保留在本次窗口中；请勿关闭页面。");
-    }
-  }
-  function discardRemovedField(key: string) {
-    if (!action || !options) return;
-    const next = { ...fields };
-    const base = { ...baseFields };
-    delete next[key];
-    delete base[key];
-    const remaining = conflicts.filter((field) => field !== key);
-    try {
-      writeDraft(draftKey(identity, action.id), {
-        fields: next,
-        base_fields: base,
-        field_labels: fieldLabels,
-        conflicts: remaining,
-        version: options.version,
-        updated_at: Date.now(),
-      });
-      setFields(next);
-      setBaseFields(base);
-      setConflicts(remaining);
-      setError("");
-    } catch {
-      setError("无法保存冲突处理结果，请检查本机存储后重试。");
     }
   }
   async function prepare() {
@@ -442,9 +425,9 @@ export function Workflow({
       if (
         merged.conflicts.some(
           (key) =>
-            !nextAction.fields.some((field) => field.key === key) ||
-            !previous.conflicts.includes(key) ||
-            previous.baseFields[key] !== merged.base_fields[key],
+            nextAction.fields.some((field) => field.key === key) &&
+            (!previous.conflicts.includes(key) ||
+              previous.baseFields[key] !== merged.base_fields[key]),
         )
       ) {
         return;
@@ -536,8 +519,32 @@ export function Workflow({
       }
       let cleanupError = "";
       try {
-        if (result.outcome === "verified") localStorage.removeItem(key);
-        else
+        if (result.outcome === "verified") {
+          const retained = Object.fromEntries(
+            Object.entries(fields).filter(
+              ([field]) => !action.fields.some((known) => known.key === field),
+            ),
+          );
+          const retainedKeys = Object.keys(retained);
+          if (retainedKeys.length) {
+            writeDraft(key, {
+              fields: retained,
+              base_fields: Object.fromEntries(
+                Object.entries(baseFields).filter(([field]) =>
+                  retainedKeys.includes(field),
+                ),
+              ),
+              field_labels: Object.fromEntries(
+                Object.entries(fieldLabels).filter(([field]) =>
+                  retainedKeys.includes(field),
+                ),
+              ),
+              conflicts: retainedKeys,
+              version: request.version,
+              updated_at: Date.now(),
+            });
+          } else localStorage.removeItem(key);
+        } else
           writeDraft(key, {
             fields,
             base_fields: baseFields,
@@ -599,35 +606,204 @@ export function Workflow({
   async function recover() {
     if (!action || !options || flight.current || busy) return;
     const origin = identity,
-      key = draftKey(identity, action.id);
+      actionId = action.id,
+      key = draftKey(identity, actionId),
+      read = ++reads.current;
+    backgroundRead.current = null;
     flight.current = true;
     setPending(true);
+    setError("");
     try {
       const latest = await getWorkflowActions(item.id, true);
-      const saved = readDraft(key);
-      writeDraft(key, {
-        fields,
-        base_fields: saved?.base_fields,
-        field_labels: saved?.field_labels,
-        conflicts: saved?.conflicts,
-        version: saved?.version ?? options.version,
-        updated_at: Date.now(),
-      });
-      if (identityRef.current === origin) {
+      if (identityRef.current !== origin || reads.current !== read) return;
+      const nextAction = latest.actions.find((next) => next.id === actionId);
+      if (!nextAction) {
         setOptions(latest);
         setAction(null);
         setReview(null);
         setBlocked(false);
-        setError("");
+        setError(
+          "云端已不再提供原动作。草稿已保留，请根据当前流程重新选择动作。",
+        );
+        return;
       }
+      const saved = readDraft(key);
+      const merged = reconcileDraft(
+        nextAction,
+        {
+          fields: saved?.fields ?? fields,
+          base_fields: saved?.base_fields ?? baseFields,
+          field_labels: saved?.field_labels ?? fieldLabels,
+          conflicts: saved?.conflicts ?? conflicts,
+          version: saved?.version ?? options.version,
+          updated_at: Date.now(),
+        },
+        latest.version,
+      );
+      writeDraft(key, {
+        ...merged,
+        version: latest.version,
+        updated_at: Date.now(),
+      });
+      setOptions(latest);
+      setAction(nextAction);
+      setFields(merged.fields);
+      setBaseFields(merged.base_fields);
+      setFieldLabels(merged.field_labels);
+      setConflicts(merged.conflicts);
+      setReview(null);
+      setAcknowledged(false);
+      setBlocked(false);
+      setDraftStatus(
+        "已重新读取云端，草稿已保留。请核对当前值后继续；上次提交结果仍以云端为准。",
+      );
     } catch (e) {
-      if (identityRef.current === origin) setError(asError(e).message);
+      if (identityRef.current === origin && reads.current === read)
+        setError(
+          `重新读取未完成：${asError(e).message}。草稿和提交标记已保留。`,
+        );
     } finally {
       flight.current = false;
       if (identityRef.current === origin) setPending(false);
     }
   }
   const locked = busy || pending;
+  const retainedKeys = Object.keys(fields).filter(
+    (key) => action && !action.fields.some((field) => field.key === key),
+  );
+  const retainedTargets = new Map(
+    retainedKeys.map((key) => [
+      key,
+      action ? scheduleDraftTargets(action, key) : [],
+    ]),
+  );
+  function restoreRetained(source: string, target: string) {
+    if (
+      !action ||
+      !options ||
+      locked ||
+      blocked ||
+      !retainedTargets.get(source)?.some((field) => field.key === target)
+    )
+      return;
+    const next = { ...fields };
+    const base = { ...baseFields };
+    const labels = { ...fieldLabels };
+    const previous = next[target];
+    next[target] = next[source];
+    // 用户明确选择此前草稿；已有的不同本机修改仍保留为可切换的另一份内容。
+    const keepPrevious =
+      previous !== undefined &&
+      previous !== next[source] &&
+      (conflicts.includes(target) || previous !== base[target]);
+    if (keepPrevious) {
+      next[source] = previous;
+      base[source] = base[target] ?? "";
+    } else {
+      delete next[source];
+      delete base[source];
+      delete labels[source];
+    }
+    const remaining = conflicts.filter(
+      (key) => key !== source && key !== target,
+    );
+    if (keepPrevious) remaining.push(source);
+    if (
+      next[target] !== base[target] &&
+      (conflicts.includes(target) || !!base[target]?.trim())
+    )
+      remaining.push(target);
+    try {
+      writeDraft(draftKey(identity, action.id), {
+        fields: next,
+        base_fields: base,
+        field_labels: labels,
+        conflicts: remaining,
+        version: options.version,
+        updated_at: Date.now(),
+      });
+      editor.current.fields = next;
+      setFields(next);
+      setBaseFields(base);
+      setFieldLabels(labels);
+      setConflicts(remaining);
+      setReview(null);
+      setDraftStatus("草稿已保存在本机");
+      setError("");
+    } catch {
+      setError("无法保存草稿恢复结果，原有两份内容均已保留，请重试。");
+    }
+  }
+  function retainedNote(field: Field) {
+    return retainedKeys
+      .filter((key) => {
+        const targets = retainedTargets.get(key);
+        return targets?.length === 1 && targets[0].key === field.key;
+      })
+      .map((key) => (
+        <div
+          className="workflow-conflict"
+          role="group"
+          aria-label={`${field.label}此前草稿`}
+          key={key}
+        >
+          <p className="hint">
+            另有此前草稿：{fields[key] || "（空）"}
+            。当前输入已保留，可选择填入；本次仅提交输入框中的值。
+          </p>
+          <button
+            type="button"
+            className="text-button"
+            disabled={locked || blocked}
+            onClick={() => restoreRetained(key, field.key)}
+          >
+            将此前草稿填入{field.label}
+          </button>
+        </div>
+      ));
+  }
+  function retainedDrafts() {
+    const keys = review
+      ? retainedKeys
+      : retainedKeys.filter((key) => retainedTargets.get(key)?.length !== 1);
+    if (!keys.length) return null;
+    const content = keys.map((key) => (
+      <div
+        className="workflow-recovery"
+        role="group"
+        aria-label={`${fieldLabels[key] || "原表单字段"}保留草稿`}
+        key={key}
+      >
+        <p className="hint">
+          {fieldLabels[key] || "原表单字段"}
+          不在本次提交字段中，以下内容仍保留在本机。
+        </p>
+        <p>本次不提交：{fields[key] || "（空）"}</p>
+        {!review && (retainedTargets.get(key)?.length ?? 0) > 1 && (
+          <Select
+            ariaLabel={`将${fieldLabels[key] || "原表单字段"}草稿填入`}
+            disabled={locked || blocked}
+            value=""
+            onChange={(target) => restoreRetained(key, target)}
+            options={[
+              { value: "", label: "选择要填入的负责人字段" },
+              ...retainedTargets
+                .get(key)!
+                .map((field) => ({ value: field.key, label: field.label })),
+            ]}
+          />
+        )}
+      </div>
+    ));
+    return review ? (
+      <div aria-label="本次未提交的保留草稿">{content}</div>
+    ) : (
+      <details className="workflow-recovery">
+        <summary>其他保留草稿（{keys.length}）</summary>
+        {content}
+      </details>
+    );
+  }
   const flowActions = options?.actions.filter(
     (candidate) => !candidate.id.startsWith("node:progress:"),
   );
@@ -859,34 +1035,6 @@ export function Workflow({
                   {!review && action.disabled_reason && (
                     <p className="hint">{action.disabled_reason}</p>
                   )}
-                  {!review &&
-                    conflicts
-                      .filter(
-                        (key) =>
-                          !action.fields.some((field) => field.key === key),
-                      )
-                      .map((key) => (
-                        <div
-                          className="workflow-recovery"
-                          role="group"
-                          aria-label={`${fieldLabels[key] || "原表单字段"}已移除草稿`}
-                          key={key}
-                        >
-                          <p className="workflow-error">
-                            {fieldLabels[key] || "原表单字段"}
-                            已不在云端当前表单中，可能已被填写或配置已变化。本机内容已保留，处理前不能提交。
-                          </p>
-                          <p>本机草稿：{fields[key] || "（空）"}</p>
-                          <button
-                            type="button"
-                            className="secondary"
-                            disabled={locked || blocked}
-                            onClick={() => discardRemovedField(key)}
-                          >
-                            确认舍弃这项草稿
-                          </button>
-                        </div>
-                      ))}
                   {!review ? (
                     layoutFields(action.fields).map((segment) =>
                       segment.kind === "owners" ? (
@@ -962,6 +1110,7 @@ export function Workflow({
                                         {field.required ? "（必填）" : ""}
                                       </span>
                                       {control(field, true)}
+                                      {retainedNote(field)}
                                     </div>
                                   );
                                 })}
@@ -1000,6 +1149,7 @@ export function Workflow({
                           </span>
                           {control(segment.field)}
                           {cloudNote(segment.field)}
+                          {retainedNote(segment.field)}
                           {segment.showHint && (
                             <small className="hint">{segment.field.hint}</small>
                           )}
@@ -1053,6 +1203,7 @@ export function Workflow({
                         )}
                     </>
                   )}
+                  {retainedDrafts()}
                 </div>
                 <div className="workflow-footer">
                   {error && (
@@ -1063,7 +1214,7 @@ export function Workflow({
                   {blocked && !pending && (
                     <div className="workflow-recovery">
                       <p className="workflow-error">
-                        这份草稿上次提交的结果尚待核实，已阻止重复提交。请先在飞书核对流程状态及填写内容。
+                        这份草稿上次提交的结果尚待核实，已阻止重复提交。重新读取云端后，可保留草稿并核对当前值，再继续操作。
                       </p>
                       <button
                         type="button"
@@ -1071,7 +1222,7 @@ export function Workflow({
                         disabled={locked}
                         onClick={() => void recover()}
                       >
-                        已在飞书核对，重新读取动作
+                        重新读取云端，保留草稿
                       </button>
                     </div>
                   )}
@@ -1098,12 +1249,6 @@ export function Workflow({
                           disabled={
                             locked ||
                             blocked ||
-                            conflicts.some(
-                              (key) =>
-                                !action.fields.some(
-                                  (field) => field.key === key,
-                                ),
-                            ) ||
                             !!action.disabled_reason ||
                             action.fields.some(
                               (f) => f.required && !fields[f.key]?.trim(),

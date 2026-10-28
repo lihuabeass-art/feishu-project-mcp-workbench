@@ -23,9 +23,9 @@ it("核实草稿后直接使用刚取得的动作，避免再次请求整套流�
   render(<Workflow item={item} available busy={false} submit={vi.fn()} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
-  await user.click(screen.getByRole("button", { name: "已在飞书核对，重新读取动作" }));
-  expect(await screen.findByRole("button", { name: "完成新节点" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "重新读取云端，保留草稿" }));
+  expect(await screen.findByText("完成新节点", { selector: "strong" })).toBeTruthy();
   await waitFor(() => expect(getWorkflowActions).toHaveBeenCalledTimes(2));
   expect(readDraft(key)?.pending).toBeUndefined();
-  expect(readDraft(key)?.version).toBe("v1"); // 核实提交结果不能为旧草稿换上最新版本。
+  expect(readDraft(key)?.version).toBe("v2"); // 已与最新云端合并，直接使用本次读取的动作版本。
 });

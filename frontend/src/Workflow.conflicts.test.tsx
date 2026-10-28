@@ -125,7 +125,11 @@ it("提交前新发现冲突先展示，保留本机输入不改也可正常提�
   await user.click(
     await screen.findByLabelText("我已核对填写内容，理解提交后的修改限制"),
   );
-  await user.click(screen.getByRole("button", { name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/ }));
+  await user.click(
+    screen.getByRole("button", {
+      name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/,
+    }),
+  );
   await waitFor(() => expect(submit).toHaveBeenCalledOnce());
   expect(submit.mock.calls[0][0]).toMatchObject({
     version: "v2",
@@ -185,7 +189,11 @@ it("版本号冲突保留原框输入，展示云端前端版本，可在同框�
   await user.click(
     screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"),
   );
-  await user.click(screen.getByRole("button", { name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/ }));
+  await user.click(
+    screen.getByRole("button", {
+      name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/,
+    }),
+  );
   await waitFor(() => expect(submit).toHaveBeenCalledOnce());
   expect(submit.mock.calls[0][0].fields).toEqual({ shared: merged });
 });
@@ -211,7 +219,11 @@ it("只修改工时不写回已满足的共享必填项，待核实草稿仍保�
   await user.click(
     screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"),
   );
-  await user.click(screen.getByRole("button", { name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/ }));
+  await user.click(
+    screen.getByRole("button", {
+      name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/,
+    }),
+  );
   await waitFor(() => expect(submit).toHaveBeenCalledOnce());
   expect(submit.mock.calls[0][0].fields).toEqual({ hours: "2" });
   expect(readDraft(key)?.fields).toEqual({ shared: "前端：1.2.3", hours: "2" });
@@ -247,7 +259,11 @@ it("后台读取期间继续输入不会丢失，双方相同的新值无需冲�
   await user.click(
     await screen.findByLabelText("我已核对填写内容，理解提交后的修改限制"),
   );
-  await user.click(screen.getByRole("button", { name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/ }));
+  await user.click(
+    screen.getByRole("button", {
+      name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/,
+    }),
+  );
   await waitFor(() => expect(submit).toHaveBeenCalledOnce());
   expect(submit.mock.calls[0][0].fields).toEqual({ hours: "3" });
 });
@@ -359,14 +375,13 @@ it("核实上次结果后仍比较原草稿基线，不会通过恢复路径跳�
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
   await user.click(
-    screen.getByRole("button", { name: "已在飞书核对，重新读取动作" }),
+    screen.getByRole("button", { name: "重新读取云端，保留草稿" }),
   );
-  await user.click(await screen.findByRole("button", { name: "完成节点" }));
   expect(screen.getByRole("group", { name: "文档冲突处理" })).toBeTruthy();
   expect(readDraft(key)?.pending).toBeUndefined();
 });
 
-it("必填项从云端表单消失时保留本机内容，明确舍弃后才按新表单确认", async () => {
+it("必填项从云端表单消失时保留本机内容，按新表单确认无需舍弃", async () => {
   const submit = vi.fn();
   const view = render(
     <Workflow item={item} available busy={false} submit={submit} />,
@@ -381,23 +396,23 @@ it("必填项从云端表单消失时保留本机内容，明确舍弃后才按�
   vi.mocked(getWorkflowActions).mockResolvedValue(next);
   await user.click(screen.getByRole("button", { name: "提交" }));
   expect(
-    (await screen.findByRole("group", { name: "文档已移除草稿" })).textContent,
+    (await screen.findByRole("group", { name: "文档保留草稿" })).textContent,
   ).toContain("本机文档");
   expect(readDraft(key)?.fields.shared).toBe("本机文档");
   view.unmount();
   render(<Workflow item={item} available busy={false} submit={submit} />);
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
-  expect(screen.getByRole("group", { name: "文档已移除草稿" })).toBeTruthy();
+  expect(screen.getByRole("group", { name: "文档保留草稿" })).toBeTruthy();
   expect(
     (screen.getByRole("button", { name: "提交" }) as HTMLButtonElement)
       .disabled,
-  ).toBe(true);
-  await user.click(screen.getByRole("button", { name: "确认舍弃这项草稿" }));
+  ).toBe(false);
+  expect(screen.queryByRole("button", { name: "确认舍弃这项草稿" })).toBeNull();
   await user.click(screen.getByRole("button", { name: "提交" }));
   expect(
     await screen.findByRole("region", { name: "提交前二次确认" }),
   ).toBeTruthy();
-  expect(readDraft(key)?.fields.shared).toBeUndefined();
+  expect(readDraft(key)?.fields.shared).toBe("本机文档");
   expect(submit).not.toHaveBeenCalled();
 });
 

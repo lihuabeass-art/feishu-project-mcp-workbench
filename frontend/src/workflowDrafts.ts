@@ -60,11 +60,91 @@ export function changedFields(
   );
 }
 
+function scheduleRoute(
+  key: string,
+): { property: string; owner: string | null } | null {
+  try {
+    const route = JSON.parse(key)?.Schedule;
+    return route &&
+      typeof route.property === "string" &&
+      (route.owner === null ||
+        (typeof route.owner === "string" && route.owner.trim()))
+      ? route
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+// 仅识别历史总排期到同一属性的个人字段，不按名称推测归属。
+export function scheduleDraftTargets(action: WorkflowAction, key: string) {
+  const previous = scheduleRoute(key);
+  if (!previous || previous.owner !== null) return [];
+  return action.fields.filter((field) => {
+    const route = scheduleRoute(field.key);
+    return (
+      route && route.owner !== null && route.property === previous.property
+    );
+  });
+}
+
+export function migrateScheduleDraft(
+  action: WorkflowAction,
+  draft: WorkflowDraft | null,
+) {
+  if (!draft || draft.pending) return draft;
+  let migrated = draft;
+  for (const [key, local] of Object.entries(draft.fields)) {
+    if (action.fields.some((field) => field.key === key)) continue;
+    const base = draft.base_fields?.[key];
+    if (
+      !draft.conflicts?.includes(key) &&
+      (base === undefined ? !local.trim() : local === base)
+    )
+      continue;
+    const targets = scheduleDraftTargets(action, key);
+    if (targets.length !== 1) continue;
+    const target = targets[0];
+    const targetLocal = draft.fields[target.key];
+    const targetBase = draft.base_fields?.[target.key];
+    const targetChanged =
+      targetLocal !== undefined &&
+      (draft.conflicts?.includes(target.key) ||
+        (targetBase === undefined
+          ? !!targetLocal.trim()
+          : targetLocal !== targetBase));
+    if (targetChanged && targetLocal !== local) continue;
+    if (migrated === draft) {
+      migrated = {
+        ...draft,
+        fields: { ...draft.fields },
+        base_fields: { ...draft.base_fields },
+        field_labels: { ...draft.field_labels },
+        conflicts: [...(draft.conflicts ?? [])],
+      };
+    }
+    migrated.fields[target.key] = local;
+    // 总排期的历史值不能充当个人字段的起点；保留当前可观察值并显式提示异值。
+    migrated.base_fields![target.key] = target.initial_value ?? "";
+    migrated.field_labels![target.key] = target.label;
+    delete migrated.fields[key];
+    delete migrated.base_fields![key];
+    delete migrated.field_labels![key];
+    migrated.conflicts = migrated.conflicts!.filter(
+      (field) => field !== key && field !== target.key,
+    );
+    const remote = target.initial_value ?? "";
+    if (remote.trim() && local !== remote) migrated.conflicts.push(target.key);
+  }
+  return migrated;
+}
+
 export function reconcileDraft(
   action: WorkflowAction,
   draft: WorkflowDraft | null,
   version: string,
 ) {
+  draft = migrateScheduleDraft(action, draft);
   const base_fields = remoteFields(action);
   const fields = { ...base_fields };
   const field_labels = {
@@ -96,7 +176,7 @@ export function reconcileDraft(
       if (remote !== base && local !== remote) conflicts.push(key);
     }
   }
-  // 已填完的必填项可能不再返回。保留其本机内容，人工舍弃前不能提交未知字段。
+  // 已填完的必填项可能不再返回。保留其本机内容供核对，提交补丁只包含当前表单字段。
   for (const [key, local] of Object.entries(draft?.fields ?? {})) {
     if (action.fields.some((field) => field.key === key)) continue;
     const base = draft?.base_fields?.[key];
