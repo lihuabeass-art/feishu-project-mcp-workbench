@@ -14,12 +14,12 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { flowLabel, itemKey, localTime, typeColorStyle, workflowFacets } from "./model";
+import { itemKey, localTime, typeColorStyle } from "./model";
 import { CompactTypeTabs, compactTypeTabId, type CompactTypeOption } from "./CompactTypeTabs";
 import { Select } from "./Select";
 import {
-  emptyWorkFilters, filterWorkItems,
-  selectionLabels, workFilterCount, type WorkFilters, type WorkLocationOptions,
+  changeWorkFilter, emptyWorkFilters, filterWorkItems,
+  workFilterCount, type WorkFilters, type WorkFilterOptions,
 } from "./workFilters";
 import "./CompactWorkspace.filters.css";
 import type { CachedItem } from "./types";
@@ -74,7 +74,7 @@ export function CompactWorkspace({
   emptyText,
   typeName,
   typeOptions,
-  locationOptions,
+  filterOptions: facets,
   selectedKey,
   select,
   detail,
@@ -95,7 +95,7 @@ export function CompactWorkspace({
   emptyText: string;
   typeName: (item: CachedItem) => string;
   typeOptions: CompactTypeOption[];
-  locationOptions: WorkLocationOptions;
+  filterOptions: WorkFilterOptions;
   selectedKey: string | null;
   select: (key: string | null) => void;
   detail: ReactNode;
@@ -126,9 +126,8 @@ export function CompactWorkspace({
   const extraCount = [filters.flowKind, filters.nodeName, filters.stateName].filter((values) => values.length > 0).length;
   const filterCount = workFilterCount({ ...filters, type: [] });
   const selectedType = filters.type[0] || "";
-  const { spaces, projects } = locationOptions;
+  const { spaces, projects, flowKinds } = facets;
   const visibleItems = filterWorkItems(items, filters);
-  const facets = workflowFacets(items, filters.query, filters.type, filters.space, filters.flowKind, filters.nodeName, filters.stateName, filters.project);
 
   function changeFilters(next: WorkFilters) {
     onFiltersChange(next);
@@ -153,12 +152,17 @@ export function CompactWorkspace({
     ...([
       { key: "space", label: "空间", options: spaces },
       { key: "project", label: "所属项目", options: projects },
-      { key: "flowKind", label: "流程类型", options: Object.entries(flowLabel).map(([value, label]) => ({ value, label })) },
+      { key: "flowKind", label: "流程类型", options: flowKinds },
       { key: "nodeName", label: "当前节点", options: facets.node.options },
       { key: "stateName", label: "当前状态", options: facets.state.options },
     ] as const).flatMap(({ key, label, options }) => filters[key].map((value) => ({
       id: `${key}:${value}`, label: `${label}：${options.find((option) => option.value === value)?.label || value}`,
-      remove: () => changeFilters({ ...filters, [key]: filters[key].filter((entry) => entry !== value) }),
+      remove: () => {
+        const values = filters[key].filter((entry) => entry !== value);
+        changeFilters(key === "nodeName" || key === "stateName"
+          ? { ...filters, [key]: values }
+          : changeWorkFilter(filters, key, values, options));
+      },
     }))),
   ];
 
@@ -298,30 +302,27 @@ export function CompactWorkspace({
                 placeholder="搜索标题、编号、空间或项目…"
                 onChange={(event) => changeFilters({ ...filters, query: event.target.value })} />
             </label>
-            <label>
+            {spaces.length > 0 && <label>
               <span>空间</span>
               <Select multiple ariaLabel="清单空间" className="compact" value={filters.space}
-                onChange={(space) => changeFilters({ ...emptyWorkFilters, type: filters.type, typeLabel: filters.typeLabel,
-                  query: filters.query, space, spaceLabel: selectionLabels(spaces, space) })}
+                onChange={(space) => changeFilters(changeWorkFilter(filters, "space", space, spaces))}
                 options={[{ value: "", label: "全部空间" }, ...spaces]} />
-            </label>
+            </label>}
             {projects.length > 0 && <label>
               <span>所属项目</span>
               <Select multiple ariaLabel="清单所属项目" className="compact" value={filters.project}
-                onChange={(project) => changeFilters({ ...emptyWorkFilters, type: filters.type, typeLabel: filters.typeLabel,
-                  query: filters.query, space: filters.space, spaceLabel: filters.spaceLabel,
-                  project, projectLabel: selectionLabels(projects, project) })}
+                onChange={(project) => changeFilters(changeWorkFilter(filters, "project", project, projects))}
                 options={[{ value: "", label: "全部项目" }, ...projects]} />
             </label>}
             <details className="list-mode-filter-more">
               <summary>更多条件{extraCount > 0 && <span>{extraCount}</span>}<ChevronDown size={12} aria-hidden="true" /></summary>
               <div className="list-mode-filter-extra">
-                <label>
+                {flowKinds.length > 0 && <label>
                   <span>流程类型</span>
                   <Select multiple ariaLabel="清单流程类型" className="compact" value={filters.flowKind}
-                    onChange={(flowKind) => changeFilters({ ...filters, flowKind, nodeName: [], stateName: [] })}
-                    options={[{ value: "", label: "全部流程类型" }, ...Object.entries(flowLabel).map(([value, label]) => ({ value, label }))]} />
-                </label>
+                    onChange={(flowKind) => changeFilters(changeWorkFilter(filters, "flowKind", flowKind, flowKinds))}
+                    options={[{ value: "", label: "全部流程类型" }, ...flowKinds]} />
+                </label>}
                 {facets.node.visible && <label>
                   <span>当前节点</span>
                   <Select multiple ariaLabel="清单当前节点" className="compact" value={filters.nodeName}

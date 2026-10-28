@@ -241,6 +241,33 @@ describe("清单模式", () => {
     expect(within(list).getAllByRole("button")).toHaveLength(1);
   });
 
+  it.each(["空间", "所属项目", "流程类型"])("取消%s标签与下拉取消使用相同的下层清理规则", async (field) => {
+    const data = filterSnapshot();
+    data.items[2].flow.node_name = "测试";
+    vi.mocked(loadSnapshot).mockResolvedValue(data);
+    const user = userEvent.setup();
+    render(<App />);
+    const list = await enterListMode(user);
+    await user.click(screen.getByRole("button", { name: "清单筛选" }));
+    if (field === "流程类型") {
+      await user.click(screen.getByText("更多条件"));
+      await chooseFilter(user, "清单流程类型", "节点流");
+      await chooseFilter(user, "清单当前节点", "研发中（2）");
+      expect(screen.getByRole("button", { name: "取消当前节点：研发中（2）" })).toBeTruthy();
+      await user.click(screen.getByRole("button", { name: "取消流程类型：节点流" }));
+      expect(screen.queryByRole("button", { name: /取消当前节点/ })).toBeNull();
+    } else {
+      await chooseFilter(user, "清单空间", "空间甲");
+      await chooseFilter(user, "清单所属项目", "项目甲");
+      await user.click(screen.getByText("更多条件"));
+      await chooseFilter(user, "清单流程类型", "状态流");
+      await user.click(screen.getByRole("button", { name: field === "空间" ? "取消空间：空间甲" : "取消所属项目：项目甲" }));
+      expect(screen.queryByRole("button", { name: "取消流程类型：状态流" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "取消所属项目：项目甲" })).toBeNull();
+    }
+    expect(within(list).getAllByRole("button")).toHaveLength(field === "所属项目" ? 3 : 4);
+  });
+
   it("本次打开期间两种模式共用搜索和流程条件，重开后全部重置", async () => {
     vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
     const user = userEvent.setup();
@@ -318,9 +345,9 @@ describe("清单模式", () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("需求甲");
-    await user.click(within(screen.getByRole("group", { name: "我的类型" })).getByRole("button", { name: /^缺陷\s*2$/ }));
     await chooseFilter(user, "空间", "空间甲");
     await chooseFilter(user, "空间", "空间乙");
+    await user.click(within(screen.getByRole("group", { name: "我的类型" })).getByRole("button", { name: /^缺陷\s*2$/ }));
     await chooseFilter(user, "所属项目", "项目甲");
     await chooseFilter(user, "流程类型", "状态流");
     await user.type(screen.getByRole("textbox", { name: "搜索工作" }), "不存在");

@@ -211,3 +211,64 @@ it("目录不可用且同项目缓存名称不同时，两种模式使用同一�
   await user.click(screen.getByRole("combobox", { name: "清单所属项目" }));
   expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(options);
 });
+
+it.each([false, true])("流程候选随搜索联动，零结果已选条件仍可取消（清单模式：%s）", async (compact) => {
+  const data = snapshot();
+  data.items[0].flow.kind = "node";
+  data.items[1].flow.kind = "state";
+  vi.mocked(loadSnapshot).mockResolvedValue(data);
+  vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByText("需求0");
+  if (compact) {
+    await user.click(screen.getByRole("button", { name: "切换到清单模式" }));
+    await user.click(screen.getByRole("button", { name: "清单筛选" }));
+    await user.click(screen.getByText("更多条件"));
+  }
+  const flow = compact ? "清单流程类型" : "流程类型";
+  const search = screen.getByRole("textbox", { name: compact ? "清单搜索工作" : "搜索工作" });
+  await user.type(search, "需求0");
+  await user.click(screen.getByRole("combobox", { name: flow }));
+  expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["全部流程类型", "节点流"]);
+  await user.click(screen.getByRole("option", { name: "节点流" }));
+  await user.keyboard("{Escape}");
+  await user.clear(search);
+  await user.type(search, "需求1");
+  await user.click(screen.getByRole("combobox", { name: flow }));
+  expect(screen.getAllByRole("option").map((option) => option.textContent))
+    .toEqual(["全部流程类型", "状态流", "节点流"]);
+  await user.click(screen.getByRole("option", { name: "节点流" }));
+  expect(screen.queryByRole("option", { name: "节点流" })).toBeNull();
+  await user.keyboard("{Escape}");
+  expect(within(screen.getByRole("region", { name: "工作清单" })).getByText("需求1")).toBeTruthy();
+});
+
+it.each([false, true])("调整上层筛选清理下层条件的规则一致（清单模式：%s）", async (compact) => {
+  const data = snapshot();
+  data.items[0].flow.kind = "node";
+  data.items[1].flow.kind = "state";
+  vi.mocked(loadSnapshot).mockResolvedValue({ ...data, workspace_catalog: catalog });
+  vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByText("需求0");
+  if (compact) {
+    await user.click(screen.getByRole("button", { name: "切换到清单模式" }));
+    await user.click(screen.getByRole("button", { name: "清单筛选" }));
+    await user.click(screen.getByText("更多条件"));
+  }
+  const flow = compact ? "清单流程类型" : "流程类型";
+  const space = compact ? "清单空间" : "空间";
+  const project = compact ? "清单所属项目" : "所属项目";
+  await choose(user, flow, "状态流");
+  await choose(user, space, "正式研发空间");
+  expect(screen.getByRole("combobox", { name: flow }).textContent).toBe("全部流程类型");
+  await choose(user, project, "医生平台");
+  await choose(user, flow, "状态流");
+  await choose(user, project, "全部项目");
+  expect(screen.getByRole("combobox", { name: flow }).textContent).toBe("全部流程类型");
+  const list = screen.getByRole("region", { name: "工作清单" });
+  expect(within(list).getByText("需求0")).toBeTruthy();
+  expect(within(list).getByText("需求1")).toBeTruthy();
+});

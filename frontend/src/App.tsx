@@ -46,7 +46,6 @@ import {
 import {
   asError,
   errorKindLabel,
-  workflowFacets,
   flowLabel,
   itemKey,
   localTime,
@@ -74,8 +73,8 @@ import { ThemeProvider } from "./ThemeProvider";
 import { ThemeControl } from "./ThemeControl";
 import { CompactWorkspace } from "./CompactWorkspace";
 import {
-  emptyWorkFilters, filterWorkItems,
-  selectionLabels, workFilterCount, workLocationOptions,
+  changeWorkFilter, emptyWorkFilters, filterWorkItems,
+  workFilterCount, workFilterOptions,
 } from "./workFilters";
 import { useDisplayMode } from "./displayMode";
 import {
@@ -936,10 +935,6 @@ function Workspace() {
     () => orderWorkItems(filterWorkItems(items, filters)),
     [items, filters],
   );
-  const facets = useMemo(
-    () => workflowFacets(items, query, type, project, flowKind, nodeName, stateName, relatedProject),
-    [items, query, type, project, flowKind, nodeName, stateName, relatedProject],
-  );
   // 两种布局共用条件，清单组件接收完整范围以显示筛选前后的数量。
   const compactItems = useMemo(() => orderWorkItems(items), [items]);
   const selected = filtered.find((i) => itemKey(i) === selectedKey);
@@ -968,8 +963,8 @@ function Workspace() {
     onReorder: (next) => void updateTypeOrder(next),
   });
   const catalog = data?.workspace_catalog || [];
-  const locationOptions = workLocationOptions(items, catalog, filters);
-  const { spaces: spaceOptions, projects: relatedProjectOptions } = locationOptions;
+  const facets = workFilterOptions(items, catalog, filters);
+  const { spaces: spaceOptions, projects: relatedProjectOptions, flowKinds } = facets;
   const source = sourceId === "*" && data?.capabilities?.source_queries ? {id:"*",kind:"all_sources",enabled:true,executable:data.sources.some(s=>s.executable),reason:null,action:null,todo_scope:null} : data?.sources.find((s) => s.id === sourceId);
   const changeType = (nextType: string) => {
     if (view !== "work") {
@@ -1080,7 +1075,7 @@ function Workspace() {
         items={compactItems}
         filters={filters}
         onFiltersChange={(next) => { setPendingType(null); setFilters(next); }}
-        locationOptions={locationOptions}
+        filterOptions={facets}
         loading={loading}
         emptyText={
           allItems.length && !items.length
@@ -1348,7 +1343,7 @@ function Workspace() {
                       <SlidersHorizontal size={14} />
                       筛选
                     </span>
-                    <label>
+                    {spaceOptions.length > 0 && <label>
                       <span className="sr-only">空间</span>
                       <Select
                         ariaLabel="空间"
@@ -1356,39 +1351,35 @@ function Workspace() {
                         className="compact"
                         value={project}
                         onChange={(key) => {
-                          setFilters((current) => ({ ...current, space: key, project: [], projectLabel: {},
-                            spaceLabel: selectionLabels(spaceOptions, key) }));
+                          setFilters((current) => changeWorkFilter(current, "space", key, spaceOptions));
                         }}
                         options={[
                           { value: "", label: "全部空间" },
                           ...spaceOptions,
                         ]}
                       />
-                    </label>
+                    </label>}
                     {(relatedProjectOptions.length > 0 || relatedProject.length > 0) && <label>
                       <span className="sr-only">所属项目</span>
                       <Select multiple ariaLabel="所属项目" className="compact" value={relatedProject}
                         onChange={(key) => {
-                          setFilters((current) => ({ ...current, project: key, projectLabel: selectionLabels(relatedProjectOptions, key) }));
+                          setFilters((current) => changeWorkFilter(current, "project", key, relatedProjectOptions));
                         }} options={[{ value: "", label: "全部项目" }, ...relatedProjectOptions]} />
                     </label>}
-                    <label>
+                    {flowKinds.length > 0 && <label>
                       <span className="sr-only">流程类型</span>
                       <Select
                         ariaLabel="流程类型"
                         multiple
                         className="compact"
                         value={flowKind}
-                        onChange={(flowKind) => setFilters((current) => ({ ...current, flowKind }))}
+                        onChange={(flowKind) => setFilters((current) => changeWorkFilter(current, "flowKind", flowKind, flowKinds))}
                         options={[
                           { value: "", label: "全部流程类型" },
-                          ...Object.entries(flowLabel).map(([key, label]) => ({
-                            value: key,
-                            label,
-                          })),
+                          ...flowKinds,
                         ]}
                       />
-                    </label>
+                    </label>}
                     {facets.node.visible && (
                       <label>
                         <span className="sr-only">当前节点</span>
