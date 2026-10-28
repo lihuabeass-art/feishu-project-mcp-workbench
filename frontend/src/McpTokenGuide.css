@@ -1,0 +1,121 @@
+.mcp-token-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.mcp-token-header label { color: var(--text-secondary); }
+.mcp-token-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; }
+.mcp-token-guide a, .mcp-token-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--green);
+  text-decoration: none;
+}
+.mcp-token-actions button {
+  border: 0;
+  padding: 3px 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.mcp-token-guide a:hover, .mcp-token-actions button:hover { text-decoration: underline; text-underline-offset: 3px; }
+.mcp-token-guide a:focus-visible, .mcp-token-actions button:focus-visible,
+.mcp-guide-image-button:focus-visible, .mcp-guide-fallback summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+.mcp-token-intro { margin: 0 0 12px; color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
+.mcp-token-intro strong { color: var(--text); font-weight: 500; }
+.mcp-guide-panel {
+  margin-top: 18px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.mcp-guide-panel:not([hidden]) { animation: mcp-guide-enter 160ms ease-out; }
+.mcp-guide-panel[hidden] { display: none; }
+.mcp-guide-heading h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.mcp-guide-heading p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+.mcp-guide-overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 24px; align-items: start; margin-top: 20px; }
+.mcp-guide-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 22px; }
+.mcp-guide-steps li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; }
+.mcp-guide-step-number {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: var(--green);
+  background: var(--surface-tint);
+  font-size: 11px;
+  font-weight: 600;
+}
+.mcp-guide-steps h4 { margin: 1px 0 5px; font-size: 12px; font-weight: 600; }
+.mcp-guide-steps p { margin: 0; color: var(--text-secondary); }
+.mcp-guide-steps strong { font-weight: 600; color: var(--text); }
+.mcp-guide-steps a { margin-top: 7px; }
+.mcp-guide-panel figure { min-width: 0; margin: 0; }
+.mcp-guide-key-image { width: min(100%, 460px); justify-self: center; }
+.mcp-guide-image-button {
+  display: block;
+  position: relative;
+  width: 100%;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-solid);
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: zoom-in;
+  overflow: hidden;
+}
+.mcp-guide-image { display: block; position: relative; }
+.mcp-guide-image img { display: block; width: 100%; height: auto; }
+.mcp-guide-header-highlight { position: absolute; left: 44.8%; top: 16.8%; width: 13.4%; height: 7%; border: 2px solid #f0182a; border-radius: 2px; pointer-events: none; }
+.mcp-guide-image-caption { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 10px; font-size: 10px; background: var(--surface-solid); }
+.mcp-guide-panel figcaption { margin-top: 7px; font-size: 11px; color: var(--muted); text-align: center; }
+.mcp-guide-fallback { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.mcp-guide-fallback summary { display: flex; align-items: center; gap: 6px; width: fit-content; cursor: pointer; list-style: none; color: var(--text-secondary); }
+.mcp-guide-fallback summary::-webkit-details-marker { display: none; }
+.mcp-guide-fallback summary svg { transition: transform 160ms ease; }
+.mcp-guide-fallback[open] summary svg { transform: rotate(180deg); }
+.mcp-guide-fallback p { margin: 12px 0; color: var(--text-secondary); }
+.mcp-guide-fallback-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 18px; }
+.mcp-guide-fallback .mcp-guide-footnote { font-size: 11px; color: var(--muted); }
+.mcp-guide-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-top: 18px; color: var(--muted); font-size: 10px; }
+.mcp-guide-preview { width: min(1100px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-solid); color: var(--text); box-shadow: 0 24px 80px #10271d40; }
+.mcp-guide-preview[open] { display: flex; flex-direction: column; }
+.mcp-guide-preview::backdrop { background: #10271d70; }
+.mcp-guide-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.mcp-guide-preview-header h3 { margin: 0; font-size: 14px; }
+.mcp-guide-preview-header button { flex-shrink: 0; }
+.mcp-guide-preview-content { min-height: 0; overflow: auto; padding: 16px; scrollbar-width: none; }
+.mcp-guide-preview-content::-webkit-scrollbar { display: none; }
+.mcp-guide-preview-content:focus-visible { outline: 2px solid var(--focus); outline-offset: -3px; }
+.mcp-guide-preview-content .mcp-guide-image { width: max-content; max-width: 100%; margin: 0 auto; }
+.mcp-guide-preview-content img { width: auto; max-width: 100%; }
+.mcp-guide-preview-description { margin: 0; padding: 0 20px 16px; font-size: 12px; color: var(--text-secondary); line-height: 1.8; }
+@keyframes mcp-guide-enter { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+@media (max-width: 900px) {
+  .mcp-guide-overview { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
+@media (max-width: 600px) {
+  .mcp-guide-panel { padding: 16px; }
+  .mcp-guide-fallback-images { grid-template-columns: minmax(0, 1fr); }
+  .mcp-guide-preview-header { padding: 12px 14px; }
+  .mcp-guide-preview-content { padding: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mcp-guide-panel:not([hidden]) { animation: none; }
+  .mcp-guide-fallback summary svg { transition: none; }
+}
