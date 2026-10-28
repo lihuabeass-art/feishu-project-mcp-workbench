@@ -56,7 +56,7 @@ it("全部来源的重叠事项只出现一次，空间统一命名，空间内�
   await waitFor(() => expect(refreshWorkspaceCatalog).toHaveBeenCalledOnce());
   const list = screen.getByRole("region", { name: "工作清单" });
   expect(within(list).getAllByText("需求0")).toHaveLength(1);
-  expect(within(list).getAllByText("空间：正式研发空间")).toHaveLength(2);
+  expect(await within(list).findAllByText("空间：正式研发空间")).toHaveLength(2);
   await choose(user, "空间", "正式研发空间");
   await choose(user, "所属项目", "医生平台");
   expect(within(list).queryByText("需求0")).toBeNull();
