@@ -14,19 +14,19 @@ export const relatedProjectKey = (space: string | null, project: RelatedProject)
   JSON.stringify([space, project.id]);
 
 export function projectFilterOptions(items: CachedItem[], catalog: SpaceCatalog[], type: FilterSelection, space: FilterSelection) {
-  const options = new Map<string, string>();
+  // 目录只补充正式名称，候选身份由当前工作事项决定。
+  const names = new Map<string, string>();
   for (const entry of catalog) {
-    if (!matchesFilter(entry.project_key, space) && !matchesFilter(entry.simple_name, space)) continue;
     for (const project of entry.projects) {
-      if (matchesFilter(project.type_key, type))
-        options.set(relatedProjectKey(entry.project_key, project), project.name);
+      names.set(relatedProjectKey(entry.project_key, project), project.name);
     }
   }
+  const options = new Map<string, string>();
   const scoped = items.filter((item) => matchesFilter(item.id.project_key, space) && matchesFilter(item.id.work_item_type_key, type));
   for (const item of scoped) {
     for (const project of item.related_projects || []) {
       const key = relatedProjectKey(item.id.project_key, project);
-      if (!options.has(key)) options.set(key, project.name);
+      if (!options.has(key)) options.set(key, names.get(key) || project.name);
     }
   }
   const result = [...options].sort((a, b) => a[1].localeCompare(b[1], "zh-CN") || a[0].localeCompare(b[0]))

@@ -14,15 +14,15 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { flowLabel, itemKey, localTime, projectFilterOptions, typeColorStyle, workflowFacets } from "./model";
+import { flowLabel, itemKey, localTime, typeColorStyle, workflowFacets } from "./model";
 import { CompactTypeTabs, compactTypeTabId, type CompactTypeOption } from "./CompactTypeTabs";
 import { Select } from "./Select";
 import {
   emptyWorkFilters, filterWorkItems,
-  keepFilterSelection, selectionLabels, workFilterCount, type WorkFilters,
+  selectionLabels, workFilterCount, type WorkFilters, type WorkLocationOptions,
 } from "./workFilters";
 import "./CompactWorkspace.filters.css";
-import type { CachedItem, SpaceCatalog } from "./types";
+import type { CachedItem } from "./types";
 import type { WindowAction } from "./displayMode";
 
 type Peek = { key: string; up: boolean };
@@ -74,7 +74,7 @@ export function CompactWorkspace({
   emptyText,
   typeName,
   typeOptions,
-  catalog,
+  locationOptions,
   selectedKey,
   select,
   detail,
@@ -95,7 +95,7 @@ export function CompactWorkspace({
   emptyText: string;
   typeName: (item: CachedItem) => string;
   typeOptions: CompactTypeOption[];
-  catalog: SpaceCatalog[];
+  locationOptions: WorkLocationOptions;
   selectedKey: string | null;
   select: (key: string | null) => void;
   detail: ReactNode;
@@ -126,15 +126,7 @@ export function CompactWorkspace({
   const extraCount = [filters.flowKind, filters.nodeName, filters.stateName].filter((values) => values.length > 0).length;
   const filterCount = workFilterCount({ ...filters, type: [] });
   const selectedType = filters.type[0] || "";
-  const spaces = keepFilterSelection(
-    [...new Map([
-      ...catalog.map((space) => [space.project_key, space.name || space.simple_name || space.project_key] as const),
-      ...items.filter((item) => item.id.project_key).map((item) =>
-        [item.id.project_key!, item.project_name || item.id.project_key!] as const),
-    ]).entries()].map(([value, label]) => ({ value, label })),
-    filters.space, filters.spaceLabel,
-  );
-  const projects = keepFilterSelection(projectFilterOptions(items, catalog, "", filters.space), filters.project, filters.projectLabel);
+  const { spaces, projects } = locationOptions;
   const visibleItems = filterWorkItems(items, filters);
   const facets = workflowFacets(items, filters.query, filters.type, filters.space, filters.flowKind, filters.nodeName, filters.stateName, filters.project);
 
@@ -313,14 +305,14 @@ export function CompactWorkspace({
                   query: filters.query, space, spaceLabel: selectionLabels(spaces, space) })}
                 options={[{ value: "", label: "全部空间" }, ...spaces]} />
             </label>
-            <label>
+            {projects.length > 0 && <label>
               <span>所属项目</span>
               <Select multiple ariaLabel="清单所属项目" className="compact" value={filters.project}
                 onChange={(project) => changeFilters({ ...emptyWorkFilters, type: filters.type, typeLabel: filters.typeLabel,
                   query: filters.query, space: filters.space, spaceLabel: filters.spaceLabel,
                   project, projectLabel: selectionLabels(projects, project) })}
                 options={[{ value: "", label: "全部项目" }, ...projects]} />
-            </label>
+            </label>}
             <details className="list-mode-filter-more">
               <summary>更多条件{extraCount > 0 && <span>{extraCount}</span>}<ChevronDown size={12} aria-hidden="true" /></summary>
               <div className="list-mode-filter-extra">

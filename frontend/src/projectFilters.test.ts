@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { filterItems, missingProject, projectFilterOptions, relatedProjectKey, workflowFacets } from "./model";
 import { sourceProjects } from "./sourcePresets";
+import { emptyWorkFilters, workLocationOptions } from "./workFilters";
 import type { CachedItem, SpaceCatalog } from "./types";
 
 const project = { field_key: "custom-project", id: "1", name: "应用平台" };
@@ -35,11 +36,53 @@ describe("空间与所属项目", () => {
   it("首次目录核实失败时不把事项中的项目名当作正式空间名", () => {
     expect(sourceProjects([], [item("a", "1")], []).get("a")).toBe("a（名称未核实）");
   });
-  it("项目选项包含没有当前事项的关联项目，并按空间与类型收窄", () => {
+  it("项目选项仅包含当前事项关联的项目，并按空间与类型收窄", () => {
     const options = projectFilterOptions([item("a", "1")], catalog, "story", "a");
-    expect(options.map((o) => o.label)).toContain("无事项的患者平台");
+    expect(options).toEqual([{ value: relatedProjectKey("a", project), label: project.name }]);
+    expect(projectFilterOptions([], catalog, "story", "a")).toEqual([]);
     expect(projectFilterOptions([], catalog, "issue", "a")).toEqual([]);
     expect(projectFilterOptions([], catalog, "story", "b")).toEqual([]);
+  });
+  it("目录只更新正式项目名，目录缺失时仍显示事项中的项目且不修改目录", () => {
+    const a = { ...item("a", "1"), related_projects: [{ ...project, name: "旧项目名" }] };
+    const before = JSON.stringify(catalog);
+    expect(projectFilterOptions([a], catalog, "story", "a")[0].label).toBe(project.name);
+    expect(projectFilterOptions([a], [], "story", "a")[0].label).toBe("旧项目名");
+    expect(JSON.stringify(catalog)).toBe(before);
+  });
+  it("项目范围按实际事项类型与空间收窄，不因目录中缺少该类型而丢失项目", () => {
+    const a = item("a", "1");
+    const issue = { ...item("a", "2"), id: { ...a.id, work_item_type_key: "issue" },
+      related_projects: [{ ...project, id: "3", name: "缺陷项目" }] };
+    const b = item("b", "3");
+    expect(workLocationOptions([a, issue, b], catalog, { ...emptyWorkFilters, type: ["issue"], space: ["a"] }).projects)
+      .toEqual([{ value: relatedProjectKey("a", issue.related_projects[0]), label: "缺陷项目" }]);
+    expect(projectFilterOptions([a, issue, b], catalog, ["story", "issue"], ["a", "b"]))
+      .toHaveLength(3);
+  });
+  it("空间候选仅来自工作事项，目录补充正式名称；空目录与空工作分别处理", () => {
+    const directory = [...catalog, { project_key: "empty", name: "无工作的空间", simple_name: null, projects: [] }];
+    expect(workLocationOptions([item("a", "1")], directory, emptyWorkFilters).spaces)
+      .toEqual([{ value: "a", label: "正式空间" }]);
+    expect(workLocationOptions([item("b", "2")], [], emptyWorkFilters).spaces)
+      .toEqual([{ value: "b", label: "不稳定的事项空间名" }]);
+    expect(workLocationOptions([], directory, emptyWorkFilters)).toEqual({ spaces: [], projects: [] });
+  });
+  it("已选空间和项目变成零结果后保留名称，取消后不再出现在候选中", () => {
+    const key = relatedProjectKey("a", project);
+    const filters = { ...emptyWorkFilters, space: ["a"], spaceLabel: { a: "已选空间" },
+      project: [key], projectLabel: { [key]: "已选项目" } };
+    expect(workLocationOptions([], catalog, filters)).toEqual({
+      spaces: [{ value: "a", label: "已选空间" }], projects: [{ value: key, label: "已选项目" }],
+    });
+    expect(workLocationOptions([], catalog, emptyWorkFilters)).toEqual({ spaces: [], projects: [] });
+  });
+  it("事项排序不同不改变两种模式的空间与项目候选顺序", () => {
+    const a = { ...item("a", "1"), project_name: "空间甲" };
+    const b = { ...item("b", "2"), project_name: "空间乙" };
+    const options = workLocationOptions([a, b], [], emptyWorkFilters);
+    expect(options.spaces).toEqual([{ value: "a", label: "空间甲" }, { value: "b", label: "空间乙" }]);
+    expect(workLocationOptions([b, a], [], emptyWorkFilters)).toEqual(options);
   });
   it("同一项目跨关联字段匹配，不同空间和同名不同编号项目隔离，缺少关联时不猜测", () => {
     const a = item("a", "1");
@@ -62,7 +105,7 @@ describe("空间与所属项目", () => {
     ] }];
     const options = projectFilterOptions([a, version], directory, "", "a");
     expect(options.filter((option) => option.label === project.name)).toHaveLength(1);
-    expect(options.map((option) => option.label)).toContain("无事项的患者平台");
+    expect(options.map((option) => option.label)).not.toContain("无事项的患者平台");
     expect(filterItems([a, version], "", "", "", "", "", "", relatedProjectKey("a", project)))
       .toEqual([a, version]);
   });

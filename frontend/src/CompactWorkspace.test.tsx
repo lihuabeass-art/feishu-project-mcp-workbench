@@ -470,6 +470,23 @@ describe("清单模式", () => {
     expect(within(list).queryByText("跨空间需求")).toBeNull();
   });
 
+  it("切换模式和事项类型使用相同项目候选，不显示其他类型的项目", async () => {
+    vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
+    const user = userEvent.setup();
+    render(<App />);
+    await enterListMode(user);
+    await user.click(screen.getByRole("tab", { name: /^缺陷\s*2$/ }));
+    await user.click(screen.getByRole("button", { name: "清单筛选" }));
+    await user.click(screen.getByRole("combobox", { name: "清单所属项目" }));
+    expect(screen.getAllByRole("option").map((option) => option.textContent))
+      .toEqual(["全部项目", "项目甲", "未提供所属项目"]);
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "切换到完整模式" }));
+    await user.click(screen.getByRole("combobox", { name: "所属项目" }));
+    expect(screen.getAllByRole("option").map((option) => option.textContent))
+      .toEqual(["全部项目", "项目甲", "未提供所属项目"]);
+  });
+
   it.each([
     { storageKey: "fstodo.work-filters.v1", completion: ["pending"] },
     { storageKey: "fstodo.work-filters.v1", completion: ["done"] },

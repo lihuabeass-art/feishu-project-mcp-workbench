@@ -55,7 +55,6 @@ import {
   orderTypeKeys,
   orderWorkItems,
   typeColorStyle,
-  projectFilterOptions,
 } from "./model";
 import { typeReorderHint, useTypeReorder } from "./useTypeReorder";
 import type { AppError, CachedItem, ConnectionSettings as Settings, Snapshot, WorkflowRequest, WorkflowResult } from "./types";
@@ -76,7 +75,7 @@ import { ThemeControl } from "./ThemeControl";
 import { CompactWorkspace } from "./CompactWorkspace";
 import {
   emptyWorkFilters, filterWorkItems,
-  selectionLabels, workFilterCount,
+  selectionLabels, workFilterCount, workLocationOptions,
 } from "./workFilters";
 import { useDisplayMode } from "./displayMode";
 import {
@@ -261,8 +260,8 @@ function Workspace() {
   const [fallbackPolicy] = useState(freshPolicy);
   const [sourceId, setSourceId] = useState("");
   const [filters, setFilters] = useState(emptyWorkFilters);
-  const { query, type, space: project, spaceLabel: projectLabel,
-    project: relatedProject, projectLabel: relatedProjectLabel, flowKind, nodeName, stateName } = filters;
+  const { query, type, space: project,
+    project: relatedProject, flowKind, nodeName, stateName } = filters;
   const setQuery = (query: string) => setFilters((current) => ({ ...current, query }));
   const setType = (type: string[]) => setFilters((current) => ({ ...current, type }));
   const [pendingType, setPendingType] = useState<string | null>(null);
@@ -968,34 +967,9 @@ function Workspace() {
     enabled: desktop && !busy && !loading,
     onReorder: (next) => void updateTypeOrder(next),
   });
-  const scopedCatalog = (data?.workspace_catalog || []).map((space) => ({ ...space,
-    projects: space.projects.filter((option) => scopedSources.some((source) =>
-      (!source.project_key || source.project_key === space.project_key || source.project_key === space.simple_name) &&
-      (!source.work_item_type_key || source.work_item_type_key === option.type_key) &&
-      visibleInSource(option.type_key, source.id) && (
-        !!source.project_key ||
-        sourceTypes(source).some((t) => t.project_key === space.project_key && t.type_key === option.type_key) ||
-        allItems.some((item) => item.id.project_key === space.project_key && item.id.work_item_type_key === option.type_key &&
-          (!item.source_ids || item.source_ids.includes(source.id)))
-      ),
-    )),
-  }));
-  const relatedProjectOptions = projectFilterOptions(items, scopedCatalog, type, project);
-  for (const value of relatedProject) {
-    if (!relatedProjectOptions.some((option) => option.value === value))
-      relatedProjectOptions.push({ value, label: relatedProjectLabel[value] || value });
-  }
-  const projects = [
-    ...new Map(
-      items
-        .filter((i) => i.id.project_key)
-        .map((i) => [i.id.project_key!, i.project_name || i.id.project_key!]),
-    ).entries(),
-  ];
-  // 同步可能移除所选空间的最后一条事项，仍保留当前条件供用户查看和取消。
-  for (const value of project) {
-    if (!projects.some(([key]) => key === value)) projects.push([value, projectLabel[value] || value]);
-  }
+  const catalog = data?.workspace_catalog || [];
+  const locationOptions = workLocationOptions(items, catalog, filters);
+  const { spaces: spaceOptions, projects: relatedProjectOptions } = locationOptions;
   const source = sourceId === "*" && data?.capabilities?.source_queries ? {id:"*",kind:"all_sources",enabled:true,executable:data.sources.some(s=>s.executable),reason:null,action:null,todo_scope:null} : data?.sources.find((s) => s.id === sourceId);
   const changeType = (nextType: string) => {
     if (view !== "work") {
@@ -1106,7 +1080,7 @@ function Workspace() {
         items={compactItems}
         filters={filters}
         onFiltersChange={(next) => { setPendingType(null); setFilters(next); }}
-        catalog={scopedCatalog.filter((space) => space.projects.length > 0)}
+        locationOptions={locationOptions}
         loading={loading}
         emptyText={
           allItems.length && !items.length
@@ -1383,14 +1357,11 @@ function Workspace() {
                         value={project}
                         onChange={(key) => {
                           setFilters((current) => ({ ...current, space: key, project: [], projectLabel: {},
-                            spaceLabel: Object.fromEntries(key.map((value) => [value, projects.find(([entry]) => entry === value)?.[1] || value])) }));
+                            spaceLabel: selectionLabels(spaceOptions, key) }));
                         }}
                         options={[
                           { value: "", label: "全部空间" },
-                          ...projects.map(([key, name]) => ({
-                            value: key,
-                            label: name,
-                          })),
+                          ...spaceOptions,
                         ]}
                       />
                     </label>
