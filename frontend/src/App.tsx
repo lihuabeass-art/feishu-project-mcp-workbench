@@ -1113,6 +1113,9 @@ function Workspace() {
               : "暂无工作。先在完整模式中选择工作来源并同步飞书。"
         }
         typeName={displayItemType}
+        typeOptions={[...new Set([...types, ...type])].map((key) => ({
+          key, label: displayType(key), count: items.filter((item) => item.id.work_item_type_key === key).length,
+        }))}
         selectedKey={selectedKey}
         select={setSelectedKey}
         detail={selected ? detailFor(selected, true) : null}

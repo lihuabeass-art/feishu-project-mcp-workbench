@@ -14,7 +14,8 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { filterItems, flowLabel, itemKey, localTime, projectFilterOptions, typeColorStyle, workflowFacets } from "./model";
+import { flowLabel, itemKey, localTime, projectFilterOptions, typeColorStyle, workflowFacets } from "./model";
+import { CompactTypeTabs, compactTypeTabId, type CompactTypeOption } from "./CompactTypeTabs";
 import { Select } from "./Select";
 import {
   emptyWorkFilters, filterWorkItems,
@@ -72,6 +73,7 @@ export function CompactWorkspace({
   loading,
   emptyText,
   typeName,
+  typeOptions,
   catalog,
   selectedKey,
   select,
@@ -92,6 +94,7 @@ export function CompactWorkspace({
   loading: boolean;
   emptyText: string;
   typeName: (item: CachedItem) => string;
+  typeOptions: CompactTypeOption[];
   catalog: SpaceCatalog[];
   selectedKey: string | null;
   select: (key: string | null) => void;
@@ -108,6 +111,7 @@ export function CompactWorkspace({
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filtersId = useId();
+  const typePanelId = useId();
   const filterButton = useRef<HTMLButtonElement>(null);
   const [peek, setPeek] = useState<Peek | null>(null);
   const rows = useRef(new Map<string, HTMLButtonElement>());
@@ -120,7 +124,8 @@ export function CompactWorkspace({
   const showDetail = !!detail;
   const cancelHover = () => window.clearTimeout(hoverTimer.current);
   const extraCount = [filters.flowKind, filters.nodeName, filters.stateName].filter((values) => values.length > 0).length;
-  const filterCount = workFilterCount(filters);
+  const filterCount = workFilterCount({ ...filters, type: [] });
+  const selectedType = filters.type[0] || "";
   const spaces = keepFilterSelection(
     [...new Map([
       ...catalog.map((space) => [space.project_key, space.name || space.simple_name || space.project_key] as const),
@@ -128,13 +133,6 @@ export function CompactWorkspace({
         [item.id.project_key!, item.project_name || item.id.project_key!] as const),
     ]).entries()].map(([value, label]) => ({ value, label })),
     filters.space, filters.spaceLabel,
-  );
-  const scopedItems = filterItems(items, "", "", filters.space, "", "", "", filters.project);
-  const typeOptions = keepFilterSelection(
-    [...new Map(scopedItems.filter((item) => item.id.work_item_type_key).map((item) =>
-      [item.id.work_item_type_key!, { value: item.id.work_item_type_key!, label: typeName(item) }],
-    )).values()],
-    filters.type, filters.typeLabel,
   );
   const projects = keepFilterSelection(projectFilterOptions(items, catalog, "", filters.space), filters.project, filters.projectLabel);
   const visibleItems = filterWorkItems(items, filters);
@@ -147,13 +145,22 @@ export function CompactWorkspace({
     if (listRef.current) listRef.current.scrollTop = 0;
   }
 
+  function changeType(key: string) {
+    if (key === selectedType) return;
+    changeFilters({ ...filters, type: key ? [key] : [],
+      typeLabel: key ? { [key]: typeOptions.find((option) => option.key === key)?.label || key } : {} });
+  }
+
+  function clearFilters() {
+    changeFilters({ ...emptyWorkFilters, type: filters.type, typeLabel: filters.typeLabel });
+  }
+
   const activeFilters = [
     ...(filters.query.trim() ? [{ id: "query", label: `搜索：${filters.query}`,
       remove: () => changeFilters({ ...filters, query: "" }) }] : []),
     ...([
       { key: "space", label: "空间", options: spaces },
       { key: "project", label: "所属项目", options: projects },
-      { key: "type", label: "事项类型", options: typeOptions },
       { key: "flowKind", label: "流程类型", options: Object.entries(flowLabel).map(([value, label]) => ({ value, label })) },
       { key: "nodeName", label: "当前节点", options: facets.node.options },
       { key: "stateName", label: "当前状态", options: facets.state.options },
@@ -267,6 +274,8 @@ export function CompactWorkspace({
             }
           }}
         >
+          <CompactTypeTabs options={typeOptions} selected={selectedType} total={items.length}
+            panelId={typePanelId} onChange={changeType} />
           <div className="list-mode-filterbar">
             <button
               ref={filterButton}
@@ -279,9 +288,9 @@ export function CompactWorkspace({
               <SlidersHorizontal size={13} aria-hidden="true" />
               筛选{filterCount > 0 && <span>{filterCount}</span>}
             </button>
-            {filterCount > 0 && <button className="text-button" onClick={() => changeFilters(emptyWorkFilters)}>清除</button>}
+            {filterCount > 0 && <button className="text-button" onClick={clearFilters}>清除</button>}
             <span className="list-mode-result-count" role="status">
-              {filterCount ? `${visibleItems.length} / ${items.length} 项` : "全部事项"}
+              {filterCount || selectedType ? `${visibleItems.length} / ${items.length} 项` : "全部事项"}
             </span>
           </div>
           {activeFilters.length > 0 && <div className="list-mode-filter-chips" role="group" aria-label="当前筛选条件">
@@ -300,13 +309,15 @@ export function CompactWorkspace({
             <label>
               <span>空间</span>
               <Select multiple ariaLabel="清单空间" className="compact" value={filters.space}
-                onChange={(space) => changeFilters({ ...emptyWorkFilters, query: filters.query, space, spaceLabel: selectionLabels(spaces, space) })}
+                onChange={(space) => changeFilters({ ...emptyWorkFilters, type: filters.type, typeLabel: filters.typeLabel,
+                  query: filters.query, space, spaceLabel: selectionLabels(spaces, space) })}
                 options={[{ value: "", label: "全部空间" }, ...spaces]} />
             </label>
             <label>
               <span>所属项目</span>
               <Select multiple ariaLabel="清单所属项目" className="compact" value={filters.project}
-                onChange={(project) => changeFilters({ ...emptyWorkFilters, query: filters.query, space: filters.space, spaceLabel: filters.spaceLabel,
+                onChange={(project) => changeFilters({ ...emptyWorkFilters, type: filters.type, typeLabel: filters.typeLabel,
+                  query: filters.query, space: filters.space, spaceLabel: filters.spaceLabel,
                   project, projectLabel: selectionLabels(projects, project) })}
                 options={[{ value: "", label: "全部项目" }, ...projects]} />
             </label>
@@ -346,6 +357,8 @@ export function CompactWorkspace({
             setPeek(null);
           }}
         >
+          <div key={selectedType} id={typePanelId} role="tabpanel" className="list-mode-type-panel"
+            aria-labelledby={compactTypeTabId(typePanelId, selectedType)} tabIndex={0}>
           {loading && !items.length ? (
             <div className="list-mode-empty">
               <LoaderCircle className="spin" size={20} />
@@ -407,14 +420,17 @@ export function CompactWorkspace({
             })
           ) : (
             <div className="list-mode-empty">
-              <p>{filterCount ? "没有符合条件的事项" : emptyText}</p>
+              <p>{filterCount ? "没有符合条件的事项" : selectedType ? "当前类型暂无事项" : emptyText}</p>
               {filterCount ? (
-                <button className="secondary" onClick={() => changeFilters(emptyWorkFilters)}>清除筛选</button>
+                <button className="secondary" onClick={clearFilters}>清除筛选</button>
+              ) : selectedType ? (
+                <button className="secondary" onClick={() => changeType("")}>查看全部类型</button>
               ) : (
                 <button className="secondary" onClick={expand} disabled={modeBusy}>打开完整模式</button>
               )}
             </div>
           )}
+          </div>
         </div>
         <footer className="list-mode-footer">
           <span>最近同步 {localTime(lastSync)}</span>
