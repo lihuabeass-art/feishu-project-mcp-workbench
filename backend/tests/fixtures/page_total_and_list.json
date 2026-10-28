@@ -1,0 +1,28 @@
+{
+  "total": 2,
+  "list": [
+    {
+      "project_key": "space_demo",
+      "project_name": "示例空间",
+      "work_item_info": {
+        "work_item_id": "WI-1001",
+        "work_item_type_key": "story",
+        "work_item_name": "示例需求A"
+      },
+      "schedule": { "start_time": "1750000000000", "end_time": "" },
+      "node_info": { "node_name": "研发中", "node_state_key": "developing" },
+      "state_info": { "start_state_key_name": "", "end_state_key_name": "" }
+    },
+    {
+      "project_key": "space_demo",
+      "project_name": "示例空间",
+      "work_item_info": {
+        "work_item_id": 2002,
+        "work_item_type_key": "issue",
+        "work_item_name": "示例缺陷A"
+      },
+      "node_info": { "node_name": "", "node_state_key": "" },
+      "state_info": { "start_state_key_name": "待处理", "end_state_key_name": "" }
+    }
+  ]
+}

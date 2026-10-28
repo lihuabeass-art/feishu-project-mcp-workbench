@@ -1,0 +1,24 @@
+[package]
+name = "fstodo-desktop"
+version = "0.4.3"
+edition = "2021"
+rust-version = "1.88"
+description = "FSTODO 飞书个人工作台"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "=2.5.4"
+tauri-plugin-updater = "=2.9.0"
+tauri-plugin-process = "=2.3.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+fstodo-backend = { path = "../../backend" }
+
+[target.'cfg(windows)'.dependencies]
+winvd = "=0.0.49"
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Shell"] }

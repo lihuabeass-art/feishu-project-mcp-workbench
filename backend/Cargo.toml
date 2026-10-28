@@ -1,0 +1,55 @@
+[package]
+name = "fstodo-backend"
+version = "0.4.3"
+edition = "2021"
+rust-version = "1.85"
+description = "飞书个人工作台本地数据层：飞书项目 MCP 只读接入 + SQLite 缓存"
+license = "MIT"
+
+[lib]
+name = "fstodo_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fstodo"
+path = "src/bin/fstodo.rs"
+
+[dependencies]
+# 官方 MCP Rust SDK：只复用其 streamable-http 客户端（初始化/会话/工具调用），不自行实现协议栈
+rmcp = { version = "3.5.1", default-features = false, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+    "reqwest-native-tls",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+http = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+futures-util = "0.3"
+thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+toml = "0.9"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+base64 = "0.22"
+sha2 = "0.10"
+sse-stream = "0.2"
+scraper = { version = "0.24", default-features = false }
+encoding_rs = "0.8"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+aes-gcm = "0.10.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+aes-gcm = "0.10.3"
+security-framework = "3.7"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+
+[profile.release]
+lto = "thin"

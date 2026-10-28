@@ -1,0 +1,239 @@
+/* 珍珠全息：装饰色只承载材质，交互与业务状态继续使用语义颜色。 */
+:root[data-appearance="pearl"] {
+  --text: #30364c;
+  --text-secondary: #5d657b;
+  --muted: #70778b;
+  --heading: #343d59;
+  --green: #297767;
+  --focus: #448d80;
+  --line: #dce0ed;
+  --border-strong: #abb9d2;
+  --surface: #ffffffb8;
+  --surface-solid: #fbfcff;
+  --surface-raised: #fafbffe8;
+  --pearl-detail-bg: #fafbfff2;
+  --surface-soft: #eff1f9;
+  --surface-hover: #edf1fb;
+  --surface-selected: #e7edf8;
+  --surface-selected-hover: #dfe8f5;
+  --surface-tint: #e4f3f0;
+  --input-bg: #ffffffde;
+  --menu-bg: #fafbfff5;
+  --glass: #ffffff8c;
+  --glass-hover: #ffffffbd;
+  --app-bg: #f3f4fb;
+  --sidebar-start: #fbfcff9c;
+  --sidebar-end: #eff0fa80;
+  --primary: #347c6c;
+  --primary-hover: #286657;
+  --on-primary: #fff;
+  --switch-off: #959eaf;
+  --pearl-cyan: #9ce9ed70;
+  --pearl-violet: #c1b1f566;
+  --pearl-rose: #f4bfdc59;
+  --pearl-edge: #aab8d25e;
+  --pearl-reflection: #ffffffb3;
+  --pearl-shadow: #6673a416;
+  --pearl-sheen: #ffffff70;
+  --pearl-spectrum: linear-gradient(
+    115deg,
+    #abddd9,
+    #c4c6ed 40%,
+    #ebc6dd 72%,
+    #c2e4ee
+  );
+}
+
+:root[data-appearance="pearl"][data-theme="dark"] {
+  --text: #e8ebf8;
+  --text-secondary: #bcc4da;
+  --muted: #a3aec9;
+  --heading: #eef0ff;
+  --green: #8bd7bd;
+  --focus: #9be4d0;
+  --line: #3d455e;
+  --border-strong: #7584aa;
+  --surface: #1c2236e8;
+  --surface-solid: #252d43;
+  --surface-raised: #20273cec;
+  --pearl-detail-bg: #20273cf2;
+  --surface-soft: #262e45;
+  --surface-hover: #303b55;
+  --surface-selected: #344159;
+  --surface-selected-hover: #3c4964;
+  --surface-tint: #243d3b;
+  --input-bg: #252e45ed;
+  --menu-bg: #252c42fa;
+  --glass: #2b3349a3;
+  --glass-hover: #39445ea6;
+  --app-bg: #141724;
+  --sidebar-start: #222b429c;
+  --sidebar-end: #1d203980;
+  --primary: #91d6be;
+  --primary-hover: #aae5d0;
+  --on-primary: #162d29;
+  --switch-off: #626e88;
+  --pearl-cyan: #62c8d026;
+  --pearl-violet: #9c84e833;
+  --pearl-rose: #ce7aaf21;
+  --pearl-edge: #9eafd22e;
+  --pearl-reflection: #b4c5ee2e;
+  --pearl-shadow: #03061145;
+  --pearl-sheen: #d9e7ff14;
+  --pearl-spectrum: linear-gradient(
+    115deg,
+    #668d9b,
+    #7772a2 40%,
+    #977792 72%,
+    #64889f
+  );
+}
+
+:root[data-appearance="pearl"] .app-shell,
+:root[data-appearance="pearl"] .list-mode-shell {
+  background:
+    radial-gradient(ellipse at 14% 2%, var(--pearl-cyan), transparent 46%),
+    radial-gradient(ellipse at 88% 12%, var(--pearl-violet), transparent 45%),
+    radial-gradient(ellipse at 55% 92%, var(--pearl-rose), transparent 52%),
+    var(--app-bg);
+}
+
+:root[data-appearance="pearl"] .sidebar {
+  background:
+    radial-gradient(ellipse at 0 30%, var(--pearl-cyan), transparent 70%),
+    radial-gradient(ellipse at 100% 85%, var(--pearl-violet), transparent 70%),
+    linear-gradient(165deg, var(--sidebar-start), var(--sidebar-end));
+  border-right-color: var(--pearl-edge);
+  box-shadow: none;
+}
+
+:root[data-appearance="pearl"] .brand-mark {
+  color: var(--heading);
+  border: 1px solid var(--pearl-edge);
+  background:
+    linear-gradient(145deg, var(--pearl-reflection), transparent 50%),
+    var(--pearl-spectrum);
+  box-shadow: 0 6px 18px var(--pearl-shadow);
+}
+
+:root[data-appearance="pearl"] .topbar,
+:root[data-appearance="pearl"] .list-mode-titlebar {
+  background: var(--glass);
+  border-bottom-color: var(--pearl-edge);
+  box-shadow: none;
+  backdrop-filter: blur(20px);
+}
+
+:root[data-appearance="pearl"] .nav-item.active {
+  color: var(--heading);
+  border-color: var(--pearl-edge);
+  background:
+    linear-gradient(110deg, var(--glass-hover), transparent),
+    linear-gradient(
+      115deg,
+      var(--pearl-cyan),
+      var(--pearl-violet),
+      var(--pearl-rose)
+    );
+  box-shadow: 0 4px 16px var(--pearl-shadow);
+}
+
+:root[data-appearance="pearl"] .overview {
+  position: relative;
+  border-radius: 18px;
+  border: 1px solid var(--pearl-edge);
+  background:
+    radial-gradient(ellipse at 80% 110%, var(--pearl-rose), transparent 60%),
+    radial-gradient(ellipse at 70% 0, var(--pearl-violet), transparent 60%),
+    radial-gradient(ellipse at 20% 80%, var(--pearl-cyan), transparent 65%),
+    linear-gradient(120deg, var(--glass-hover), var(--surface));
+  box-shadow: 0 10px 34px var(--pearl-shadow);
+}
+
+/* 高光在悬停时掠过；使用背景位移，不引入持续渲染的动画。 */
+:root[data-appearance="pearl"] .overview::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+      115deg,
+      transparent 30%,
+      var(--pearl-sheen) 48%,
+      transparent 68%
+    ) -150%
+    0 / 250% 100% no-repeat;
+  opacity: 0;
+  transition:
+    background-position 900ms ease,
+    opacity 300ms ease;
+}
+
+:root[data-appearance="pearl"] .overview:hover::after {
+  background-position: 150% 0;
+  opacity: 1;
+}
+
+:root[data-appearance="pearl"]
+  :is(.work-panel, .settings-panel, .history-panel) {
+  border-color: var(--pearl-edge);
+  border-radius: 18px;
+  box-shadow: 0 12px 40px var(--pearl-shadow);
+}
+
+:root[data-appearance="pearl"] .work-panel-header {
+  border-radius: 18px 18px 0 0;
+  backdrop-filter: blur(20px);
+}
+
+:root[data-appearance="pearl"] .tab.active::after {
+  height: 3px;
+  background: var(--pearl-spectrum);
+}
+
+:root[data-appearance="pearl"]
+  :is(.select-trigger, .theme-trigger, .secondary) {
+  box-shadow: 0 2px 6px var(--pearl-shadow);
+}
+
+:root[data-appearance="pearl"] :is(.select-menu, .theme-menu) {
+  box-shadow: 0 14px 40px var(--pearl-shadow);
+  backdrop-filter: blur(24px);
+}
+
+/* 详情覆盖清单时隔开文字；不支持背景模糊的环境保留实色底。 */
+:root[data-appearance="pearl"] :is(.detail, .detail-top) {
+  background: var(--surface-solid);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  :root[data-appearance="pearl"] :is(.detail, .detail-top) {
+    background: var(--pearl-detail-bg);
+    -webkit-backdrop-filter: blur(24px);
+    backdrop-filter: blur(24px);
+  }
+}
+
+:root[data-appearance="pearl"] .primary {
+  box-shadow: 0 5px 14px var(--pearl-shadow);
+}
+
+:root[data-appearance="pearl"] .work-item.selected::before {
+  background: linear-gradient(var(--green), #aaa4dd);
+}
+
+:root[data-appearance="pearl"] .empty-illustration {
+  color: var(--heading);
+  background:
+    linear-gradient(145deg, var(--pearl-reflection), transparent 50%),
+    var(--pearl-spectrum);
+  box-shadow: 0 12px 30px var(--pearl-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-appearance="pearl"] .overview::after {
+    transition: none;
+    background: none;
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "identifier": "theme",
+  "description": "允许主窗口同步外观、检查并安装签名更新及重启应用",
+  "windows": ["main"],
+  "permissions": [
+    "core:window:allow-set-theme",
+    "core:window:allow-show",
+    "core:resources:allow-close",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install",
+    "process:allow-restart"
+  ]
+}

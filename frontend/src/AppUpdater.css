@@ -1,0 +1,217 @@
+.app-update-settings .section-heading p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.app-update-settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+}
+.app-update-settings-actions .hint {
+  margin: 0;
+  line-height: 1.7;
+}
+.app-update-settings-actions button,
+.app-update-notice-actions button,
+.app-update-footer button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+.app-update-notice {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 25;
+  width: min(420px, calc(100vw - 40px));
+  max-height: min(60vh, 360px);
+  overflow: auto;
+  scrollbar-width: none;
+  box-sizing: border-box;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--text);
+  background: var(--surface-solid);
+  box-shadow: 0 12px 36px #10271d25;
+}
+.app-update-notice::-webkit-scrollbar {
+  display: none;
+}
+.app-update-notice:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
+}
+.app-update-notice-copy {
+  padding-right: 22px;
+  overflow-wrap: anywhere;
+}
+.app-update-notice-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.app-update-notice-copy strong {
+  font-size: 14px;
+}
+.app-update-notice-copy p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.app-update-notice-copy .app-update-error {
+  color: var(--danger, #b94040);
+}
+.app-update-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.app-update-dialog {
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(84vh, 760px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--text);
+  background: var(--surface-solid);
+  box-shadow: 0 24px 80px #10271d40;
+}
+.app-update-dialog[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.app-update-dialog::backdrop {
+  background: #10271d70;
+}
+.app-update-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.app-update-header h2 {
+  margin: 0;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.app-update-header p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.app-update-content {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 24px 20px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+  scrollbar-width: none;
+}
+.app-update-content::-webkit-scrollbar {
+  display: none;
+}
+.app-update-content:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -3px;
+}
+.app-update-status {
+  font-weight: 600;
+}
+.app-update-error {
+  color: var(--danger, #b94040);
+}
+.app-update-explanation {
+  color: var(--muted);
+  font-size: 13px;
+}
+.app-update-notes {
+  border-top: 1px solid var(--line);
+  margin-top: 20px;
+  padding-top: 4px;
+}
+.app-update-notes h3 {
+  font-size: 14px;
+  margin: 16px 0 10px;
+}
+.app-update-notes h1,
+.app-update-notes h2 {
+  font-size: 16px;
+}
+.app-update-notes a {
+  color: var(--green);
+}
+.app-update-progress {
+  height: 7px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: var(--line);
+}
+.app-update-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+}
+.app-update-progress.is-indeterminate span {
+  width: 35%;
+  animation: app-update-progress 1.4s ease-in-out infinite alternate;
+}
+.app-update-download p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.app-update-footer {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--line);
+}
+.app-update-footer > span {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+@keyframes app-update-progress {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(186%);
+  }
+}
+@media (max-width: 480px) {
+  .app-update-settings-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .app-update-header,
+  .app-update-footer {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+  .app-update-content {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-update-progress.is-indeterminate span {
+    animation: none;
+    width: 100%;
+    opacity: 0.55;
+  }
+}

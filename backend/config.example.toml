@@ -1,0 +1,60 @@
+# 复制本文件到 %APPDATA%\FSTODO\config.toml 后按需修改。
+#
+# 两条铁律（config.rs 强制）：
+#   1. 未知键直接报错（deny_unknown_fields）——不留「看似生效实则没生效」的键；
+#   2. 本文件不允许出现 token 值——只能声明凭证的*来源*。
+
+endpoint = "https://project.feishu.cn/mcp_server/v1"   # 必须 https：凭证走 HTTP 头，不接受明文
+token_env = "FSTODO_MCP_TOKEN"                        # 存放 MCP token 的环境变量名
+# token_file = "C:/Users/<you>/secrets/fstodo-mcp-token.txt"
+#   备选凭证来源。位于当前工作目录（典型即仓库）之内会被拒绝读取。
+# db_path = "C:/Users/<you>/AppData/Local/FSTODO/fstodo.db"
+#   缺省 %LOCALAPPDATA%\FSTODO\fstodo.db；命令行 --db 可临时覆盖。
+
+max_pages = 0                # 0 = 自动取完；正数仅限制 CLI 翻页，触顶按「不完整」记失败
+# 请求并发、限流退避与超时由系统自动调度。
+
+sync_run_retention = 0       # 默认永久保留；CLI 可用正数仅保留指定数量的已结束运行
+workflow_enabled = true     # CLI 流程操作开关；桌面端默认开启，实际执行仍需确认
+
+# ------------------------------------------------------------------ 来源配置
+# 三种来源均可执行；多来源用 sync --all，或在桌面端选择“所有已启用来源”。
+# 每条已纳入范围的工作项都额外补全 get_workitem_brief 的全部逻辑字段。
+
+[[source]]
+id = "我的待办"
+kind = "personal_todo"
+enabled = true
+action = "todo"              # 必填：todo | done | overdue | this_week（tools/list 元数据）
+todo_scope = "in_progress"   # 可选：all | in_progress | not_started；省略则请求里不出现该参数
+# asset_key = "..."          # 元数据称「仅报错时按报错内容传」，该路径未实测；填了就原样透传
+# personal_todo 不接受 association_rule；更广的本人关联查询请添加 work_item_type 来源。
+
+# personal_todo 不需要也不要写 project_key / work_item_type_key / view_id，
+# 写了会被配置错误拒绝（避免「以为过滤了其实没过滤」）。
+
+# ------------------------------------------------------------------ 本人关联工作
+# 不受进行中待办限制，可包括已完成工作；类型 key 也可以是子任务或自定义类型。
+# 默认规则为全部参与人包含当前登录用户；不传 LIMIT，使用远端会话翻页直到 count。
+
+# [[source]]
+# id = "story-by-type"
+# kind = "work_item_type"
+# enabled = false
+# project_key = "space_xxx"
+# work_item_type_key = "story"
+# association_rule = '{"kind":"all_participants"}'
+# 或当前参与人：'{"kind":"current_participants"}'
+# 或人员字段/角色：'{"kind":"personnel","fields":["current_status_operator"],"roles":["后端开发工程师"],"match_all":false}'
+# fields 使用字段发现返回的 field_key，roles 使用角色发现返回的 role_name。
+# match_all=false 为任一条件成立，true 为全部成立。人员字段与角色存在性会在查询前核实。
+# 或自定义 WHERE 条件（只允许表达式，不允许 LIMIT / GROUP BY 等查询子句）：
+# association_rule = '{"kind":"custom","expression":"array_contains(all_participate_persons(), current_login_user())"}'
+
+# [[source]]
+# id = "my-view"
+# kind = "view"
+# enabled = false
+# project_key = "space_xxx"
+# view_id = "view_xxx"
+# 普通已保存视图沿用飞书侧筛选条件，不叠加 association_rule；全景视图不在此接口范围内。

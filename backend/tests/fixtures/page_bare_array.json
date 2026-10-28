@@ -1,0 +1,13 @@
+[
+  {
+    "project_key": "space_demo",
+    "project_name": "示例空间",
+    "work_item_info": {
+      "work_item_id": "WI-3003",
+      "work_item_type_key": "task",
+      "work_item_name": "裸数组页事项"
+    },
+    "node_info": { "node_name": "验收中", "node_state_key": "verifying" },
+    "state_info": { "start_state_key_name": "", "end_state_key_name": "" }
+  }
+]

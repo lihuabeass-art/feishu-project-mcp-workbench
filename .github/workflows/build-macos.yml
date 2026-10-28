@@ -1,0 +1,102 @@
+name: Build macOS
+
+on:
+  push:
+    tags: ["v*", "[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已由用户确定并推送的版本 tag"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-macos-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: macOS universal DMG
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      FSTODO_RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Validate tag and generate release notes
+        id: notes
+        run: node frontend/scripts/release-notes.mjs --output artifacts/release --github-output "$GITHUB_OUTPUT"
+      - name: Use generated notes for tests and build
+        run: echo "FSTODO_RELEASE_NOTES_FILE=$GITHUB_WORKSPACE/artifacts/release/release.json" >> "$GITHUB_ENV"
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup default 1.88.0
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Test backend
+        working-directory: backend
+        run: cargo test --locked
+      - name: Test token persistence with an isolated Keychain
+        working-directory: backend
+        run: |
+          original_keychain=$(security default-keychain -d user | sed 's/^ *"//; s/"$//')
+          test_keychain="$RUNNER_TEMP/fstodo-test.keychain-db"
+          keychain_password=$(uuidgen)
+          cleanup() {
+            security default-keychain -d user -s "$original_keychain"
+            security delete-keychain "$test_keychain"
+          }
+          trap cleanup EXIT
+          security create-keychain -p "$keychain_password" "$test_keychain"
+          security unlock-keychain -p "$keychain_password" "$test_keychain"
+          security default-keychain -d user -s "$test_keychain"
+          cargo test --locked encrypted_token_survives_reopen_and_overrides_external_credentials -- --ignored
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+      - name: Build universal app and DMG
+        working-directory: frontend
+        run: npm run build:macos
+      - name: Verify architectures and ad-hoc signature
+        run: |
+          app=frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/FSTODO.app
+          lipo "$app/Contents/MacOS/fstodo-desktop" -verify_arch arm64 x86_64
+          codesign --verify --deep --strict --verbose=2 "$app"
+      - name: Collect DMG, release notes and optional signed updater archive
+        run: |
+          mkdir -p artifacts/packages
+          cp frontend/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg artifacts/packages/
+          cp artifacts/release/RELEASE_NOTES.md artifacts/packages/
+          cp artifacts/release/release.json artifacts/packages/
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            cp frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz artifacts/packages/
+            cp frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig artifacts/packages/
+          else
+            echo "未配置 updater 私钥：仅交付手动安装 DMG，没有自动更新包。"
+          fi
+      - name: Upload DMG and release notes
+        uses: actions/upload-artifact@v7
+        with:
+          name: FSTODO-${{ steps.notes.outputs.version }}-macos-universal
+          path: artifacts/packages/*
+          if-no-files-found: error
+          retention-days: 14

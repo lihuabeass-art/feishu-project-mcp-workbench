@@ -1,0 +1,27 @@
+{
+  "total": 3,
+  "list": [
+    {
+      "project_key": "space_demo",
+      "project_name": "示例空间",
+      "work_item_info": {
+        "work_item_id": "WI-4001",
+        "work_item_type_key": "story",
+        "work_item_name": "唯一合格的一条"
+      },
+      "node_info": { "node_name": "评审中", "node_state_key": "reviewing" },
+      "state_info": { "start_state_key_name": "", "end_state_key_name": "" }
+    },
+    {
+      "project_key": "space_demo",
+      "work_item_info": {
+        "work_item_type_key": "story",
+        "work_item_name": "缺身份的一条"
+      }
+    },
+    {
+      "project_key": "space_demo",
+      "work_item_info": "这不该是字符串"
+    }
+  ]
+}

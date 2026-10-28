@@ -1,0 +1,76 @@
+# Rust 构建产物
+target/
+*.exe
+*.dll
+*.pdb
+*.obj
+*.lib
+*.exp
+
+# 桌面打包与本地导出产物
+*.msi
+*.msix
+*.appx
+*.wixpdb
+/artifacts/
+/releases/
+
+# 本地运行数据与凭证（永不入库）
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+config.toml
+config.local.*
+*.local.toml
+*.local.json
+!frontend/.cargo/config.toml
+*.token
+fstodo-token-*.txt
+*.pfx
+*.p12
+
+# 本地环境变量；示例与模板仍入库
+.env
+.env.*
+!.env.example
+!.env.template
+!.env.*.example
+!.env.*.template
+
+# 日志、运行缓存、临时文件与测试报告
+*.log
+logs/
+.cache/
+.local/
+.tmp/
+/tmp/
+/temp/
+coverage/
+playwright-report/
+test-results/
+
+# 编辑器/系统
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# 前端构建产物
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+.vite-temp/
+frontend/src-tauri/gen/schemas/
+
+# 保留 config.example.toml / config.template.toml 等配置模板、
+# frontend/.cargo/config.toml 构建配置，以及 Cargo.lock / package-lock.json。
