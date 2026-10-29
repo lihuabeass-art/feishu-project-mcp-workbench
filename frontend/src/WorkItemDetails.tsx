@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import { asError, itemKey, localTime } from "./model";
+import { readFailureMessage } from "./readFeedback";
 import type { CachedItem, ItemDetail } from "./types";
 import { BusinessField } from "./BusinessField";
 import { ExternalLink } from "./ExternalLink";
@@ -257,7 +258,7 @@ export function WorkItemDetails({
           setCacheError("");
         }
       } catch (e) {
-        if (active && request === cacheRead.current) setCacheError(asError(e).message);
+        if (active && request === cacheRead.current) setCacheError(readFailureMessage(asError(e).kind));
       }
     })();
     return () => { active = false; };
@@ -290,7 +291,7 @@ export function WorkItemDetails({
           refreshed = true;
         }
       } catch (e) {
-        if (active) setError(asError(e).message);
+        if (active) setError(readFailureMessage(asError(e).kind));
       } finally {
         if (active) setLoading(false);
       }
@@ -298,7 +299,7 @@ export function WorkItemDetails({
         try {
           await onRefreshed?.();
         } catch (e) {
-          if (active) setSummaryError(asError(e).message);
+          if (active) setSummaryError(readFailureMessage(asError(e).kind));
         }
       }
     })();

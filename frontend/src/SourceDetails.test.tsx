@@ -332,7 +332,8 @@ it("自动回读失败保留详情，后续版本恢复且较旧的回读不能�
   view.rerender(
     <WorkItemDetails item={{ ...current, detail_revision: "v2" }} enabled />,
   );
-  await screen.findByText(/缓存暂不可读/);
+  await screen.findByText(/详情读取失败：暂时无法获取最新信息，请稍后重试/);
+  expect(screen.queryByText(/缓存暂不可读/)).toBeNull();
   expect(screen.getByText("旧正文")).toBeTruthy();
   let oldRead!: (value: ItemDetail) => void;
   vi.mocked(cachedItemDetail).mockReturnValueOnce(

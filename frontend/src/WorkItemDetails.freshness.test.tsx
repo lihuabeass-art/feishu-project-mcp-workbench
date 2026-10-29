@@ -59,10 +59,11 @@ it("联网失败后迟到的缓存不能变成检查成功，手动重试成功�
   vi.mocked(refreshItemDetail).mockReturnValueOnce(remote.promise);
   render(<WorkItemDetails item={item} enabled />);
 
-  await act(async () => remote.reject({ message: "网络断开" }));
+  await act(async () => remote.reject({ kind: "connection", message: "RPCError: transport failed; log_id: sample" }));
   await act(async () => cached.resolve(detail(60_000, "上次正文")));
   expect(screen.getByRole("status").textContent).toBe("检查失败");
-  expect(screen.getByRole("alert").textContent).toContain("网络断开");
+  expect(screen.getByRole("alert").textContent).toContain("暂时无法连接服务，请稍后重试");
+  expect(screen.getByRole("alert").textContent).not.toMatch(/RPCError|log_id/);
   expect(screen.getByRole("alert").textContent).toContain(`当前显示上次保存的信息（获取于 ${localTime(60_000)}）`);
   expect(screen.getByText("上次正文")).toBeTruthy();
 
@@ -106,7 +107,7 @@ it.each([false, true])("后台回读新快照期间，本次联网失败仍显�
   await screen.findByText("同步后的正文");
   await act(async () => remote.reject({ message: "本次联网检查失败" }));
   expect(screen.getByRole("status").textContent).toBe("检查失败");
-  expect(screen.getByRole("alert").textContent).toContain("本次联网检查失败");
+  expect(screen.getByRole("alert").textContent).toContain("暂时无法获取最新信息，请稍后重试");
   expect(screen.getByText("同步后的正文")).toBeTruthy();
 });
 
@@ -118,7 +119,7 @@ it("详情成功但清单摘要回读失败时保留已检查，下一次检查�
 
   await screen.findByText(/清单摘要读取失败/);
   expect(screen.getByRole("status").textContent).toBe(`已检查 · ${localTime(120_000)}`);
-  expect(screen.getByRole("alert").textContent).toContain("清单暂不可读");
+  expect(screen.getByRole("alert").textContent).toContain("暂时无法获取最新信息，请稍后重试");
   expect(screen.getByRole("alert").textContent).not.toContain("上次保存的信息");
   expect(screen.getByText("最新正文")).toBeTruthy();
 
@@ -173,4 +174,17 @@ it("切换事项时重置检查结果，旧事项的已检查状态不能用于�
   await act(async () => remote.reject({ message: "暂时无法连接" }));
   expect(screen.getByRole("status").textContent).toBe("检查失败");
   expect(screen.queryByText(/已检查/)).toBeNull();
+});
+
+it("切换事项后旧请求的迟到错误不能污染新事项", async () => {
+  const oldRequest = deferred<ItemDetail>();
+  vi.mocked(cachedItemDetail).mockResolvedValue(null);
+  vi.mocked(refreshItemDetail).mockReturnValueOnce(oldRequest.promise)
+    .mockResolvedValueOnce(detail(180_000, "新事项正文"));
+  const view = render(<WorkItemDetails item={item} enabled />);
+  view.rerender(<WorkItemDetails item={{ ...item, id: { ...item.id, work_item_id: "2" } }} enabled />);
+  await screen.findByText("新事项正文");
+  await act(async () => oldRequest.reject({ kind: "tool", message: "RPCError: unavailable" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("status").textContent).toBe(`已检查 · ${localTime(180_000)}`);
 });

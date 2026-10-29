@@ -774,7 +774,7 @@ describe("工作台交互", () => {
     await user.click(screen.getByRole("button", { name: "立即刷新" }));
     expect(await screen.findByRole("alert")).toHaveProperty(
       "textContent",
-      expect.stringContaining("连接中断"),
+      expect.stringContaining("暂时无法连接服务，请稍后重试"),
     );
     await waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(2));
     expect(screen.getByText("缺陷乙")).toBeTruthy();
@@ -1209,7 +1209,7 @@ describe("同步与流程独立执行", () => {
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("节点推进已核验"));
     await act(async () => sync.reject({ kind: "connection", message: "同步网络失败" }));
     expect(screen.getByRole("status").textContent).toBe("节点推进已核验");
-    expect(screen.getByText("同步网络失败")).toBeTruthy();
+    expect(screen.getByText("暂时无法连接服务，请稍后重试。")).toBeTruthy();
   });
 
   it.each(["verified", "unknown"] as const)("流程结论 %s 已到但缓存回读未结束时，同步不能清除结论", async (outcome) => {
@@ -1476,7 +1476,7 @@ describe("自动同步与提示时序", () => {
     expect(syncTodos).toHaveBeenCalledTimes(2);
     await tick(480000);
     expect(syncTodos).toHaveBeenCalledTimes(3);
-    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
     await tick(480000);
     expect(syncTodos).toHaveBeenCalledTimes(4);
     await tick(480000);
@@ -1516,6 +1516,7 @@ describe("自动同步与提示时序", () => {
     expect(
       screen.getByText("自动同步将在 8 分钟间隔后重试"),
     ).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it.each(["online", "focus"])("收到 %s 后提前重试失败来源，恢复成功后回到正常周期", async (event) => {
@@ -1591,6 +1592,176 @@ describe("所有来源调度与清单 patch", () => {
       source_id, report: successfulReport as typeof successfulReport | null,
       error_kind: null as string | null, error_message: null as string | null,
     })),
+  });
+
+  const failedCheck = (source_id: string, error_kind = "tool") => ({
+    source_id, report: null, error_kind,
+    error_message: "RPCError: service unavailable; log_id: sample-log",
+  });
+
+  it("后台其他来源失败不打断当前事项，仍应用已取得的清单补丁", async () => {
+    const data = scheduledData();
+    const report = patchReport();
+    report.checks[1] = failedCheck("source-b");
+    vi.mocked(syncTodos).mockResolvedValue({ ...report,
+      patch: { added: [], modified: [{ ...data.items[0], name: "后台更新的需求" }], removed: [] } });
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {});
+    await act(async () => fireEvent.click(screen.getByRole("combobox", { name: "显示来源" })));
+    await act(async () => fireEvent.click(screen.getByRole("option", { name: "source-a" })));
+    fireEvent.click(screen.getByRole("button", { name: /需求甲/ }));
+    await tick(120000);
+    expect(screen.getByRole("complementary", { name: "事项详情" }).textContent).toContain("后台更新的需求");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/RPCError|sample-log/)).toBeNull();
+  });
+
+  it.each([
+    ["connection", "暂时无法连接服务，请稍后重试。"],
+    ["tool", "服务暂时无法完成读取，请稍后重试。"],
+    ["permission", "没有读取权限，请检查账号在原软件中的访问权限。"],
+  ])("手动刷新 %s 失败给出分类短提示，不显示服务原文", async (kind, message) => {
+    scheduledData();
+    vi.mocked(syncTodos).mockRejectedValue({ kind, message: "RPCError: unavailable; log_id: sample-log" });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "立即刷新" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(message);
+    expect(alert.textContent).not.toMatch(/RPCError|source-a|source-b|log_id/);
+  });
+
+  it("手动刷新复用自动 A 请求时失败仍有反馈，且不重复发送请求", async () => {
+    scheduledData();
+    let finish!: (value: ReturnType<typeof patchReport>) => void;
+    vi.mocked(syncTodos).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {});
+    await act(async () => fireEvent.click(screen.getByRole("combobox", { name: "显示来源" })));
+    await act(async () => fireEvent.click(screen.getByRole("option", { name: "source-a" })));
+    await tick(120000);
+    fireEvent.click(screen.getByRole("button", { name: "正在同步" }));
+    const report = patchReport();
+    report.checks[0] = failedCheck("source-a");
+    await act(async () => finish(report));
+    expect(syncTodos).toHaveBeenCalledOnce();
+    expect(screen.getByRole("alert").textContent).toContain("服务暂时无法完成读取");
+    expect(screen.queryByText("检查完成，数据无变化。")).toBeNull();
+  });
+
+  it("手动请求 A+B 复用自动 A 后补查 B，A 失败不能被 B 成功覆盖", async () => {
+    scheduledData();
+    const now = Date.now();
+    localStorage.setItem("fstodo.sync-policy.v1", JSON.stringify({
+      "source-a": { failures: 0, nextAt: now + 120000 },
+      "source-b": { failures: 0, nextAt: now + 240000 },
+    }));
+    let finish!: (value: ReturnType<typeof patchReport>) => void;
+    vi.mocked(syncTodos).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }))
+      .mockResolvedValue(patchReport(["source-b"]));
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {});
+    await tick(120000);
+    fireEvent.click(screen.getByRole("button", { name: "正在同步" }));
+    const report = patchReport(["source-a"]);
+    report.checks[0] = failedCheck("source-a");
+    await act(async () => finish(report));
+    expect(syncTodos).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("alert").textContent).toContain("服务暂时无法完成读取");
+    expect(screen.queryByText("检查完成，数据无变化。")).toBeNull();
+    // B 的后续自动检查也不能清除 A 尚未恢复的手动失败。
+    await tick(120000);
+    expect(screen.getByRole("alert").textContent).toContain("服务暂时无法完成读取");
+  });
+
+  it("手动只关注 A 时，同轮后台 B 失败不污染 A 的成功结果", async () => {
+    scheduledData();
+    let finish!: (value: ReturnType<typeof patchReport>) => void;
+    vi.mocked(syncTodos).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {});
+    await act(async () => fireEvent.click(screen.getByRole("combobox", { name: "显示来源" })));
+    await act(async () => fireEvent.click(screen.getByRole("option", { name: "source-a" })));
+    await tick(120000);
+    fireEvent.click(screen.getByRole("button", { name: "正在同步" }));
+    const report = patchReport();
+    report.checks[1] = failedCheck("source-b");
+    await act(async () => finish(report));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("刷新完成。")).toBeTruthy();
+  });
+
+  it("首次无缓存自动加载失败显示内容区未完成状态和重试入口", async () => {
+    const data = scheduledData();
+    data.items = [];
+    data.total = 0;
+    data.last_success = null;
+    vi.mocked(syncTodos).mockRejectedValueOnce({ kind: "connection", message: "RPCError: unavailable" })
+      .mockResolvedValue(patchReport());
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {});
+    await tick(120000);
+    expect(screen.getByText("工作清单加载未完成")).toBeTruthy();
+    expect(screen.getByText(/尚未取得完整的工作清单/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "重新刷新" })));
+    expect(screen.queryByText("工作清单加载未完成")).toBeNull();
+    expect(screen.getByText("检查完成，数据无变化。")).toBeTruthy();
+  });
+
+  it.each([false, true])("A 成功与 B 首次失败按来源显示空态（A 有缓存=%s）", async (aHasCache) => {
+    const data = scheduledData();
+    data.items = aHasCache ? [data.items[0]] : [];
+    data.total = data.items.length;
+    // 另一来源的历史成功不能代替 B 本次的读取结果。
+    data.last_success = { source_id: "source-a", status: "success" } as NonNullable<Snapshot["last_success"]>;
+    const report = patchReport();
+    report.checks[1] = failedCheck("source-b", "connection");
+    vi.mocked(syncTodos).mockResolvedValueOnce(report).mockResolvedValue(patchReport(["source-b"]));
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {});
+    await act(async () => fireEvent.click(screen.getByRole("combobox", { name: "显示来源" })));
+    await act(async () => fireEvent.click(screen.getByRole("option", { name: "source-a" })));
+    await tick(120000);
+    expect(screen.queryByText("工作清单加载未完成")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    if (aHasCache) expect(screen.getByText("需求甲")).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("combobox", { name: "显示来源" })));
+    await act(async () => fireEvent.click(screen.getByRole("option", { name: "source-b" })));
+    expect(screen.getByText("工作清单加载未完成")).toBeTruthy();
+    expect(screen.getByText(/尚未取得完整的工作清单/)).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "重新刷新" })));
+    expect(screen.queryByText("工作清单加载未完成")).toBeNull();
+    expect(syncTodos).toHaveBeenLastCalledWith("*", false, ["source-b"]);
+  });
+
+  it.each(["connection", "tool"])("后台认证失败变为 %s 时移除过期凭证提示", async (kind) => {
+    scheduledData();
+    const auth = patchReport();
+    auth.checks[0] = failedCheck("source-a", "auth");
+    const transient = patchReport(["source-a"]);
+    transient.checks[0] = failedCheck("source-a", kind);
+    vi.mocked(syncTodos).mockResolvedValueOnce(auth)
+      .mockResolvedValueOnce(patchReport(["source-b"]))
+      .mockResolvedValueOnce(transient);
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {});
+    await tick(120000);
+    expect(screen.getByRole("alert").textContent).toContain("连接凭证已失效");
+    await tick(120000);
+    expect(screen.getByRole("alert").textContent).toContain("连接凭证已失效");
+    await act(async () => window.dispatchEvent(new Event("online")));
+    await tick(0);
+    expect(syncTodos).toHaveBeenLastCalledWith("*", true, ["source-a"]);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/连接凭证已失效/)).toBeNull();
   });
 
   it("手动刷新跟随所选来源，空 patch 明确提示无变化，全部来源仍检查全部", async () => {

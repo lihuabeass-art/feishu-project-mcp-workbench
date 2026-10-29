@@ -62,6 +62,7 @@ import { SourceTypes } from "./SourceTypes";
 import { WorkSources } from "./WorkSources";
 import { sourceName, sourceProjects } from "./sourcePresets";
 import { WorkItemDetails } from "./WorkItemDetails";
+import { readFailureMessage, readFailureNeedsAction } from "./readFeedback";
 import { Select } from "./Select";
 import { LinkSettings } from "./LinkSettings";
 import { DesktopSettings, useDesktopSettings } from "./DesktopSettings";
@@ -97,6 +98,14 @@ import {
 
 type View = "work" | "sources" | "settings";
 type Notice = { tone: "success" | "warning"; text: string };
+type ManualSync = {
+  requested: Set<string>;
+  remaining: Set<string>;
+  failures: Map<string, AppError>;
+  results: string[];
+  workflowAttempt: number;
+  workflowInFlight: boolean;
+};
 
 function Flow({ item }: { item: CachedItem }) {
   const f = item.flow;
@@ -247,6 +256,8 @@ function Workspace() {
   const [credentialFeedback, setCredentialFeedback] = useState<SaveFeedback | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [syncFailure, setSyncFailure] = useState<string | null>(null);
+  const syncFailures = useRef(new Map<string, { kind: string; dismissed: boolean }>());
+  const [sourceReadFailures, setSourceReadFailures] = useState<Record<string, string>>({});
   const displayMode = useDisplayMode((message) => setError({ kind: "window", message }));
   const compact = displayMode.mode === "compact";
   const compactRef = useRef(compact);
@@ -303,6 +314,7 @@ function Workspace() {
   const autoRunRef = useRef<() => void>(() => {});
   const activeSyncIds = useRef<string[]>([]);
   const pendingManual = useRef(new Set<string>());
+  const manualSync = useRef<ManualSync | null>(null);
   const incremental = !!data?.capabilities?.incremental_sync;
   const enabledIds = data?.sources.filter((s) => s.enabled && s.executable).map((s) => s.id) || [];
   const policy = Object.hasOwn(policies, sourceId)
@@ -501,9 +513,6 @@ function Workspace() {
     return () => cancelAnimationFrame(frame);
   }, [pendingType, type, view, compact]);
   useEffect(() => {
-    setSyncFailure(null);
-  }, [sourceId]);
-  useEffect(() => {
     if (notice?.tone !== "success") return;
     const timer = window.setTimeout(() => setNotice(null), 5000);
     return () => window.clearTimeout(timer);
@@ -626,6 +635,24 @@ function Workspace() {
     }
   }
 
+  function publishSyncFailures() {
+    const messages = [...syncFailures.current.values()]
+      .filter((failure) => !failure.dismissed)
+      .map((failure) => readFailureMessage(failure.kind));
+    setSyncFailure(messages.length ? [...new Set(messages)].join("；") + "。" : null);
+  }
+
+  function registerManualSync(ids: string[]) {
+    manualSync.current ||= {
+      requested: new Set(), remaining: new Set(), failures: new Map(), results: [],
+      workflowAttempt: workflowAttempt.current, workflowInFlight: workflowRef.current,
+    };
+    for (const id of ids) {
+      if (!manualSync.current.requested.has(id)) manualSync.current.remaining.add(id);
+      manualSync.current.requested.add(id);
+    }
+  }
+
   async function run(action: "sync" | "check", automatic = false, requestedIds?: string[]) {
     const ids = requestedIds || (incremental
       ? sourceId === "*" ? enabledIds : enabledIds.filter((id) => id === sourceId)
@@ -633,20 +660,25 @@ function Workspace() {
     if (action === "sync" && incremental && syncRef.current) {
       if (!automatic) {
         refreshCatalogAfterSync.current = true;
-        ids.filter((id) => !activeSyncIds.current.includes(id)).forEach((id) => pendingManual.current.add(id));
+        registerManualSync(ids);
+        ids.filter((id) => manualSync.current!.remaining.has(id) && !activeSyncIds.current.includes(id))
+          .forEach((id) => pendingManual.current.add(id));
       }
       return;
     }
     if (action === "sync" && !ids.length) return;
     if (busyRef.current || (action !== "sync" && workflowRef.current) || !desktop) return;
-    if (action === "sync" && !automatic) refreshCatalogAfterSync.current = true;
+    if (action === "sync" && !automatic) {
+      refreshCatalogAfterSync.current = true;
+      registerManualSync(ids);
+    }
     busyRef.current = true;
     syncRef.current = action === "sync";
     activeSyncIds.current = action === "sync" ? ids : [];
-    const workflowAtStart = workflowAttempt.current;
     const workflowInFlightAtStart = workflowRef.current;
     setBusy(action);
-    if (!automatic && !workflowInFlightAtStart) {
+    if (!automatic && !workflowInFlightAtStart &&
+        (!manualSync.current || (!manualSync.current.workflowInFlight && manualSync.current.workflowAttempt === workflowAttempt.current))) {
       setError(null);
       setNotice(null);
     }
@@ -654,6 +686,8 @@ function Workspace() {
     let successText = "";
     let patched = false;
     let checksReceived = false;
+    let cacheReadFailure: AppError | null = null;
+    const outcomes = new Map<string, AppError | null>();
     try {
       if (action === "sync") {
         const report = incremental
@@ -683,11 +717,12 @@ function Workspace() {
         if (report.checks) {
           checksReceived = true;
           for (const check of report.checks) {
+            if (!ids.includes(check.source_id)) continue;
             const ok = check.report?.status === "success" && check.report.complete && !check.report.items_rejected;
-            updatePolicy(ok ? undefined : check.error_kind || "incomplete", check.source_id);
+            outcomes.set(check.source_id, ok ? null : {
+              kind: check.error_kind || "incomplete", message: "",
+            });
           }
-          const messages = report.checks.filter((c) => c.error_message).map((c) => `${c.source_id}：${c.error_message}`);
-          if (messages.length) failure = { kind: "source_failed", message: messages.join("；") };
         }
         const success =
           report.status === "success" &&
@@ -720,7 +755,7 @@ function Workspace() {
       try {
         if (!patched) await reload();
       } catch (e) {
-        if (action === "sync") failure ||= asError(e);
+        if (action === "sync") cacheReadFailure = asError(e);
         else setError((previous) => previous || asError(e));
       }
       if (action === "sync") {
@@ -729,17 +764,58 @@ function Workspace() {
           if (patched && refreshCatalogAfterSync.current) setCatalogEpoch((value) => value + 1);
           refreshCatalogAfterSync.current = false;
         }
-        const ownsNotice = !workflowInFlightAtStart && workflowAtStart === workflowAttempt.current;
-        if (!checksReceived) for (const id of ids) updatePolicy(failure?.kind, id);
-        if (failure) {
-          if (ownsNotice) setNotice(null);
-          setSyncFailure(failure.message);
-        } else {
-          setSyncFailure(null);
-          // 并行同步的旧结果不能覆盖此后发起的流程操作结论。
-          if (!automatic && ownsNotice)
-            setNotice({ tone: "success", text: successText });
+        for (const id of ids) {
+          if (!outcomes.has(id)) {
+            const outcome = failure || (checksReceived ? { kind: "incomplete", message: "" } : null);
+            outcomes.set(id, outcome);
+          }
+          if (!outcomes.get(id) && cacheReadFailure) outcomes.set(id, cacheReadFailure);
+          updatePolicy(outcomes.get(id)?.kind, id);
         }
+        const manual = manualSync.current;
+        let joinedManual = false;
+        for (const [id, outcome] of outcomes) {
+          if (!outcome) {
+            syncFailures.current.delete(id);
+          } else {
+            const previous = syncFailures.current.get(id);
+            if (readFailureNeedsAction(outcome.kind)) {
+              if (previous?.kind !== outcome.kind) syncFailures.current.set(id, { kind: outcome.kind, dismissed: false });
+            } else if (previous) {
+              // 新结果已不再指向凭证或权限问题，不能继续显示旧的操作指引。
+              if (readFailureNeedsAction(previous.kind)) syncFailures.current.delete(id);
+              else previous.kind = outcome.kind;
+            }
+          }
+          if (manual?.remaining.delete(id)) {
+            joinedManual = true;
+            if (outcome) manual.failures.set(id, outcome);
+          }
+        }
+        if (joinedManual && manual) manual.results.push(
+          ids.every((id) => manual.requested.has(id)) ? successText || "刷新完成。" : "刷新完成。");
+        if (manual && !manual.remaining.size) {
+          const ownsNotice = !manual.workflowInFlight && manual.workflowAttempt === workflowAttempt.current;
+          if (manual.failures.size) {
+            if (ownsNotice) setNotice(null);
+            for (const [id, outcome] of manual.failures)
+              syncFailures.current.set(id, { kind: outcome.kind, dismissed: false });
+          } else if (ownsNotice) {
+            const text = manual.results.every((result) => result === "检查完成，数据无变化。")
+              ? "检查完成，数据无变化。" : manual.results.length === 1 ? manual.results[0] : "刷新完成。";
+            setNotice({ tone: "success", text });
+          }
+          manualSync.current = null;
+        }
+        publishSyncFailures();
+        setSourceReadFailures((current) => {
+          const next = { ...current };
+          for (const [id, outcome] of outcomes) {
+            if (outcome) next[id] = outcome.kind;
+            else delete next[id];
+          }
+          return next;
+        });
       }
       syncRef.current = false;
       activeSyncIds.current = [];
@@ -893,6 +969,11 @@ function Workspace() {
         flow: personal?.kind === "node" && item.flow.kind === "node" ? personal : item.flow };
     });
   }, [data, sourceId]);
+  const emptySourceFailure = !allItems.length
+    ? scopedSources.map((s) => sourceReadFailures[s.id]).find(Boolean) || sourceReadFailures[sourceId]
+    : undefined;
+  const initialSyncFailure = emptySourceFailure
+    ? `尚未取得完整的工作清单。${readFailureMessage(emptySourceFailure)}。` : null;
   const items = useMemo(
     () =>
       allItems.filter(
@@ -1019,15 +1100,14 @@ function Workspace() {
           <div>
             <strong>同步未完成</strong>
             <p>{syncFailure}</p>
-            <p>
-              {incremental ? "各来源持续按各自的重试计划检查，其他来源继续同步。"
-                : "已降低重试频率，无需反复操作。"}
-            </p>
           </div>
           <button
             className="icon-button"
             aria-label="关闭同步错误提示"
-            onClick={() => setSyncFailure(null)}
+            onClick={() => {
+              for (const failure of syncFailures.current.values()) failure.dismissed = true;
+              publishSyncFailures();
+            }}
           >
             <X size={16} />
           </button>
@@ -1081,9 +1161,9 @@ function Workspace() {
         emptyText={
           allItems.length && !items.length
             ? "尚未选择显示类型，可在完整模式的工作来源中设置。"
-            : error
+            : initialSyncFailure || (error
               ? "暂时无法读取工作，请检查上方提示。"
-              : "暂无工作。先在完整模式中选择工作来源并同步飞书。"
+              : "暂无工作。先在完整模式中选择工作来源并同步飞书。")
         }
         typeName={displayItemType}
         typeOptions={[...new Set([...types, ...type])].map((key) => ({
@@ -1485,7 +1565,7 @@ function Workspace() {
                         ? "尚未选择显示类型"
                         : items.length
                           ? "没有匹配的工作"
-                          : error
+                          : initialSyncFailure ? "工作清单加载未完成" : error
                             ? "暂时无法读取工作"
                             : "工作，从这里汇合"}
                     </h2>
@@ -1494,9 +1574,9 @@ function Workspace() {
                         ? "在工作来源中勾选需要显示的类型。"
                         : items.length
                           ? "试试其他关键词，或调整筛选条件。"
-                          : error
+                          : initialSyncFailure || (error
                             ? "检查上方提示后，重新读取本地缓存。"
-                            : "先选择工作来源，再同步飞书。已取得的事项会保存在本地，离线也能查看。"}
+                            : "先选择工作来源，再同步飞书。已取得的事项会保存在本地，离线也能查看。")}
                     </p>
                     {items.length && hasFilters ? (
                       <button className="secondary" onClick={clearFilters}>
@@ -1506,15 +1586,15 @@ function Workspace() {
                       <button
                         className="secondary"
                         onClick={() =>
-                          error ? void readCache() : setView("sources")
+                          initialSyncFailure ? void run("sync") : error ? void readCache() : setView("sources")
                         }
                       >
-                        {error ? (
+                        {error || initialSyncFailure ? (
                           <RefreshCw size={15} />
                         ) : (
                           <Layers3 size={15} />
                         )}
-                        {error ? "重新读取" : "查看工作来源"}
+                        {initialSyncFailure ? "重新刷新" : error ? "重新读取" : "查看工作来源"}
                         <ArrowRight size={14} />
                       </button>
                     )}
