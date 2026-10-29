@@ -955,7 +955,7 @@ function Workspace() {
         ))
       : typePreference(preferences, key).enabled,
   );
-  const hasFilters = workFilterCount(filters) > 0;
+  const hasFilters = workFilterCount({ ...filters, type: [] }) > 0;
   const sidebarReorder = useTypeReorder({
     keys: types,
     order: knownTypes,
@@ -977,10 +977,11 @@ function Workspace() {
   };
   const clearFilters = () => {
     setPendingType(null);
-    setFilters(emptyWorkFilters);
+    setFilters((current) => ({ ...emptyWorkFilters, type: current.type, typeLabel: current.typeLabel }));
   };
   const resetWorkFilters = () => {
-    clearFilters();
+    setPendingType(null);
+    setFilters(emptyWorkFilters);
   };
   const changeSource = (id: string) => {
     setSourceId(id);

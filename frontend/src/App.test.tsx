@@ -799,6 +799,35 @@ describe("工作台交互", () => {
     expect(screen.getByText("缺陷乙")).toBeTruthy();
   });
 
+  it.each(["侧边栏", "顶部栏"])("仅通过%s切换类型不显示清除筛选，清除普通条件保留当前类型", async (entry) => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("需求甲");
+    const list = screen.getByRole("region", { name: "工作清单" });
+    const navigation = entry === "侧边栏"
+      ? screen.getByRole("group", { name: "我的类型" })
+      : list;
+    expect(screen.queryByRole("button", { name: "清除筛选" })).toBeNull();
+    await user.click(within(navigation).getByRole("button", { name: /^需求\s*1$/ }));
+    expect(within(list).getByText("需求甲")).toBeTruthy();
+    expect(within(list).queryByText("缺陷乙")).toBeNull();
+    expect(screen.queryByRole("button", { name: "清除筛选" })).toBeNull();
+
+    await chooseOption(user, "空间", "空间甲");
+    await user.type(screen.getByRole("textbox", { name: "搜索工作" }), "不存在");
+    expect(within(list).getByText("没有匹配的工作")).toBeTruthy();
+    await user.click(within(list).getAllByRole("button", { name: "清除筛选" })[0]);
+    expect(screen.getByRole("combobox", { name: "空间" }).textContent).toBe("全部空间");
+    expect((screen.getByRole("textbox", { name: "搜索工作" }) as HTMLInputElement).value).toBe("");
+    expect(within(list).getByText("需求甲")).toBeTruthy();
+    expect(within(list).queryByText("缺陷乙")).toBeNull();
+    expect(within(list).getByRole("button", { name: /^需求\s*1$/ }).classList.contains("active")).toBe(true);
+    expect(screen.queryByRole("button", { name: "清除筛选" })).toBeNull();
+    await user.click(within(list).getByRole("button", { name: /^全部工作/ }));
+    expect(within(list).getByText("缺陷乙")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "清除筛选" })).toBeNull();
+  });
+
   it("侧栏类型可拖动或用 Alt+方向键排序，并按类型标识着色", async () => {
     vi.mocked(saveTypeOrder).mockResolvedValue(undefined);
     render(<App />);
