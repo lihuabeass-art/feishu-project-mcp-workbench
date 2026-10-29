@@ -453,6 +453,10 @@ impl TodoSource for FeishuMcp {
 #[path = "feishu_http_tests.rs"]
 mod http_tests;
 
+#[cfg(test)]
+#[path = "feishu_overload_tests.rs"]
+mod overload_tests;
+
 fn retryable_read(tool: &str) -> bool {
     matches!(
         tool,
@@ -473,12 +477,38 @@ fn retryable_read(tool: &str) -> bool {
 }
 
 fn throttle_value(code: i64, message: &str, data: Option<&Value>) -> Option<Option<Duration>> {
+    // 明确的认证或权限拒绝不能被附带的限流/过载文字变成重试。
+    if matches!(code, 401 | 403) {
+        return None;
+    }
     let lower = message.to_lowercase();
+    let tokens: Vec<_> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let field_is = |name, value| tokens.windows(2).any(|pair| pair == [name, value]);
+    // 只兼容已观测到的动态过载信号组合；1606 或 retriable=true 单独出现不足以重试。
+    let overload_code = if code > 0 {
+        code == 1606
+    } else {
+        data.and_then(|value| value.get("error_code"))
+            .and_then(Value::as_i64)
+            == Some(1606)
+            || field_is("error_code", "1606")
+    };
+    let retryable = data
+        .and_then(|value| value.get("retriable"))
+        .map_or_else(
+            || field_is("retriable", "true"),
+            |value| value.as_bool() == Some(true),
+        );
+    let dynamic_overload = overload_code && retryable && tokens.contains(&"ondynamicoverload");
     if code == 429
         || lower.contains("rate limit")
         || lower.contains("too many requests")
         || message.contains("限流")
         || message.contains("请求过于频繁")
+        || dynamic_overload
     {
         return Some(
             data.and_then(|v| v.get("retry_after"))
@@ -489,35 +519,34 @@ fn throttle_value(code: i64, message: &str, data: Option<&Value>) -> Option<Opti
     None
 }
 
+fn throttle_structured(value: &Value) -> Option<Option<Duration>> {
+    let code = value
+        .get("code")
+        .or_else(|| value.get("error_code"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let message = value
+        .get("message")
+        .or_else(|| value.get("msg"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    throttle_value(code, message, Some(value))
+}
+
 fn throttle_payload(payload: &ToolResultPayload) -> Option<Option<Duration>> {
     if !payload.is_error {
         return None;
     }
-    let values = payload.structured.iter().cloned().chain(
-        payload
-            .text_blocks
-            .iter()
-            .filter_map(|s| serde_json::from_str::<Value>(s).ok()),
-    );
-    for value in values {
-        let code = value
-            .get("code")
-            .or_else(|| value.get("error_code"))
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        let message = value
-            .get("message")
-            .or_else(|| value.get("msg"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if let Some(delay) = throttle_value(code, message, Some(&value)) {
-            return Some(delay);
-        }
+    if let Some(value) = &payload.structured {
+        return throttle_structured(value);
     }
     payload
         .text_blocks
         .iter()
-        .find_map(|text| throttle_value(0, text, None))
+        .find_map(|text| match serde_json::from_str::<Value>(text) {
+            Ok(value) => throttle_structured(&value),
+            Err(_) => throttle_value(0, text, None),
+        })
 }
 
 fn log_label(tool: &str) -> &'static str {
@@ -780,6 +809,14 @@ mod tests {
     }
 
     async fn scripted_session(first: Value, calls: Arc<std::sync::atomic::AtomicUsize>) -> Session {
+        scripted_session_repeating(first, 1, calls).await
+    }
+
+    pub(super) async fn scripted_session_repeating(
+        first: Value,
+        failures: usize,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Session {
         use std::sync::atomic::Ordering;
         let (to_server, mut requests) = tokio::sync::mpsc::unbounded_channel();
         let (responses, from_server) = tokio::sync::mpsc::unbounded_channel();
@@ -789,7 +826,7 @@ mod tests {
                 let result = if value["method"] == "initialize" {
                     serde_json::json!({"protocolVersion":value["params"]["protocolVersion"],"capabilities":{},"serverInfo":{"name":"test","version":"1"}})
                 } else if value["method"] == "tools/call" {
-                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    if calls.fetch_add(1, Ordering::SeqCst) < failures {
                         first.clone()
                     } else {
                         serde_json::json!({"content":[{"type":"text","text":"{}"}]})
