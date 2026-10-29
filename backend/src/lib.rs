@@ -25,6 +25,7 @@ pub mod association;
 pub mod catalog;
 pub mod detail;
 mod diagnostics;
+mod item_access;
 mod remote;
 pub mod field_images;
 pub mod link_metadata;

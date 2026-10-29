@@ -1020,6 +1020,7 @@ pub fn execute(
         ));
     }
     let _execution = ItemExecution::acquire(&request.item_id)?;
+    let detail_access = crate::remote::runtime()?.block_on(crate::item_access::lock_workflow(&session.store, &request.item_id));
     let discovery = discover_with_freshness(session, &request.item_id, true)?;
     if discovery.version != request.version {
         return Err(BackendError::conflict(format!(
@@ -1164,6 +1165,7 @@ pub fn execute(
         match check_updated_fields(session, request, entry, &plan) {
             Ok(()) => {
                 let note = finish("verified", true, receipt_error);
+                drop(detail_access);
                 let resynced = session.sync_personal_todos(None, crate::store::RunTrigger::Manual).is_ok();
                 return Ok(WorkflowResult {
                     outcome: ActionOutcome::Verified,
@@ -1231,6 +1233,7 @@ pub fn execute(
     if entry.ledger_kind == "node_progress" {
         // 字段值与节点仍为 doing 已由 check_updated_fields 回读确认。
         let note = finish("verified", true, None);
+        drop(detail_access);
         let resynced = session
             .sync_personal_todos(None, crate::store::RunTrigger::Manual)
             .is_ok();
@@ -1265,6 +1268,7 @@ pub fn execute(
     match verify(session, &request.item_id, &entry.expect) {
         Ok(true) => {
             let note = finish("verified", true, receipt_error);
+            drop(detail_access);
             let resynced = session
                 .sync_personal_todos(None, crate::store::RunTrigger::Manual)
                 .is_ok();
@@ -1390,6 +1394,10 @@ mod performance_tests;
 #[cfg(test)]
 #[path = "workflow_progress_tests.rs"]
 mod progress_tests;
+
+#[cfg(test)]
+#[path = "workflow_concurrency_tests.rs"]
+mod concurrency_tests;
 
 #[cfg(test)]
 #[path = "workflow_schedule_tests.rs"]

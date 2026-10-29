@@ -58,6 +58,11 @@ struct QueryState {
     received: usize,
 }
 
+enum EnrichedRow {
+    Row(Value),
+    ReloadPersonalPage,
+}
+
 pub struct SourceReader<'a> {
     pub client: &'a dyn TodoSource,
     pub source: &'a WorkSource,
@@ -102,7 +107,7 @@ impl<'a> SourceReader<'a> {
         MeteredSource { client: self.client, metrics: &self.metrics, priority: crate::mcp::scheduler::Priority::Check }
     }
 
-    async fn enrich(&self, row: Value, versions: &HashMap<ItemKey, crate::store::DetailCacheState>, version_field: Option<&str>) -> Result<Value, BackendError> {
+    async fn enrich(&self, row: Value, versions: &HashMap<ItemKey, crate::store::DetailCacheState>, version_field: Option<&str>) -> Result<EnrichedRow, BackendError> {
         let requested = WorkItemId {
             project_key: detail::text(&row["project_key"]),
             work_item_type_key: detail::text(&row["work_item_info"]["work_item_type_key"]),
@@ -112,11 +117,20 @@ impl<'a> SourceReader<'a> {
         if requested.work_item_id.is_empty() || requested.project_key.is_none()
             || requested.work_item_type_key.is_none()
             || self.scope.is_some_and(|scope| !scope.allows(&p, &t)) {
-            return Ok(row);
+            return Ok(EnrichedRow::Row(row));
         }
-        let version = version_field.and_then(|field| row_version(&row, field));
+        let detail_access = crate::item_access::lock(self.store, &requested).await;
         let cached = versions.get(&requested.key_tuple());
-        let generation = cached.map_or(0, |c| c.generation);
+        let generation = self.store.detail_generation(&requested)?;
+        let stale_row = detail_access.waited_for_write || generation != cached.map_or(0, |c| c.generation);
+        // 个人节点与排期来自清单行；跨过流程写入后必须重读整页，不能拼接旧本人上下文。
+        if stale_row && matches!(self.source.kind, SourceKind::PersonalTodo) {
+            return Ok(EnrichedRow::ReloadPersonalPage);
+        }
+        // 等待流程写入后必须使用新代次；旧清单版本不能绑定到写入后的新详情。
+        let version = (!stale_row)
+            .then(|| version_field.and_then(|field| row_version(&row, field)))
+            .flatten();
         let entry = self.cache.entry(requested.key_tuple(), version.clone(), generation);
         let mut fetched = false;
         let detail = entry.get_or_try_init(|| async {
@@ -146,9 +160,25 @@ impl<'a> SourceReader<'a> {
         // 别名请求也可供后续使用正式 project_key 的来源复用。
         self.cache.entries.lock().expect("detail cache poisoned")
             .entry((detail.id.key_tuple(), version, generation)).or_insert_with(|| entry.clone());
-        Ok(if matches!(self.source.kind, SourceKind::PersonalTodo) {
+        Ok(EnrichedRow::Row(if matches!(self.source.kind, SourceKind::PersonalTodo) {
             detail::todo_summary(detail, row)
-        } else { detail::summary(detail, row) })
+        } else { detail::summary(detail, row) }))
+    }
+
+    async fn personal_page(&self, args: &Map<String, Value>) -> Result<(Vec<Value>, Option<i64>), BackendError> {
+        let payload = self.measured_check().call_list_todo(args).await?;
+        let value = parse_tool_json("list_todo", &payload)?;
+        // 原始待办解析器负责逐条拒绝统计；不能在这里把异常条目丢掉。
+        let rows = if let Some(a) = value.as_array() {
+            a.clone()
+        } else {
+            value["list"].as_array()
+                .ok_or_else(|| BackendError::parse("个人待办", "缺少 list 数组"))?.clone()
+        };
+        let total = value.get("total").and_then(|n| {
+            n.as_i64().or_else(|| n.as_str().and_then(|s| s.parse().ok()))
+        });
+        Ok((rows, total))
     }
 
     async fn read(&self, tool: &str, args: Value) -> Result<Value, BackendError> {
@@ -291,25 +321,8 @@ impl TodoSource for SourceReader<'_> {
     ) -> Result<ToolResultPayload, BackendError> {
         let page = args.get("page_num").and_then(Value::as_u64).unwrap_or(1) as u32;
         let query_timer = self.metrics.phase(true);
-        let (rows, total) = match &self.source.kind {
-            SourceKind::PersonalTodo => {
-                let payload = self.measured_check().call_list_todo(args).await?;
-                let value = parse_tool_json("list_todo", &payload)?;
-                // 原始待办解析器负责逐条拒绝统计；不能在这里把异常条目丢掉。
-                let rows = if let Some(a) = value.as_array() {
-                    a.clone()
-                } else {
-                    value["list"]
-                        .as_array()
-                        .ok_or_else(|| BackendError::parse("个人待办", "缺少 list 数组"))?
-                        .clone()
-                };
-                let total = value.get("total").and_then(|n| {
-                    n.as_i64()
-                        .or_else(|| n.as_str().and_then(|s| s.parse().ok()))
-                });
-                (rows, total)
-            }
+        let (mut rows, mut total) = match &self.source.kind {
+            SourceKind::PersonalTodo => self.personal_page(args).await?,
             SourceKind::WorkItemType {
                 project_key: Some(p),
                 type_key: Some(t),
@@ -360,17 +373,31 @@ impl TodoSource for SourceReader<'_> {
             _ => return Err(BackendError::validation("来源缺少空间、类型或视图标识")),
         };
         drop(query_timer);
-        let _details_timer = self.metrics.phase(false);
-        // 先按页批量读小字段；未取详情的成员仍交给同步驱动核对归属。
         let field = self.store.source_version_field(self.source)?;
-        let ids: Vec<_> = rows.iter().map(row_identity).collect();
-        let versions = self.store.detail_versions(&ids)?;
-        // 保留原始清单顺序；同项待办的不同本人节点仍逐条派生摘要。
-        let enriched: Vec<Value> = stream::iter(rows).map(|row| self.enrich(row, &versions, field.as_deref()))
-            .buffered(crate::mcp::scheduler::MAX_PENDING_READS).try_collect().await?;
-        Ok(ToolResultPayload::from_json(
-            json!({"list":enriched,"total":total}),
-        ))
+        for recheck in 0..=2 {
+            let enriched: Vec<EnrichedRow> = {
+                let _details_timer = self.metrics.phase(false);
+                // 先按页批量读小字段；未取详情的成员仍交给同步驱动核对归属。
+                let ids: Vec<_> = rows.iter().map(row_identity).collect();
+                let versions = self.store.detail_versions(&ids)?;
+                // 保留原始清单顺序；同项待办的不同本人节点仍逐条派生摘要。
+                stream::iter(rows).map(|row| self.enrich(row, &versions, field.as_deref()))
+                    .buffered(crate::mcp::scheduler::MAX_PENDING_READS).try_collect().await?
+            };
+            let enriched: Option<Vec<Value>> = enriched.into_iter().map(|row| match row {
+                EnrichedRow::Row(row) => Some(row),
+                EnrichedRow::ReloadPersonalPage => None,
+            }).collect();
+            if let Some(enriched) = enriched {
+                return Ok(ToolResultPayload::from_json(json!({"list":enriched,"total":total})));
+            }
+            if recheck == 2 {
+                return Err(BackendError::conflict("个人待办读取期间流程持续变化，请重新检查"));
+            }
+            let _query_timer = self.metrics.phase(true);
+            (rows, total) = self.personal_page(args).await?;
+        }
+        unreachable!("个人待办重查次数已受限")
     }
 }
 
