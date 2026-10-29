@@ -174,15 +174,18 @@
 }
 .list-mode-type-panel {
   min-height: 100%;
-  animation: list-mode-type-enter 160ms ease-out;
+}
+.list-mode-type-panel > .list-mode-item {
+  /* 只淡入新挂载的事项，共有事项保持原位和亮度。 */
+  animation: list-mode-item-enter 140ms ease-out;
 }
 .list-mode-type-panel:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
-@keyframes list-mode-type-enter {
-  from { opacity: 0.65; transform: translateY(2px); }
-  to { opacity: 1; transform: translateY(0); }
+@keyframes list-mode-item-enter {
+  from { opacity: 0.72; }
+  to { opacity: 1; }
 }
 @keyframes list-mode-type-menu-in {
   from { opacity: 0; transform: translateY(-3px); }
@@ -193,6 +196,6 @@
   .list-mode-type-tab,
   .list-mode-type-more,
   .list-mode-type-more svg { transition: none; }
-  .list-mode-type-panel,
+  .list-mode-type-panel > .list-mode-item,
   .list-mode-type-menu { animation: none; }
 }

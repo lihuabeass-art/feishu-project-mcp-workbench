@@ -396,6 +396,32 @@ describe("清单模式", () => {
     expect(within(screen.getByRole("region", { name: "工作清单" })).getAllByRole("button")).toHaveLength(2);
   });
 
+  it("全部与需求来回切换保留共有事项行，不重复挂载造成闪烁", async () => {
+    const data = snapshot();
+    data.items = [item("4", "需求甲"), item("3", "缺陷丙", "issue", "state"),
+      item("2", "需求乙"), item("1", "缺陷乙", "issue", "state")];
+    data.total = data.items.length;
+    vi.mocked(loadSnapshot).mockResolvedValue(data);
+    const user = userEvent.setup();
+    render(<App />);
+    const list = await enterListMode(user);
+    const panel = within(list).getByRole("tabpanel");
+    const first = rowNamed(list, "需求甲");
+    const later = rowNamed(list, "需求乙");
+
+    for (let round = 0; round < 3; round++) {
+      await user.click(screen.getByRole("tab", { name: /^需求\s*2$/ }));
+      expect(within(list).getAllByRole("button")).toEqual([first, later]);
+      expect(rowNamed(list, "需求甲")).toBe(first);
+      expect(rowNamed(list, "需求乙")).toBe(later);
+      expect(within(list).getByRole("tabpanel")).toBe(panel);
+      await user.click(screen.getByRole("tab", { name: /^全部\s*4$/ }));
+      expect(within(list).getAllByRole("button")).toHaveLength(4);
+      expect(rowNamed(list, "需求甲")).toBe(first);
+      expect(rowNamed(list, "需求乙")).toBe(later);
+    }
+  });
+
   it("类型 Tab 沿用侧栏的别名、排序和显示范围，并保留零项类型入口", async () => {
     const data = snapshot();
     data.items.push(item("3", "隐藏事项", "hidden-type"));

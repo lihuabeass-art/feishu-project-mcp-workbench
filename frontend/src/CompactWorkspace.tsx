@@ -350,7 +350,7 @@ export function CompactWorkspace({
             setPeek(null);
           }}
         >
-          <div key={selectedType} id={typePanelId} role="tabpanel" className="list-mode-type-panel"
+          <div id={typePanelId} role="tabpanel" className="list-mode-type-panel"
             aria-labelledby={compactTypeTabId(typePanelId, selectedType)} tabIndex={0}>
           {loading && !items.length ? (
             <div className="list-mode-empty">
