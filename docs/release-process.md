@@ -10,6 +10,16 @@
 
 版本 tag 通常为 `v版本号`，也兼容无 `v` 的同名版本。应用、安装包、软件内更新记录和构建产物名称都由该 tag 取版本，禁止为发版修改 `package.json`、`Cargo.toml` 或锁文件中的版本。
 
+## GitHub 账号与非交互认证
+
+发布仓库所属账号为 `lihuabeass-art`。同一台 Windows 电脑可能保存多个 GitHub 账号，Git Credential Manager 在没有明确账号时会弹出「Select an account」；发布自动化必须指定账号，不能让每次查询、推送或上传反复要求用户选择。
+
+- 优先复用当前发布会话已有的 `GH_TOKEN` / `GITHUB_TOKEN`，用 `gh api user --jq .login` 核对身份为 `lihuabeass-art`，再检查仓库和 Actions 权限；不要仅凭公开仓库可读取就认定具有发布权限。
+- 需要从 Git Credential Manager 读取既有凭证时，设置 `GCM_INTERACTIVE=Never`、`GIT_TERMINAL_PROMPT=0` 和 `GH_PROMPT_DISABLED=1`，向 `git credential fill` 明确提供 `protocol=https`、`host=github.com`、`username=lihuabeass-art`。推送同样使用已指定该账号的仓库 remote，并继承这些非交互设置。
+- 同一次发布应在同一受控 shell 会话中将所得凭证保存在进程环境的 `GH_TOKEN`，后续 `gh` 命令直接复用；不要每调用一次 API 就重新取凭证或运行 `gh auth login`。工具启动新的 shell 时须显式继承认证环境；不得为跨调用复用而把 Token 写入仓库文件、临时脚本、命令参数或日志。
+- 已有凭证可通过 `GH_TOKEN` 访问所需 API 时，直接使用环境变量。`gh auth login --with-token` 的通用 scope 检查（例如要求 `read:org`）失败，不等于该凭证无法操作本发布仓库，不应据此反复唤起登录或要求扩大无关权限。
+- 明确账号后的非交互认证若仍失败，应停止需要认证的远端操作，只报告缺失账号或实际 API 权限错误；仅当确实需要人工登录时请用户处理一次，不自动反复唤起账号选择或浏览器登录。凭证值和 updater 私钥始终不得输出。
+
 ## 完整顺序
 
 1. 用户明确要求发版，并指定版本号和待发布代码范围。
