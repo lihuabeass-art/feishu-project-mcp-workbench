@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 
 const FILE_NAME: &str = "display-mode.json";
@@ -88,6 +89,59 @@ impl Stored {
 pub struct DisplayModeStore {
     path: Option<PathBuf>,
     stored: Mutex<Stored>,
+    // 外链打开时只临时让出置顶；不能把这个状态写入用户的 pinned 偏好。
+    external_handoff: Mutex<ExternalHandoff>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExternalOpenTicket(u64);
+
+#[derive(Debug)]
+struct PendingExternalOpen {
+    ticket: ExternalOpenTicket,
+    lost_focus: bool,
+    restore_pending: bool,
+}
+
+#[derive(Debug, Default)]
+struct ExternalHandoff {
+    generation: u64,
+    pending: Option<PendingExternalOpen>,
+}
+
+impl ExternalHandoff {
+    fn begin(&mut self) -> ExternalOpenTicket {
+        self.generation = self.generation.wrapping_add(1);
+        let ticket = ExternalOpenTicket(self.generation);
+        self.pending = Some(PendingExternalOpen { ticket, lost_focus: false, restore_pending: false });
+        ticket
+    }
+
+    fn on_focus(&mut self, focused: bool) -> Option<ExternalOpenTicket> {
+        let pending = self.pending.as_mut()?;
+        if !focused {
+            pending.lost_focus = true;
+            pending.restore_pending = false;
+        } else if pending.lost_focus && !pending.restore_pending {
+            pending.restore_pending = true;
+            return Some(pending.ticket);
+        }
+        None
+    }
+
+    fn is_current(&self, ticket: ExternalOpenTicket) -> bool {
+        self.pending.as_ref().is_some_and(|pending| pending.ticket == ticket)
+    }
+
+    fn finish(&mut self, ticket: ExternalOpenTicket) {
+        if self.is_current(ticket) {
+            self.pending = None;
+        }
+    }
+
+    fn cancel(&mut self) {
+        self.pending = None;
+    }
 }
 
 impl DisplayModeStore {
@@ -200,7 +254,108 @@ pub fn restore(app: &tauri::App) {
             let _ = apply(&window, mode, target, stored.pinned(), false);
         }
     }
-    app.manage(DisplayModeStore { path, stored: Mutex::new(stored) });
+    app.manage(DisplayModeStore {
+        path,
+        stored: Mutex::new(stored),
+        external_handoff: Mutex::new(ExternalHandoff::default()),
+    });
+    if let Some(window) = app.get_webview_window("main") {
+        let observed_window = window.clone();
+        window.on_window_event(move |event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                on_focus_changed(&observed_window, *focused);
+            }
+        });
+    }
+}
+
+/// 打开浏览器前临时让位。持久设置和原生窗口写入由 stored 锁串行化，
+/// 焦点回调只访问另一把短锁，不会在 UI 线程等待 stored。
+pub(crate) fn begin_external_open(window: &WebviewWindow) -> Result<Option<ExternalOpenTicket>, String> {
+    let store = window.state::<DisplayModeStore>();
+    let stored = store.stored.lock().map_err(|_| "窗口设置暂不可用，请重启应用".to_string())?;
+    if stored.mode != Mode::Compact || !stored.pinned() {
+        return Ok(None);
+    }
+    let ticket = store
+        .external_handoff
+        .lock()
+        .map_err(|_| "窗口设置暂不可用，请重启应用".to_string())?
+        .begin();
+    if let Err(error) = window.set_always_on_top(false) {
+        if let Ok(mut handoff) = store.external_handoff.lock() {
+            handoff.finish(ticket);
+        }
+        return Err(message(error));
+    }
+    Ok(Some(ticket))
+}
+
+fn restore_external_handoff(
+    window: &WebviewWindow,
+    ticket: ExternalOpenTicket,
+    require_focus: bool,
+) -> Result<(), String> {
+    let store = window.state::<DisplayModeStore>();
+    let stored = store.stored.lock().map_err(|_| "窗口设置暂不可用，请重启应用".to_string())?;
+    if !store
+        .external_handoff
+        .lock()
+        .map_err(|_| "窗口设置暂不可用，请重启应用".to_string())?
+        .is_current(ticket)
+    {
+        return Ok(());
+    }
+    // 排队的恢复任务可能晚于下一次失焦；此时继续让位，等真正回到本窗口。
+    if require_focus && !window.is_focused().map_err(message)? {
+        if let Ok(mut handoff) = store.external_handoff.lock() {
+            handoff.on_focus(false);
+        }
+        return Ok(());
+    }
+    window.set_always_on_top(stored.mode == Mode::Compact && stored.pinned()).map_err(message)?;
+    if let Ok(mut handoff) = store.external_handoff.lock() {
+        handoff.finish(ticket);
+    }
+    Ok(())
+}
+
+pub(crate) fn cancel_external_open(
+    window: &WebviewWindow,
+    ticket: Option<ExternalOpenTicket>,
+) -> Result<(), String> {
+    match ticket {
+        Some(ticket) => restore_external_handoff(window, ticket, false),
+        None => Ok(()),
+    }
+}
+
+pub(crate) fn await_external_return(window: WebviewWindow, ticket: Option<ExternalOpenTicket>) {
+    let Some(ticket) = ticket else { return };
+    // 系统可能接受打开请求却未转移焦点。有限等待后仅在 FSTODO 仍在前台时恢复，
+    // 浏览器已在前台则继续等待正常的返回焦点事件，避免再次遮住页面。
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let _ = restore_external_handoff(&window, ticket, true);
+        })
+        .await;
+    });
+}
+
+fn on_focus_changed(window: &WebviewWindow, focused: bool) {
+    // 在回调内按事件到达顺序记录失焦/聚焦，窗口调用移到工作线程，避免 UI 锁互等。
+    let ticket = {
+        let store = window.state::<DisplayModeStore>();
+        let ticket = store.external_handoff.lock().ok().and_then(|mut handoff| handoff.on_focus(focused));
+        ticket
+    };
+    if let Some(ticket) = ticket {
+        let window = window.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let _ = restore_external_handoff(&window, ticket, true);
+        });
+    }
 }
 
 /// 关闭窗口前记下当前模式的位置与尺寸。命令持锁期间会等待主线程，这里只能 try_lock。
@@ -239,6 +394,9 @@ pub async fn set_display_mode(
     let maximize = mode == Mode::Full && stored.full_maximized;
     apply(&window, mode, target, stored.pinned(), maximize).map_err(message)?;
     stored.mode = mode;
+    if let Ok(mut handoff) = store.external_handoff.lock() {
+        handoff.cancel();
+    }
     let warning = store.save(&stored);
     Ok(DisplayState { mode, pinned: stored.pinned(), warning })
 }
@@ -254,6 +412,9 @@ pub async fn set_compact_pinned(
         window.set_always_on_top(pinned).map_err(message)?;
     }
     stored.pinned = Some(pinned);
+    if let Ok(mut handoff) = store.external_handoff.lock() {
+        handoff.cancel();
+    }
     let warning = store.save(&stored);
     Ok(DisplayState { mode: stored.mode, pinned, warning })
 }
@@ -329,5 +490,44 @@ mod tests {
         let full = Geometry { x: 300, y: 100, width: 1240.0, height: 800.0 };
         assert_eq!(anchored_position(&full, 1240, 360.0, 1.0), (1180, 100));
         assert_eq!(anchored_position(&full, 1860, 360.0, 1.5), (1620, 100));
+    }
+
+    #[test]
+    fn external_handoff_waits_for_a_real_leave_and_return() {
+        let mut handoff = ExternalHandoff::default();
+        let ticket = handoff.begin();
+        assert_eq!(handoff.on_focus(true), None);
+        assert_eq!(handoff.on_focus(false), None);
+        assert_eq!(handoff.on_focus(true), Some(ticket));
+        assert_eq!(handoff.on_focus(true), None);
+        handoff.finish(ticket);
+        assert_eq!(handoff.on_focus(false), None);
+        assert_eq!(handoff.on_focus(true), None);
+    }
+
+    #[test]
+    fn an_older_open_cannot_restore_over_a_newer_open() {
+        let mut handoff = ExternalHandoff::default();
+        let previous = handoff.begin();
+        handoff.on_focus(false);
+        let current = handoff.begin();
+        handoff.finish(previous);
+        assert!(!handoff.is_current(previous));
+        assert!(handoff.is_current(current));
+        assert_eq!(handoff.on_focus(true), None);
+        handoff.on_focus(false);
+        assert_eq!(handoff.on_focus(true), Some(current));
+    }
+
+    #[test]
+    fn changing_window_preferences_cancels_delayed_external_restoration() {
+        let mut handoff = ExternalHandoff::default();
+        let ticket = handoff.begin();
+        handoff.on_focus(false);
+        handoff.cancel();
+        assert!(!handoff.is_current(ticket));
+        assert_eq!(handoff.on_focus(true), None);
+        handoff.finish(ticket);
+        assert!(handoff.pending.is_none());
     }
 }

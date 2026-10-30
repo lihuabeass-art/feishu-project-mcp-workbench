@@ -7,20 +7,38 @@ fn browser_url(value: &str) -> Result<tauri::Url, String> {
 }
 
 #[tauri::command]
-pub async fn open_external_url(url: String, new_window: Option<bool>) -> Result<(), String> {
+pub async fn open_external_url(
+    window: tauri::WebviewWindow,
+    url: String,
+    new_window: Option<bool>,
+) -> Result<(), String> {
     let url = browser_url(&url)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let handoff = crate::display_mode::begin_external_open(&window)?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
         #[cfg(windows)]
-        if new_window.unwrap_or(true) {
-            return windows::open_new_window(&url);
+        {
+            windows::open_url(&url, new_window.unwrap_or(true))
         }
         #[cfg(not(windows))]
-        let _ = new_window;
-        tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
-            .map_err(|_| "无法通过默认浏览器打开链接".to_string())
+        {
+            let _ = new_window;
+            tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+                .map_err(|_| "无法通过默认浏览器打开链接".to_string())
+        }
     })
     .await
-    .map_err(|_| "打开链接任务中断，请重试".to_string())?
+    .unwrap_or_else(|_| Err("打开链接任务中断，请重试".to_string()));
+    match result {
+        Ok(()) => {
+            crate::display_mode::await_external_return(window, handoff);
+            Ok(())
+        }
+        Err(error) => {
+            crate::display_mode::cancel_external_open(&window, handoff)
+                .map_err(|restore| format!("{error}；窗口置顶恢复失败：{restore}"))?;
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
