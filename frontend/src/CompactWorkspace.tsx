@@ -87,6 +87,9 @@ export function CompactWorkspace({
   windowControls,
   windowAction,
   modeBusy,
+  create,
+  recoverCreation,
+  creationDisabled = false,
 }: {
   items: CachedItem[];
   filters: WorkFilters;
@@ -108,6 +111,9 @@ export function CompactWorkspace({
   windowControls: boolean;
   windowAction: (action: WindowAction) => void;
   modeBusy: boolean;
+  create?: () => void;
+  recoverCreation?: () => void;
+  creationDisabled?: boolean;
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filtersId = useId();
@@ -273,6 +279,8 @@ export function CompactWorkspace({
           <CompactTypeTabs options={typeOptions} selected={selectedType} total={items.length}
             panelId={typePanelId} onChange={changeType} />
           <div className="list-mode-filterbar">
+            {create && <button className="secondary" aria-label="新建工作事项" disabled={creationDisabled} onClick={create}>新建</button>}
+            {recoverCreation && <button className="secondary" aria-label="核验创建记录" disabled={creationDisabled} onClick={recoverCreation}>核验</button>}
             <button
               ref={filterButton}
               className={`list-mode-filter-toggle${filterCount ? " active" : ""}`}

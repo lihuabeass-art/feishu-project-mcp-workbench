@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
+import { useState } from "react";
+import { RefreshCw } from "lucide-react";
 import type { Source } from "./types";
 import { typePreference, type TypePreferences } from "./preferences";
 import { typeColorStyle } from "./model";
@@ -32,12 +32,9 @@ export function SourceTypes({
   updatePreferences: (value: TypePreferences) => void;
   saveTypeOrder: (keys: string[]) => void;
   apply: (
-    action: "refresh" | "save",
-    keys?: string[] | null,
+    action: "refresh",
   ) => Promise<boolean>;
 }) {
-  const [savingKey, setSavingKey] = useState<string | null>(null);
-  const savingRef = useRef(false);
   const [aliasDrafts, setAliasDrafts] = useState<Record<string, string>>({});
   const scope = source?.type_scope;
   const availableKeys = [...new Set(scope?.types.map((t) => t.type_key) || [])];
@@ -50,27 +47,6 @@ export function SourceTypes({
     enabled: canReorder,
     onReorder: saveTypeOrder,
   });
-  const all = !scope?.configured;
-  const selectedKeys = all
-    ? availableKeys
-    : [
-        ...new Set(
-          scope?.types.filter((t) => t.selected).map((t) => t.type_key) || [],
-        ),
-      ];
-  const syncDisabled = disabled || savingKey !== null;
-
-  async function saveSync(key: string, nextKeys: string[] | null) {
-    if (syncDisabled || savingRef.current) return;
-    savingRef.current = true;
-    setSavingKey(key);
-    try {
-      await apply("save", nextKeys);
-    } finally {
-      savingRef.current = false;
-      setSavingKey(null);
-    }
-  }
 
   return (
     <section className="source-types" aria-label="工作类型">
@@ -82,12 +58,13 @@ export function SourceTypes({
               <strong>当前来源：{sourceLabel || sourceName(source)}</strong>
             </p>
           )}
-          <p>清单显示、别名和同步范围按来源独立设置，所有设置自动保存。</p>
+          <p>所有工作类型均参与同步。清单显示、允许新建与别名按来源独立设置，自动保存。</p>
+          <p id="type-creation-help">新建功能默认关闭；开启后，可在此类型下新建工作事项。</p>
         </div>
         {source && (
           <button
             className="secondary"
-            disabled={syncDisabled}
+            disabled={disabled}
             onClick={() => void apply("refresh")}
           >
             <RefreshCw size={14} />
@@ -96,39 +73,11 @@ export function SourceTypes({
         )}
       </div>
       {readFailure && <p className="hint" role="status">{readFailure}</p>}
-      {scope ? (
-        <div className="type-sync-summary">
-          <div>
-            <strong>
-              {savingKey !== null && (
-                <LoaderCircle
-                  size={13}
-                  className="type-saving"
-                  aria-hidden="true"
-                />
-              )}
-              {all
-                ? `全部 ${availableKeys.length} 种类型参与同步`
-                : `${selectedKeys.length} / ${availableKeys.length} 种类型参与同步`}
-            </strong>
-            <p>新发现的类型默认开启；仅明确关闭的类型不参与后续同步。</p>
-          </div>
-          {!all && (
-            <button
-              className="type-sync-reset"
-              disabled={syncDisabled}
-              onClick={() => void saveSync("restore-all", null)}
-            >
-              <RotateCcw size={13} aria-hidden="true" />
-              恢复全部同步
-            </button>
-          )}
-        </div>
-      ) : (
+      {!scope && (
         <p className="hint">
           {source
             ? "当前服务未提供来源类型清单，暂时无法配置工作类型。"
-            : "选择一个工作来源后，可发现类型并设置同步范围。"}
+            : "选择一个工作来源后，可发现类型并设置清单显示与别名。"}
         </p>
       )}
       <div className="type-settings unified-types" role="list">
@@ -137,7 +86,6 @@ export function SourceTypes({
           const alias = Object.hasOwn(aliasDrafts, key)
             ? aliasDrafts[key]
             : preference.alias;
-          const available = availableKeys.includes(key);
           const projects = [
             ...new Set(
               scope?.types
@@ -197,27 +145,13 @@ export function SourceTypes({
                   <span className="type-switch-track" aria-hidden="true" />
                   清单显示
                 </label>
-                {scope && (
-                  <label className="type-toggle">
-                    <input
-                      type="checkbox"
-                      role="switch"
-                      aria-label={`同步${label(key)}`}
-                      disabled={syncDisabled || !available}
-                      checked={available && selectedKeys.includes(key)}
-                      onChange={(e) =>
-                        void saveSync(
-                          key,
-                          e.target.checked
-                            ? [...selectedKeys, key]
-                            : selectedKeys.filter((k) => k !== key),
-                        )
-                      }
-                    />
-                    <span className="type-switch-track" aria-hidden="true" />
-                    同步
-                  </label>
-                )}
+                <label className="type-toggle">
+                  <input type="checkbox" role="switch" aria-label={`允许新建${label(key)}`}
+                    aria-describedby="type-creation-help" checked={preference.create_enabled === true}
+                    onChange={(e) => updatePreferences({ ...preferences,
+                      [key]: { ...preference, create_enabled: e.target.checked } })} />
+                  <span className="type-switch-track" aria-hidden="true" />允许新建
+                </label>
               </div>
               <input
                 className="type-alias-input"
@@ -244,13 +178,8 @@ export function SourceTypes({
         )}
       </div>
       <p className="hint">
-        清单显示与别名仅影响本机的当前来源；同步开关仅影响当前来源，在下次同步时生效，关闭后已有事项仍保留，不影响单条事项刷新或流程操作。同一来源内，同一类型在各空间一并设置。名称实时生效，清空即可恢复原名。
+        清单显示与别名仅影响本机的当前来源，隐藏类型仍会正常同步。同一来源内，同一类型在各空间一并设置。名称实时生效，清空即可恢复原名。
       </p>
-      {scope && !all && !selectedKeys.length && (
-        <p className="scope-warning">
-          当前已发现的类型均已关闭，将跳过这些类型的拉取；新发现的类型仍默认开启。
-        </p>
-      )}
     </section>
   );
 }

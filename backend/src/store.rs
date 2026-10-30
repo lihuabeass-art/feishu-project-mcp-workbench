@@ -27,9 +27,11 @@ use crate::paths;
 
 mod type_preferences;
 pub use type_preferences::{SourceTypePreferences, TypePreference, TypePreferences};
+mod creation_images;
+pub(crate) use creation_images::{CreationImage, CreationImageKey, UploadedCreationImageKey};
 
 /// 当前 schema 版本。升高前请确认迁移语句可重入。
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// 事项离开所有来源后，详情与图片保留七天，期间重新出现则取消清理。
 const ITEM_CACHE_GRACE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -386,6 +388,8 @@ impl Store {
         tx.execute_batch(SCHEMA_V5)?;
         tx.execute_batch(SCHEMA_V6)?;
         tx.execute_batch(type_preferences::SCHEMA)?;
+        tx.execute_batch(creation_images::SCHEMA)?;
+        ensure_column(&tx, "creation_image", "uploaded_token", "TEXT")?;
         if version < 6 {
             // 旧库未记录完整来源归属，先保留为待认领缓存，交给已配置来源逐次核对。
             tx.execute("INSERT OR IGNORE INTO work_item_source
@@ -445,6 +449,9 @@ impl Store {
         }
         tx.execute_batch("CREATE TABLE IF NOT EXISTS source_version_evidence (
             source_id TEXT PRIMARY KEY, field TEXT NOT NULL, evidence TEXT NOT NULL, scope TEXT NOT NULL);")?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS creation_people (
+            context TEXT NOT NULL, project_key TEXT NOT NULL, user_key TEXT NOT NULL, name TEXT NOT NULL,
+            PRIMARY KEY(context,project_key,user_key));")?;
         tx.execute_batch("CREATE TABLE IF NOT EXISTS workspace_catalog (
             project_key TEXT PRIMARY KEY, snapshot_json TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS workspace_catalog_refresh (
@@ -1242,6 +1249,73 @@ impl Store {
 
     // ---------- 动作执行流水（幂等 + 结果不确定时绝不谎报成功） ----------
 
+    pub fn action_by_request(&self, request_id: &str) -> Result<Option<ActionRecord>, BackendError> {
+        let item: Option<String> = self.conn.lock().expect("store mutex poisoned")
+            .query_row("SELECT item_id FROM workflow_action_run WHERE request_id=?1", [request_id], |r| r.get(0)).optional()?;
+        match item {
+            Some(item) => Ok(self.recent_actions(&item, i64::MAX)?.into_iter().find(|r| r.request_id == request_id)),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn creation_people(&self, context:&str, project:&str) -> Result<std::collections::BTreeMap<String,String>,BackendError> {
+        let conn=self.conn.lock().expect("store mutex poisoned");
+        let mut stmt=conn.prepare("SELECT user_key,name FROM creation_people WHERE context=?1 AND project_key=?2")?;
+        let rows=stmt.query_map(params![context,project],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        rows.collect::<Result<_,_>>().map_err(BackendError::from)
+    }
+
+    pub(crate) fn save_creation_people(&self, context:&str, project:&str, people:&std::collections::BTreeMap<String,String>) -> Result<(),BackendError> {
+        let conn=self.conn.lock().expect("store mutex poisoned");
+        let tx=Transaction::new_unchecked(&conn,TransactionBehavior::Immediate)?;
+        for (key,name) in people {
+            tx.execute("INSERT INTO creation_people(context,project_key,user_key,name) VALUES(?1,?2,?3,?4)
+                ON CONFLICT(context,project_key,user_key) DO UPDATE SET name=excluded.name",params![context,project,key,name])?;
+        }
+        tx.commit()?;Ok(())
+    }
+
+    pub(crate) fn creation_people_snapshots(&self, project:&str) -> Result<Vec<serde_json::Value>,BackendError> {
+        let conn=self.conn.lock().expect("store mutex poisoned");
+        let mut stmt=conn.prepare("SELECT snapshot_json FROM item_detail WHERE project_key=?1 AND snapshot_json<>'null'
+            UNION ALL SELECT raw_json FROM work_item WHERE project_key=?1")?;
+        let rows=stmt.query_map([project],|row|row.get::<_,String>(0))?;
+        rows.map(|row|serde_json::from_str(&row?).map_err(BackendError::from)).collect()
+    }
+
+    pub(crate) fn cancel_unregistered_creation(&self, record:&ActionRecord) -> Result<(),BackendError> {
+        self.conn.lock().expect("store mutex poisoned").execute(
+            "INSERT OR IGNORE INTO workflow_action_run(request_id,item_id,action_kind,target,version,status,verified,detail,created_at,finished_at)
+             VALUES(?1,?2,'create_workitem',?3,?4,'failed',0,?5,?6,?6)",
+            params![record.request_id,record.item_id,record.target,record.version,record.detail,record.created_at])?;
+        Ok(())
+    }
+
+    pub(crate) fn pending_creations(&self) -> Result<Vec<ActionRecord>, BackendError> {
+        let conn=self.conn.lock().expect("store mutex poisoned");
+        let mut stmt=conn.prepare("SELECT request_id,item_id,target,version,status,detail,CAST(created_at AS INTEGER) FROM workflow_action_run WHERE action_kind='create_workitem' AND status IN ('pending','unknown') ORDER BY CAST(created_at AS INTEGER) DESC")?;
+        let rows=stmt.query_map([],|row|Ok(ActionRecord{
+            request_id:row.get(0)?,item_id:row.get(1)?,target:row.get(2)?,version:row.get(3)?,status:row.get(4)?,detail:row.get(5)?,created_at:row.get(6)?,
+            action_kind:"create_workitem".into(),verified:false,finished_at:None,
+        }))?;
+        rows.collect::<Result<Vec<_>,_>>().map_err(BackendError::from)
+    }
+
+    pub fn verify_created_action(&self, request_id: &str) -> Result<(), BackendError> {
+        let changed = self.conn.lock().expect("store mutex poisoned").execute(
+            "UPDATE workflow_action_run SET status='verified',verified=1,finished_at=?2 WHERE request_id=?1 AND action_kind='create_workitem' AND status IN ('pending','unknown')",
+            params![request_id,crate::sync::now_ms()])?;
+        if changed != 1 { return Err(BackendError::conflict("创建记录已变化，请重新读取结果")); }
+        Ok(())
+    }
+
+    pub(crate) fn save_creation_detail(&self, request_id: &str, detail: &str) -> Result<(), BackendError> {
+        self.conn.lock().expect("store mutex poisoned").execute(
+            "UPDATE workflow_action_run SET detail=?2 WHERE request_id=?1 AND action_kind='create_workitem'",
+            params![request_id,detail])?;
+        Ok(())
+    }
+
     /// 远端写之前原子登记。相同请求或同一事项仍有 pending 写入时返回 false，
     /// 不允许不同 request_id 交错更新字段与推进节点（也覆盖共用数据库的进程）。
     pub fn begin_action(
@@ -1252,9 +1326,9 @@ impl Store {
         let changed = conn.execute(
             "INSERT INTO workflow_action_run
                  (request_id, item_id, action_kind, target, version, status, verified, detail, created_at, finished_at)
-             SELECT ?1, ?2, ?3, ?4, ?5, 'pending', 0, NULL, ?6, NULL
+             SELECT ?1, ?2, ?3, ?4, ?5, 'pending', 0, ?7, ?6, NULL
               WHERE NOT EXISTS (
-                  SELECT 1 FROM workflow_action_run WHERE item_id = ?2 AND status = 'pending'
+                  SELECT 1 FROM workflow_action_run WHERE item_id = ?2 AND (status = 'pending' OR (action_kind = 'create_workitem' AND status = 'unknown'))
               )
          ON CONFLICT(request_id) DO NOTHING",
             params![
@@ -1263,7 +1337,8 @@ impl Store {
                 record.action_kind,
                 record.target,
                 record.version,
-                record.created_at
+                record.created_at,
+                record.detail
             ],
         )?;
         Ok(changed == 1)
@@ -1736,6 +1811,8 @@ fn schema_is_current(conn: &Connection) -> Result<bool, BackendError> {
         ("source_version_evidence", &["scope"][..]),
         ("source_type_disabled", &[][..]), ("item_cache_gc", &[][..]),
         ("source_type_preferences", &["preferences_json"][..]),
+        ("creation_people", &["context", "project_key", "user_key", "name"][..]),
+        ("creation_image", &["context", "project_key", "type_key", "field_key", "image_id", "mime_type", "file_name", "bytes", "uploaded_url", "uploaded_token"][..]),
     ] {
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
         let columns = stmt.query_map([], |r|r.get::<_,String>(1))?.collect::<Result<Vec<_>,_>>()?;
@@ -2064,6 +2141,60 @@ mod detail_atomicity_tests {
 #[cfg(test)]
 mod additive_migration_tests {
     use super::*;
+
+    #[test]
+    fn v17_cache_adds_creation_people_and_images_without_losing_type_preferences() {
+        let store=Store::in_memory().unwrap();
+        let preferences=std::collections::BTreeMap::from([("issue".into(),TypePreference{enabled:true,alias:"缺陷".into(),create_enabled:true})]);
+        store.set_source_type_preferences("source",&preferences).unwrap();
+        store.conn.lock().unwrap().execute_batch("DROP TABLE creation_people; DROP TABLE creation_image; PRAGMA user_version=17;").unwrap();
+        assert!(!schema_is_current(&store.conn.lock().unwrap()).unwrap());
+        store.init().unwrap();
+        let people=std::collections::BTreeMap::from([("person".into(),"示例人员".into())]);
+        store.save_creation_people("context","project",&people).unwrap();
+        assert_eq!(store.creation_people("context","project").unwrap(),people);
+        assert_eq!(store.source_type_preferences().unwrap().unwrap()["source"],preferences);
+        let image=CreationImage { mime_type:"image/png".into(),file_name:"截图.png".into(),bytes:b"image".to_vec(),uploaded_url:None,uploaded_token:None };
+        let key=CreationImageKey { context:"context",project_key:"project",type_key:"issue",field_key:"description",image_id:"image" };
+        store.save_creation_image(&key,&image).unwrap();
+        assert_eq!(store.creation_image(&key).unwrap().unwrap().bytes,image.bytes);
+        assert!(schema_is_current(&store.conn.lock().unwrap()).unwrap());
+    }
+    #[test]
+    fn current_version_without_creation_images_still_repairs_schema() {
+        let store=Store::in_memory().unwrap();
+        store.conn.lock().unwrap().execute_batch("DROP TABLE creation_image;").unwrap();
+        assert!(!schema_is_current(&store.conn.lock().unwrap()).unwrap());
+        store.init().unwrap();
+        assert!(schema_is_current(&store.conn.lock().unwrap()).unwrap());
+    }
+    #[test]
+    fn v18_image_cache_adds_token_column_and_preserves_legacy_bytes_and_url() {
+        let store=Store::in_memory().unwrap();
+        store.conn.lock().unwrap().execute_batch("DROP TABLE creation_image;
+            CREATE TABLE creation_image (
+                context TEXT NOT NULL,project_key TEXT NOT NULL,type_key TEXT NOT NULL,
+                field_key TEXT NOT NULL,image_id TEXT NOT NULL,mime_type TEXT NOT NULL,
+                file_name TEXT NOT NULL,bytes BLOB NOT NULL,uploaded_url TEXT,
+                PRIMARY KEY(context,project_key,type_key,field_key,image_id));
+            PRAGMA user_version=18;").unwrap();
+        store.conn.lock().unwrap().execute("INSERT INTO creation_image VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params!["context","project","issue","description","image","image/png","截图.png",b"legacy-image".as_slice(),"https://example.test/image.png"]).unwrap();
+        assert!(!schema_is_current(&store.conn.lock().unwrap()).unwrap());
+        store.init().unwrap();
+        let key=CreationImageKey { context:"context",project_key:"project",type_key:"issue",field_key:"description",image_id:"image" };
+        let image=store.creation_image(&key).unwrap().unwrap();
+        assert_eq!(image.bytes,b"legacy-image");
+        assert_eq!(image.uploaded_url.as_deref(),Some("https://example.test/image.png"));
+        assert!(image.uploaded_token.is_none());
+        assert!(schema_is_current(&store.conn.lock().unwrap()).unwrap());
+        store.mark_creation_image_uploaded(&key,"https://example.test/image.png","fixture-file-token").unwrap();
+        store.init().unwrap();
+        let uploaded=store.creation_image(&key).unwrap().unwrap();
+        assert_eq!(uploaded.bytes,b"legacy-image");
+        assert_eq!(uploaded.uploaded_token.as_deref(),Some("fixture-file-token"));
+        assert_eq!(store.conn.lock().unwrap().query_row::<i64,_,_>("PRAGMA user_version",[],|row|row.get(0)).unwrap(),SCHEMA_VERSION);
+    }
     #[test]
     fn v14_does_not_copy_unattributed_node_schedule_between_personal_sources() {
         let store=Store::in_memory().unwrap();

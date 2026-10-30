@@ -10,6 +10,8 @@ use crate::error::BackendError;
 pub struct TypePreference {
     pub enabled: bool,
     pub alias: String,
+    #[serde(default)]
+    pub create_enabled: bool,
 }
 
 pub type TypePreferences = BTreeMap<String, TypePreference>;
@@ -85,6 +87,7 @@ mod tests {
             TypePreference {
                 enabled,
                 alias: alias.into(),
+                create_enabled: false,
             },
         )])
     }

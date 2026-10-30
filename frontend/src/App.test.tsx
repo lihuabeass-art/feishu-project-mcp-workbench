@@ -492,7 +492,7 @@ describe("工作台交互", () => {
     expect(screen.queryByRole("heading", { name: "类型与别名" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "同步类型范围" })).toBeNull();
     await user.click(screen.getByRole("switch", { name: "专项需求在清单中显示" }));
-    expect((screen.getByRole("switch", { name: "同步专项需求" }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("switch", { name: "允许新建专项需求" }) as HTMLInputElement).checked).toBe(false);
     expect(saveSourceTypes).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: /我的工作/ }));
     expect(screen.queryByText("专项事项")).toBeNull();
@@ -512,7 +512,7 @@ describe("工作台交互", () => {
     expect(screen.getAllByRole("button", { name: /^专项需求/ }).length).toBeGreaterThan(0);
   });
 
-  it("发现类型回读范围，开关自动保存空集，恢复全部使用独立接口", async () => {
+  it("发现类型保留部分失败反馈，旧同步排除配置不再显示为开关", async () => {
     const data = snapshot();
     data.sources[0].type_scope = {
       configured: false,
@@ -532,22 +532,6 @@ describe("工作台交互", () => {
       discovered_count: 1,
       failed: [["space-b", "读取失败"]],
     });
-    vi.mocked(saveSourceTypes).mockImplementation(async () => {
-      data.sources[0].type_scope = {
-        ...data.sources[0].type_scope!,
-        configured: true,
-        types: data.sources[0].type_scope!.types.map(t => ({ ...t, selected: false })),
-      };
-      return 0;
-    });
-    vi.mocked(clearSourceTypes).mockImplementation(async () => {
-      data.sources[0].type_scope = {
-        ...data.sources[0].type_scope!,
-        configured: false,
-        types: data.sources[0].type_scope!.types.map(t => ({ ...t, selected: true })),
-      };
-      return true;
-    });
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("需求甲");
@@ -559,24 +543,11 @@ describe("工作台交互", () => {
       "space-b：读取失败",
     );
     expect(loadSnapshot).toHaveBeenCalledTimes(2);
-    await user.click(screen.getByRole("switch", { name: "同步新类型" }));
-    await waitFor(() =>
-      expect(saveSourceTypes).toHaveBeenCalledWith("source-a", []),
-    );
-    await waitFor(() =>
-      expect(
-        screen
-          .getByRole("button", { name: "恢复全部同步" })
-          .hasAttribute("disabled"),
-      ).toBe(false),
-    );
+    expect(screen.queryByRole("switch", { name: /^同步/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "恢复全部同步" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "新类型在清单中显示" })).toBeTruthy();
     expect(clearSourceTypes).not.toHaveBeenCalled();
-    expect((screen.getByRole("switch", { name: "同步新类型" }) as HTMLInputElement).checked).toBe(false);
-    await user.click(screen.getByRole("button", { name: "恢复全部同步" }));
-    await waitFor(() =>
-      expect(clearSourceTypes).toHaveBeenCalledWith("source-a"),
-    );
-    expect(saveSourceTypes).toHaveBeenCalledTimes(1);
+    expect(saveSourceTypes).not.toHaveBeenCalled();
   });
 
   it("保存 token 后清空密码框，切换页面只回显后端脱敏摘要", async () => {
@@ -1210,6 +1181,34 @@ describe("同步与流程独立执行", () => {
     await act(async () => sync.reject({ kind: "connection", message: "同步网络失败" }));
     expect(screen.getByRole("status").textContent).toBe("节点推进已核验");
     expect(screen.getByText("暂时无法连接服务，请稍后重试。")).toBeTruthy();
+  });
+
+  it.each(["order", "discovery"] as const)("并行的 %s 失败保留流程结果不确定的反馈", async (action) => {
+    setup();
+    const order = deferred<void>();
+    const discovery = deferred<Awaited<ReturnType<typeof refreshSourceTypes>>>();
+    vi.mocked(saveTypeOrder).mockReturnValue(order.promise);
+    const message = "流程结果不确定，请先核对飞书状态";
+    vi.mocked(executeWorkflowAction).mockResolvedValue({ ...workflowResult, outcome: "unknown", verified: false, message });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("需求甲");
+    if (action === "order") {
+      fireEvent.keyDown(within(document.querySelector(".type-nav")!).getByRole("button", { name: /^需求/ }), { key: "ArrowDown", altKey: true });
+      expect(saveTypeOrder).toHaveBeenCalledOnce();
+    } else {
+      vi.mocked(refreshSourceTypes).mockReturnValueOnce(discovery.promise);
+      await user.click(screen.getByRole("button", { name: "工作来源" }));
+      await user.click(screen.getByRole("button", { name: "发现类型" }));
+      await act(async () => {});
+      await user.click(screen.getByRole("button", { name: /我的工作/ }));
+    }
+    await submit(user);
+    await screen.findByText(message);
+    await act(async () => (action === "order" ? order : discovery).reject({ kind: "storage", message: "类型操作未保存" }));
+    expect(screen.getByText(message)).toBeTruthy();
+    expect(screen.getByText("类型操作未保存")).toBeTruthy();
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
   });
 
   it.each(["verified", "unknown"] as const)("流程结论 %s 已到但缓存回读未结束时，同步不能清除结论", async (outcome) => {

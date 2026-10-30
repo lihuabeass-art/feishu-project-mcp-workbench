@@ -32,6 +32,7 @@ pub mod link_metadata;
 pub mod source_query;
 pub mod config;
 pub mod credentials;
+pub mod creation;
 pub mod error;
 pub mod mcp;
 pub mod model;
@@ -43,6 +44,7 @@ pub mod workflow;
 
 pub use config::{Config, DEFAULT_ENDPOINT, DEFAULT_MAX_PAGES, DEFAULT_TOKEN_ENV};
 pub use credentials::{Credential, SecretToken};
+pub use creation::images::{ImagePreview as CreationImagePreview, SavedImage as SavedCreationImage, UploadedImage as UploadedCreationImage};
 pub use error::{BackendError, ErrorKind};
 pub use mcp::{ConnectionInfo, TodoSource, ToolResultPayload};
 pub use model::{

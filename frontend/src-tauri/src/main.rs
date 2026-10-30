@@ -123,6 +123,7 @@ struct Capabilities {
     source_type_preferences: bool,
     incremental_sync: bool,
     workspace_catalog: bool,
+    creation: bool,
 }
 
 #[derive(Serialize)]
@@ -210,6 +211,7 @@ async fn load_snapshot() -> Result<Snapshot, UiError> {
                 source_type_preferences: true,
                 incremental_sync: true,
                 workspace_catalog: true,
+                creation: true,
             },
             // 缓存是累积集合，不能把默认 200 条截断误报成全部。
             items: session.query_cached_items(&ItemFilter {
@@ -405,6 +407,56 @@ async fn get_workflow_actions(item_id: WorkItemId, fresh: Option<bool>) -> Resul
 }
 
 #[tauri::command]
+async fn get_pending_creations() -> Result<Vec<fstodo_backend::creation::Form>, UiError> {
+    blocking(move || fstodo_backend::creation::pending_forms(&open_session()?)).await
+}
+
+#[tauri::command]
+async fn get_creation_form(target: fstodo_backend::creation::Target) -> Result<fstodo_backend::creation::Form, UiError> {
+    blocking(move || fstodo_backend::creation::discover(&open_session()?, &target)).await
+}
+
+#[tauri::command]
+async fn lookup_creation_field(target: fstodo_backend::creation::Target, field_key: String, query: String) -> Result<fstodo_backend::creation::LookupResult, UiError> {
+    blocking(move || fstodo_backend::creation::lookup(&open_session()?, &target, &field_key, &query)).await
+}
+
+#[tauri::command]
+async fn save_creation_image(target: fstodo_backend::creation::Target, context: String, field_key: String, bytes_base64: String, mime_type: String, file_name: String) -> Result<fstodo_backend::SavedCreationImage, UiError> {
+    blocking(move || fstodo_backend::creation::images::save(&open_session()?, &target, &context, &field_key, &bytes_base64, &mime_type, &file_name)).await
+}
+
+#[tauri::command]
+async fn get_creation_image(target: fstodo_backend::creation::Target, context: String, field_key: String, image_id: String) -> Result<fstodo_backend::CreationImagePreview, UiError> {
+    blocking(move || fstodo_backend::creation::images::get(&open_session()?, &target, &context, &field_key, &image_id)).await
+}
+
+#[tauri::command]
+async fn get_uploaded_creation_image(target: fstodo_backend::creation::Target, context: String, field_key: String, url: String, file_token: String) -> Result<fstodo_backend::CreationImagePreview, UiError> {
+    blocking(move || fstodo_backend::creation::images::get_uploaded(&open_session()?, &target, &context, &field_key, &url, &file_token)).await
+}
+
+#[tauri::command]
+async fn upload_creation_image(target: fstodo_backend::creation::Target, context: String, field_key: String, image_id: String) -> Result<fstodo_backend::UploadedCreationImage, UiError> {
+    blocking(move || fstodo_backend::creation::images::upload(&open_session()?, &target, &context, &field_key, &image_id)).await
+}
+
+#[tauri::command]
+async fn create_work_item(request: fstodo_backend::creation::Request) -> Result<fstodo_backend::creation::ResultView, serde_json::Value> {
+    // execute 发出写请求之后始终返回 ResultView；仅校验和登记前失败可恢复编辑。
+    // 线程中断不具备该保证，不能标记为 before_write。
+    tauri::async_runtime::spawn_blocking(move || {
+        open_session().and_then(|session| fstodo_backend::creation::execute(&session, &request))
+            .map_err(|e| { let error=UiError::from(e); serde_json::json!({"kind":error.kind,"message":error.message,"before_write":true}) })
+    }).await.map_err(|_| serde_json::json!({"kind":"internal","message":"创建任务中断，请先核对结果","before_write":false}))?
+}
+
+#[tauri::command]
+async fn verify_work_item_creation(request_id: String, item_number: Option<String>, local_request: Option<fstodo_backend::creation::Request>) -> Result<fstodo_backend::creation::ResultView, UiError> {
+    blocking(move || fstodo_backend::creation::verify(&open_session()?, &request_id, item_number.as_deref(),local_request.as_ref())).await
+}
+
+#[tauri::command]
 async fn execute_workflow_action(request: WorkflowRequest) -> Result<WorkflowResult, UiError> {
     blocking(move || {
         let session = open_session()?;
@@ -469,6 +521,15 @@ fn main() {
             initialize_source_type_preferences,
             save_source_type_preferences,
             get_workflow_actions,
+            get_pending_creations,
+            get_creation_form,
+            lookup_creation_field,
+            save_creation_image,
+            get_creation_image,
+            get_uploaded_creation_image,
+            upload_creation_image,
+            create_work_item,
+            verify_work_item_creation,
             execute_workflow_action
         ])
         .run(tauri::generate_context!())

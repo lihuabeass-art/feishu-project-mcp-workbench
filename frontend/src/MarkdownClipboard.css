@@ -1,0 +1,158 @@
+.markdown-clipboard {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.markdown-clipboard-editor {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  min-height: 160px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-soft);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+.markdown-clipboard-editor:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.markdown-clipboard-editor[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+.markdown-clipboard-editor[data-empty="true"]::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  color: var(--muted);
+  pointer-events: none;
+}
+.markdown-clipboard-hint,
+.markdown-clipboard-status {
+  margin: 0;
+  line-height: 1.5;
+  font-size: 11px;
+}
+.markdown-clipboard-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.markdown-editor-image {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+  margin: 6px 2px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  vertical-align: middle;
+  cursor: default;
+}
+.markdown-editor-image-display {
+  display: block;
+  max-width: 100%;
+}
+.markdown-editor-image-display > img {
+  display: block;
+  max-width: 100%;
+  max-height: 280px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+.markdown-editor-image-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-solid);
+  color: var(--text-secondary);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+.markdown-editor-image-remove:hover {
+  color: var(--text);
+  background: var(--surface-soft);
+}
+.markdown-editor-image-remove:focus-visible,
+.markdown-image-retry:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.markdown-editor-image-remove:disabled,
+.markdown-image-retry:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.markdown-image-retry {
+  align-self: flex-start;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.markdown-editor-image-placeholder {
+  display: grid;
+  gap: 6px;
+  min-width: 120px;
+  max-width: 100%;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  background: var(--surface-soft);
+  font-size: 12px;
+}
+.markdown-editor-image-placeholder > small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.markdown-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+.markdown-preview-image {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+  vertical-align: middle;
+  margin: 6px 0;
+}
+.markdown-preview-image > img {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: 5px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .markdown-editor-image,
+  .markdown-editor-image-remove,
+  .markdown-image-retry {
+    animation: none;
+    transition: none;
+  }
+}

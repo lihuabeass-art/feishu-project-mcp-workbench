@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
@@ -73,6 +73,30 @@ async function openTypes() {
   return user;
 }
 
+it("只在当前已开启新建的类型显示入口，关闭的类型不能借用其他类型开关", async () => {
+  const data=snapshot();data.capabilities!.creation=true;
+  data.source_type_preferences={a:{story:{enabled:true,alias:"需求研发",create_enabled:false},issue:{enabled:true,alias:"缺陷跟踪",create_enabled:true}}};
+  data.sources[0].type_scope!.types.push({project_key:"space",project_name:"空间",type_key:"issue",type_name:"缺陷跟踪",selected:false});
+  vi.mocked(loadSnapshot).mockResolvedValue(data);
+  vi.mocked(invoke).mockImplementation(async (command,args)=>{
+    if(command==="get_pending_creations")return [];
+    if(command==="get_creation_form")return {target:(args as {target:unknown}).target,context:"account",version:"v1",fields:[],pending:null};
+    return undefined;
+  });
+  const user=userEvent.setup();render(<App />);
+  await screen.findByRole("button",{name:/全部工作/});
+  expect(screen.queryByRole("button",{name:"新建工作事项"})).toBeNull();
+  const tabs=within(document.querySelector(".tabs") as HTMLElement);
+  await user.click(tabs.getByRole("button",{name:/需求研发/}));
+  await waitFor(()=>expect(screen.queryByRole("button",{name:"新建工作事项"})).toBeNull());
+  await user.click(tabs.getByRole("button",{name:/缺陷跟踪/}));
+  await user.click(await screen.findByRole("button",{name:"新建工作事项"}));
+  await screen.findByRole("heading",{name:"新建缺陷跟踪"});
+  expect(invoke).toHaveBeenCalledWith("get_creation_form",{target:expect.objectContaining({type_key:"issue"})});
+  await user.click(screen.getByRole("combobox",{name:"新建类型"}));
+  expect(screen.queryByRole("option",{name:"需求研发"})).toBeNull();
+});
+
 it("升级后界面缓存丢失时，清单显示和别名从数据库恢复，同步选择保持独立", async () => {
   vi.mocked(loadSnapshot).mockResolvedValue(snapshot());
   render(<App />);
@@ -85,7 +109,7 @@ it("升级后界面缓存丢失时，清单显示和别名从数据库恢复，�
     ).checked,
   ).toBe(false);
   expect(
-    (screen.getByRole("switch", { name: "同步研发" }) as HTMLInputElement)
+    (screen.getByRole("switch", { name: "允许新建研发" }) as HTMLInputElement)
       .checked,
   ).toBe(false);
   expect(
@@ -141,7 +165,7 @@ it("切换和别名修改落库后，清空界面缓存并重启仍保留最新�
     ).checked,
   ).toBe(true);
   expect(
-    (screen.getByRole("switch", { name: "同步研发组" }) as HTMLInputElement)
+    (screen.getByRole("switch", { name: "允许新建研发组" }) as HTMLInputElement)
       .checked,
   ).toBe(false);
   app.unmount();
@@ -174,7 +198,7 @@ it("数据库保存失败时恢复已确认的开关状态，之后可以重试"
   ).toBe(true);
 });
 
-it("已停用来源的清单显示和别名仍可保存，同步开关保持禁用", async () => {
+it("已停用来源的清单显示和别名仍可保存，新建默认关闭", async () => {
   const data = snapshot();
   data.sources.push({
     ...structuredClone(data.sources[0]),
@@ -199,9 +223,9 @@ it("已停用来源的清单显示和别名仍可保存，同步开关保持禁�
     preferences: { story: { enabled: false, alias: "归档" } },
   });
   expect(
-    (screen.getByRole("switch", { name: "同步归档" }) as HTMLInputElement)
-      .disabled,
-  ).toBe(true);
+    (screen.getByRole("switch", { name: "允许新建归档" }) as HTMLInputElement)
+      .checked,
+  ).toBe(false);
 });
 
 it("配置回读期间的新选择不会被较早读取的数据库状态覆盖", async () => {

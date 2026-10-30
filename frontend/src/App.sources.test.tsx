@@ -152,14 +152,8 @@ it("来源的类型、显示偏好、别名和同步范围互不串用，全部�
   expect(panel().queryByText("外部类型")).toBeNull();
   await user.type(panel().getByLabelText("需求的显示别名"), "甲需求");
   await user.click(panel().getByRole("switch", { name: "甲需求在清单中显示" }));
-  await user.click(panel().getByRole("switch", { name: "同步甲需求" }));
-  expect(saveSourceTypes).toHaveBeenLastCalledWith("a", []);
-  await waitFor(() =>
-    expect(
-      (panel().getByRole("switch", { name: "同步甲需求" }) as HTMLInputElement)
-        .disabled,
-    ).toBe(false),
-  );
+  await user.click(panel().getByRole("switch", { name: "允许新建甲需求" }));
+  expect(saveSourceTypes).not.toHaveBeenCalled();
   await user.click(screen.getByRole("radio", { name: "乙来源" }));
   expect(panel().getByText("当前来源：乙来源")).toBeTruthy();
   expect(panel().getAllByRole("listitem")).toHaveLength(2);
@@ -174,9 +168,9 @@ it("来源的类型、显示偏好、别名和同步范围互不串用，全部�
     ).checked,
   ).toBe(true);
   expect(
-    (panel().getByRole("switch", { name: "同步需求" }) as HTMLInputElement)
+    (panel().getByRole("switch", { name: "允许新建需求" }) as HTMLInputElement)
       .checked,
-  ).toBe(true);
+  ).toBe(false);
   await user.type(panel().getByLabelText("需求的显示别名"), "乙需求");
   await user.click(screen.getByRole("button", { name: /我的工作/ }));
   await user.click(screen.getByRole("combobox", { name: "显示来源" }));

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { Select } from "./Select";
@@ -17,8 +17,15 @@ const options = [
 describe("自定义选择框", () => {
   function MultiSelect() {
     const [value, setValue] = useState<string[]>([]);
-    return <Select multiple ariaLabel="多选筛选" value={value} onChange={setValue}
-      options={[{ value: "", label: "全部" }, ...options.slice(1)]} />;
+    return (
+      <Select
+        multiple
+        ariaLabel="多选筛选"
+        value={value}
+        onChange={setValue}
+        options={[{ value: "", label: "全部" }, ...options.slice(1)]}
+      />
+    );
   }
 
   it("多选可连续勾选、再次点击取消，全部清空且不关闭菜单", async () => {
@@ -54,7 +61,11 @@ describe("自定义选择框", () => {
     await user.keyboard("{ArrowDown}{ArrowDown}{Enter}{ArrowDown}{Enter}");
     expect(trigger.textContent).toContain("等 2 项");
     await user.keyboard(" ");
-    expect(screen.getByRole("option", { name: "柔光紫" }).getAttribute("aria-selected")).toBe("false");
+    expect(
+      screen
+        .getByRole("option", { name: "柔光紫" })
+        .getAttribute("aria-selected"),
+    ).toBe("false");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("listbox")).toBeNull();
     expect(document.activeElement).toBe(trigger);
@@ -63,9 +74,20 @@ describe("自定义选择框", () => {
   it("取消最后一个零计数候选后活动项有效，可继续键盘选择", async () => {
     function DynamicSelect() {
       const [value, setValue] = useState(["gone"]);
-      return <Select multiple ariaLabel="动态筛选" value={value} onChange={setValue}
-        options={[{ value: "mint", label: "薄荷绿" },
-          ...(value.includes("gone") ? [{ value: "gone", label: "旧选项（0）" }] : [])]} />;
+      return (
+        <Select
+          multiple
+          ariaLabel="动态筛选"
+          value={value}
+          onChange={setValue}
+          options={[
+            { value: "mint", label: "薄荷绿" },
+            ...(value.includes("gone")
+              ? [{ value: "gone", label: "旧选项（0）" }]
+              : []),
+          ]}
+        />
+      );
     }
     const user = userEvent.setup();
     render(<DynamicSelect />);
@@ -73,9 +95,16 @@ describe("自定义选择框", () => {
     await user.click(trigger);
     await user.keyboard(" ");
     expect(screen.queryByRole("option", { name: "旧选项（0）" })).toBeNull();
-    expect(document.getElementById(trigger.getAttribute("aria-activedescendant")!)?.textContent).toBe("薄荷绿");
+    expect(
+      document.getElementById(trigger.getAttribute("aria-activedescendant")!)
+        ?.textContent,
+    ).toBe("薄荷绿");
     await user.keyboard("{Enter}");
-    expect(screen.getByRole("option", { name: "薄荷绿" }).getAttribute("aria-selected")).toBe("true");
+    expect(
+      screen
+        .getByRole("option", { name: "薄荷绿" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
     expect(trigger.textContent).toBe("薄荷绿");
   });
 
@@ -141,5 +170,35 @@ describe("自定义选择框", () => {
     await user.click(screen.getByRole("option", { name: "不可使用" }));
     expect(change).not.toHaveBeenCalled();
     expect(screen.getByRole("listbox", { name: "主题颜色" })).toBeTruthy();
+  });
+
+  it("多选内容换行改变控件高度后，菜单继续锚定当前控件底部", async () => {
+    const user = userEvent.setup();
+    const props = {
+      multiple: true as const,
+      ariaLabel: "换行选项",
+      options,
+      onChange: vi.fn(),
+    };
+    const mounted = render(<Select {...props} value={["mint"]} />);
+    const trigger = screen.getByRole("combobox", { name: "换行选项" });
+    let bottom = 40;
+    vi.spyOn(trigger, "getBoundingClientRect").mockImplementation(() => ({
+      left: 20,
+      right: 260,
+      top: 0,
+      bottom,
+      width: 240,
+      height: bottom,
+      x: 20,
+      y: 0,
+      toJSON: () => ({}),
+    }));
+    await user.click(trigger);
+    const menu = screen.getByRole("listbox", { name: "换行选项" });
+    expect(menu.style.top).toBe("48px");
+    bottom = 76;
+    mounted.rerender(<Select {...props} value={["mint", "violet"]} />);
+    await waitFor(() => expect(menu.style.top).toBe("84px"));
   });
 });

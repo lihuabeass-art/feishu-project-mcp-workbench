@@ -15,7 +15,7 @@ fn type_names_upgrade_rename_and_persist_without_changing_work_or_preferences() 
         store.save_source_types("a", &[cached("space", "703000000001")], 1).unwrap();
         store.set_source_type_scope("a", &[], 1).unwrap();
         let preferences = std::collections::BTreeMap::from([("703000000001".into(),
-            crate::store::TypePreference { enabled: false, alias: "我的名称".into() })]);
+            crate::store::TypePreference { enabled: false, alias: "我的名称".into(), create_enabled: false })]);
         store.set_source_type_preferences("a", &preferences).unwrap();
         store.set_type_order(&["703000000001".into()]).unwrap();
         let raw = json!({"project_key":"space", "work_item_info":{

@@ -133,25 +133,29 @@ it("后台失败不覆盖缓存或操作反馈，下一次成功同步补齐新�
   expect(screen.queryByText(/RPC diagnostic/)).toBeNull();
 });
 
-it("较早发起的缓存回读不覆盖后取得的新名称，也不回滚同步范围", async () => {
+it("较早发起的缓存回读不覆盖后取得的新名称，旧同步范围不再产生开关", async () => {
   const incoming = deferred<ReturnType<typeof discovery>>();
-  vi.mocked(refreshSourceTypes).mockReturnValueOnce(incoming.promise);
+  const afterSync = deferred<ReturnType<typeof discovery>>();
+  vi.mocked(refreshSourceTypes).mockReturnValueOnce(incoming.promise).mockReturnValue(afterSync.promise);
   const oldSnapshot = snapshot("旧名称");
   const reloaded = deferred<Snapshot>();
   vi.mocked(loadSnapshot).mockResolvedValueOnce(oldSnapshot).mockReturnValueOnce(reloaded.promise);
   const user = userEvent.setup();
+  const fullReport=report();delete fullReport.patch;
+  vi.mocked(syncTodos).mockResolvedValueOnce(fullReport);
   render(<App />);
   await screen.findByText("反馈事项");
-  await user.click(screen.getByRole("button", { name: "工作来源" }));
-  await user.click(screen.getByRole("switch", { name: "同步旧名称" }));
+  await user.click(screen.getByRole("button", { name: "立即刷新" }));
   await waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(2));
   await act(async () => { incoming.resolve(discovery("新名称")); });
   const saved = structuredClone(oldSnapshot);
   saved.sources[0].type_scope!.configured = true;
   saved.sources[0].type_scope!.types[0].selected = false;
   await act(async () => { reloaded.resolve(saved); });
+  await user.click(screen.getByRole("button", { name: "工作来源" }));
   expect(screen.getByLabelText("新名称的显示别名")).toBeTruthy();
-  expect((screen.getByRole("switch", { name: "同步新名称" }) as HTMLInputElement).checked).toBe(false);
+  expect(screen.queryByRole("switch", { name: "同步新名称" })).toBeNull();
+  expect((screen.getByRole("switch", { name: "新名称在清单中显示" }) as HTMLInputElement).checked).toBe(true);
 });
 
 it.each(["auth", "permission", "config"])("类型目录 %s 错误在对应来源说明，恢复后清除且不改变同步结论", async (kind) => {

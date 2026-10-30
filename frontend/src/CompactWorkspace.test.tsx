@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
+import { CompactWorkspace } from "./CompactWorkspace";
+import { emptyWorkFilters, workFilterOptions } from "./workFilters";
 import { executeWorkflowAction, getWorkflowActions, loadSnapshot } from "./api";
 import type { CachedItem, Snapshot, WorkflowResult } from "./types";
 
@@ -75,6 +77,15 @@ async function enterListMode(user: ReturnType<typeof userEvent.setup>) {
 
 const rowNamed = (list: HTMLElement, text: string) =>
   within(list).getByText(text).closest("button") as HTMLButtonElement;
+
+it("待核验记录使用独立核验入口，不能在关闭新建的类型上显示新建", () => {
+  render(<CompactWorkspace items={[]} filters={emptyWorkFilters} onFiltersChange={vi.fn()} loading={false} emptyText="无事项"
+    typeName={()=>"类型"} typeOptions={[]} filterOptions={workFilterOptions([], [], emptyWorkFilters)}
+    selectedKey={null} select={vi.fn()} detail={null} alerts={null} lastSync={null} refresh={{run:vi.fn(),disabled:false,syncing:false}}
+    pinned={false} pin={vi.fn()} expand={vi.fn()} windowControls={false} windowAction={vi.fn()} modeBusy={false} recoverCreation={vi.fn()} />);
+  expect(screen.getByRole("button",{name:"核验创建记录"})).toBeTruthy();
+  expect(screen.queryByRole("button",{name:"新建工作事项"})).toBeNull();
+});
 
 async function chooseFilter(user: ReturnType<typeof userEvent.setup>, name: string, value: string) {
   await user.click(screen.getByRole("combobox", { name }));

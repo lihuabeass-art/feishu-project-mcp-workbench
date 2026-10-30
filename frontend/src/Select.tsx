@@ -6,6 +6,7 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
@@ -23,6 +24,9 @@ type SelectProps = {
   disabled?: boolean;
   required?: boolean;
   className?: string;
+  menuClassName?: string;
+  renderOption?: (option: SelectOption) => ReactNode;
+  adjacent?: ReactNode;
 } & (
   | { multiple?: false; value: string; onChange: (value: string) => void }
   | { multiple: true; value: string[]; onChange: (value: string[]) => void }
@@ -65,6 +69,7 @@ export function Select(props: SelectProps) {
   const selectionLabel = selectedLabels.length > 1
     ? `${selectedLabels[0]} 等 ${selectedLabels.length} 项`
     : selectedLabels[0] || selected?.label || "请选择";
+  const selectionKey = JSON.stringify(value);
 
   const firstEnabled = () => options.findIndex((option) => !option.disabled);
   const lastEnabled = () => {
@@ -178,7 +183,7 @@ export function Select(props: SelectProps) {
 
   useLayoutEffect(() => {
     if (open) updatePosition();
-  }, [open, options.length]);
+  }, [open, options.length, selectionKey]);
 
   useLayoutEffect(() => {
     // 取消已选的零计数候选后，该候选可能消失，键盘活动项须保持有效。
@@ -248,13 +253,14 @@ export function Select(props: SelectProps) {
         </span>
         <ChevronDown className="select-chevron" size={16} aria-hidden="true" />
       </button>
+      {props.adjacent}
       {open &&
         menuPosition &&
         createPortal(
           <div
             ref={menuRef}
             id={listboxId}
-            className="select-menu"
+            className={`select-menu ${props.menuClassName || ""}`.trim()}
             role="listbox"
             aria-multiselectable={multiple || undefined}
             aria-label={ariaLabel}
@@ -272,7 +278,7 @@ export function Select(props: SelectProps) {
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => choose(index)}
               >
-                <span>{option.label}</span>
+                <span>{props.renderOption ? props.renderOption(option) : option.label}</span>
                 {isSelected(option) && !option.disabled && (
                   <Check size={15} strokeWidth={2.5} aria-hidden="true" />
                 )}

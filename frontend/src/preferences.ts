@@ -4,6 +4,7 @@ import type { Snapshot } from "./types";
 export interface TypePreference {
   enabled: boolean;
   alias: string;
+  create_enabled?: boolean;
 }
 export type TypePreferences = Record<string, TypePreference>;
 export type SourceTypePreferences = Record<string, TypePreferences>;

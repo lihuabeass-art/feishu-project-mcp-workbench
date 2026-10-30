@@ -4,6 +4,7 @@ import { AppVersion } from "./AppVersion";
 import { AppUpdateDialog, AppUpdateSettings } from "./AppUpdater";
 import { useAppUpdater } from "./useAppUpdater";
 import { prepareUpdateInstallation } from "./appUpdateSafety";
+import { workspaceActionBlocked, type WorkspaceActivity } from "./operationPolicy";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -15,6 +16,7 @@ import {
   Clock3,
   Cloud,
   FileText,
+  Plus,
   FolderOpen,
   Inbox,
   Layers3,
@@ -34,8 +36,6 @@ import {
   desktop,
   loadSnapshot,
   refreshWorkspaceCatalog,
-  saveSourceTypes,
-  clearSourceTypes,
   saveTypeOrder,
   executeWorkflowAction,
   saveToken,
@@ -59,12 +59,15 @@ import { applySourceTypeNames, typeNameConnection, typeNameSource, useSourceType
 import type { AppError, CachedItem, ConnectionSettings as Settings, Snapshot, WorkflowRequest, WorkflowResult } from "./types";
 import { Workflow } from "./Workflow";
 import { SourceTypes } from "./SourceTypes";
+import { CreateWorkItem } from "./CreateWorkItem";
+import { creationLocations, creationTargetKey, getPendingCreations, type CreationForm, type CreationLocation } from "./creation";
 import { WorkSources } from "./WorkSources";
 import { sourceName, sourceProjects } from "./sourcePresets";
 import { WorkItemDetails } from "./WorkItemDetails";
 import { readFailureMessage, readFailureNeedsAction } from "./readFeedback";
 import { Select } from "./Select";
 import { LinkSettings } from "./LinkSettings";
+import { CreationSettings } from "./CreationSettings";
 import { DesktopSettings, useDesktopSettings } from "./DesktopSettings";
 import { ConnectionSettings } from "./ConnectionSettings";
 import { McpTokenGuide } from "./McpTokenGuide";
@@ -98,6 +101,8 @@ import {
 
 type View = "work" | "sources" | "settings";
 type Notice = { tone: "success" | "warning"; text: string };
+type CreationRecordFeedback = { context: string; result: "empty" } |
+  { context: string; result: "failed"; error: AppError };
 type ManualSync = {
   requested: Set<string>;
   remaining: Set<string>;
@@ -239,19 +244,29 @@ function Workspace() {
   const [data, setData] = useState<Snapshot | null>(null);
   const [view, setView] = useState<View>("work");
   const [loading, setLoading] = useState(true);
-  const [operation, setBusy] = useState<
-    "sync" | "check" | "save" | "types" | "settings" | "update" | null
+  const [contextOperation, setContextOperation] = useState<
+    "save" | "settings" | "update" | null
   >(null);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [checkBusy, setCheckBusy] = useState(false);
+  const [discoveryBusy, setDiscoveryBusy] = useState(false);
+  const [orderBusy, setOrderBusy] = useState(false);
   const [workflowBusy, setWorkflowBusy] = useState(false);
-  const busy = operation || (workflowBusy ? "workflow" : null);
+  const [creationOpen, setCreationOpen] = useState(false);
+  const [creationBusy, setCreationBusy] = useState(false);
+  const [creationRecovery, setCreationRecovery] = useState(false);
+  const [creationRecords, setCreationRecords] = useState<{ context: string; forms: CreationForm[]; failed: boolean }>({ context: "", forms: [], failed: false });
+  const [creationRecordFeedback, setCreationRecordFeedback] = useState<CreationRecordFeedback | null>(null);
   const [tokenDraft, setTokenDraft] = useState("");
   const [tokenGuideOpen, setTokenGuideOpen] = useState(false);
   const [connectionCheck, setConnectionCheck] = useState<ConnectionCheckResult | null>(null);
   const [error, setError] = useState<AppError | null>(null);
+  const [typeOperationErrors, setTypeOperationErrors] = useState<Partial<Record<"order" | "discovery", AppError>>>({});
   const [settingsRefreshFailed, setSettingsRefreshFailed] = useState(false);
   const [connectionFeedback, setConnectionFeedback] = useState<SaveFeedback | null>(null);
   const [connectionUnsaved, setConnectionUnsaved] = useState(false);
   const [linkFeedback, setLinkFeedback] = useState<SaveFeedback | null>(null);
+  const [creationFeedback, setCreationFeedback] = useState<SaveFeedback | null>(null);
   const [desktopFeedback, setDesktopFeedback] = useState<SaveFeedback | null>(null);
   const [credentialFeedback, setCredentialFeedback] = useState<SaveFeedback | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -285,11 +300,25 @@ function Workspace() {
   const refreshCatalogAfterSync = useRef(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [searchFocusRequest, setSearchFocusRequest] = useState(0);
-  const busyRef = useRef(false);
+  const contextRef = useRef(false);
   const syncRef = useRef(false);
+  const checkRef = useRef(false);
+  const discoveryRef = useRef(false);
+  const orderRef = useRef(false);
   const workflowRef = useRef(false);
-  const updater = useAppUpdater({ prepareInstall: () => prepareUpdateInstallation({
-    busy: busyRef,
+  const creationRef = useRef(false);
+  const activity: WorkspaceActivity = { context: !!contextOperation, sync: syncBusy, check: checkBusy,
+    discovery: discoveryBusy, order: orderBusy, workflow: workflowBusy, creation: creationBusy };
+  const currentActivity = (): WorkspaceActivity => ({ context: contextRef.current, sync: syncRef.current,
+    check: checkRef.current, discovery: discoveryRef.current, order: orderRef.current,
+    workflow: workflowRef.current, creation: creationRef.current });
+  const contextChangeDisabled = workspaceActionBlocked("context", activity) || loading;
+  const creationDisabled = workspaceActionBlocked("creation", activity) || loading;
+  const updater = useAppUpdater({ prepareInstall: () => {
+    if (workspaceActionBlocked("context", currentActivity()))
+      throw new Error("当前操作尚未结束，请先关闭新建窗口，并等待同步、保存或流程提交完成后再安装。");
+    return prepareUpdateInstallation({
+    busy: contextRef,
     workflow: workflowRef,
     blockedReason: loading || desktopSettings.busy || displayMode.busy
       ? "当前页面或窗口设置尚未就绪，请稍后再安装。"
@@ -297,20 +326,22 @@ function Workspace() {
         ? "MCP 服务地址尚未保存，请先保存或恢复原值后再安装。"
       : tokenDraft.trim()
         ? "Token 输入尚未保存，请先保存或清空输入后再安装。"
-        : [connectionFeedback, linkFeedback, desktopFeedback, credentialFeedback].some((feedback) =>
+        : [connectionFeedback, linkFeedback, creationFeedback, desktopFeedback, credentialFeedback].some((feedback) =>
           feedback && ["waiting", "saving", "invalid", "failed"].includes(feedback.state))
           ? "设置尚未保存成功，请先完成保存或处理错误后再安装。"
           : undefined,
-    onBusyChange: (locked) => setBusy(locked ? "update" : null),
+    onBusyChange: (locked) => setContextOperation(locked ? "update" : null),
     flush: async () => {
       await flushSourceTypePreferences();
       await invoke("prepare_app_update");
     },
-  }) });
+    });
+  } });
   const workflowAttempt = useRef(0);
   const snapshotRequest = useRef(0);
   const syncPatchRevision = useRef(0);
   const typeNamesRevision = useRef(0);
+  const typeOrderRevision = useRef(0);
   const [credentialRevision, setCredentialRevision] = useState(0);
   const receiveTypeNames = useCallback((sourceId: string, types: Parameters<typeof applySourceTypeNames>[2], context: Snapshot) => {
     ++typeNamesRevision.current;
@@ -369,11 +400,12 @@ function Workspace() {
     }
   }
   async function updateTypeOrder(next: string[]) {
-    if (busyRef.current || workflowRef.current || !desktop) return;
+    if (workspaceActionBlocked("order", currentActivity()) || !desktop) return;
     const previous = data?.type_order || [];
-    busyRef.current = true;
-    setBusy("types");
-    setError(null);
+    orderRef.current = true;
+    setOrderBusy(true);
+    ++typeOrderRevision.current;
+    setTypeOperationErrors((current) => ({ ...current, order: undefined }));
     setData((current) =>
       current ? { ...current, type_order: next } : current,
     );
@@ -383,10 +415,11 @@ function Workspace() {
       setData((current) =>
         current ? { ...current, type_order: previous } : current,
       );
-      setError(asError(e));
+      setTypeOperationErrors((current) => ({ ...current, order: asError(e) }));
     } finally {
-      busyRef.current = false;
-      setBusy(null);
+      ++typeOrderRevision.current;
+      orderRef.current = false;
+      setOrderBusy(false);
     }
   }
   function updatePolicy(kind?: string, id = sourceId) {
@@ -404,6 +437,7 @@ function Workspace() {
     ++catalogRequest.current;
     const patchRevision = syncPatchRevision.current;
     const namesRevision = typeNamesRevision.current;
+    const orderRevision = typeOrderRevision.current;
     const preferencesRevision = preferenceRevision.current;
     await flushSourceTypePreferences();
     const snapshot = await loadSnapshot();
@@ -433,6 +467,8 @@ function Workspace() {
             next = applySourceTypeNames(next, source.id, source.type_scope);
         }
       }
+      if (current && (orderRef.current || orderRevision !== typeOrderRevision.current))
+        next = { ...next, type_order: current.type_order };
       return next;
     });
     setSourceId((previous) => {
@@ -557,7 +593,7 @@ function Workspace() {
     !!data?.sources.some((s) => (incremental || s.id === sourceId || (sourceId === "*" && data.capabilities?.source_queries)) && s.executable) &&
     !loading;
   useEffect(() => {
-    if (!automaticReady || operation) return;
+    if (!automaticReady || contextOperation || syncBusy) return;
     const ready = incremental
       ? enabledIds.map((id) => policies[id] || fallbackPolicy)
       : [policy];
@@ -569,7 +605,7 @@ function Workspace() {
       Math.max(0, nextAt - Date.now()),
     );
     return () => window.clearTimeout(timer);
-  }, [automaticReady, operation, policy, sourceId, policies, data, incremental]);
+  }, [automaticReady, contextOperation, syncBusy, policy, sourceId, policies, data, incremental]);
   useEffect(() => {
     if (!automaticReady) return;
     const retry = () => {
@@ -589,11 +625,13 @@ function Workspace() {
   }, [automaticReady]);
 
   async function saveCredential() {
-    if (busyRef.current || workflowRef.current || !desktop || !tokenDraft.trim()) return;
-    busyRef.current = true;
-    setBusy("save");
+    if (workspaceActionBlocked("context", currentActivity()) || !desktop || !tokenDraft.trim()) return;
+    contextRef.current = true;
+    setContextOperation("save");
     setCredentialFeedback({ state: "saving" });
     setError(null);
+    setTypeOperationErrors({});
+    setCreationRecordFeedback(null);
     setNotice(null);
     try {
       const description = await saveToken(tokenDraft);
@@ -617,17 +655,19 @@ function Workspace() {
       // 不回显提交内容；原文只存在当前密码框内。
       setCredentialFeedback({ state: "failed", message: `Token 保存失败：${asError(e).message}` });
     } finally {
-      busyRef.current = false;
-      setBusy(null);
+      contextRef.current = false;
+      setContextOperation(null);
     }
   }
 
   async function saveSettings(settings: Settings) {
-    if (busyRef.current || workflowRef.current || !desktop || loading) return false;
-    busyRef.current = true;
-    setBusy("settings");
+    if (workspaceActionBlocked("context", currentActivity()) || !desktop || loading) return false;
+    contextRef.current = true;
+    setContextOperation("settings");
     setConnectionFeedback({ state: "saving" });
     setError(null);
+    setTypeOperationErrors({});
+    setCreationRecordFeedback(null);
     setNotice(null);
     let saved = false;
     try {
@@ -655,8 +695,8 @@ function Workspace() {
       });
       return false;
     } finally {
-      busyRef.current = false;
-      setBusy(null);
+      contextRef.current = false;
+      setContextOperation(null);
     }
   }
 
@@ -692,16 +732,20 @@ function Workspace() {
       return;
     }
     if (action === "sync" && !ids.length) return;
-    if (busyRef.current || (action !== "sync" && workflowRef.current) || !desktop) return;
+    if (workspaceActionBlocked(action, currentActivity()) || !desktop) return;
     if (action === "sync" && !automatic) {
       refreshCatalogAfterSync.current = true;
       registerManualSync(ids);
     }
-    busyRef.current = true;
-    syncRef.current = action === "sync";
-    activeSyncIds.current = action === "sync" ? ids : [];
+    if (action === "sync") {
+      syncRef.current = true;
+      activeSyncIds.current = ids;
+      setSyncBusy(true);
+    } else {
+      checkRef.current = true;
+      setCheckBusy(true);
+    }
     const workflowInFlightAtStart = workflowRef.current;
-    setBusy(action);
     if (!automatic && !workflowInFlightAtStart &&
         (!manualSync.current || (!manualSync.current.workflowInFlight && manualSync.current.workflowAttempt === workflowAttempt.current))) {
       setError(null);
@@ -843,14 +887,18 @@ function Workspace() {
         });
         typeNames.afterSync([...outcomes].filter(([, outcome]) => !outcome).map(([id]) => id));
       }
-      syncRef.current = false;
-      activeSyncIds.current = [];
-      busyRef.current = false;
-      setBusy(null);
-      if (pendingManual.current.size) {
-        const pending = [...pendingManual.current];
-        pendingManual.current.clear();
-        queueMicrotask(() => void run("sync", false, pending));
+      if (action === "sync") {
+        syncRef.current = false;
+        activeSyncIds.current = [];
+        setSyncBusy(false);
+        if (pendingManual.current.size) {
+          const pending = [...pendingManual.current];
+          pendingManual.current.clear();
+          queueMicrotask(() => void run("sync", false, pending));
+        }
+      } else {
+        checkRef.current = false;
+        setCheckBusy(false);
       }
     }
   }
@@ -863,7 +911,7 @@ function Workspace() {
   };
 
   async function submitWorkflow(request: WorkflowRequest) {
-    if ((busyRef.current && !syncRef.current) || workflowRef.current || !desktop) throw { kind: "conflict", message: "当前有其他操作正在执行或桌面连接不可用，本次尚未发送，请稍后重新检查。" };
+    if (workspaceActionBlocked("workflow", currentActivity()) || !desktop) throw { kind: "conflict", message: "当前有其他操作正在执行或桌面连接不可用，本次尚未发送，请稍后重新检查。" };
     workflowRef.current = true;
     workflowAttempt.current += 1;
     setWorkflowBusy(true);
@@ -917,52 +965,44 @@ function Workspace() {
   }
 
   async function applySourceTypes(
-    action: "refresh" | "save",
-    keys?: string[] | null,
+    action: "refresh",
   ): Promise<boolean> {
-    if (busyRef.current || workflowRef.current || !desktop) return false;
-    busyRef.current = true;
-    setBusy("types");
-    setError(null);
-    setNotice(null);
+    if (workspaceActionBlocked("discovery", currentActivity()) || !desktop) return false;
+    discoveryRef.current = true;
+    setDiscoveryBusy(true);
+    const startedDuringWorkflow = workflowRef.current;
+    const workflowAtStart = workflowAttempt.current;
+    const ownsFeedback = () => !startedDuringWorkflow && workflowAtStart === workflowAttempt.current;
+    setTypeOperationErrors((current) => ({ ...current, discovery: undefined }));
+    if (ownsFeedback()) {
+      setError(null);
+      setNotice(null);
+    }
     try {
       if (action === "refresh") {
         const result = await typeNames.refresh(sourceId);
         if (!result) return false;
         await reload();
         if (result.failed.length)
-          setError({
+          setTypeOperationErrors((current) => ({ ...current, discovery: {
             kind: "discovery_partial",
             message: `部分空间未能读取，类型清单可能不完整：${result.failed.map(([project, message]) => `${project}：${message}`).join("；")}`,
-          });
-        else
+          } }));
+        else if (ownsFeedback())
           setNotice({
             tone: result.discovered_count ? "success" : "warning",
             text: result.discovered_count
               ? `已发现 ${result.discovered_count} 个空间与类型组合。`
               : "本次未发现类型，保留原有类型清单。",
           });
-      } else {
-        const count =
-          keys === null
-            ? (await clearSourceTypes(sourceId), null)
-            : await saveSourceTypes(sourceId, keys || []);
-        await reload();
-        setNotice({
-          tone: "success",
-          text:
-            count === null
-              ? "已恢复接收全部类型，下次同步生效。"
-              : `同步范围已保存：${count} 个空间与类型组合，下次同步生效。`,
-        });
       }
       return true;
     } catch (e) {
-      setError(asError(e));
+      setTypeOperationErrors((current) => ({ ...current, discovery: asError(e) }));
       return false;
     } finally {
-      busyRef.current = false;
-      setBusy(null);
+      discoveryRef.current = false;
+      setDiscoveryBusy(false);
     }
   }
 
@@ -976,6 +1016,60 @@ function Workspace() {
       (!s.project_key || t.project_key === s.project_key) &&
       (!s.work_item_type_key || t.type_key === s.work_item_type_key),
     );
+  const creationTargets = creationLocations(scopedSources, sourcePreferences, { types: type, spaces: project });
+  const canCreate = desktop && data?.capabilities?.creation && type.length === 1 && creationTargets.length > 0;
+  const creationContext = `${credentialRevision}:${data?.settings?.endpoint}:${data?.db_path}`;
+  const pendingCreations = creationRecords.context === creationContext ? creationRecords.forms : [];
+  const creationRecoveryAvailable = pendingCreations.length > 0 || (creationRecords.context === creationContext && creationRecords.failed);
+  const recoveryFeedback = creationRecordFeedback?.context === creationContext ? creationRecordFeedback : null;
+  const pendingLocations: CreationLocation[] = pendingCreations.map((form) => {
+    const source = data?.sources.find((s) => s.id === form.target.source_id);
+    const entry = source?.type_scope?.types.find((t) => t.project_key === form.target.project_key && t.type_key === form.target.type_key);
+    return { ...form.target, space: entry?.project_name || form.target.project_key, name: entry?.type_name || form.target.type_key, pending_form: form };
+  });
+  const creationLocationsWithPending = creationTargets.map((target) => pendingLocations.find((l) => creationTargetKey(l) === creationTargetKey(target)) || target);
+  useEffect(() => {
+    if (!desktop || !data?.capabilities?.creation) return;
+    let cancelled = false;
+    getPendingCreations().then((forms) => {
+      if (!cancelled) setCreationRecords({ context: creationContext, forms, failed: false });
+    }).catch(() => {
+      if (!cancelled) setCreationRecords((current) => ({ context: creationContext, forms: current.context === creationContext ? current.forms : [], failed: true }));
+    });
+    return () => { cancelled = true; };
+  }, [creationContext, creationOpen, data?.capabilities?.creation]);
+  function closeCreation() {
+    creationRef.current = false;
+    setCreationBusy(false);
+    setCreationOpen(false);
+  }
+  function openCreation() {
+    if (!canCreate || loading || workspaceActionBlocked("creation", currentActivity())) return;
+    creationRef.current = true;
+    setCreationBusy(true);
+    setCreationRecovery(false);
+    setCreationOpen(true);
+  }
+  async function openCreationRecovery() {
+    if (!desktop || loading || workspaceActionBlocked("creation", currentActivity())) return;
+    creationRef.current = true;
+    setCreationBusy(true);
+    setCreationRecordFeedback(null);
+    try {
+      const forms = await getPendingCreations();
+      setCreationRecords({ context: creationContext, forms, failed: false });
+      if (forms.length) { setCreationRecovery(true); setCreationOpen(true); }
+      else {
+        closeCreation();
+        setCreationRecordFeedback({ context: creationContext, result: "empty" });
+      }
+    } catch (e) {
+      closeCreation();
+      setCreationRecords((current) => ({ context: creationContext,
+        forms: current.context === creationContext ? current.forms : [], failed: true }));
+      setCreationRecordFeedback({ context: creationContext, result: "failed", error: asError(e) });
+    }
+  }
   const visibleInSource = (key: string, id: string) =>
     typePreference(sourceTypePreferences(sourcePreferences, id), key).enabled;
   const allItems = useMemo(() => {
@@ -1067,7 +1161,7 @@ function Workspace() {
   const sidebarReorder = useTypeReorder({
     keys: types,
     order: knownTypes,
-    enabled: desktop && !busy && !loading,
+    enabled: desktop && !workspaceActionBlocked("order", activity) && !loading,
     onReorder: (next) => void updateTypeOrder(next),
   });
   const catalog = data?.workspace_catalog || [];
@@ -1097,13 +1191,13 @@ function Workspace() {
     setSelectedKey(null);
   };
   const syncDisabled =
-    !desktop || !source?.executable || (!!operation && (operation !== "sync" || !incremental)) || loading;
-  const hasAlerts = settingsRefreshFailed || !!error || !!syncFailure || !!notice;
+    !desktop || !source?.executable || !!contextOperation || (syncBusy && !incremental) || loading;
+  const hasAlerts = settingsRefreshFailed || !!error || !!syncFailure || !!notice || !!recoveryFeedback || Object.values(typeOperationErrors).some(Boolean);
   const alerts = (
     <>
       {settingsRefreshFailed && <div className="banner warning" role="status">
         <span>需要重新加载页面数据后才能继续同步。</span>
-        <button className="secondary" disabled={loading || !!busy} onClick={() => void readCache()}>重试刷新页面</button>
+        <button className="secondary" disabled={loading || !!contextOperation || syncBusy} onClick={() => void readCache()}>重试刷新页面</button>
       </div>}
       {error && (
         <div className="banner error" role="alert">
@@ -1121,6 +1215,25 @@ function Workspace() {
           </button>
         </div>
       )}
+      {(["order", "discovery"] as const).map((action) => {
+        const failure = typeOperationErrors[action];
+        const title = action === "order" ? "类型排序未保存" : "类型发现未完成";
+        return failure && <div className="banner error" role="alert" key={action}>
+          <Unplug size={18} />
+          <div><strong>{title} · {errorKindLabel(failure.kind)}</strong><p>{failure.message}</p></div>
+          <button className="icon-button" aria-label={`关闭${title}提示`}
+            onClick={() => setTypeOperationErrors((current) => ({ ...current, [action]: undefined }))}><X size={16} /></button>
+        </div>;
+      })}
+      {recoveryFeedback && <div className={`banner ${recoveryFeedback.result === "failed" ? "error" : "success"}`}
+        role={recoveryFeedback.result === "failed" ? "alert" : "status"}>
+        {recoveryFeedback.result === "failed" ? <Unplug size={18} /> : <Check size={17} />}
+        {recoveryFeedback.result === "failed" ? <div><strong>创建记录读取未完成 · {errorKindLabel(recoveryFeedback.error.kind)}</strong>
+          <p>{recoveryFeedback.error.message}</p></div> : <span>没有待核验的创建记录。</span>}
+        {recoveryFeedback.result === "failed" && <button className="secondary" disabled={creationDisabled}
+          onClick={() => void openCreationRecovery()}>重试读取创建记录</button>}
+        <button className="icon-button" aria-label="关闭创建记录读取提示" onClick={() => setCreationRecordFeedback(null)}><X size={16} /></button>
+      </div>}
       {syncFailure && (
         <div className="banner error" role="alert">
           <Unplug size={18} />
@@ -1167,7 +1280,7 @@ function Workspace() {
       workflowAvailable={!!data?.capabilities?.workflow}
       detailsAvailable={!!data?.capabilities?.details}
       onDetailRefreshed={reload}
-      busy={workflowBusy || (!!operation && operation !== "sync")}
+      busy={workspaceActionBlocked("workflow", activity)}
       submit={submitWorkflow}
       compact={inCompact}
     />
@@ -1201,13 +1314,16 @@ function Workspace() {
         detail={selected ? detailFor(selected, true) : null}
         alerts={hasAlerts ? alerts : null}
         lastSync={data?.last_success?.finished_at_ms}
-        refresh={{ run: () => void run("sync"), disabled: syncDisabled, syncing: busy === "sync" }}
+        refresh={{ run: () => void run("sync"), disabled: syncDisabled, syncing: syncBusy }}
         pinned={displayMode.pinned}
         pin={displayMode.pin}
         expand={() => displayMode.change("full")}
         windowControls={displayMode.desktop}
         windowAction={displayMode.windowAction}
         modeBusy={displayMode.busy}
+        create={canCreate ? openCreation : undefined}
+        recoverCreation={creationRecoveryAvailable ? () => void openCreationRecovery() : undefined}
+        creationDisabled={creationDisabled}
       />
     )}
     {/* 清单模式只隐藏完整布局，配置编辑器保持挂载，不丢自动保存和失败草稿。 */}
@@ -1218,12 +1334,14 @@ function Workspace() {
         feedback={[
           connectionFeedback,
           linkFeedback,
+          creationFeedback,
           desktopFeedback,
           credentialFeedback,
         ]}
         onDismiss={() => {
           setConnectionFeedback(null);
           setLinkFeedback(null);
+          setCreationFeedback(null);
           setDesktopFeedback(null);
           setCredentialFeedback(null);
         }}
@@ -1402,9 +1520,9 @@ function Workspace() {
                   >
                     <RefreshCw
                       size={16}
-                      className={busy === "sync" ? "spin" : ""}
+                      className={syncBusy ? "spin" : ""}
                     />
-                    {busy === "sync" ? "正在同步" : "立即刷新"}
+                    {syncBusy ? "正在同步" : "立即刷新"}
                   </button>
                 </div>
               </div>
@@ -1434,7 +1552,7 @@ function Workspace() {
                         </button>
                       ))}
                     </div>
-                    <label className="search">
+                    <div className="list-toolbar-actions"><label className="search">
                       <Search size={16} />
                       <input
                         ref={searchRef}
@@ -1445,6 +1563,10 @@ function Workspace() {
                       />
                       <kbd>⌃ K</kbd>
                     </label>
+                    {creationRecoveryAvailable && <button className="secondary creation-recovery-button" disabled={creationDisabled}
+                      onClick={() => void openCreationRecovery()}>核验创建记录{pendingCreations.length ? ` (${pendingCreations.length})` : ""}</button>}
+                    {canCreate && <button className="secondary create-work-button" disabled={creationDisabled}
+                      onClick={openCreation}><Plus size={15} />新建工作事项</button>}</div>
                   </div>
                   <div className="filterbar">
                     <span>
@@ -1648,17 +1770,17 @@ function Workspace() {
               <WorkSources sources={data?.sources || []} items={data?.items || []}
                 workspaceCatalog={data?.workspace_catalog}
                 selectedId={sourceId} select={changeSource}
-                disabled={!desktop || loading || (!!busy && busy !== "sync")}
+                disabled={!desktop || loading || !!contextOperation}
                 editable={!!data?.capabilities?.source_queries}
                 saved={async (id) => { await reload(); if (id) changeSource(id); }} />
               <div className="source-actions">
                 <button
                   className="primary"
-                  disabled={!desktop || !source?.executable || (!!operation && (operation !== "sync" || !incremental))}
+                  disabled={syncDisabled}
                   onClick={() => void run("sync")}
                 >
                   <ArrowDownToLine size={16} />
-                  {busy === "sync" ? "正在同步…" : "立即刷新"}
+                  {syncBusy ? "正在同步…" : "立即刷新"}
                 </button>
                 <span>不会更改飞书上的事项</span>
               </div>
@@ -1669,8 +1791,8 @@ function Workspace() {
                   types: sourceTypes(source),
                 } }}
                 sourceLabel={`${sourceName(source)}${source.project_key ? ` · ${sourceProjectNames.get(source.project_key) || source.project_key}` : ""}`}
-                disabled={!desktop || !source?.executable || !!busy || loading}
-                canReorder={desktop && !busy && !loading}
+                disabled={!desktop || !source?.executable || workspaceActionBlocked("discovery", activity) || loading}
+                canReorder={desktop && !workspaceActionBlocked("order", activity) && !loading}
                 label={displayType}
                 typeName={typeName}
                 typeKeys={knownTypes}
@@ -1681,7 +1803,7 @@ function Workspace() {
                 apply={applySourceTypes}
               /> : <section className="source-types" aria-label="工作类型">
                 <h3>工作类型</h3>
-                <p className="hint">请先选择上方的一个工作来源，再设置该来源的工作类型；清单显示、别名和同步范围按来源独立保存。</p>
+                <p className="hint">请先选择上方的一个工作来源，再设置该来源的工作类型；清单显示、允许新建和别名按来源独立保存。</p>
               </section>}
             </section>
           )}
@@ -1695,16 +1817,16 @@ function Workspace() {
                 </div>
                 <button
                   className="secondary"
-                  disabled={!desktop || !!busy || !!tokenDraft.trim() || connectionUnsaved}
+                  disabled={!desktop || workspaceActionBlocked("check", activity) || !!tokenDraft.trim() || connectionUnsaved}
                   onClick={() => void run("check")}
                 >
                   <Cloud size={16} />
-                  {busy === "check" ? "检查中…" : "检查连接"}
+                  {checkBusy ? "检查中…" : "检查连接"}
                 </button>
               </div>
               <McpConnectionStatus configured={!!data?.credential_ready}
                 description={data?.credential_description} result={connectionCheck}
-                checking={busy === "check"} onOpenGuide={() => setTokenGuideOpen(true)} />
+                checking={checkBusy} onOpenGuide={() => setTokenGuideOpen(true)} />
               {(!!tokenDraft.trim() || connectionUnsaved) && <p className="hint">
                 {tokenDraft.trim() ? "请先保存下方 Token，再检查连接。" : "服务地址尚未保存，保存后再检查连接。"}
               </p>}
@@ -1729,16 +1851,16 @@ function Workspace() {
                         ? "已配置，输入新 token 可替换"
                         : "粘贴飞书项目 MCP token"
                     }
-                    disabled={!desktop || !!busy}
+                    disabled={!desktop || contextChangeDisabled}
                     aria-describedby="token-help"
                   />
                   <button
                     className="primary"
                     type="submit"
-                    disabled={!desktop || !!busy || !tokenDraft.trim()}
+                    disabled={!desktop || contextChangeDisabled || !tokenDraft.trim()}
                   >
                     <ShieldCheck size={16} />
-                    {busy === "save" ? "保存中…" : "保存 Token"}
+                    {contextOperation === "save" ? "保存中…" : "保存 Token"}
                   </button>
                 </div>
                 <p id="token-help" className="hint">
@@ -1748,13 +1870,14 @@ function Workspace() {
               </form>}
               {data?.settings && <ConnectionSettings
                 settings={data.settings}
-                disabled={!desktop || loading || !!busy}
+                disabled={!desktop || contextChangeDisabled}
                 save={saveSettings}
                 onFeedback={setConnectionFeedback}
                 onUnsavedChange={setConnectionUnsaved}
               />}
               <DesktopSettings settings={desktopSettings} onFeedback={setDesktopFeedback} />
-              <LinkSettings onFeedback={setLinkFeedback} disabled={!!busy || loading} />
+              <LinkSettings onFeedback={setLinkFeedback} disabled={!!contextOperation || loading} />
+              <CreationSettings onFeedback={setCreationFeedback} disabled={!!contextOperation || loading} />
               <AppUpdateSettings updater={updater} />
             </section>
         </div>
@@ -1762,6 +1885,9 @@ function Workspace() {
       {!compact && view === "work" && selected && detailFor(selected, false)}
     </div>
     <AppUpdateDialog updater={updater} />
+    {creationOpen && desktop && data?.capabilities?.creation && <CreateWorkItem key={`${creationContext}:${creationRecovery}`}
+      locations={creationRecovery ? pendingLocations : creationLocationsWithPending} initialType={!creationRecovery && type.length === 1 ? type[0] : undefined}
+      initialSpace={!creationRecovery && project.length === 1 ? project[0] : undefined} close={closeCreation} created={reload} />}
     </>
   );
 }

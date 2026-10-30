@@ -52,13 +52,17 @@ pub const TOOL_TRANSITION_NODE: &str = "transition_node";
 pub const TOOL_TRANSITION_STATE: &str = "transition_state";
 pub const TOOL_UPDATE_NODE: &str = "update_node";
 pub const TOOL_UPDATE_FIELD: &str = "update_field";
+pub const TOOL_CREATE_WORKITEM: &str = "create_workitem";
+pub const TOOL_UPLOAD_FILE: &str = "upload_file";
 
 /// 写侧工具集合：诊断入口据此拒绝「顺手调一个写工具」。
-pub const WRITE_TOOLS: [&str; 4] = [
+pub const WRITE_TOOLS: [&str; 6] = [
     TOOL_TRANSITION_NODE,
     TOOL_TRANSITION_STATE,
     TOOL_UPDATE_NODE,
     TOOL_UPDATE_FIELD,
+    TOOL_CREATE_WORKITEM,
+    TOOL_UPLOAD_FILE,
 ];
 
 /// 凭证所在的请求头名（小写是 `http::HeaderName` 的规范形式，匹配时不区分大小写）。

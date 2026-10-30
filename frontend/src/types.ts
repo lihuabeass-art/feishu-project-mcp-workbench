@@ -109,6 +109,7 @@ export interface Snapshot {
     type_order?: boolean;
     source_type_preferences?: boolean;
     workspace_catalog?: boolean;
+    creation?: boolean;
   };
   items: CachedItem[];
   total: number;

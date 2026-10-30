@@ -160,8 +160,8 @@ impl Session {
         let source = self.config.select_todo_source(source_id)?.clone();
         let source_id_owned = source.id.clone();
         let query = source.todo.clone().unwrap_or(PersonalTodoQuery{action:TodoAction::Todo,todo_scope:None,asset_key:None});
-        // 类型范围只认「用户确认过」的集合；从没确认过就是 None（全量），与升级前行为完全一致。
-        let scope = self.store.source_type_scope(&source_id_owned)?;
+        // 桌面端始终读取来源内全部类型；CLI 的显式范围继续由调用方选择。
+        let scope = self.source_type_scope(&source_id_owned)?;
         let credential = self.credential()?;
         let mut client = self.client(&credential);
         let mut reader=crate::source_query::SourceReader::new(&client,&source,&self.store,scope.as_ref(),self.config.max_pages)
@@ -462,7 +462,8 @@ impl Session {
 
     /// 当前生效的同步类型范围；`None` = 从未确认过（全量，与升级前一致）。
     pub fn source_type_scope(&self, source_id: &str) -> Result<Option<TypeScope>, BackendError> {
-        self.store.source_type_scope(source_id)
+        if self.config.desktop_all_types { Ok(None) }
+        else { self.store.source_type_scope(source_id) }
     }
 
     /// 记下用户确认过的类型范围，返回展开后的 `(空间, 类型)` 组合数。
@@ -641,6 +642,17 @@ fn runtime() -> Result<&'static tokio::runtime::Runtime, BackendError> {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn desktop_ignores_legacy_type_exclusions_without_changing_display_preferences() {
+        let mut session = Session::open(tmp_config("desktop-all-types")).unwrap();
+        session.store.set_source_type_scope("personal-todo", &[], 1).unwrap();
+        assert!(session.source_type_scope("personal-todo").unwrap().is_some());
+        session.config = session.config.for_desktop();
+        assert!(session.source_type_scope("personal-todo").unwrap().is_none());
+        assert!(session.store.source_type_scope("personal-todo").unwrap().is_some());
+        assert_eq!(session.store.source_type_preferences().unwrap(), None);
+    }
 
     fn tmp_config(name: &str) -> Config {
         // 只测本地路径与缓存行为，不碰网络，因此凭证不参与

@@ -120,6 +120,8 @@ pub struct Config {
     /// 关闭时 `load_snapshot` 的 `capabilities.workflow` 为 false，
     /// 且 `get_workflow_actions` / `execute_workflow_action` 直接拒绝（不靠前端自觉）。
     pub workflow_enabled: bool,
+    /// 桌面端同步来源内全部类型，旧版类型排除配置不再限制拉取。
+    pub desktop_all_types: bool,
     pub sources: Vec<WorkSource>,
 }
 
@@ -129,6 +131,7 @@ impl Config {
         self.max_pages = 0;
         self.sync_run_retention = 0;
         self.workflow_enabled = true;
+        self.desktop_all_types = true;
         self
     }
 
@@ -213,6 +216,7 @@ impl Config {
             max_pages: file.max_pages,
             sync_run_retention: file.sync_run_retention,
             workflow_enabled: file.workflow_enabled,
+            desktop_all_types: false,
             sources,
         })
     }
@@ -432,6 +436,8 @@ todo_scope = "in_progress"
         assert_eq!(desktop.max_pages, 0);
         assert_eq!(desktop.sync_run_retention, 0);
         assert!(desktop.workflow_enabled);
+        assert!(desktop.desktop_all_types);
+        assert!(!original.desktop_all_types);
         assert_eq!(desktop.db_path, original.db_path);
         assert_eq!(desktop.token_env, original.token_env);
         assert_eq!(desktop.token_file, original.token_file);

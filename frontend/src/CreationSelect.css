@@ -1,0 +1,147 @@
+.select-control.creation-select-control,
+.creation-panel .select-control.creation-select-control {
+  display: block;
+  position: relative;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.creation-select-control .select-trigger {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  min-height: 38px;
+  padding: 7px 10px 7px 12px;
+  border-color: transparent;
+  border-radius: 6px;
+  background: var(--surface-soft);
+  box-shadow: none;
+}
+
+.creation-select-control .select-trigger > span:first-child {
+  opacity: 0;
+}
+
+.creation-select-control .select-chevron {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.creation-select-content {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-height: 38px;
+  min-width: 0;
+  padding: 6px 35px 6px 12px;
+  pointer-events: none;
+}
+
+.creation-option-chip {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 7px;
+  overflow: hidden;
+  border: 1px solid
+    color-mix(in srgb, var(--creation-chip-color) 18%, transparent);
+  border-radius: 4px;
+  background: color-mix(
+    in srgb,
+    var(--creation-chip-color) 14%,
+    var(--surface-solid)
+  );
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 19px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.creation-select-content .creation-option-chip {
+  max-width: calc(100% - 29px);
+}
+
+.creation-select-placeholder {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 25px;
+}
+
+.creation-select-star {
+  display: inline-flex;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.creation-select-star.is-default {
+  color: #bb8b18;
+}
+
+.creation-select-star:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: #a7780c;
+  filter: none;
+}
+
+.creation-select-star:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.creation-select-star:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.creation-select-menu .select-option {
+  min-width: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.creation-select-menu .select-option > span:first-child {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.creation-select-menu .select-option.active,
+.creation-select-menu .select-option:hover:not([aria-disabled="true"]),
+.creation-select-menu .select-option.selected {
+  background: var(--surface-hover);
+  box-shadow: none;
+  transform: none;
+}
+
+:root[data-theme="dark"] .creation-option-chip {
+  border-color: color-mix(in srgb, var(--creation-chip-color) 28%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--creation-chip-color) 23%,
+    var(--surface-solid)
+  );
+}
+
+:root[data-theme="dark"] .creation-select-star.is-default,
+:root[data-theme="dark"] .creation-select-star:hover:not(:disabled) {
+  color: #edc15b;
+}
