@@ -118,6 +118,18 @@ function bytes(value: number) {
     : `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function ManualDownload() {
+  return __UPDATE_RELEASES_URL__ ? (
+    <p className="hint">
+      仍无法更新时，可
+      <ExternalLink href={__UPDATE_RELEASES_URL__}>
+        通过浏览器下载安装包
+      </ExternalLink>
+      ，退出 FSTODO 后覆盖安装，保留本机数据。
+    </p>
+  ) : null;
+}
+
 export function AppUpdateDialog({
   updater,
 }: {
@@ -216,6 +228,10 @@ export function AppUpdateDialog({
               : status(updater)}
           </p>
           {error && <p className="app-update-error">{error}</p>}
+          {phase === "error" &&
+            (failureStage === "check" || failureStage === "download") && (
+              <ManualDownload />
+            )}
         </div>
         <div className="app-update-notice-actions">
           <button
@@ -329,6 +345,10 @@ export function AppUpdateDialog({
             {error}
           </p>
         )}
+        {phase === "error" &&
+          (failureStage === "check" || failureStage === "download") && (
+            <ManualDownload />
+          )}
         {phase === "ready" && (
           <p className="app-update-explanation">
             安装将退出 FSTODO

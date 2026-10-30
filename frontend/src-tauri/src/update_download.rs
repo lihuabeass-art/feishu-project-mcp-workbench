@@ -88,7 +88,7 @@ pub fn begin_update_download(webview: Webview, rid: ResourceId) -> Result<Resour
 }
 
 fn client(read_timeout: Duration, request_timeout: Duration) -> Result<Client, String> {
-    Client::builder()
+    crate::update_proxy::configure(Client::builder())
         .user_agent("FSTODO-Updater")
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(read_timeout)

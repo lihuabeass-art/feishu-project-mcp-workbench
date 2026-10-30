@@ -4,6 +4,8 @@ mod external_links;
 mod desktop_workspaces;
 mod display_mode;
 mod update_download;
+mod update_check;
+mod update_proxy;
 
 use fstodo_backend::api::Session;
 use fstodo_backend::config::{Config, ConnectionSettings};
@@ -442,6 +444,7 @@ fn main() {
             display_mode::set_compact_pinned,
             display_mode::window_action,
             prepare_app_update,
+            update_check::check_app_update,
             update_download::begin_update_download,
             update_download::download_update,
             update_download::install_verified_update,

@@ -34,7 +34,21 @@ https://github.com/lihuabeass-art/feishu-project-mcp-workbench/releases/latest/d
 
 清单中的包 URL 始终指向固定 tag 的 `releases/download/<tag>/<文件名>`，避免检查后下载时跟随 `latest` 跳至另一版本。更换公开仓库时应同时修改应用构建配置和清单生成参数，已有客户端仍会查询其安装版本内保存的旧地址。
 
-更新检查和分段下载共用启用了 `system-proxy` 的 reqwest 0.12，读取 Windows / macOS 的系统 HTTP(S) 代理及代理环境变量。macOS 从图形界面启动时通常不继承终端代理环境变量，因此不能只验证终端可访问 GitHub；实机验收还须覆盖使用系统代理获取清单和下载更新包。
+更新检查和分段下载共用 reqwest 0.12 与同一套代理策略，启用 `system-proxy` 和 SOCKS 支持。Windows 使用 WinHTTP 读取当前用户的代理配置，兼容单地址、`http=…;https=…` 分协议代理及显式 SOCKS 地址；PAC / WPAD 交由 Windows 原生接口按目标服务器解析，重定向到 Release 附件服务器时重新选择对应代理。PAC 返回 `DIRECT` 时保留直连，解析失败时允许使用配置中的静态代理。代理环境变量优先，保留 `NO_PROXY` 和系统代理绕过规则；每次重新检查或手动重试下载都会重新读取配置，不扫描本机端口，也不修改用户的系统代理。
+
+Windows PAC 按服务器地址（协议、主机、端口）选择，与 Chromium 对 HTTPS URL 的处理边界一致，不承诺按下载路径分流或多个代理自动切换。同步的 WinHTTP 解析在单独的有界工作队列中执行，每次最多等待 3 秒，超时使用静态代理或直连；重试不会无限创建解析线程。macOS 沿用 reqwest 的系统 HTTP(S) 代理支持；本轮 Windows PAC 适配不代表 macOS PAC 已支持。macOS 从图形界面启动时通常不继承终端代理环境变量，因此不能只验证终端可访问 GitHub；实机验收还须覆盖使用系统代理获取清单和下载更新包。
+
+重新检查／下载重试会重读静态代理地址、绕过规则与 PAC URL，并新建解析会话；同一 PAC URL 下的脚本内容缓存仍由 Windows AutoProxy 服务管理，不承诺重试会强制重新下载该脚本。应用不清空整台电脑的代理缓存，不自动发送 Windows 登录凭证。修改了 PAC 脚本而仍使用旧规则时，可在代理软件中切换到静态系统代理完成更新，或使用浏览器下载安装入口。[Windows 官方缓存说明](https://learn.microsoft.com/en-us/windows/win32/winhttp/autoproxy-cache)。
+
+### Windows 能访问 GitHub，但软件更新失败
+
+浏览器与 Rust 更新器使用不同的网络客户端，浏览器可访问仓库页面不等于更新器可读取 Release 附件。`latest.json` 和安装包还会从 `github.com` 重定向至 GitHub 的附件域名（例如 `release-assets.githubusercontent.com`），代理规则和公司网络须允许整条下载链路。
+
+0.5.0 未启用 Windows 系统代理读取；Clash / v2ray 开启系统代理而未开启 TUN 时，浏览器可能正常、软件更新却连接失败。`684f286` 中的基础修复已进入 0.5.1，但不会改变仍在运行的 0.5.0。受影响用户可先通过浏览器打开本仓库的正式 Release，下载 Windows 安装包，退出 FSTODO 后覆盖安装，无需卸载或删除本机数据；也可临时使用原有代理软件的 TUN 模式完成这一次更新。后续更新由已安装的新客户端执行。
+
+失败提示与更新详情提供浏览器下载安装包的入口，地址跟随同次构建的更新仓库配置；不会自动打开浏览器或安装。若浏览器也无法下载安装包，需要先恢复 GitHub 附件域名的访问；重试、分段下载和代理适配不能替代可用的网络。当前没有独立镜像源。
+
+Windows 代理回归应覆盖：关闭 TUN 后仅使用系统 HTTP 代理、分协议代理、环境变量覆盖与 `NO_PROXY`、PAC 对更新源和重定向附件分别选择代理、PAC `DIRECT`、PAC 故障后静态代理回退、重新配置后手动重试，以及失败后从浏览器下载安装。自动化测试使用独立的本地代理和 PAC 服务，不改动本机系统设置；受影响机器的实际网络仍须验收。
 
 ## 签名与 macOS 兼容
 

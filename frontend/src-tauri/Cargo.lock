@@ -1377,6 +1377,7 @@ version = "0.4.3"
 dependencies = [
  "base64 0.22.1",
  "fstodo-backend",
+ "hyper-util",
  "minisign-verify",
  "reqwest 0.12.28",
  "serde",

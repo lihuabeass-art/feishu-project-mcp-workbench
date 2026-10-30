@@ -1,9 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  check as checkOfficial,
-  type Update as OfficialUpdate,
-} from "@tauri-apps/plugin-updater";
+import { Update as OfficialUpdate } from "@tauri-apps/plugin-updater";
 import { check } from "./updaterClient";
 
 const closed = vi.hoisted(() => vi.fn());
@@ -19,27 +16,29 @@ vi.mock("@tauri-apps/api/core", () => ({
     }
   },
 }));
-vi.mock("@tauri-apps/plugin-updater", () => ({ check: vi.fn() }));
 
 beforeEach(() => vi.resetAllMocks());
 
 it("下载失败保留原生会话用于续传，验签返回资源后才允许安装，关闭释放全部资源", async () => {
+  const closeCandidate = vi
+    .spyOn(OfficialUpdate.prototype, "close")
+    .mockResolvedValue();
   const candidate = {
     rid: 10,
     version: "1.1.0",
     currentVersion: "1.0.0",
-    close: vi.fn(),
+    rawJson: {},
   };
-  vi.mocked(checkOfficial).mockResolvedValue(
-    candidate as unknown as OfficialUpdate,
-  );
   vi.mocked(invoke)
+    .mockResolvedValueOnce(candidate)
     .mockResolvedValueOnce(20)
     .mockRejectedValueOnce("连接超时")
     .mockResolvedValueOnce(30)
     .mockResolvedValueOnce(undefined);
   const update = (await check({ timeout: 20_000 }))!;
-  expect(checkOfficial).toHaveBeenCalledWith({ timeout: 20_000 });
+  expect(invoke).toHaveBeenNthCalledWith(1, "check_app_update", {
+    timeout: 20_000,
+  });
   await expect(update.install()).rejects.toThrow("尚未下载并通过签名校验");
   await expect(update.download(vi.fn())).rejects.toBe("连接超时");
   await expect(update.install()).rejects.toThrow("尚未下载并通过签名校验");
@@ -61,11 +60,15 @@ it("下载失败保留原生会话用于续传，验签返回资源后才允许�
   });
   await update.close();
   expect(closed.mock.calls.map(([rid]) => rid)).toEqual([30, 20]);
-  expect(candidate.close).toHaveBeenCalledOnce();
+  expect(closeCandidate).toHaveBeenCalledOnce();
+  expect((closeCandidate.mock.contexts[0] as OfficialUpdate).rid).toBe(10);
+  closeCandidate.mockRestore();
 });
 
 it("没有新版不创建下载会话", async () => {
-  vi.mocked(checkOfficial).mockResolvedValue(null);
+  vi.mocked(invoke).mockResolvedValueOnce(null);
   expect(await check()).toBeNull();
-  expect(invoke).not.toHaveBeenCalled();
+  expect(invoke).toHaveBeenCalledExactlyOnceWith("check_app_update", {
+    timeout: undefined,
+  });
 });

@@ -1,9 +1,7 @@
 import { Channel, Resource, invoke } from "@tauri-apps/api/core";
 import {
-  check as checkOfficial,
-  type Update as OfficialUpdate,
+  Update as OfficialUpdate,
   type DownloadEvent as OfficialDownloadEvent,
-  type CheckOptions,
 } from "@tauri-apps/plugin-updater";
 
 export type DownloadEvent =
@@ -66,7 +64,9 @@ export class Update {
   }
 }
 
-export async function check(options?: CheckOptions) {
-  const candidate = await checkOfficial(options);
-  return candidate ? new Update(candidate) : null;
+export async function check(options?: { timeout?: number }) {
+  const metadata = await invoke<
+    ConstructorParameters<typeof OfficialUpdate>[0] | null
+  >("check_app_update", { timeout: options?.timeout });
+  return metadata ? new Update(new OfficialUpdate(metadata)) : null;
 }

@@ -213,6 +213,11 @@ it("关闭自动检查持久保存且仍可手动检查，检查失败不显示�
   await screen.findByText("网络连接失败");
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.getByText("网络连接失败")).toBeTruthy();
+  expect(
+    screen
+      .getByRole("link", { name: "通过浏览器下载安装包" })
+      .getAttribute("href"),
+  ).toBe(__UPDATE_RELEASES_URL__);
   expect(screen.queryByText("当前已是最新版本。")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "重试" }));
   await waitFor(() =>
@@ -291,6 +296,9 @@ it("后台下载失败保留可见重试入口，未知大小使用不确定进�
   trigger.focus();
   fireEvent.click(trigger);
   await screen.findByText("下载中断");
+  expect(
+    screen.getByRole("link", { name: "通过浏览器下载安装包" }),
+  ).toBeTruthy();
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(document.activeElement).toBe(trigger);
   fireEvent.click(screen.getByRole("button", { name: "重试" }));
@@ -300,6 +308,9 @@ it("后台下载失败保留可见重试入口，未知大小使用不确定进�
   const view = screen.getByRole("button", { name: "查看更新" });
   view.focus();
   fireEvent.click(view);
+  expect(
+    screen.queryByRole("link", { name: "通过浏览器下载安装包" }),
+  ).toBeNull();
   expect(screen.getByRole("progressbar").hasAttribute("aria-valuenow")).toBe(
     false,
   );
