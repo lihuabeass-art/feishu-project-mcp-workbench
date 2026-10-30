@@ -359,8 +359,9 @@ function saveLegacy(pending = false, occupied = false) {
   });
 }
 
-it("旧总排期草稿打开时直接填入对应个人输入框并保存新身份，不等待后台读取", async () => {
+it("旧总排期草稿在fresh检测前字节不变，确认本地表单后迁移对应个人字段", async () => {
   saveLegacy();
+  const original = localStorage.getItem(key);
   const latest = scheduleOptions();
   vi.mocked(getWorkflowActions).mockResolvedValueOnce(latest);
   let resolve!: (value: WorkflowOptions) => void;
@@ -371,6 +372,10 @@ it("旧总排期草稿打开时直接填入对应个人输入框并保存新身�
       }),
   );
   const { view, user } = await open();
+  expect(screen.queryByLabelText("实际工时 a（必填）")).toBeNull();
+  expect(localStorage.getItem(key)).toBe(original);
+  vi.mocked(getWorkflowActions).mockResolvedValue(latest);
+  await act(async () => resolve(latest));
   expect(
     (screen.getByLabelText("实际工时 a（必填）") as HTMLInputElement).value,
   ).toBe("1");
@@ -383,8 +388,6 @@ it("旧总排期草稿打开时直接填入对应个人输入框并保存新身�
   expect(screen.queryByText(/其他保留草稿/)).toBeNull();
   expect(readDraft(key)?.fields[legacyHours]).toBeUndefined();
   expect(readDraft(key)?.fields[ownerHours]).toBe("1");
-  vi.mocked(getWorkflowActions).mockResolvedValue(latest);
-  await act(async () => resolve(latest));
   view.unmount();
   await open();
   expect(

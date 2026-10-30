@@ -506,6 +506,38 @@ input {
 .workflow-option {
   margin-bottom: 12px;
 }
+.workflow-manual-fill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 6px 0;
+  font-size: 11px;
+}
+.workflow-manual-fill a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--green);
+  background: var(--surface-solid);
+  text-decoration: none;
+}
+.workflow-manual-fill a:hover {
+  background: var(--surface-hover);
+}
+.workflow-manual-fill a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.workflow-manual-fill .hint {
+  margin: 0;
+}
+.workflow-manual-fill .error-text {
+  flex-basis: 100%;
+}
 .workflow-error {
   color: var(--error-text);
   font-size: 11px;

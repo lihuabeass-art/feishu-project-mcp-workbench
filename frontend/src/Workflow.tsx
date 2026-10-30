@@ -1,8 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { Check, CircleAlert, ClipboardCheck } from "lucide-react";
+import { ArrowUpRight, Check, CircleAlert, ClipboardCheck } from "lucide-react";
 import { getWorkflowActions } from "./api";
 import { asError, itemKey } from "./model";
+import { ExternalLink, openExternalUrl } from "./ExternalLink";
 import { Select } from "./Select";
 import { PercentageInput } from "./PercentageInput";
 import { SteppedNumberInput } from "./SteppedNumberInput";
@@ -27,6 +28,17 @@ import type {
 } from "./types";
 
 type Field = WorkflowAction["fields"][number];
+const feishuActionExplanation = "此操作所需字段暂无法在本软件中处理。点击上方按钮，即可打开对应的飞书事项，填写并完成流程。";
+const feishuEditorExplanation = "此操作所需字段暂无法在本软件中处理。请通过飞书链接打开对应事项，填写并完成流程。";
+
+function validItemUrl(url?: string) {
+  try {
+    if (url && ["https:", "http:"].includes(new URL(url).protocol)) return url;
+  } catch {
+    // 地址由后端核实，缺失或非法时不推测其他页面。
+  }
+  return undefined;
+}
 
 export function Workflow({
   item,
@@ -51,6 +63,8 @@ export function Workflow({
   const [blocked, setBlocked] = useState(false);
   const [draftStatus, setDraftStatus] = useState("");
   const [error, setError] = useState("");
+  const [returnCheckError, setReturnCheckError] = useState("");
+  const [actionOpenError, setActionOpenError] = useState<{ id: string; message: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
   const flight = useRef(false);
@@ -60,8 +74,15 @@ export function Workflow({
   const identity = itemKey(item);
   const identityRef = useRef(identity);
   identityRef.current = identity;
+  const optionsIdentity = useRef(identity);
+  const manualFillReturn = useRef<string | null>(null);
+  const manualFillEpoch = useRef(0);
   const reads = useRef(0);
   const backgroundRead = useRef<number | null>(null);
+  const returnCheckRead = useRef<number | null>(null);
+  const selectionRead = useRef<number | null>(null);
+  const freshSelection = useRef<string | null>(null);
+  const knownPendingActions = useRef({ identity, actions: new Map<string, string>() });
   const editor = useRef({
     action,
     options,
@@ -84,8 +105,8 @@ export function Workflow({
     blocked,
     busy,
   };
-  const checkRemoteRef = useRef(() => {});
-  checkRemoteRef.current = () => void checkRemote();
+  const checkRemoteRef = useRef<(onReturn?: boolean) => void>(() => {});
+  checkRemoteRef.current = (onReturn) => void checkRemote(onReturn);
   useEffect(() => {
     reads.current += 1;
     let active = true;
@@ -93,6 +114,10 @@ export function Workflow({
     setAction(null);
     setReview(null);
     setError("");
+    setReturnCheckError("");
+    setActionOpenError(null);
+    selectionRead.current = null;
+    freshSelection.current = null;
     setBlocked(false);
     setPending(false);
     if (!available || !item.id.project_key || !item.id.work_item_type_key)
@@ -100,7 +125,11 @@ export function Workflow({
     setLoading(true);
     void getWorkflowActions(item.id)
       .then((v) => {
-        if (active) setOptions(v);
+        if (active) {
+          optionsIdentity.current = identity;
+          rememberPendingActions(v);
+          setOptions(v);
+        }
       })
       .catch((e) => {
         if (active) setError(asError(e).message);
@@ -113,6 +142,16 @@ export function Workflow({
       reads.current += 1;
     };
   }, [identity, available, revision]);
+
+  useEffect(() => {
+    manualFillEpoch.current += 1;
+    manualFillReturn.current = null;
+    knownPendingActions.current = { identity, actions: new Map() };
+    return () => {
+      manualFillEpoch.current += 1;
+      manualFillReturn.current = null;
+    };
+  }, [identity]);
 
   useLayoutEffect(() => {
     const workflow = workflowRef.current;
@@ -153,7 +192,11 @@ export function Workflow({
   }, [action?.id, !!review]);
 
   useEffect(() => {
-    const onFocus = () => checkRemoteRef.current();
+    const onFocus = () => {
+      const origin = manualFillReturn.current;
+      manualFillReturn.current = null;
+      checkRemoteRef.current(origin === identityRef.current);
+    };
     const onVisible = () => {
       if (document.visibilityState === "visible") checkRemoteRef.current();
     };
@@ -165,7 +208,12 @@ export function Workflow({
     };
   }, []);
   useEffect(() => {
-    if (action) checkRemoteRef.current();
+    if (!action) return;
+    if (freshSelection.current === action.id) {
+      freshSelection.current = null;
+      return;
+    }
+    checkRemoteRef.current();
   }, [action?.id]);
   const lastItemVersion = useRef({
     identity,
@@ -188,37 +236,66 @@ export function Workflow({
     }
   }, [identity, item.detail_revision, item.updated_at_ms]);
 
-  async function checkRemote() {
+  async function checkRemote(onReturn = false) {
     const current = editor.current;
     if (
       !available ||
-      !current.action ||
       !current.options ||
+      (!current.action && !onReturn) ||
       current.review ||
-      current.blocked ||
+      (current.blocked && !onReturn) ||
       current.busy ||
       flight.current ||
-      backgroundRead.current !== null
+      selectionRead.current !== null
     )
       return;
+    if (backgroundRead.current === reads.current) {
+      if (onReturn) {
+        returnCheckRead.current = backgroundRead.current;
+        setReturnCheckError("");
+      }
+      return;
+    }
     const origin = identity,
-      actionId = current.action.id,
+      epoch = manualFillEpoch.current,
+      actionId = current.action?.id,
       read = ++reads.current;
     backgroundRead.current = read;
+    if (onReturn) {
+      returnCheckRead.current = read;
+      setReturnCheckError("");
+    }
     try {
       const latest = await getWorkflowActions(item.id, true);
-      if (reads.current !== read || identityRef.current !== origin) return;
+      if (
+        reads.current !== read ||
+        identityRef.current !== origin ||
+        manualFillEpoch.current !== epoch
+      ) return;
       const now = editor.current;
+      const fromReturn = returnCheckRead.current === read;
       if (
         now.action?.id !== actionId ||
         !now.options ||
         now.review ||
-        now.blocked ||
+        (now.blocked && !fromReturn) ||
         now.busy ||
         flight.current
       )
         return;
+      rememberPendingActions(latest);
       const nextAction = latest.actions.find((next) => next.id === actionId);
+      if (fromReturn && (!now.action || now.blocked)) {
+        // 返回检查只更新可展示的云端信息；提交标记和本机编辑快照仍由明确恢复操作处理。
+        setOptions(latest);
+        if (nextAction) setAction(nextAction);
+        setReturnCheckError(
+          now.action && !nextAction
+            ? "云端已不再提供原动作，草稿和提交标记已保留，请先核对飞书状态。"
+            : "",
+        );
+        return;
+      }
       if (!nextAction) {
         setOptions(latest);
         setAction(null);
@@ -239,7 +316,7 @@ export function Workflow({
         },
         latest.version,
       );
-      const key = draftKey(origin, actionId);
+      const key = draftKey(origin, nextAction.id);
       const hasDraft =
         readDraft(key) !== null ||
         Object.entries(now.fields).some(
@@ -261,19 +338,86 @@ export function Workflow({
         hasDraft ? "草稿已保存在本机" : "修改会自动保存为本机草稿",
       );
       setError("");
+      setReturnCheckError("");
     } catch (e) {
-      if (reads.current === read && identityRef.current === origin)
-        setError(`云端检查未完成：${asError(e).message}`);
+      if (
+        reads.current === read &&
+        identityRef.current === origin &&
+        manualFillEpoch.current === epoch
+      ) {
+        if (returnCheckRead.current === read)
+          setReturnCheckError("云端检查未完成，现有内容和草稿已保留，请稍后重试。");
+        else setError(`云端检查未完成：${asError(e).message}`);
+      }
     } finally {
       if (backgroundRead.current === read) backgroundRead.current = null;
     }
   }
 
-  function choose(next: WorkflowAction, values: Record<string, string> = {}) {
-    if (!options || busy || flight.current) return;
+  async function selectAction(candidate: WorkflowAction) {
+    if (
+      !options ||
+      optionsIdentity.current !== identity ||
+      busy ||
+      flight.current ||
+      selectionRead.current !== null
+    ) return;
+    const origin = identity,
+      epoch = manualFillEpoch.current,
+      read = ++reads.current;
+    selectionRead.current = read;
+    backgroundRead.current = null;
+    setPending(true);
+    setActionOpenError(null);
+    setReturnCheckError("");
+    setError("");
+    const isCurrent = () => identityRef.current === origin &&
+      manualFillEpoch.current === epoch && reads.current === read;
+    try {
+      const latest = await getWorkflowActions(item.id, true);
+      if (!isCurrent()) return;
+      rememberPendingActions(latest);
+      setOptions(latest);
+      const next = latest.actions.find((action) => action.id === candidate.id);
+      if (!next) {
+        setError("云端流程已变化，原动作已不可用。已有草稿已保留，请重新选择动作。");
+        return;
+      }
+      if (next.requires_feishu) {
+        const href = validItemUrl(latest.item_url);
+        if (!href) {
+          setActionOpenError({ id: next.id, message: "未取得当前事项的有效飞书地址，请在飞书项目中搜索该事项，填写并完成流程。" });
+          return;
+        }
+        try {
+          await openExternalUrl(href);
+          if (isCurrent()) manualFillReturn.current = origin;
+        } catch {
+          if (isCurrent()) setActionOpenError({ id: next.id, message: "打开飞书项目未完成，请重试或使用下方链接打开。" });
+        }
+        return;
+      }
+      if (next.disabled_reason && !syncFor(next, "progress", latest) && !syncFor(next, "schedule", latest)) {
+        setActionOpenError({ id: next.id, message: "云端动作已不可用，请核对最新提示。已有草稿已保留。" });
+        return;
+      }
+      choose(next, {}, latest, true);
+    } catch {
+      if (isCurrent()) setActionOpenError({ id: candidate.id, message: "动作检查未完成，现有清单和草稿已保留，请重试。" });
+    } finally {
+      if (selectionRead.current === read) {
+        selectionRead.current = null;
+        if (identityRef.current === origin && manualFillEpoch.current === epoch) setPending(false);
+      }
+    }
+  }
+  function choose(next: WorkflowAction, values: Record<string, string> = {}, source = options, fresh = false) {
+    if (!source || busy || flight.current) return;
     reads.current += 1;
     backgroundRead.current = null;
     setError("");
+    setReturnCheckError("");
+    setActionOpenError(null);
     setReview(null);
     setAcknowledged(false);
     setBlocked(false);
@@ -297,7 +441,7 @@ export function Workflow({
                 ),
                 ...conflicts.filter((key) => transferred.includes(key)),
               ],
-              version: options.version,
+              version: source.version,
               updated_at: Date.now(),
             }
           : saved;
@@ -308,11 +452,11 @@ export function Workflow({
         !draft.pending
       )
         writeDraft(draftKey(identity, next.id), draft);
-      const initial = reconcileDraft(next, null, options.version);
-      // 先恢复上次编辑快照，后台读取后再推进基线，避免旧缓存制造冲突。
+      const initial = reconcileDraft(next, null, source.version);
+      // 最新读取可直接推进基线；内部切换动作仍先恢复编辑快照，避免旧缓存制造冲突。
       const restored =
-        !draft || draft.pending
-          ? reconcileDraft(next, draft, options.version)
+        fresh || !draft || draft.pending
+          ? reconcileDraft(next, draft, source.version)
           : {
               fields: { ...initial.fields, ...draft.fields },
               base_fields: {
@@ -338,8 +482,12 @@ export function Workflow({
             ? "已恢复本机草稿"
             : "修改会自动保存为本机草稿",
       );
-      if (draft && !draft.pending)
-        setOptions({ ...options, version: draft.version });
+      if (fresh && draft && !draft.pending) {
+        writeDraft(draftKey(identity, next.id), { ...restored, version: source.version, updated_at: Date.now() });
+      }
+      if (draft && !draft.pending && !fresh)
+        setOptions({ ...source, version: draft.version });
+      if (fresh) freshSelection.current = next.id;
       setAction(next);
     } catch (e) {
       setError(asError(e).message);
@@ -657,7 +805,9 @@ export function Workflow({
       setAcknowledged(false);
       setBlocked(false);
       setDraftStatus(
-        "已重新读取云端，草稿已保留。请核对当前值后继续；上次提交结果仍以云端为准。",
+        nextAction.requires_feishu
+          ? "已重新读取云端，草稿已保留。请在飞书项目中核对并完成流程；上次提交结果仍以云端为准。"
+          : "已重新读取云端，草稿已保留。请核对当前值后继续；上次提交结果仍以云端为准。",
       );
     } catch (e) {
       if (identityRef.current === origin && reads.current === read)
@@ -813,9 +963,9 @@ export function Workflow({
   );
   const progressOnly = action?.id.startsWith("node:progress:") ?? false;
   const scheduleOnly = action?.id.startsWith("node:schedule:") ?? false;
-  function syncFor(candidate: WorkflowAction, kind: "progress" | "schedule") {
+  function syncFor(candidate: WorkflowAction, kind: "progress" | "schedule", source = options) {
     return candidate.id.startsWith("node:confirm:")
-      ? options?.actions.find(
+      ? source?.actions.find(
           (next) =>
             !next.disabled_reason &&
             next.id === candidate.id.replace("node:confirm:", `node:${kind}:`),
@@ -881,8 +1031,9 @@ export function Workflow({
     action?.fields.map((field, index) => [field.key, index]),
   );
   const labelId = (field: Field) => `${fieldId}-${fieldIndex.get(field.key)}`;
-  const remoteOf = (field: Field) =>
-    baseFields[field.key] ?? field.initial_value ?? "";
+  const remoteOf = (field: Field) => blocked
+    ? field.initial_value ?? baseFields[field.key] ?? ""
+    : baseFields[field.key] ?? field.initial_value ?? "";
   // 数值和下拉留空时用占位文字说明沿用云端；文本需复制云端值协作修改，日期控件不显示占位文字。
   const compactKeep = (field: Field) =>
     field.kind === "number" || field.kind === "select";
@@ -1005,6 +1156,49 @@ export function Workflow({
       />
     );
   }
+  function feishuLinkFor(candidate: Pick<WorkflowAction, "id">, verify = false) {
+    if (optionsIdentity.current !== identity) return null;
+    const epoch = manualFillEpoch.current;
+    const href = validItemUrl(options?.item_url);
+    return (
+      <div className="workflow-manual-fill" key={`${identity}:${candidate.id}:${href ?? ""}:${verify}`}>
+        {href ? (
+          <ExternalLink href={href} title={`在飞书项目中${verify ? "核对" : "填写"}「${item.name || item.id.work_item_id}」`}
+            onOpen={() => {
+              if (identityRef.current === identity && manualFillEpoch.current === epoch)
+                manualFillReturn.current = identity;
+            }}>
+            {verify ? "去飞书核对" : "去飞书填写"}<ArrowUpRight size={13} aria-hidden="true" />
+          </ExternalLink>
+        ) : (
+          <p className="hint">未取得当前事项的有效飞书地址，请在飞书项目中搜索该事项{verify ? "后核对" : "，填写并完成流程"}。</p>
+        )}
+      </div>
+    );
+  }
+  function manualFillFor(candidate: WorkflowAction, includeReadOnly = false) {
+    if (
+      !candidate.requires_feishu &&
+      !(candidate.disabled_reason && candidate.manual_fill_required) &&
+      !(includeReadOnly && candidate.fields.some((field) => field.read_only))
+    ) return null;
+    return feishuLinkFor(candidate);
+  }
+  function pendingDraftFor(candidate: Pick<WorkflowAction, "id">) {
+    try {
+      return !!readDraft(draftKey(identity, candidate.id))?.pending;
+    } catch {
+      return false;
+    }
+  }
+  function rememberPendingActions(source: WorkflowOptions) {
+    if (knownPendingActions.current.identity !== identity)
+      knownPendingActions.current = { identity, actions: new Map() };
+    for (const candidate of source.actions) {
+      if (pendingDraftFor(candidate))
+        knownPendingActions.current.actions.set(candidate.id, candidate.label);
+    }
+  }
   return (
     <section
       className={`detail-section workflow${action && options ? " workflow-active" : ""}`}
@@ -1023,6 +1217,26 @@ export function Workflow({
               {error}
             </p>
           )}
+          {returnCheckError && (
+            <div className="workflow-recovery">
+              <p className="workflow-error" role="alert">{returnCheckError}</p>
+              {action && (
+                <button type="button" className="text-button" disabled={locked}
+                  onClick={() => void checkRemote(true)}>
+                  重试云端检查
+                </button>
+              )}
+            </div>
+          )}
+          {!action && knownPendingActions.current.identity === identity &&
+            [...knownPendingActions.current.actions].filter(([id]) =>
+              !flowActions?.some((candidate) => candidate.id === id) && pendingDraftFor({ id }),
+            ).map(([id, label]) => (
+              <div className="workflow-recovery" key={id}>
+                <p className="workflow-error">「{label}」上次提交结果待核实，草稿和提交标记已保留。请在飞书项目中核对。</p>
+                {feishuLinkFor({ id }, true)}
+              </div>
+            ))}
           {!loading && !action && (
             <>
               {flowActions?.length === 0 && (
@@ -1035,17 +1249,27 @@ export function Workflow({
                     disabled={
                       locked ||
                       (!!a.disabled_reason &&
+                        !a.requires_feishu &&
                         !syncFor(a, "progress") &&
                         !syncFor(a, "schedule"))
                     }
-                    onClick={() => choose(a)}
+                    onClick={() => void selectAction(a)}
                   >
                     {a.label}
                   </button>
-                  {a.disabled_reason && (
-                    <p className="hint">{a.disabled_reason}</p>
+                  {(a.requires_feishu || a.disabled_reason) && (
+                    <p className="hint">{a.requires_feishu ? feishuActionExplanation : a.disabled_reason}</p>
                   )}
-                  {a.disabled_reason &&
+                  {pendingDraftFor(a) && (
+                    <p className="workflow-error">上次提交结果待核实，已有草稿和提交标记已保留。请在飞书项目中核对。</p>
+                  )}
+                  {actionOpenError?.id === a.id && (
+                    <div className="workflow-recovery">
+                      <p className="workflow-error" role="alert">{actionOpenError.message}</p>
+                      {a.requires_feishu && validItemUrl(options?.item_url) && feishuLinkFor(a)}
+                    </div>
+                  )}
+                  {!a.requires_feishu && a.disabled_reason &&
                     (syncFor(a, "progress") || syncFor(a, "schedule")) && (
                       <p className="hint">
                         可进入表单同步
@@ -1058,7 +1282,7 @@ export function Workflow({
                         ；完成节点前仍需补齐上述必填项。
                       </p>
                     )}
-                  {!a.disabled_reason && a.fields.some((f) => f.required) && (
+                  {!a.requires_feishu && !a.disabled_reason && a.fields.some((f) => f.required) && (
                     <p className="hint">
                       需填写：
                       {a.fields
@@ -1072,7 +1296,9 @@ export function Workflow({
               <button
                 className="text-button"
                 disabled={locked}
-                onClick={() => setRevision((v) => v + 1)}
+                onClick={() => options
+                  ? void checkRemote(true)
+                  : setRevision((v) => v + 1)}
               >
                 重新读取动作
               </button>
@@ -1096,9 +1322,10 @@ export function Workflow({
                   {!review && action.description && (
                     <p className="hint">{action.description}</p>
                   )}
-                  {!review && action.disabled_reason && (
-                    <p className="hint">{action.disabled_reason}</p>
+                  {!review && (action.requires_feishu || action.disabled_reason) && (
+                    <p className="hint">{action.requires_feishu ? feishuEditorExplanation : action.disabled_reason}</p>
                   )}
+                  {!review && !blocked && manualFillFor(action, true)}
                   {!review ? (
                     segments.map((segment, index) =>
                       segment.kind === "owners" ? (
@@ -1281,8 +1508,11 @@ export function Workflow({
                   {blocked && !pending && (
                     <div className="workflow-recovery">
                       <p className="workflow-error">
-                        这份草稿上次提交的结果尚待核实，已阻止重复提交。重新读取云端后，可保留草稿并核对当前值，再继续操作。
+                        {action.requires_feishu
+                          ? "这份草稿上次提交的结果尚待核实，已阻止重复提交。请在飞书项目中核对当前状态；需要补充的字段和流程操作可直接在飞书完成。"
+                          : "这份草稿上次提交的结果尚待核实，已阻止重复提交。重新读取云端后，可保留草稿并核对当前值，再继续操作。"}
                       </p>
+                      {feishuLinkFor(action, true)}
                       <button
                         type="button"
                         className="secondary"

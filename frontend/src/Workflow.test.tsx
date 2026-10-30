@@ -133,47 +133,46 @@ it("非必填的只读系统字段未填写时仍可核对并直接推进，不�
   expect(submit.mock.calls[0][0].fields).toEqual({});
 });
 
-it("未满足系统必填项展示官方提示，重新读取已满足后可继续且不重写旧草稿", async () => {
+it("页面必填预检说明在飞书填写并完成流程，满足后仍去飞书且不重写旧草稿", async () => {
   // 原文来源：飞书官方 sop-transition-node.md §4.3，仅替换节点、字段和类型占位。
   const reason = "节点流转失败。当前节点【设计】设置了必须填写【负责人完成结论】（类型：owners_finished_info）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。";
-  let current = systemOwnerOptions("", reason);
+  const itemUrl = "https://project.feishu.cn/example/story/detail/same";
+  let current = { ...systemOwnerOptions("", reason), item_url: itemUrl };
+  current.actions[0].requires_feishu = true;
+  current.actions[0].manual_fill_required = true;
   vi.mocked(getWorkflowActions).mockImplementation(async () => current);
+  const open = vi.spyOn(window, "open").mockReturnValue({ opener: null } as Window);
   const key = draftKey(itemKey(item()), options.actions[0].id);
   writeDraft(key, { version: "legacy", updated_at: 1,
     fields: { legacy: "/", doc: "云端设计稿" },
     base_fields: { legacy: "", doc: "云端设计稿" },
     field_labels: { legacy: "旧负责人意见" } });
+  const original = localStorage.getItem(key);
   const submit = vi.fn().mockResolvedValue(result);
   render(<Workflow item={item()} available busy={false} submit={submit} />);
   const user = userEvent.setup();
-  const blocked = await screen.findByRole("button", { name: "完成设计节点" });
-  expect((blocked as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.getByText(reason)).toBeTruthy();
-  await user.click(blocked);
+  const action = await screen.findByRole("button", { name: "完成设计节点" });
+  expect((action as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.getByText("此操作所需字段暂无法在本软件中处理。点击上方按钮，即可打开对应的飞书事项，填写并完成流程。")).toBeTruthy();
+  expect(screen.queryByText(reason)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  await user.click(action);
+  await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith(itemUrl, "_blank"));
   expect(submit).not.toHaveBeenCalled();
   expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
-  expect(readDraft(key)?.fields.legacy).toBe("/");
+  expect(localStorage.getItem(key)).toBe(original);
 
-  current = { ...systemOwnerOptions("passed"), version: "owner-v2" };
-  await user.click(screen.getByRole("button", { name: "重新读取动作" }));
-  await waitFor(() => expect(
-    (screen.getByRole("button", { name: "完成设计节点" }) as HTMLButtonElement).disabled,
-  ).toBe(false));
+  current = { ...systemOwnerOptions("passed"), version: "owner-v2", item_url: itemUrl };
+  current.actions[0].requires_feishu = true;
+  fireEvent.focus(window);
+  await waitFor(() => expect(getWorkflowActions).toHaveBeenCalledTimes(3));
   expect(screen.queryByText(reason)).toBeNull();
+  expect(screen.getByText("此操作所需字段暂无法在本软件中处理。点击上方按钮，即可打开对应的飞书事项，填写并完成流程。")).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "完成设计节点" }));
-  await user.click(screen.getByRole("button", { name: "提交" }));
-  const review = await screen.findByRole("region", { name: "提交前二次确认" });
-  expect(review.textContent).toContain("已通过");
-  expect(review.textContent).toContain("本次不提交");
+  await waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole("button", { name: "提交" })).toBeNull();
   expect(submit).not.toHaveBeenCalled();
-  await user.click(screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"));
-  await user.click(screen.getByRole("button", { name: "确认完成节点" }));
-  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
-  expect(submit.mock.calls[0][0]).toMatchObject({
-    action_id: options.actions[0].id, version: "owner-v2",
-  });
-  expect(submit.mock.calls[0][0].fields).toEqual({});
-  expect(readDraft(key)?.fields.legacy).toBe("/");
+  expect(localStorage.getItem(key)).toBe(original);
 });
 
 const stateOptions: WorkflowOptions = {

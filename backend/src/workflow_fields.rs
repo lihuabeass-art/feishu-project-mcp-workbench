@@ -45,6 +45,8 @@ pub(super) struct NodeForm {
     inputs: Vec<Input>,
     pub blocked: Vec<String>,
     page_required: BTreeMap<String, PageRequired>,
+    manual_fill_required: bool,
+    page_fields: bool,
 }
 
 fn text(v: &Value) -> String {
@@ -77,6 +79,14 @@ fn page_only_type<'a>(key: &str, config: &'a Value) -> Option<&'a str> {
     }
     config["field_type"].as_str().filter(|kind| matches!(*kind,
         "vote-boolean" | "vote-option" | "vote-option-multi"))
+}
+
+fn config_needs_page(config: &Value) -> bool {
+    if config["field_type"] == "multi_user_compound_field" {
+        return config["compound_field_info"].as_array()
+            .is_some_and(|children| children.iter().any(config_needs_page));
+    }
+    schema::unsupported_type(config)
 }
 
 fn select_value(value: &Value) -> String {
@@ -132,6 +142,21 @@ impl NodeForm {
     }
 
     pub fn has_page_required(&self) -> bool { !self.page_required.is_empty() }
+
+    pub fn requires_manual_fill(&self) -> bool { self.manual_fill_required }
+
+    pub fn requires_feishu(&self) -> bool { self.page_fields || self.manual_fill_required }
+
+    fn block_manual_fill(&mut self, reason: String) {
+        self.blocked.push(reason);
+        self.manual_fill_required = true;
+    }
+
+    fn block_page_fill(&mut self, reason: String) {
+        self.blocked.push(reason);
+        self.manual_fill_required = true;
+        self.page_fields = true;
+    }
 
     pub fn node_block_reason(&self, node_name: &str) -> Option<String> {
         if self.page_required.is_empty() { return super::block_reason("完成", &self.blocked); }
@@ -207,13 +232,13 @@ impl NodeForm {
             let key = text(row["_path"].as_array().unwrap().last().unwrap());
             let work_field = row["_scope"] == "work_item";
             if !work_field || row["class"].as_str().is_some_and(|class| class != "field") {
-                form.blocked.push(format!("{key}（无法识别可编辑字段）"));
+                form.block_manual_fill(format!("{key}（无法识别可编辑字段）"));
                 continue;
             }
             let root = if work_field { schema::root_for(work_configs, row)? } else { None };
             if root.is_none() && row["_path"].as_array().is_some_and(|path| path.len() > 1) {
                 let path = row["_path"].as_array().unwrap().iter().map(text).collect::<Vec<_>>().join(" · ");
-                form.blocked.push(format!("{path}（缺少支持完整路径的字段配置）"));
+                form.block_manual_fill(format!("{path}（缺少支持完整路径的字段配置）"));
                 continue;
             }
             let key = root.map(|r| text(&r["field_key"])).unwrap_or(key);
@@ -241,7 +266,7 @@ impl NodeForm {
                 .and_then(Value::as_str)
                 .or_else(|| confirm.and_then(|r| r["class"].as_str()));
             if !work_field || class.is_some_and(|c| c != "field") || config.is_none() {
-                if is_required { form.blocked.push(format!("{label}（无法识别可编辑字段）")); }
+                if is_required { form.block_manual_fill(format!("{label}（无法识别可编辑字段）")); }
                 continue;
             }
             let config = config.unwrap();
@@ -259,7 +284,12 @@ impl NodeForm {
         let (kind, options) = match schema::definition(config) {
             Ok(definition) => definition,
             Err(reason) => {
-                if required { self.blocked.push(format!("{label}（{reason}）")); }
+                if schema::unsupported_type(config) {
+                    self.page_fields = true;
+                    if required { self.block_page_fill(format!("{label}（{reason}）")); }
+                } else if required {
+                    self.block_manual_fill(format!("{label}（{reason}）"));
+                }
                 return;
             }
         };
@@ -292,6 +322,7 @@ impl NodeForm {
         required: &BTreeMap<String, Value>, owner_labels: &BTreeMap<String, String>,
         node_owners: Option<&BTreeSet<String>>, work: &Value,
     ) -> Result<(), BackendError> {
+        self.page_fields |= config_needs_page(config);
         let key = text(&config["field_key"]);
         let label = text(&config["field_name"]).if_empty(&key);
         let mut path = parent_path.to_vec();
@@ -299,7 +330,7 @@ impl NodeForm {
         let mut labels = parent_labels.to_vec();
         labels.push(label.clone());
         if schema::needed(required, &path, work_item).is_some() {
-            self.blocked.push(format!("{label}（未提供具体子字段的必填配置）"));
+            self.block_manual_fill(format!("{label}（未提供具体子字段的必填配置）"));
         }
         let children = config["compound_field_info"].as_array()
             .filter(|children| !children.is_empty())
@@ -331,7 +362,7 @@ impl NodeForm {
             return Err(BackendError::parse("复合字段", "负责人标识为空"));
         }
         if owners.is_empty() && !relevant.is_empty() {
-            self.blocked.push(format!("{label}（无法确认应填写的负责人）"));
+            self.block_manual_fill(format!("{label}（无法确认应填写的负责人）"));
         }
         let multiple = owners.len() > 1;
         for (index, owner) in owners.iter().enumerate() {
@@ -344,7 +375,7 @@ impl NodeForm {
             if node_owners.is_some_and(|known| !known.contains(owner)) {
                 if relevant.iter().any(|row| schema::owners_at(row, &path)
                     .any(|rows| rows.as_array().is_some_and(|rows| rows.iter().any(|v| v == owner)))) {
-                    self.blocked.push(format!("{label} · {owner_label}（不是当前节点负责人）"));
+                    self.block_manual_fill(format!("{label} · {owner_label}（不是当前节点负责人）"));
                 }
                 continue;
             }
@@ -386,7 +417,7 @@ impl NodeForm {
                     work_item, path: next_steps.clone(), field: child_key,
                 };
                 if page_only_type("", child).is_some() {
-                    if needed { self.blocked.push(format!("{child_label}（需在飞书项目页面填写）")); }
+                    if needed { self.block_page_fill(format!("{child_label}（需在飞书项目页面填写）")); }
                     self.add_page_basic(child, caption, route, &value);
                 } else {
                     self.add_basic(child, caption, needed, route, &value);
@@ -443,18 +474,18 @@ impl NodeForm {
                     .if_empty(&config.map(|c| text(&c["field_name"])).unwrap_or_default())
                     .if_empty(page_only_node_field(&key).unwrap_or(&key));
                 let identity = serde_json::to_string(&json!({"scope":req["_scope"],"path":path})).unwrap();
-                if form.page_required.insert(identity, PageRequired { label: label.clone(), kind: kind.into() }).is_none() { form.blocked.push(label); }
+                if form.page_required.insert(identity, PageRequired { label: label.clone(), kind: kind.into() }).is_none() { form.block_page_fill(label); }
                 editable_required.remove(required_id);
                 continue;
             }
             if req["class"].as_str().is_some_and(|class| class != "field") {
-                form.blocked.push(format!("{key}（无法识别可编辑字段）"));
+                form.block_manual_fill(format!("{key}（无法识别可编辑字段）"));
                 continue;
             }
             let root = schema::root_for(if work_field { work_configs } else { node_configs }, req)?;
             if root.is_none() && req["_path"].as_array().is_some_and(|path| path.len() > 1) {
                 let path = req["_path"].as_array().unwrap().iter().map(text).collect::<Vec<_>>().join(" · ");
-                form.blocked.push(format!("{path}（缺少支持完整路径的字段配置）"));
+                form.block_manual_fill(format!("{path}（缺少支持完整路径的字段配置）"));
                 continue;
             }
             let root_key = root.map(|r| text(&r["field_key"])).unwrap_or(key);
@@ -477,9 +508,13 @@ impl NodeForm {
             let wc = work_configs.iter().find(|f| f["field_key"] == key);
             let config = if work { wc } else { nc };
             let page_only = page_only_type(if work { "" } else { &key }, config.unwrap_or(&Value::Null)).is_some();
+            // 只算当前动作实际涉及的页面字段，不让全空间的可选工时配置扩大动作范围。
+            if page_only && items.iter().any(|item| item["field_key"] == key) {
+                form.page_fields = true;
+            }
             let Some(config) = config else {
                 if needed.is_some() && !page_only {
-                    form.blocked.push(
+                    form.block_manual_fill(
                         text(&item["field_name"])
                             .chars()
                             .collect::<String>()
@@ -651,7 +686,9 @@ impl NodeForm {
                 let field = &mut form.inputs.last_mut().unwrap().field;
                 if field.kind != FieldKind::Number {
                     form.inputs.pop();
-                    form.blocked.push("节点进度字段配置不是数字".into());
+                    let reason = "节点进度字段配置不是数字".into();
+                    if needed.is_some() { form.block_manual_fill(reason); }
+                    else { form.blocked.push(reason); }
                     continue;
                 }
                 field.settings.initial_value = field.settings.initial_value.as_deref()
@@ -666,6 +703,7 @@ impl NodeForm {
     }
 
     fn mark_page_only(&mut self, from: usize) {
+        self.page_fields |= self.inputs.len() > from;
         for input in &mut self.inputs[from..] {
             input.field.required = false;
             input.field.settings.read_only = Some(true);
@@ -1225,6 +1263,8 @@ mod tests {
         ] {
             let form = NodeForm::build_state(&json!({}), &required, &[config], &json!({})).unwrap();
             assert_eq!(form.blocked.len(), 1);
+            assert!(form.requires_manual_fill());
+            assert!(form.requires_feishu());
             assert!(form.fields().is_empty());
         }
         for required in [
@@ -1239,6 +1279,8 @@ mod tests {
             )
             .unwrap();
             assert_eq!(form.blocked.len(), 1);
+            assert!(form.requires_manual_fill());
+            assert!(form.requires_feishu());
             assert!(form.fields().is_empty());
         }
         assert!(
@@ -1303,6 +1345,13 @@ mod tests {
         node["form_items"][0]["field_name"] = json!("总估分");
         node["form_items"][3]["field_name"] = json!("完成比例");
         let form = NodeForm::build(&node, &required, &nc, &wc, &json!({})).unwrap();
+        assert!(form.requires_manual_fill());
+        assert!(form.requires_feishu());
+        for independent in [form.progress_only().unwrap(), form.schedule_only().unwrap()] {
+            assert!(independent.blocked.is_empty());
+            assert!(!independent.requires_manual_fill(), "独立同步不继承流程补填要求");
+            assert!(!independent.requires_feishu(), "独立同步不继承节点页面字段");
+        }
         for input in &form.inputs {
             let encoded = serde_json::to_value(&input.field).unwrap();
             match &input.route {
@@ -1810,7 +1859,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(form.blocked.len(), 1);
+        assert!(form.requires_manual_fill());
         assert!(NodeForm::build(&n, &json!({"node_fields":[{}]}), &[], &[], &json!({})).is_err());
+    }
+
+    #[test]
+    fn invalid_progress_config_keeps_api_block_without_preventing_page_field_route() {
+        let node = json!({"form_items":[{"field_key":"node_progress","form_item_type":"node_field"},
+            {"field_key":"actual_work_time","form_item_type":"node_field"}]});
+        let configs = [json!({"field_key":"node_progress","field_type":"text"}),
+            json!({"field_key":"actual_work_time","field_type":"number"})];
+        for required in [
+            json!({}),
+            json!({"node_fields":[{"field_key":"node_progress","finished":true}]}),
+            json!({"node_fields":[{"field_key":"node_progress","finished":false}]}),
+        ] {
+            let form = NodeForm::build(&node, &required, &configs, &[], &json!({})).unwrap();
+            assert_eq!(form.blocked, vec!["节点进度字段配置不是数字"]);
+            assert_eq!(form.requires_manual_fill(), required["node_fields"][0]["finished"] == false);
+            assert!(form.requires_feishu(), "字段配置错误保留API阻断，但不应阻止打开同一事项页面");
+            assert!(form.progress_only().is_none());
+        }
     }
     #[test]
     fn schedule_readback_distinguishes_missing_values_from_mismatch_and_preserves_owner_scope() {

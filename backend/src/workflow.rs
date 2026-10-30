@@ -33,6 +33,8 @@ use crate::store::ActionRecord;
 use crate::sync::now_ms;
 #[path = "workflow_fields.rs"]
 mod editing;
+#[path = "workflow_links.rs"]
+mod links;
 
 /// 界面上一个可填字段的控件类型。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -109,6 +111,12 @@ pub struct WorkflowAction {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
+    /// 未满足的流转必填项无法在本地补填，界面应提供当前事项的飞书填写入口。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manual_fill_required: Option<bool>,
+    /// 动作涉及须在页面处理的字段，点击时直接打开飞书，不进入本机草稿。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_feishu: Option<bool>,
     pub fields: Vec<WorkflowField>,
 }
 
@@ -116,6 +124,9 @@ pub struct WorkflowAction {
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkflowOptions {
     pub version: String,
+    /// 同一轮已读事项的飞书项目详情页；无法确认完整身份或域名时省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_url: Option<String>,
     pub actions: Vec<WorkflowAction>,
 }
 
@@ -199,14 +210,32 @@ struct DiscoveredAction {
 /// 一次发现的内部结果。
 pub struct Discovery {
     pub version: String,
+    item_url: Option<String>,
     entries: Vec<DiscoveredAction>,
 }
 
 impl Discovery {
     pub fn options(&self) -> WorkflowOptions {
+        // 节点动作按操作语义稳定分组，组内沿用远端顺序；状态流继续用已有排序规则。
+        let mut nodes: Vec<_> = self.entries.iter().filter(|entry| entry.view.kind == ActionKind::Node).collect();
+        nodes.sort_by_key(|entry| match entry.ledger_kind {
+            "node_confirm" => 0,
+            "node_progress" | "node_schedule" => 1,
+            "node_rollback" => 2,
+            _ => 3,
+        });
+        let mut states: Vec<_> = self.entries.iter().filter(|entry| entry.view.kind == ActionKind::State).collect();
+        states.sort_by(|a, b| snapshot_entry_order(a, b));
+        let mut nodes = nodes.into_iter();
+        let mut states = states.into_iter();
+        let actions = self.entries.iter().map(|entry| match entry.view.kind {
+            ActionKind::Node => nodes.next().unwrap(),
+            ActionKind::State => states.next().unwrap(),
+        }.view.clone()).collect();
         WorkflowOptions {
             version: self.version.clone(),
-            actions: self.entries.iter().map(|e| e.view.clone()).collect(),
+            item_url: self.item_url.clone(),
+            actions,
         }
     }
 }
@@ -247,6 +276,7 @@ async fn discover_async(session: &Session, id: &WorkItemId, fresh: bool) -> Resu
     // Use the explicit model from a complete remote detail, never infer it from a type name.
     // UI details and this request share the same in-flight read; execution bypasses all TTL caches.
     let detail = session.refresh_item_detail_async(id, fresh).await?;
+    let item_url = links::item_url(&session.config.endpoint, id, &detail.data);
     let results = match detail.data["work_item_attribute"]["work_item_mod"].as_str() {
         Some("节点流") => vec![node_entries(session, id, &detail, fresh).await],
         Some("状态流") => vec![state_entries(session, id, &detail, fresh).await],
@@ -271,15 +301,8 @@ async fn discover_async(session: &Session, id: &WorkItemId, fresh: bool) -> Resu
         }
     }
 
-    // 可执行的排前面，其余按 id 稳定排序：展示顺序和 version 指纹都必须是确定的。
-    entries.sort_by(|a, b| {
-        let a_off = a.view.disabled_reason.is_some();
-        let b_off = b.view.disabled_reason.is_some();
-        a_off.cmp(&b_off).then_with(|| a.view.id.cmp(&b.view.id))
-    });
-
     let version = fingerprint(&entries);
-    Ok(Discovery { version, entries })
+    Ok(Discovery { version, item_url, entries })
 }
 
 /// 只要动作清单，供 IPC / CLI 直接用。
@@ -473,6 +496,8 @@ async fn node_entries(session: &Session, id: &WorkItemId, detail: &crate::detail
                             kind: ActionKind::Node,
                             description: Some("只将进度百分比同步到飞书，保持当前节点；即使进度为 100% 也不会推进流程。".into()),
                             disabled_reason: None,
+                            manual_fill_required: None,
+                            requires_feishu: None,
                             fields: progress.fields(),
                         },
                         tool: crate::mcp::feishu::TOOL_UPDATE_NODE,
@@ -494,6 +519,8 @@ async fn node_entries(session: &Session, id: &WorkItemId, detail: &crate::detail
                             kind: ActionKind::Node,
                             description: Some("仅同步排期的开始和结束日期，保持当前节点进行中。".into()),
                             disabled_reason: None,
+                            manual_fill_required: None,
+                            requires_feishu: None,
                             fields: schedule.fields(),
                         },
                         tool: crate::mcp::feishu::TOOL_UPDATE_NODE,
@@ -515,6 +542,8 @@ async fn node_entries(session: &Session, id: &WorkItemId, detail: &crate::detail
                         kind: ActionKind::Node,
                         description: None,
                         disabled_reason: form.node_block_reason(&name),
+                        manual_fill_required: form.requires_manual_fill().then_some(true),
+                        requires_feishu: form.requires_feishu().then_some(true),
                         fields: form.fields(),
                     },
                     tool: TOOL_TRANSITION_NODE,
@@ -539,6 +568,8 @@ async fn node_entries(session: &Session, id: &WorkItemId, detail: &crate::detail
                         kind: ActionKind::Node,
                         description: Some("节点已完成，回滚后可重新处理".into()),
                         disabled_reason: None,
+                        manual_fill_required: None,
+                        requires_feishu: None,
                         // 回滚原因是工具要求（action=rollback 必须给），本端能填，所以开放。
                         fields: vec![WorkflowField {
                             key: "rollback_reason".to_string(),
@@ -650,6 +681,8 @@ async fn state_entries(
                     Some(format!("当前状态：{current}"))
                 },
                 disabled_reason: block_reason("流转", &form.blocked),
+                manual_fill_required: form.requires_manual_fill().then_some(true),
+                requires_feishu: form.requires_feishu().then_some(true),
                 fields: form.fields(),
             },
             tool: TOOL_TRANSITION_STATE,
@@ -776,8 +809,18 @@ fn block_reason(verb: &str, unfinished: &[String]) -> Option<String> {
     ))
 }
 
+/// 快照与状态流动作沿用的归一排序。
+fn snapshot_entry_order(a: &DiscoveredAction, b: &DiscoveredAction) -> std::cmp::Ordering {
+    let a_off = a.view.disabled_reason.is_some();
+    let b_off = b.view.disabled_reason.is_some();
+    a_off.cmp(&b_off).then_with(|| a.view.id.cmp(&b.view.id))
+}
+
 /// 快照指纹：动作清单或写入参数一变就变，界面持有的版本因此不可能对上新状态。
 fn fingerprint(entries: &[DiscoveredAction]) -> String {
+    // 保留原有指纹输入归一规则，展示排序不改变执行快照的版本。
+    let mut entries: Vec<_> = entries.iter().collect();
+    entries.sort_by(|a, b| snapshot_entry_order(a, b));
     let mut canonical = String::new();
     for entry in entries {
         // serde_json 的 Map 是有序 map，同一份内容序列化结果稳定。
@@ -1532,6 +1575,8 @@ mod tests {
                 kind: ActionKind::Node,
                 description: None,
                 disabled_reason: disabled,
+                manual_fill_required: None,
+                requires_feishu: None,
                 fields: vec![],
             },
             tool: TOOL_TRANSITION_NODE,
@@ -1544,6 +1589,76 @@ mod tests {
             target: "state_11".into(),
             form: editing::NodeForm::default(),
         }
+    }
+
+    fn node_display_entry(id: &str, kind: &'static str) -> DiscoveredAction {
+        let mut action = entry(id, json!({"node_id":id}), None);
+        action.ledger_kind = kind;
+        action.expect = Expectation::NodeNot { node_key: id.into(),
+            status: if kind == "node_rollback" { "finished" } else { "doing" }.into() };
+        action
+    }
+
+    #[test]
+    fn node_display_prioritizes_current_completion_and_preserves_remote_order_in_each_group() {
+        let mut page_completion = node_display_entry("node:confirm:z", "node_confirm");
+        page_completion.view.label = "技术方案评审".into();
+        page_completion.view.disabled_reason = Some("需在飞书页面处理".into());
+        page_completion.view.requires_feishu = Some(true);
+        page_completion.view.manual_fill_required = Some(true);
+        let mut local_completion = node_display_entry("node:confirm:a", "node_confirm");
+        local_completion.view.label = "产品验收".into();
+        let entries = vec![
+            node_display_entry("node:rollback:z", "node_rollback"),
+            node_display_entry("node:progress:z", "node_progress"),
+            node_display_entry("node:schedule:z", "node_schedule"),
+            page_completion,
+            node_display_entry("node:rollback:a", "node_rollback"),
+            node_display_entry("node:schedule:a", "node_schedule"),
+            local_completion,
+            node_display_entry("node:progress:a", "node_progress"),
+        ];
+        let original_ids: Vec<_> = entries.iter().map(|entry| entry.view.id.clone()).collect();
+        let version = fingerprint(&entries);
+        let discovery = Discovery { version: version.clone(), item_url: None, entries };
+        let options = discovery.options();
+        let displayed: Vec<_> = options.actions.iter().map(|action| action.id.as_str()).collect();
+        assert_eq!(displayed, vec!["node:confirm:z", "node:confirm:a", "node:progress:z",
+            "node:schedule:z", "node:schedule:a", "node:progress:a", "node:rollback:z", "node:rollback:a"]);
+        assert_eq!(options.actions[0].requires_feishu, Some(true));
+        assert!(options.actions[0].disabled_reason.is_some(), "页面完成动作不因本地不能写入而排在历史回滚后面");
+        assert_eq!(options.version, version, "展示排序不修改执行版本");
+        assert_eq!(discovery.entries.iter().map(|entry| entry.view.id.clone()).collect::<Vec<_>>(), original_ids);
+        let mut reversed = discovery.entries.clone();
+        reversed.reverse();
+        assert_eq!(fingerprint(&reversed), version, "快照仍使用原disabled/id归一输入，与展示顺序无关");
+    }
+
+    #[test]
+    fn node_display_keeps_pure_rollback_business_order() {
+        let entries = vec![
+            node_display_entry("node:rollback:z", "node_rollback"),
+            node_display_entry("node:rollback:a", "node_rollback"),
+            node_display_entry("node:rollback:m", "node_rollback"),
+        ];
+        let options = Discovery { version: fingerprint(&entries), item_url: None, entries }.options();
+        assert_eq!(options.actions.iter().map(|action| action.id.as_str()).collect::<Vec<_>>(),
+            vec!["node:rollback:z", "node:rollback:a", "node:rollback:m"]);
+    }
+
+    #[test]
+    fn state_display_keeps_existing_availability_then_id_order() {
+        let mut entries = Vec::new();
+        for (id, disabled) in [("state:z", false), ("state:a", true), ("state:b", false), ("state:c", true)] {
+            let mut action = entry(id, json!({"transition_id":id}), disabled.then(|| "当前不可用".into()));
+            action.view.kind = ActionKind::State;
+            action.ledger_kind = "state_transition";
+            action.tool = TOOL_TRANSITION_STATE;
+            entries.push(action);
+        }
+        let options = Discovery { version: fingerprint(&entries), item_url: None, entries }.options();
+        assert_eq!(options.actions.iter().map(|action| action.id.as_str()).collect::<Vec<_>>(),
+            vec!["state:b", "state:z", "state:a", "state:c"]);
     }
 
     #[test]
@@ -1650,6 +1765,8 @@ mod tests {
             kind: ActionKind::State,
             description: None,
             disabled_reason: Some("缺必填项".into()),
+            manual_fill_required: None,
+            requires_feishu: None,
             fields: vec![],
         };
         let json = serde_json::to_value(&action).unwrap();
@@ -1659,6 +1776,12 @@ mod tests {
         );
         assert_eq!(json["kind"], "state");
         assert_eq!(json["disabled_reason"], "缺必填项");
+        assert!(json.get("manual_fill_required").is_none(), "普通禁用原因不隐含飞书补填要求");
+        assert!(json.get("requires_feishu").is_none(), "普通禁用原因不允许直接打开飞书执行");
+        let manual = WorkflowAction { manual_fill_required: Some(true), requires_feishu: Some(true), ..action };
+        let manual_json = serde_json::to_value(manual).unwrap();
+        assert_eq!(manual_json["manual_fill_required"], true);
+        assert_eq!(manual_json["requires_feishu"], true);
     }
 
     #[test]

@@ -71,7 +71,7 @@ impl TodoSource for Arc<CompoundSource> {
         }
         let value = match tool {
             "get_workitem_brief" => json!({"work_item_attribute":{
-                "work_item_id":"1","owned_project":{"key":"compound-test"},"work_item_type":{"key":"story"},
+                "work_item_id":"1","owned_project":{"key":"compound-test","simple_name":"compound-example"},"work_item_type":{"key":"story"},
                 "work_item_mod":if self.state { "状态流" } else { "节点流" }
             },"work_item_fields":if self.state { vec![json!({"key":"review","value":self.value.lock().unwrap().clone()})] } else { vec![] },
                 "pagination":{"has_more":false}}),
@@ -198,6 +198,7 @@ fn compound_execution_checks_exact_owner_remote_values_and_required_fields_befor
                 work_item_id: "1".into(),
             };
             let options = actions(&session, &id).unwrap();
+            assert_eq!(options.item_url.as_deref(), Some("https://project.feishu.cn/compound-example/story/detail/1"));
             let action = options
                 .actions
                 .iter()
@@ -210,6 +211,8 @@ fn compound_execution_checks_exact_owner_remote_values_and_required_fields_befor
                 })
                 .unwrap();
             if failure == "system_acceptance" {
+                assert_eq!(action.manual_fill_required, Some(true));
+                assert_eq!(action.requires_feishu, Some(true));
                 let reason = action.disabled_reason.as_deref().unwrap();
                 assert_eq!(reason, "节点流转失败。当前节点【产品经理验收】设置了必须填写【负责人完成结论】（类型：owners_finished_info）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。");
                 assert!(action.fields.iter().all(|field| field.settings.read_only == Some(true)));
@@ -234,6 +237,8 @@ fn compound_execution_checks_exact_owner_remote_values_and_required_fields_befor
                 "{:?}",
                 action.disabled_reason
             );
+            assert_eq!(action.manual_fill_required, None);
+            assert_eq!(action.requires_feishu, None);
             assert_eq!(action.fields.len(), 1);
             let request = WorkflowRequest {
                 item_id: id.clone(),
@@ -347,6 +352,8 @@ fn page_only_fields_allow_zero_patch_transition_after_required_values_are_satisf
         if failure == "system_refreshed" {
             let previous = options.actions.iter().find(|action| action.id == "node:confirm:n1").unwrap();
             assert!(previous.disabled_reason.is_some());
+            assert_eq!(previous.manual_fill_required, Some(true));
+            assert_eq!(previous.requires_feishu, Some(true));
             let previous_version = options.version.clone();
             source.required_complete.store(true, Ordering::SeqCst);
             options = actions(&session, &id).unwrap();
@@ -355,6 +362,8 @@ fn page_only_fields_allow_zero_patch_transition_after_required_values_are_satisf
         }
         let action = options.actions.iter().find(|action| action.id == "node:confirm:n1").unwrap();
         assert!(action.disabled_reason.is_none(), "{failure}: {:?}", action.disabled_reason);
+        assert_eq!(action.manual_fill_required, None);
+        assert_eq!(action.requires_feishu, Some(true), "可选或已满足的页面字段仍直接在飞书处理");
         assert!(action.fields.iter().all(|field| field.settings.read_only == Some(true)));
         let request = WorkflowRequest {
             item_id: id.clone(), action_id: action.id.clone(), version: options.version,
@@ -365,6 +374,11 @@ fn page_only_fields_allow_zero_patch_transition_after_required_values_are_satisf
         assert_eq!(source.advances.load(Ordering::SeqCst), 1, "允许一次流程推进");
         assert_eq!(result.verified, failure != "system_unverified", "回执 success 不可代替远端状态核验");
         assert_eq!(result.outcome, if failure == "system_unverified" { ActionOutcome::Unknown } else { ActionOutcome::Verified });
+        if result.verified {
+            let next = actions(&session, &id).unwrap();
+            let rollback = next.actions.iter().find(|action| action.id == "node:rollback:n1").unwrap();
+            assert_eq!(rollback.requires_feishu, None, "完成节点的页面字段不污染后续回滚动作");
+        }
         let events = source.events.lock().unwrap();
         let advance = events.iter().position(|tool| tool == "transition_node").unwrap();
         assert!(events[..advance].iter().any(|tool| tool == "get_transition_required"));

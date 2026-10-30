@@ -194,6 +194,8 @@ export interface WorkflowAction {
   kind: "node" | "state";
   description?: string;
   disabled_reason?: string;
+  manual_fill_required?: boolean;
+  requires_feishu?: boolean;
   fields: Array<{
     key: string;
     label: string;
@@ -214,6 +216,7 @@ export interface WorkflowAction {
 }
 export interface WorkflowOptions {
   version: string;
+  item_url?: string;
   actions: WorkflowAction[];
 }
 export interface WorkflowRequest {
