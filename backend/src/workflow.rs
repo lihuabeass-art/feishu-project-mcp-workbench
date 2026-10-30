@@ -50,6 +50,8 @@ pub struct FieldSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_value: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
@@ -512,7 +514,7 @@ async fn node_entries(session: &Session, id: &WorkItemId, detail: &crate::detail
                         label: format!("完成节点「{name}」"),
                         kind: ActionKind::Node,
                         description: None,
-                        disabled_reason: block_reason("完成", &form.blocked),
+                        disabled_reason: form.node_block_reason(&name),
                         fields: form.fields(),
                     },
                     tool: TOOL_TRANSITION_NODE,
@@ -686,20 +688,6 @@ fn node_field_labels(node: &Value) -> BTreeMap<String, String> {
 ///
 /// 读不到必填项时**不返回空列表**而是报错：未知不等于没有，
 /// 把「未知」当「无必填」就是给用户开一个必然失败的按钮。
-fn unfinished_required(
-    session: &Session,
-    project_key: &str,
-    type_key: &str,
-    work_item_id: &str,
-    state_key: &str,
-    labels: &BTreeMap<String, String>,
-) -> Result<Vec<String>, BackendError> {
-    Ok(unfinished_names(
-        &required_value(session, project_key, type_key, work_item_id, state_key)?,
-        labels,
-    ))
-}
-
 fn required_value(
     session: &Session,
     project_key: &str,
@@ -773,35 +761,8 @@ fn parse_required_value(value: Value) -> Result<Value, BackendError> {
 }
 
 /// 归一化两种响应形状：状态流 `form_items[].key`、节点流 `node_fields[].field_key`。
-fn unfinished_names(value: &Value, labels: &BTreeMap<String, String>) -> Vec<String> {
-    let mut names = BTreeSet::new();
-    for items in ["form_items", "node_fields"] {
-        for item in value
-            .get(items)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            // finished 缺省按「未完成」算：宁可少给一个动作，不可多给一个失败按钮。
-            if item
-                .get("finished")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            let key = item
-                .get("key")
-                .and_then(Value::as_str)
-                .or_else(|| item.get("field_key").and_then(Value::as_str))
-                .unwrap_or("");
-            if key.is_empty() {
-                continue;
-            }
-            names.insert(labels.get(key).cloned().unwrap_or_else(|| key.to_string()));
-        }
-    }
-    names.into_iter().collect()
+fn unfinished_names(value: &Value, labels: &BTreeMap<String, String>) -> Result<Vec<String>, BackendError> {
+    editing::NodeForm::unfinished_names(value, labels)
 }
 
 /// 必填项没填完 → 禁用原因；没有缺失 → `None`（动作可执行）。
@@ -952,6 +913,7 @@ fn check_updated_fields(
     } else {
         None
     };
+    let mut checked_node = None;
     let labels = match &entry.expect {
         Expectation::StateIs { .. } => {
             entry.form.verify(
@@ -975,6 +937,7 @@ fn check_updated_fields(
             entry
                 .form
                 .verify(node, work.as_ref().map(|d| &d.data), &values)?;
+            checked_node = Some(node.clone());
             node_field_labels(node)
         }
     };
@@ -982,9 +945,18 @@ fn check_updated_fields(
         return Ok(());
     }
     let ready = (|| -> Result<(), BackendError> {
-        let remaining =
-            unfinished_required(session, &project, &type_key, &item, &entry.target, &labels)?;
+        let required = required_value(session, &project, &type_key, &item, &entry.target)?;
+        let remaining = unfinished_names(&required, &labels)?;
         if !remaining.is_empty() {
+            if let Some(node) = &checked_node {
+                let (nc, wc) = crate::remote::runtime()?.block_on(editing::field_configs(session, &project, &type_key, false))?;
+                let form = editing::NodeForm::build(node, &required, &nc, &wc,
+                    work.as_ref().map(|detail| &detail.data).unwrap_or(&Value::Null))?;
+                if form.has_page_required() {
+                    let name = node["basic"]["name"].as_str().unwrap_or(&entry.target);
+                    return Err(BackendError::workflow_blocked(form.node_block_reason(name).unwrap()));
+                }
+            }
             return Err(BackendError::validation(format!(
                 "仍缺必填项：{}",
                 remaining.join("、")
@@ -1039,6 +1011,9 @@ pub fn execute(
             ))
         })?;
     if let Some(reason) = &entry.view.disabled_reason {
+        if entry.form.has_page_required() {
+            return Err(BackendError::workflow_blocked(reason.clone()));
+        }
         return Err(BackendError::validation(format!(
             "动作「{}」当前不可执行：{reason}",
             entry.view.label
@@ -1058,6 +1033,7 @@ pub fn execute(
     }
     let mut args = entry.args.clone();
     for field in &entry.view.fields {
+        if field.settings.read_only == Some(true) { continue; }
         let value = request
             .fields
             .get(&field.key)
@@ -1211,8 +1187,8 @@ pub fn execute(
     ) };
     let transition = match submitted {
         Err(failure @ (SubmissionError::FieldWrite(_) | SubmissionError::FieldCheck(_))) => {
-            let (e, progress) = match failure {
-                SubmissionError::FieldWrite(e) => (e, "字段提交结果尚待核实"),
+            let (e, progress, write_failed) = match failure {
+                SubmissionError::FieldWrite(e) => (e, "字段提交结果尚待核实", true),
                 SubmissionError::FieldCheck(failure) => (
                     failure.error,
                     if failure.fields_saved {
@@ -1220,12 +1196,20 @@ pub fn execute(
                     } else {
                         "字段保存结果尚未通过核验"
                     },
+                    false,
                 ),
                 SubmissionError::Transition(_) => unreachable!(),
             };
             let detail = e.safe_message(secret.as_deref());
             let note = finish("unknown", false, Some(detail.clone()));
-            return Ok(WorkflowResult{outcome:ActionOutcome::Unknown,verified:false,message:format!("{progress}，尚未发送流程推进请求：{detail}。草稿已保留，请先核对飞书后再处理。{note}"),request_id:request.request_id.clone(),action_id:entry.view.id.clone(),resynced:false});
+            let feedback = if write_failed {
+                match e.kind() {
+                    ErrorKind::Permission => "飞书拒绝了字段修改权限，请核对应用所用账号的权限",
+                    ErrorKind::Auth | ErrorKind::Credential => "连接认证未通过，请检查连接设置",
+                    _ => "暂时无法确认飞书是否已保存字段",
+                }
+            } else { &detail };
+            return Ok(WorkflowResult{outcome:ActionOutcome::Unknown,verified:false,message:format!("{progress}，尚未发送流程推进请求：{feedback}。草稿已保留，请先核对飞书后再处理。{note}"),request_id:request.request_id.clone(),action_id:entry.view.id.clone(),resynced:false});
         }
         Err(SubmissionError::Transition(e)) => Err(e),
         Ok(value) => Ok(value),
@@ -1446,7 +1430,7 @@ mod tests {
         // issue 7140568716 → IN PROGRESS：all/finished 返回 finished=true 的角色项，
         // unfinished 则返回 {}。无未完成必填项时应能加载并启用流转动作。
         let required = parse_required_value(json!({})).unwrap();
-        let unfinished = unfinished_names(&required, &labels());
+        let unfinished = unfinished_names(&required, &labels()).unwrap();
         assert!(unfinished.is_empty());
         assert_eq!(block_reason("流转", &unfinished), None);
     }
@@ -1456,12 +1440,12 @@ mod tests {
         let required = json!({"form_items": [{"key": "field_fixture", "finished": false}]});
         let parsed = parse_required_value(required.clone()).unwrap();
         assert_eq!(parsed, required);
-        let unfinished = unfinished_names(&parsed, &labels());
+        let unfinished = unfinished_names(&parsed, &labels()).unwrap();
         assert_eq!(unfinished, vec!["详情描述".to_string()]);
         assert!(block_reason("流转", &unfinished).is_some());
         for empty in [json!({"form_items": []}), json!({"node_fields": []})] {
             let parsed = parse_required_value(empty).unwrap();
-            assert!(unfinished_names(&parsed, &labels()).is_empty());
+            assert!(unfinished_names(&parsed, &labels()).unwrap().is_empty());
         }
     }
 
@@ -1492,12 +1476,12 @@ mod tests {
             {"field_key": "point", "field_type_key": "number", "finished": true}
         ]});
         assert_eq!(
-            unfinished_names(&state, &labels()),
+            unfinished_names(&state, &labels()).unwrap(),
             vec!["详情描述".to_string()]
         );
         // 认识的键翻成中文名（去重后只剩一个），不认识的键原样保留，finished=true 的不算缺失。
         assert_eq!(
-            unfinished_names(&node, &labels()),
+            unfinished_names(&node, &labels()).unwrap(),
             vec!["schedule".to_string(), "实际工时".to_string()]
         );
     }
@@ -1507,11 +1491,11 @@ mod tests {
         // 服务端没写 finished 时按未完成算：宁可少给动作，不可给一个必然失败的按钮。
         let value = json!({"form_items": [{"key": "field_fixture"}]});
         assert_eq!(
-            unfinished_names(&value, &labels()),
+            unfinished_names(&value, &labels()).unwrap(),
             vec!["详情描述".to_string()]
         );
         assert_eq!(
-            unfinished_names(&json!({}), &labels()),
+            unfinished_names(&json!({}), &labels()).unwrap(),
             Vec::<String>::new()
         );
     }

@@ -68,6 +68,10 @@ pub enum BackendError {
     #[error("请求校验未通过: {detail}")]
     Validation { detail: String },
 
+    /// 官方工作流业务阻断文案；保留校验分类，展示时不附加通用错误前缀。
+    #[error("{detail}")]
+    WorkflowBlocked { detail: String },
+
     /// 服务端按权限拒绝了这次流转（从服务端原文识别，识别不到时仍归 `Tool`）。
     #[error("权限不足: {detail}")]
     Permission { detail: String },
@@ -149,7 +153,7 @@ impl BackendError {
             Self::Store { .. } => ErrorKind::Store,
             Self::NotImplemented { .. } => ErrorKind::NotImplemented,
             Self::Conflict { .. } => ErrorKind::Conflict,
-            Self::Validation { .. } => ErrorKind::Validation,
+            Self::Validation { .. } | Self::WorkflowBlocked { .. } => ErrorKind::Validation,
             Self::Permission { .. } => ErrorKind::Permission,
             Self::UnknownResult { .. } => ErrorKind::UnknownResult,
         }
@@ -187,6 +191,10 @@ impl BackendError {
 
     pub fn validation(detail: impl Into<String>) -> Self {
         Self::Validation { detail: detail.into() }
+    }
+
+    pub fn workflow_blocked(detail: impl Into<String>) -> Self {
+        Self::WorkflowBlocked { detail: detail.into() }
     }
 
     pub fn permission(detail: impl Into<String>) -> Self {
@@ -307,5 +315,17 @@ mod tests {
         assert!(safe.contains("***"));
         // 不传 secret 时仍应给出可读信息
         assert!(err.safe_message(None).contains("list_todo"));
+    }
+
+    #[test]
+    fn workflow_block_keeps_official_message_validation_kind_and_redaction() {
+        let message = "节点流转失败。当前节点【评审】设置了必须填写【实际工时】（类型：actual_work_time）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。";
+        let error = BackendError::workflow_blocked(message);
+        assert_eq!(error.to_string(), message);
+        assert_eq!(error.safe_message(None), message);
+        assert_eq!(error.kind(), ErrorKind::Validation);
+        assert_eq!(error.kind().exit_code(), 13);
+        assert_eq!(error.safe_message(Some("评审")), message.replace("评审", "***"));
+        assert_eq!(BackendError::validation("普通校验").to_string(), "请求校验未通过: 普通校验");
     }
 }

@@ -51,6 +51,131 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
+
+it("系统负责人字段只读展示云端值，旧填写保留为本次不提交且确认仅发送可编辑字段", async () => {
+  const readonlyOptions: WorkflowOptions = {
+    ...options,
+    actions: [{
+      ...options.actions[0],
+      fields: [
+        { key: "cloud-conclusion", label: "负责人完成结论", kind: "select", required: false,
+          read_only: true, initial_value: "passed", scope: "assignee", owner: "甲",
+          options: [{ value: "passed", label: "已通过" }] },
+        { key: "cloud-opinion", label: "负责人完成意见", kind: "text", required: false,
+          read_only: true, initial_value: "云端意见", scope: "assignee", owner: "甲" },
+        { ...options.actions[0].fields[0], initial_value: "旧文档" },
+      ],
+    }],
+  };
+  vi.mocked(getWorkflowActions).mockResolvedValue(readonlyOptions);
+  const key = draftKey(itemKey(item()), options.actions[0].id);
+  writeDraft(key, { version: "old", updated_at: 1,
+    fields: { legacy: "/", doc: "新文档", "cloud-opinion": "旧草稿值" },
+    base_fields: { legacy: "", doc: "旧文档", "cloud-opinion": "旧云端值" },
+    field_labels: { legacy: "旧负责人意见" } });
+  const submit = vi.fn().mockResolvedValue(result);
+  render(<Workflow item={item()} available busy={false} submit={submit} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "完成设计节点" }));
+  expect(screen.queryByRole("combobox")).toBeNull();
+  expect(screen.getByText("云端意见")).toBeTruthy();
+  expect(screen.queryByText("旧草稿值")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  const review = await screen.findByRole("region", { name: "提交前二次确认" });
+  expect(review.textContent).toContain("已通过");
+  expect(review.textContent).toContain("云端意见");
+  expect(review.textContent).toContain("2 项沿用云端");
+  expect(review.textContent).toContain("本次不提交");
+  expect(submit).not.toHaveBeenCalled();
+  await user.click(screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"));
+  await user.click(screen.getByRole("button", { name: "确认完成节点" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0][0].fields).toEqual({ doc: "新文档" });
+  expect(readDraft(key)?.fields.legacy).toBe("/");
+});
+
+function systemOwnerOptions(conclusion = "", disabled_reason?: string): WorkflowOptions {
+  return {
+    version: "owner-v1",
+    actions: [{
+      ...options.actions[0],
+      disabled_reason,
+      fields: [
+        { key: "cloud-conclusion", label: "负责人完成结论", kind: "select", required: false,
+          read_only: true, initial_value: conclusion, scope: "assignee", owner: "甲",
+          options: [{ value: "passed", label: "已通过" }] },
+        { ...options.actions[0].fields[0], initial_value: "云端设计稿" },
+      ],
+    }],
+  };
+}
+
+it("非必填的只读系统字段未填写时仍可核对并直接推进，不提交字段写入", async () => {
+  vi.mocked(getWorkflowActions).mockResolvedValue(systemOwnerOptions());
+  const submit = vi.fn().mockResolvedValue(result);
+  render(<Workflow item={item()} available busy={false} submit={submit} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "完成设计节点" }));
+  expect(screen.getByText("未填写")).toBeTruthy();
+  expect(screen.queryByRole("combobox")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  const review = await screen.findByRole("region", { name: "提交前二次确认" });
+  expect(review.textContent).toContain("未填写");
+  expect(review.textContent).toContain("云端设计稿");
+  expect(review.textContent).toContain("2 项沿用云端");
+  expect(submit).not.toHaveBeenCalled();
+  await user.click(screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"));
+  await user.click(screen.getByRole("button", { name: "确认完成节点" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0][0]).toMatchObject({
+    action_id: options.actions[0].id,
+  });
+  expect(submit.mock.calls[0][0].fields).toEqual({});
+});
+
+it("未满足系统必填项展示官方提示，重新读取已满足后可继续且不重写旧草稿", async () => {
+  // 原文来源：飞书官方 sop-transition-node.md §4.3，仅替换节点、字段和类型占位。
+  const reason = "节点流转失败。当前节点【设计】设置了必须填写【负责人完成结论】（类型：owners_finished_info）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。";
+  let current = systemOwnerOptions("", reason);
+  vi.mocked(getWorkflowActions).mockImplementation(async () => current);
+  const key = draftKey(itemKey(item()), options.actions[0].id);
+  writeDraft(key, { version: "legacy", updated_at: 1,
+    fields: { legacy: "/", doc: "云端设计稿" },
+    base_fields: { legacy: "", doc: "云端设计稿" },
+    field_labels: { legacy: "旧负责人意见" } });
+  const submit = vi.fn().mockResolvedValue(result);
+  render(<Workflow item={item()} available busy={false} submit={submit} />);
+  const user = userEvent.setup();
+  const blocked = await screen.findByRole("button", { name: "完成设计节点" });
+  expect((blocked as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(reason)).toBeTruthy();
+  await user.click(blocked);
+  expect(submit).not.toHaveBeenCalled();
+  expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
+  expect(readDraft(key)?.fields.legacy).toBe("/");
+
+  current = { ...systemOwnerOptions("passed"), version: "owner-v2" };
+  await user.click(screen.getByRole("button", { name: "重新读取动作" }));
+  await waitFor(() => expect(
+    (screen.getByRole("button", { name: "完成设计节点" }) as HTMLButtonElement).disabled,
+  ).toBe(false));
+  expect(screen.queryByText(reason)).toBeNull();
+  await user.click(screen.getByRole("button", { name: "完成设计节点" }));
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  const review = await screen.findByRole("region", { name: "提交前二次确认" });
+  expect(review.textContent).toContain("已通过");
+  expect(review.textContent).toContain("本次不提交");
+  expect(submit).not.toHaveBeenCalled();
+  await user.click(screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"));
+  await user.click(screen.getByRole("button", { name: "确认完成节点" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0][0]).toMatchObject({
+    action_id: options.actions[0].id, version: "owner-v2",
+  });
+  expect(submit.mock.calls[0][0].fields).toEqual({});
+  expect(readDraft(key)?.fields.legacy).toBe("/");
+});
+
 const stateOptions: WorkflowOptions = {
   version: "state-v1",
   actions: [

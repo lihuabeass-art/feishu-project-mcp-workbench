@@ -35,14 +35,48 @@ struct Input {
     route: Route,
     remote_type: String,
 }
+#[derive(Debug, Clone, Serialize)]
+struct PageRequired {
+    label: String,
+    kind: String,
+}
 #[derive(Debug, Clone, Default, Serialize)]
 pub(super) struct NodeForm {
     inputs: Vec<Input>,
     pub blocked: Vec<String>,
+    page_required: BTreeMap<String, PageRequired>,
 }
 
 fn text(v: &Value) -> String {
     schema::scalar(v)
+}
+
+// 系统的负责人完成信息虽声明为复合字段，但不能据此套用普通复合字段写协议。
+// 飞书官方节点操作说明要求各负责人在页面填写；实际 update_node 也会拒绝该值。
+fn page_only_node_field(key: &str) -> Option<&'static str> {
+    match key {
+        "owners_finished_info" => Some("负责人完成结论与意见"),
+        "owners_node_finished_conclusion" => Some("负责人完成结论"),
+        "owners_node_finished_opinion" => Some("负责人完成意见"),
+        "actual_work_time" => Some("实际工时"),
+        _ => None,
+    }
+}
+
+fn config_at_path<'a>(configs: &'a [Value], path: &[Value]) -> Option<&'a Value> {
+    let mut config = configs.iter().find(|row| row["field_key"] == path[0])?;
+    for key in &path[1..] {
+        config = config["compound_field_info"].as_array()?.iter().find(|row| row["field_key"] == *key)?;
+    }
+    Some(config)
+}
+
+fn page_only_type<'a>(key: &str, config: &'a Value) -> Option<&'a str> {
+    if page_only_node_field(key).is_some() {
+        return Some(if key == "actual_work_time" { "actual_work_time" } else { "owners_finished_info" });
+    }
+    config["field_type"].as_str().filter(|kind| matches!(*kind,
+        "vote-boolean" | "vote-option" | "vote-option-multi"))
 }
 
 fn select_value(value: &Value) -> String {
@@ -90,6 +124,26 @@ pub(super) async fn work_field_configs(
 }
 
 impl NodeForm {
+    pub fn unfinished_names(required: &Value, labels: &BTreeMap<String, String>) -> Result<Vec<String>, BackendError> {
+        Ok(schema::requirements(required)?.values().map(|row| {
+            let key = text(row["_path"].as_array().unwrap().last().unwrap());
+            labels.get(&key).cloned().unwrap_or_else(|| text(&row["field_name"]).if_empty(&key))
+        }).collect::<BTreeSet<_>>().into_iter().collect())
+    }
+
+    pub fn has_page_required(&self) -> bool { !self.page_required.is_empty() }
+
+    pub fn node_block_reason(&self, node_name: &str) -> Option<String> {
+        if self.page_required.is_empty() { return super::block_reason("完成", &self.blocked); }
+        // 飞书官方 sop-transition-node.md §4.3 原文，仅替换节点名、字段名及类型。
+        let mut reasons: Vec<_> = self.page_required.values().map(|PageRequired { label, kind }| format!(
+            "节点流转失败。当前节点【{node_name}】设置了必须填写【{label}】（类型：{kind}）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。"
+        )).collect();
+        let other: Vec<_> = self.blocked.iter().filter(|label| !self.page_required.values().any(|required| &required.label == *label)).cloned().collect();
+        if let Some(reason) = super::block_reason("完成", &other) { reasons.push(reason); }
+        Some(reasons.join("\n"))
+    }
+
     pub fn fields(&self) -> Vec<WorkflowField> {
         self.inputs.iter().map(|i| i.field.clone()).collect()
     }
@@ -101,7 +155,7 @@ impl NodeForm {
                 && input.field.kind == FieldKind::Number
         })?.clone();
         input.field.required = true;
-        Some(Self { inputs: vec![input], blocked: vec![] })
+        Some(Self { inputs: vec![input], ..Self::default() })
     }
 
     /// 节点排期始终按开始、结束两个日期核对；不带入估分、工时或流转必填项。
@@ -115,7 +169,7 @@ impl NodeForm {
             input
         }).collect();
         if inputs.is_empty() { return None; }
-        Some(Self { inputs, blocked: vec![] })
+        Some(Self { inputs, ..Self::default() })
     }
 
     pub fn schedule_plan(&self, values: &BTreeMap<String, String>) -> Result<UpdatePlan, BackendError> {
@@ -216,6 +270,21 @@ impl NodeForm {
         input.remote_type = text(&config["field_type"]);
     }
 
+    fn add_page_basic(&mut self, config: &Value, label: String, route: Route, current: &Value) {
+        let previous = self.inputs.len();
+        if schema::definition(config).is_ok() {
+            self.add_basic(config, label, false, route, current);
+        } else {
+            // 只读快照不推断投票的写协议；复杂云端值保留原始内容，不能伪装成空值。
+            let initial = if current.is_null() { String::new() }
+                else if current.is_object() || current.is_array() { current.to_string() }
+                else { text(current) };
+            self.add(label, FieldKind::Text, false, route, Some(initial), None, None, None);
+            self.inputs.last_mut().unwrap().remote_type = text(&config["field_type"]);
+        }
+        self.mark_page_only(previous);
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn add_compound(
         &mut self, config: &Value, current: &Value, work_item: bool,
@@ -313,9 +382,15 @@ impl NodeForm {
                 let column = format!("{} · {child_label}", labels.join(" · "));
                 let caption = if multiple { format!("{column} · {owner_label}") } else { column.clone() };
                 let previous = self.inputs.len();
-                self.add_basic(child, caption, needed, Route::Compound {
+                let route = Route::Compound {
                     work_item, path: next_steps.clone(), field: child_key,
-                }, &value);
+                };
+                if page_only_type("", child).is_some() {
+                    if needed { self.blocked.push(format!("{child_label}（需在飞书项目页面填写）")); }
+                    self.add_page_basic(child, caption, route, &value);
+                } else {
+                    self.add_basic(child, caption, needed, route, &value);
+                }
                 if self.inputs.len() > previous {
                     self.set_owner_column(Some(owner_label.clone()), column);
                 }
@@ -334,6 +409,7 @@ impl NodeForm {
     ) -> Result<Self, BackendError> {
         let mut form = Self::default();
         let required_keys = schema::resolved_requirements(required, node_configs, work_configs)?;
+        let mut editable_required = required_keys.clone();
         let owner_labels: BTreeMap<_, _> = node_owner_keys(node, required)
             .into_iter()
             .enumerate()
@@ -354,13 +430,27 @@ impl NodeForm {
                 (!key.is_empty()).then_some(((work, key), f.clone()))
             })
             .collect();
-        for req in required_keys.values() {
+        for (required_id, req) in &required_keys {
             let key = text(req["_path"].as_array().unwrap().last().unwrap());
+            let work_field = req["_scope"] == "work_item";
+            let path = req["_path"].as_array().unwrap();
+            let config = config_at_path(if work_field { work_configs } else { node_configs }, path);
+            let root_key = text(&path[0]);
+            let fallback = json!({"field_type":req.get("field_type").or_else(|| req.get("field_type_key")).unwrap_or(&Value::Null)});
+            let page_type = page_only_type(if work_field { "" } else { &root_key }, config.unwrap_or(&fallback));
+            if let Some(kind) = page_type {
+                let label = text(&req["field_name"])
+                    .if_empty(&config.map(|c| text(&c["field_name"])).unwrap_or_default())
+                    .if_empty(page_only_node_field(&key).unwrap_or(&key));
+                let identity = serde_json::to_string(&json!({"scope":req["_scope"],"path":path})).unwrap();
+                if form.page_required.insert(identity, PageRequired { label: label.clone(), kind: kind.into() }).is_none() { form.blocked.push(label); }
+                editable_required.remove(required_id);
+                continue;
+            }
             if req["class"].as_str().is_some_and(|class| class != "field") {
                 form.blocked.push(format!("{key}（无法识别可编辑字段）"));
                 continue;
             }
-            let work_field = req["_scope"] == "work_item";
             let root = schema::root_for(if work_field { work_configs } else { node_configs }, req)?;
             if root.is_none() && req["_path"].as_array().is_some_and(|path| path.len() > 1) {
                 let path = req["_path"].as_array().unwrap().iter().map(text).collect::<Vec<_>>().join(" · ");
@@ -386,8 +476,9 @@ impl NodeForm {
             let nc = node_configs.iter().find(|f| f["field_key"] == key);
             let wc = work_configs.iter().find(|f| f["field_key"] == key);
             let config = if work { wc } else { nc };
+            let page_only = page_only_type(if work { "" } else { &key }, config.unwrap_or(&Value::Null)).is_some();
             let Some(config) = config else {
-                if needed.is_some() {
+                if needed.is_some() && !page_only {
                     form.blocked.push(
                         text(&item["field_name"])
                             .chars()
@@ -412,12 +503,17 @@ impl NodeForm {
                 let known_owners: BTreeSet<String> = node["assignees"]["owners"].as_array()
                     .into_iter().flatten().map(|o| text(&o["user_key"]))
                     .filter(|o| !o.is_empty()).collect();
-                form.add_compound(config, &current, work, &[], &[], &[], &required_keys, &owner_labels,
+                let previous = form.inputs.len();
+                let display_required = BTreeMap::new();
+                form.add_compound(config, &current, work, &[], &[], &[],
+                    if page_only { &display_required } else { &editable_required }, &owner_labels,
                     (!work).then_some(&known_owners), work_item)?;
+                if page_only { form.mark_page_only(previous); }
                 continue;
             }
             // 未填负责人仍需补齐；已填负责人的真实值同样回显并允许修改。
             if !work && matches!(key.as_str(), "schedule" | "point" | "actual_work_time") {
+                let previous = form.inputs.len();
                 let missing_owners = needed
                     .and_then(|v| v["not_finished_owner"].as_array())
                     .filter(|a| !a.is_empty());
@@ -527,6 +623,7 @@ impl NodeForm {
                         }
                     }
                 }
+                if page_only { form.mark_page_only(previous); }
                 continue;
             }
             let current = if work {
@@ -545,7 +642,11 @@ impl NodeForm {
                 Route::Node(key)
             };
             let previous = form.inputs.len();
-            form.add_basic(config, label, needed.is_some(), route, current);
+            if page_only {
+                form.add_page_basic(config, label, route, current);
+            } else {
+                form.add_basic(config, label, needed.is_some(), route, current);
+            }
             if progress && form.inputs.len() > previous {
                 let field = &mut form.inputs.last_mut().unwrap().field;
                 if field.kind != FieldKind::Number {
@@ -562,6 +663,16 @@ impl NodeForm {
             }
         }
         Ok(form)
+    }
+
+    fn mark_page_only(&mut self, from: usize) {
+        for input in &mut self.inputs[from..] {
+            input.field.required = false;
+            input.field.settings.read_only = Some(true);
+            input.field.settings.hint = Some("仅支持在飞书项目页面填写，当前显示云端值".into());
+            // 使用独立身份保留旧版可编辑草稿；旧填写继续作为“本次不提交”内容展示。
+            input.field.key = serde_json::to_string(&json!({"ReadOnly":&input.route})).unwrap();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -615,6 +726,12 @@ impl NodeForm {
         let mut compounds: BTreeMap<(bool, Vec<CompoundStep>), Vec<Value>> = BTreeMap::new();
         for input in &self.inputs {
             let field = &input.field;
+            if field.settings.read_only == Some(true) {
+                if values.contains_key(&field.key) {
+                    return Err(BackendError::validation(format!("{}需在飞书页面填写，不能由本次操作修改", field.label)));
+                }
+                continue;
+            }
             let raw = values.get(&field.key)
                 .map(String::as_str)
                 .or(field.settings.initial_value.as_deref())
@@ -1162,6 +1279,7 @@ mod tests {
     fn values(form: &NodeForm) -> BTreeMap<String, String> {
         form.inputs
             .iter()
+            .filter(|input| input.field.settings.read_only != Some(true))
             .map(|i| {
                 let value = match &i.route {
                     Route::WorkItem(_) => "https://example.test/design",
@@ -1222,7 +1340,7 @@ mod tests {
     fn five_fields_route_to_correct_tools_and_each_owner_is_explicit() {
         let (node, required, nc, wc) = example();
         let form = NodeForm::build(&node, &required, &nc, &wc, &json!({})).unwrap();
-        assert!(form.blocked.is_empty());
+        assert_eq!(form.blocked, vec!["实际工时"]);
         assert!(form.fields().iter().any(|f| f.label == "实际工时 · 乙"));
         for input in &form.inputs {
             let scope = match &input.route {
@@ -1240,14 +1358,13 @@ mod tests {
         assert_eq!(calls[1].0, "update_node");
         assert_eq!(calls[1].1["fields"][0]["field_value"], "0.75");
         let schedules = calls[1].1["schedules"].as_array().unwrap();
-        assert_eq!(schedules.len(), 2);
+        assert_eq!(schedules.len(), 1);
         assert_eq!(schedules[0]["owners"], json!(["a"]));
-        assert_eq!(schedules[1]["owners"], json!(["b"]));
         assert_eq!(schedules[0]["clear_schedule"], false);
         assert_eq!(schedules[0]["is_auto"], false);
         assert!(
-            schedules[1].get("estimate_start_date").is_none(),
-            "未填的他人排期不得被清空或复制"
+            schedules[0].get("actual_work_time").is_none(),
+            "实际工时是只读云端值，不得随排期写入"
         );
         assert_eq!(schedules[0]["estimate_start_date"], 1792425600000i64);
     }
@@ -1361,7 +1478,7 @@ mod tests {
         let form = NodeForm::build(&node, &required, &nc, &wc, &json!({})).unwrap();
         let mut values = values(&form);
         for input in &form.inputs {
-            if matches!(input.route, Route::Schedule { .. }) {
+            if matches!(input.route, Route::Schedule { .. }) && input.field.settings.read_only != Some(true) {
                 values.insert(
                     input.field.key.clone(),
                     input.field.settings.initial_value.clone().unwrap(),
@@ -1385,9 +1502,12 @@ mod tests {
         let mut values = BTreeMap::new();
         for field in form.fields() {
             assert!(!field.required);
+            if field.settings.read_only == Some(true) {
+                assert_eq!(field.label, "actual_work_time");
+                continue;
+            }
             let value = match field.label.as_str() {
                 "point" => "2.5",
-                "actual_work_time" => "3",
                 "schedule · 开始日期" => "2026-10-24",
                 "schedule · 结束日期" => "2026-10-25",
                 _ => panic!("unexpected field: {}", field.label),
@@ -1398,7 +1518,7 @@ mod tests {
         let plan = form.plan(&values).unwrap();
         let schedule = plan.node_schedule.as_ref().unwrap();
         assert_eq!(schedule["points"].as_f64(), Some(2.5));
-        assert_eq!(schedule["actual_work_time"].as_f64(), Some(3.0));
+        assert!(schedule.get("actual_work_time").is_none());
         assert_eq!(schedule["estimate_start_date"], 1792771200000i64);
         assert_eq!(schedule["estimate_end_date"], 1792857600000i64);
     }
@@ -1429,7 +1549,9 @@ mod tests {
             assert_eq!(field.settings.initial_value.as_deref(), Some(expected));
         }
         let missing = fields.iter().find(|f| f.label == "实际工时 · 乙").unwrap();
-        assert!(missing.required);
+        assert!(!missing.required);
+        assert_eq!(missing.settings.read_only, Some(true));
+        assert_eq!(form.blocked, vec!["实际工时"]);
         assert_eq!(missing.settings.initial_value.as_deref(), Some(""));
         assert!(!fields
             .iter()
@@ -1484,7 +1606,7 @@ mod tests {
             let form = NodeForm::build(&node, &json!({}), &configs, &[], &json!({})).unwrap();
             assert_eq!(form.fields().iter().map(|field| field.key.clone()).collect::<Vec<_>>(), previous_keys.unwrap());
             assert!(form.fields().iter().all(|field| !field.required));
-            let submitted = form.inputs.iter().map(|input| {
+            let submitted = form.inputs.iter().filter(|input| input.field.settings.read_only != Some(true)).map(|input| {
                 let value = match &input.route {
                     Route::Schedule { property, .. } if property == "actual_work_time" => "1",
                     Route::Schedule { property, .. } if property == "estimate_start_date" => "2026-10-27",
@@ -1497,12 +1619,12 @@ mod tests {
             assert_eq!(plan.schedules.len(), owners.len());
             for (schedule, owner) in plan.schedules.iter().zip(&owners) {
                 assert_eq!(schedule["owners"], json!([owner]));
-                assert_eq!(schedule["actual_work_time"], 1.0);
+                assert!(schedule.get("actual_work_time").is_none());
                 assert_eq!(schedule["estimate_start_date"], 1793030400000i64);
                 assert_eq!(schedule["estimate_end_date"], 1793116800000i64);
             }
             assert!(form.verify(&node, None, &submitted).is_err(),
-                "必填清单消失不代表个人工时和排期已保存");
+                "必填清单消失不代表个人排期已保存");
         }
     }
 
@@ -1520,8 +1642,10 @@ mod tests {
             let field = &form.fields()[0];
             assert_eq!(field.settings.scope.as_deref(), Some("node"));
             assert_eq!(field.settings.initial_value.as_deref(), Some("2"));
-            let plan = form.plan(&BTreeMap::from([(field.key.clone(), "3".into())])).unwrap();
-            assert_eq!(plan.node_schedule.unwrap()["actual_work_time"], 3.0);
+            assert_eq!(field.settings.read_only, Some(true));
+            assert!(form.plan(&BTreeMap::from([(field.key.clone(), "3".into())])).is_err());
+            let plan = form.plan(&BTreeMap::new()).unwrap();
+            assert!(plan.node_schedule.is_none());
             assert!(plan.schedules.is_empty());
         }
         let personal = json!({
@@ -1574,10 +1698,10 @@ mod tests {
             ]}
         ]}});
         let form = NodeForm::build(&node, &required, &nc, &wc, &work).unwrap();
-        assert!(form.blocked.is_empty());
+        assert_eq!(form.blocked, vec!["实际工时"]);
         let fields = form.fields();
         for name in ["张三", "李四"] {
-            for caption in ["实际工时", "估分", "排期"] {
+            for caption in ["估分", "排期"] {
                 let label = format!("{caption} · {name}");
                 assert!(fields.iter().any(|f| f.required && f.label.starts_with(&label)));
             }
@@ -1586,7 +1710,7 @@ mod tests {
         let mut submitted = values(&form);
         for input in &form.inputs {
             if let Route::Schedule { property, owner: Some(owner) } = &input.route {
-                if property == "actual_work_time" || property == "points" {
+                if property == "points" {
                     submitted.insert(input.field.key.clone(), if owner == owners[0] { "2" } else { "3" }.into());
                 }
             }
@@ -1596,7 +1720,7 @@ mod tests {
         for (index, owner) in owners.iter().enumerate() {
             let schedule = &plan.schedules[index];
             assert_eq!(schedule["owners"], json!([owner]));
-            assert_eq!(schedule["actual_work_time"], json!((index + 2) as f64));
+            assert!(schedule.get("actual_work_time").is_none());
             assert_eq!(schedule["points"], json!((index + 2) as f64));
             assert_eq!(schedule["estimate_start_date"], 1792425600000i64);
             assert_eq!(schedule["estimate_end_date"], 1792512000000i64);
@@ -1610,7 +1734,7 @@ mod tests {
         })).collect::<Vec<_>>());
         let updated_work = json!({"work_item_fields":[{"key":"doc-key","value":"https://example.test/design"}]});
         assert!(form.verify(&node, Some(&updated_work), &submitted).is_ok());
-        node["assignee_schedule_list"][1]["schedule_info"]["actual_work_time"] = json!(2);
+        node["assignee_schedule_list"][1]["schedule_info"]["points"] = json!(2);
         assert!(form.verify(&node, Some(&updated_work), &submitted).is_err());
     }
 
@@ -1745,18 +1869,18 @@ mod tests {
     #[test]
     fn patch_validates_required_against_remote_and_writes_only_changed_fields() {
         let (mut node, _, nc, wc) = example();
-        node["schedule"] = json!({"actual_work_time":1});
-        let required = json!({"form_items":[{"key":"doc-key"}],"node_fields":[{"field_key":"actual_work_time"}]});
+        node["schedule"] = json!({"points":1});
+        let required = json!({"form_items":[{"key":"doc-key"}],"node_fields":[{"field_key":"point"}]});
         let work = json!({"work_item_fields":[{"key":"doc-key","value":"前端：1.2.3"}]});
         let form = NodeForm::build(&node, &required, &nc, &wc, &work).unwrap();
         let doc = form.inputs.iter().find(|i| matches!(&i.route, Route::WorkItem(_))).unwrap();
-        let hours = form.inputs.iter().find(|i| matches!(&i.route, Route::Schedule { property, .. } if property == "actual_work_time")).unwrap();
-        let values = BTreeMap::from([(hours.field.key.clone(), "2".into())]);
+        let points = form.inputs.iter().find(|i| matches!(&i.route, Route::Schedule { property, .. } if property == "points")).unwrap();
+        let values = BTreeMap::from([(points.field.key.clone(), "2".into())]);
         let plan = form.plan(&values).unwrap();
         assert!(plan.work_fields.is_empty(), "共享必填项已有云端值，不应再次写回");
         assert_eq!(plan.fields, values);
-        assert_eq!(plan.node_schedule.as_ref().unwrap()["actual_work_time"], 2.0);
-        let same = BTreeMap::from([(doc.field.key.clone(), "前端：1.2.3".into()), (hours.field.key.clone(), "1.0".into())]);
+        assert_eq!(plan.node_schedule.as_ref().unwrap()["points"], 2.0);
+        let same = BTreeMap::from([(doc.field.key.clone(), "前端：1.2.3".into()), (points.field.key.clone(), "1.0".into())]);
         assert!(form.plan(&same).unwrap().calls("p", "1", "n").is_empty());
         let cleared = BTreeMap::from([(doc.field.key.clone(), "".into())]);
         assert!(form.plan(&cleared).is_err(), "显式清空必填项仍必须拒绝");

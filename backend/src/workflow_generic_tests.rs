@@ -105,7 +105,7 @@ fn node_and_state_share_basic_types_remote_options_and_valid_zero_values() {
 }
 
 #[test]
-fn observed_acceptance_subfields_are_discovered_without_top_level_configs() {
+fn system_acceptance_fields_require_feishu_page_even_with_generic_compound_metadata() {
     let config = compound(
         "owners_finished_info",
         vec![
@@ -113,56 +113,95 @@ fn observed_acceptance_subfields_are_discovered_without_top_level_configs() {
             json!({"field_key":"owners_node_finished_opinion","field_name":"负责人完成意见","field_type":"text"}),
         ],
     );
-    let node = json!({"assignees":{"owners":[{"user_key":"a","name":"甲"}]},"form_items":[
-        {"field_key":"owners_finished_info","form_item_type":"node_field","value":"{\"a\":[{\"field_key\":\"created_at\",\"field_value\":123}]}"}
+    let node = json!({"assignees":{"owners":[{"user_key":"a","name":"甲"},{"user_key":"b","name":"乙"}]},"form_items":[
+        {"field_key":"owners_finished_info","form_item_type":"node_field","value":json!({
+            "a":[{"field_key":"created_at","field_value":123},{"field_key":"owners_node_finished_conclusion","field_value":"system_passed"}],
+            "b":[{"field_key":"created_at","field_value":124}]
+        }).to_string()}
     ]});
-    let form = NodeForm::build(
-        &node,
-        &required(&[
-            "owners_node_finished_conclusion",
-            "owners_node_finished_opinion",
-        ]),
-        &[config],
-        &[],
-        &json!({}),
-    )
-    .unwrap();
+    for req in [
+        required(&["owners_node_finished_conclusion", "owners_node_finished_opinion"]),
+        required(&["owners_finished_info"]),
+        json!({"node_fields":[{"field_key":"owners_finished_info","sub_field":[
+            {"field_key":"owners_node_finished_conclusion","not_finished_owner":["a"]}
+        ]}]}),
+    ] {
+        // 包含无父配置的旧快照；系统字段不因元数据形态不同而开放写入。
+        for configs in [vec![config.clone()], vec![]] {
+            let form = NodeForm::build(&node, &req, &configs, &[], &json!({})).unwrap();
+            assert!(form.fields().iter().all(|field| field.settings.read_only == Some(true)));
+            assert!(!form.blocked.is_empty());
+            assert!(form.node_block_reason("评审").unwrap().contains("由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。"));
+            assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
+        }
+    }
+    // 系统必填项已在飞书满足后，可以继续推进，不重写已有负责人信息。
+    let form = NodeForm::build(&node, &json!({}), &[config], &[], &json!({})).unwrap();
     assert!(form.blocked.is_empty());
-    assert_eq!(form.fields().len(), 2);
-    assert!(form
-        .fields()
-        .iter()
-        .all(|f| f.required && f.settings.scope.as_deref() == Some("assignee")));
-    assert!(form
-        .fields()
-        .iter()
-        .any(|f| f.label.contains("负责人完成结论") && f.options[0].label == "已通过"));
-    assert!(form.plan(&BTreeMap::new()).is_err());
-    let values = form
-        .fields()
-        .iter()
-        .map(|f| {
-            (
-                f.key.clone(),
-                if f.kind == FieldKind::Select {
-                    "system_passed"
-                } else {
-                    "验收通过"
-                }
-                .into(),
-            )
-        })
-        .collect();
-    let calls = form.plan(&values).unwrap().calls("p", "1", "n");
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "update_node");
-    assert_eq!(calls[0].1["fields"][0]["field_key"], "owners_finished_info");
-    let patch: Value =
-        serde_json::from_str(calls[0].1["fields"][0]["field_value"].as_str().unwrap()).unwrap();
-    assert_eq!(patch["operation_type"], 1);
-    assert_eq!(patch["group_editor"], "a");
-    assert_eq!(patch["sub_field_value"].as_array().unwrap().len(), 2);
-    assert!(!calls[0].1.contains_key("node_owners"));
+    assert_eq!(form.fields().len(), 4);
+    assert!(form.fields().iter().any(|field| field.settings.initial_value.as_deref() == Some("system_passed")));
+    assert!(form.fields().iter().all(|field| field.settings.read_only == Some(true) && !field.required));
+    assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
+    let attempted = BTreeMap::from([(form.fields()[0].key.clone(), "system_passed".into())]);
+    assert!(form.plan(&attempted).is_err(), "只读云端快照不得进入写入计划");
+}
+
+#[test]
+fn page_only_fields_block_only_unfinished_required_values_with_official_node_message() {
+    for (key, kind, label) in [
+        ("actual_work_time", "number", "实际工时"),
+        ("vote", "vote-boolean", "是否同意"),
+        ("vote", "vote-option", "评审投票"),
+        ("vote", "vote-option-multi", "多选投票"),
+    ] {
+        let node = json!({"form_items":[{"field_key":key,"field_name":label,"form_item_type":"node_field","value":0}],"schedule":{"actual_work_time":0}});
+        let configs = vec![json!({"field_key":key,"field_name":label,"field_type":kind})];
+        for required in [json!({}), json!({"node_fields":[{"field_key":key,"finished":true}]})] {
+            let form = NodeForm::build(&node, &required, &configs, &[], &json!({})).unwrap();
+            assert!(form.node_block_reason("验收").is_none(), "非必填或已完成值不能拦截流转");
+            assert_eq!(form.fields().len(), 1);
+            assert_eq!(form.fields()[0].settings.read_only, Some(true));
+            assert_eq!(form.fields()[0].settings.initial_value.as_deref(), Some("0"));
+            assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
+        }
+        let required = json!({"node_fields":[{"field_key":key,"finished":false}]});
+        let form = NodeForm::build(&node, &required, &configs, &[], &json!({})).unwrap();
+        let expected_kind = if key == "actual_work_time" { key } else { kind };
+        assert_eq!(form.node_block_reason("验收").unwrap(), format!(
+            "节点流转失败。当前节点【验收】设置了必须填写【{label}】（类型：{expected_kind}）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。"
+        ));
+    }
+}
+
+#[test]
+fn nested_vote_snapshots_keep_cloud_content_and_distinct_required_field_identities() {
+    let remote = json!({"votes":[{"option_id":"pass","count":2}],"extra":true});
+    let config = compound("review", vec![
+        json!({"field_key":"decision","field_name":"评审确认","field_type":"vote-option"}),
+        json!({"field_key":"approval","field_name":"评审确认","field_type":"vote-boolean"}),
+    ]);
+    let node = node(json!({"a":[
+        {"field_key":"decision","field_value":remote},
+        {"field_key":"approval","field_value":false}
+    ]}));
+    let required = required(&["decision", "approval"]);
+    let form = NodeForm::build(&node, &required, &[config.clone()], &[], &json!({})).unwrap();
+    let reason = form.node_block_reason("评审").unwrap();
+    let template = |kind| format!("节点流转失败。当前节点【评审】设置了必须填写【评审确认】（类型：{kind}）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。");
+    assert!(reason.contains(&template("vote-option")) && reason.contains(&template("vote-boolean")));
+    assert_eq!(reason.lines().count(), 2, "同名不同类型的缺项不能互相覆盖或追加通用错误");
+    assert_eq!(find(&form, "a", "decision").settings.initial_value, Some(remote.to_string()));
+    assert_eq!(find(&form, "a", "approval").settings.initial_value.as_deref(), Some("false"));
+    assert!(form.fields().iter().all(|field| field.settings.read_only == Some(true)));
+    assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
+    let attempted = BTreeMap::from([(find(&form, "a", "decision").key.clone(), "different".into())]);
+    assert!(form.plan(&attempted).is_err());
+    assert!(serde_json::to_string(&form).is_ok(), "完整身份必须可进入动作指纹");
+    for required in [json!({}), json!({"node_fields":[{"field_key":"review","finished":true}]})] {
+        let form = NodeForm::build(&node, &required, &[config.clone()], &[], &json!({})).unwrap();
+        assert!(form.node_block_reason("评审").is_none());
+        assert_eq!(find(&form, "a", "decision").settings.initial_value, Some(remote.to_string()));
+    }
 }
 
 #[test]

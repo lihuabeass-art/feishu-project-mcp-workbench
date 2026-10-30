@@ -200,6 +200,7 @@ export interface WorkflowAction {
     kind: "text" | "textarea" | "select" | "number" | "date";
     required: boolean;
     initial_value?: string;
+    read_only?: boolean;
     scope?: "work_item" | "node" | "assignee";
     min?: number;
     max?: number;

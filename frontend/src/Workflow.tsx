@@ -443,6 +443,7 @@ export function Workflow({
       }
       const invalidOption = nextAction.fields.find(
         (field) =>
+          !field.read_only &&
           field.kind === "select" &&
           merged.fields[field.key]?.trim() &&
           !field.options?.some(
@@ -893,6 +894,7 @@ export function Workflow({
     return `沿用 ${displayFieldValue(field, remote)}`;
   }
   function cloudNote(field: Field, caption?: string) {
+    if (field.read_only) return null;
     const remote = remoteOf(field);
     const local = fields[field.key] ?? "";
     if (local.trim() === remote.trim()) return null;
@@ -920,6 +922,12 @@ export function Workflow({
     );
   }
   function control(field: Field, inTable = false) {
+    if (field.read_only)
+      return (
+        <span className="workflow-review-value">
+          {displayFieldValue(field, remoteOf(field)) || "未填写"}
+        </span>
+      );
     const value = fields[field.key] || "";
     const disabled = locked || blocked;
     const placeholder = placeholderOf(field, inTable);

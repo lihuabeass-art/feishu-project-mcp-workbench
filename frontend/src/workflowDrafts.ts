@@ -52,6 +52,7 @@ export function changedFields(
   return Object.fromEntries(
     action.fields
       .filter((field) => {
+        if (field.read_only) return false;
         const value = fields[field.key]?.trim() ?? "";
         // 空的可选项沿用“不修改”的约定，不能借此清空云端字段。
         return value !== "" && value !== (base[field.key]?.trim() ?? "");
@@ -156,6 +157,7 @@ export function reconcileDraft(
     const key = field.key,
       remote = base_fields[key];
     const local = draft?.fields[key];
+    if (field.read_only) continue;
     if (local === undefined) continue;
     if (draft?.pending) {
       fields[key] = local;
