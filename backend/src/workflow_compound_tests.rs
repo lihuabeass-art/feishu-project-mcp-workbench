@@ -7,6 +7,7 @@ use std::sync::{
 };
 
 struct CompoundSource {
+    project_key: &'static str,
     state: bool,
     failure: &'static str,
     value: Mutex<Value>,
@@ -71,7 +72,7 @@ impl TodoSource for Arc<CompoundSource> {
         }
         let value = match tool {
             "get_workitem_brief" => json!({"work_item_attribute":{
-                "work_item_id":"1","owned_project":{"key":"compound-test","simple_name":"compound-example"},"work_item_type":{"key":"story"},
+                "work_item_id":"1","owned_project":{"key":self.project_key,"simple_name":"compound-example"},"work_item_type":{"key":"story"},
                 "work_item_mod":if self.state { "状态流" } else { "节点流" }
             },"work_item_fields":if self.state { vec![json!({"key":"review","value":self.value.lock().unwrap().clone()})] } else { vec![] },
                 "pagination":{"has_more":false}}),
@@ -179,6 +180,7 @@ fn compound_execution_checks_exact_owner_remote_values_and_required_fields_befor
             )
             .unwrap();
             let source = Arc::new(CompoundSource {
+                project_key: "compound-test",
                 state,
                 failure,
                 value: Mutex::new(json!({})),
@@ -341,13 +343,14 @@ fn page_only_fields_allow_zero_patch_transition_after_required_values_are_satisf
         )).unwrap();
         let session = Session::open(crate::Config::load(Some(&config_path), Some(&dir.join("cache.db"))).unwrap()).unwrap();
         let source = Arc::new(CompoundSource {
+            project_key: "compound-page-test",
             state: false, failure,
             value: Mutex::new(if failure == "system_retired" { json!({"a":[{"field_key":"owners_node_finished_conclusion","field_value":"retired-option"}]}) } else { json!({}) }),
             writes: AtomicUsize::new(0), advances: AtomicUsize::new(0), required_complete: AtomicBool::new(false),
             events: Mutex::new(vec![]),
         });
         let installed = crate::remote::install_test_client(&session.config, &session.credential().unwrap(), Box::new(source.clone()));
-        let id = WorkItemId { project_key: Some("compound-test".into()), work_item_type_key: Some("story".into()), work_item_id: "1".into() };
+        let id = WorkItemId { project_key: Some(source.project_key.into()), work_item_type_key: Some("story".into()), work_item_id: "1".into() };
         let mut options = actions(&session, &id).unwrap();
         if failure == "system_refreshed" {
             let previous = options.actions.iter().find(|action| action.id == "node:confirm:n1").unwrap();

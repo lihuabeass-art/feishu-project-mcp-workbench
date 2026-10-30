@@ -400,6 +400,10 @@ it("确认页使用提交前刚读取的完整云端快照，迟到的旧响应�
   const user = userEvent.setup();
   render(<Workflow item={item} available busy={false} submit={submit} />);
   const open = await screen.findByRole("button", { name: "完成开发节点" });
+  await user.click(open);
+  fireEvent.change(await screen.findByLabelText("代码版本号（必填）"), {
+    target: { value: "新版本" },
+  });
   let resolve!: (value: WorkflowOptions) => void;
   vi.mocked(getWorkflowActions).mockImplementationOnce(
     () =>
@@ -407,10 +411,10 @@ it("确认页使用提交前刚读取的完整云端快照，迟到的旧响应�
         resolve = done;
       }),
   );
-  await user.click(open);
-  fireEvent.change(screen.getByLabelText("代码版本号（必填）"), {
-    target: { value: "新版本" },
-  });
+  // 选择动作已使用 fresh read；返回焦点才启动这里故意延迟的后台读取。
+  fireEvent.focus(window);
+  expect(getWorkflowActions).toHaveBeenCalledTimes(3);
+  expect(getWorkflowActions).toHaveBeenLastCalledWith(item.id, true);
   const latest = options();
   latest.version = "v2";
   latest.actions[0].fields.find(
@@ -419,6 +423,7 @@ it("确认页使用提交前刚读取的完整云端快照，迟到的旧响应�
   vi.mocked(getWorkflowActions).mockResolvedValue(latest);
   await user.click(screen.getByRole("button", { name: "提交" }));
   await screen.findByRole("region", { name: "提交前二次确认" });
+  expect(getWorkflowActions).toHaveBeenCalledTimes(4);
   expect(within(reviewRow("估分 · 甲")).getByText("2")).toBeTruthy();
   await act(async () => resolve(options()));
   expect(within(reviewRow("估分 · 甲")).getByText("2")).toBeTruthy();

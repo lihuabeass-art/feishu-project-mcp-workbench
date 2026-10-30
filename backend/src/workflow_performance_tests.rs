@@ -3,7 +3,7 @@ use crate::mcp::{ConnectionInfo, TodoSource, ToolResultPayload};
 use async_trait::async_trait;
 use std::{
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -14,6 +14,8 @@ struct Fake {
     calls: Mutex<BTreeMap<String, usize>>,
     active: AtomicUsize,
     peak: AtomicUsize,
+    block_next_detail: AtomicBool,
+    detail_release: tokio::sync::Notify,
 }
 impl Fake {
     fn count(&self, tool: &str) -> usize {
@@ -34,6 +36,9 @@ impl TodoSource for Arc<Fake> {
         *self.calls.lock().unwrap().entry(tool.into()).or_default() += 1;
         let value = match tool {
             "get_workitem_brief" => {
+                if self.block_next_detail.swap(false, Ordering::SeqCst) {
+                    self.detail_release.notified().await;
+                }
                 json!({"work_item_attribute":{"work_item_id":"1","owned_project":{"key":"p"},
                 "work_item_type":{"key":"custom"},"work_item_mod":self.mode},"work_item_fields":[],"pagination":{"has_more":false}})
             }
@@ -87,6 +92,8 @@ fn setup(
         calls: Mutex::new(BTreeMap::new()),
         active: AtomicUsize::new(0),
         peak: AtomicUsize::new(0),
+        block_next_detail: AtomicBool::new(false),
+        detail_release: tokio::sync::Notify::new(),
     });
     let installed = crate::remote::install_test_client(
         &session.config,
@@ -96,16 +103,24 @@ fn setup(
     (session, fake, installed, dir)
 }
 
-#[test]
-fn node_discovery_reuses_details_metadata_and_checks_required_fields_concurrently() {
+#[tokio::test]
+async fn node_discovery_reuses_details_metadata_and_checks_required_fields_concurrently() {
     let (session, fake, installed, dir) = setup("节点流");
     let id = WorkItemId {
         project_key: Some("p".into()),
         work_item_type_key: Some("custom".into()),
         work_item_id: "1".into(),
     };
-    session.refresh_item_detail(&id).unwrap(); // The UI requested this detail immediately before actions.
-    let first = actions(&session, &id).unwrap();
+    fake.block_next_detail.store(true, Ordering::SeqCst);
+    // Keep the UI detail pending until action discovery has also been polled. This proves
+    // in-flight reuse without assuming the host completes the test within the 1-second TTL.
+    let (detail, first, ()) = tokio::join!(biased;
+        session.refresh_item_detail_async(&id, false),
+        discover_async(&session, &id, false),
+        async { fake.detail_release.notify_one(); },
+    );
+    detail.unwrap();
+    let first = first.unwrap().options();
     assert_eq!(first.actions.len(), 3);
     assert_eq!(fake.count("get_workitem_brief"), 1);
     assert_eq!(
@@ -114,7 +129,7 @@ fn node_discovery_reuses_details_metadata_and_checks_required_fields_concurrentl
         "明确节点流不探测状态流"
     );
     assert_eq!(fake.peak.load(Ordering::SeqCst), 3, "所有必填项参与调度，不再受用户检查并发值限制");
-    actions(&session, &id).unwrap();
+    discover_async(&session, &id, false).await.unwrap();
     assert_eq!(fake.count("list_node_field_config"), 1);
     assert_eq!(fake.count("list_workitem_field_config"), 1);
     assert_eq!(
@@ -122,8 +137,10 @@ fn node_discovery_reuses_details_metadata_and_checks_required_fields_concurrentl
         6,
         "可执行条件每次仍重新检查"
     );
-    fresh_actions(&session, &id).unwrap();
-    assert_eq!(fake.count("get_workitem_brief"), 2);
+    let detail_reads_before_fresh = fake.count("get_workitem_brief");
+    discover_async(&session, &id, true).await.unwrap();
+    assert_eq!(fake.count("get_workitem_brief"), detail_reads_before_fresh + 1,
+        "提交前检查必须额外读取一次详情，不依赖此前普通读取是否已过期");
     assert_eq!(
         fake.count("list_node_field_config"),
         2,

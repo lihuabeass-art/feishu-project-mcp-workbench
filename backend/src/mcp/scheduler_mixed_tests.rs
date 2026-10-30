@@ -65,7 +65,9 @@ async fn source_backlog_does_not_block_workflow_or_later_source_checks() {
             }
         })
         .await
-        .expect("真实后台详情应填满后台窗口并形成积压");
+        .unwrap_or_else(|error| panic!("真实后台详情应填满后台窗口并形成积压: {error}; {}; background_active={}; requested={:?}",
+            client.scheduler.debug_state(), server.background_active.load(Ordering::SeqCst),
+            server.requested.lock().unwrap()));
         let started = std::time::Instant::now();
         start_check.notify_one();
         let foreground_stage_task = foreground_stage.clone();
