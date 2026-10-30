@@ -9,6 +9,7 @@ import { sourceName } from "./sourcePresets";
 export function SourceTypes({
   source,
   sourceLabel,
+  readFailure,
   disabled,
   canReorder = false,
   label,
@@ -21,6 +22,7 @@ export function SourceTypes({
 }: {
   source?: Source;
   sourceLabel?: string;
+  readFailure?: string;
   disabled: boolean;
   canReorder?: boolean;
   label: (key: string) => string;
@@ -93,6 +95,7 @@ export function SourceTypes({
           </button>
         )}
       </div>
+      {readFailure && <p className="hint" role="status">{readFailure}</p>}
       {scope ? (
         <div className="type-sync-summary">
           <div>

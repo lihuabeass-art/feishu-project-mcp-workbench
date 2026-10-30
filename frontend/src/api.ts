@@ -12,6 +12,7 @@ import type {
   WorkSourceInput,
   ConnectionSettings,
   CatalogRefresh,
+  SourceTypeScope,
 } from "./types";
 
 export const desktop = isTauri();
@@ -63,7 +64,7 @@ export const loadSnapshot = async () => {
 export const syncTodos = (sourceId: string, automatic = false, sourceIds?: string[]) =>
   invoke<SyncReport>("sync_todos", { sourceId, automatic, ...(sourceIds ? { sourceIds } : {}) });
 export const refreshSourceTypes = (sourceId: string) =>
-  invoke<{ discovered_count: number; failed: [string, string][] }>(
+  invoke<{ discovered_count: number; failed: [string, string][]; failure_kinds?: string[]; type_scope?: SourceTypeScope }>(
     "refresh_source_types",
     { sourceId },
   );

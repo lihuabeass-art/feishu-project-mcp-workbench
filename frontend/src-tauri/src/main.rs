@@ -92,6 +92,8 @@ fn type_scope_view(types: Vec<CachedType>, scope: Option<TypeScope>) -> SourceTy
 struct TypeDiscoveryView {
     discovered_count: usize,
     failed: Vec<(String, String)>,
+    failure_kinds: Vec<String>,
+    type_scope: SourceTypeScopeView,
 }
 
 fn ensure_source_enabled(session: &Session, source_id: &str) -> Result<(), BackendError> {
@@ -307,6 +309,8 @@ async fn refresh_source_types(source_id: String) -> Result<TypeDiscoveryView, Ui
         Ok(TypeDiscoveryView {
             discovered_count: result.types.len(),
             failed: result.failed,
+            failure_kinds: result.failure_kinds,
+            type_scope: type_scope_view(session.source_types(&source_id)?, session.source_type_scope(&source_id)?),
         })
     })
     .await

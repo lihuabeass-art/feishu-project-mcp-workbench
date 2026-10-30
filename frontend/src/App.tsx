@@ -34,7 +34,6 @@ import {
   desktop,
   loadSnapshot,
   refreshWorkspaceCatalog,
-  refreshSourceTypes,
   saveSourceTypes,
   clearSourceTypes,
   saveTypeOrder,
@@ -56,6 +55,7 @@ import {
   typeColorStyle,
 } from "./model";
 import { typeReorderHint, useTypeReorder } from "./useTypeReorder";
+import { applySourceTypeNames, typeNameConnection, typeNameSource, useSourceTypeNames } from "./useSourceTypeNames";
 import type { AppError, CachedItem, ConnectionSettings as Settings, Snapshot, WorkflowRequest, WorkflowResult } from "./types";
 import { Workflow } from "./Workflow";
 import { SourceTypes } from "./SourceTypes";
@@ -310,6 +310,18 @@ function Workspace() {
   const workflowAttempt = useRef(0);
   const snapshotRequest = useRef(0);
   const syncPatchRevision = useRef(0);
+  const typeNamesRevision = useRef(0);
+  const [credentialRevision, setCredentialRevision] = useState(0);
+  const receiveTypeNames = useCallback((sourceId: string, types: Parameters<typeof applySourceTypeNames>[2], context: Snapshot) => {
+    ++typeNamesRevision.current;
+    setData((current) => {
+      const source = current?.sources.find((entry) => entry.id === sourceId);
+      const original = context.sources.find((entry) => entry.id === sourceId);
+      return current && source && original && typeNameConnection(current) === typeNameConnection(context) &&
+        typeNameSource(source) === typeNameSource(original) ? applySourceTypeNames(current, sourceId, types) : current;
+    });
+  }, []);
+  const typeNames = useSourceTypeNames(data, desktop && !loading, credentialRevision, receiveTypeNames);
   const searchRef = useRef<HTMLInputElement>(null);
   const autoRunRef = useRef<() => void>(() => {});
   const activeSyncIds = useRef<string[]>([]);
@@ -391,6 +403,7 @@ function Workspace() {
     const request = ++snapshotRequest.current;
     ++catalogRequest.current;
     const patchRevision = syncPatchRevision.current;
+    const namesRevision = typeNamesRevision.current;
     const preferencesRevision = preferenceRevision.current;
     await flushSourceTypePreferences();
     const snapshot = await loadSnapshot();
@@ -404,13 +417,24 @@ function Workspace() {
     setSettingsRefreshFailed(false);
     // 配置回读仍须生效，但不能覆盖读取期间已应用的同步事项补丁。
     const patchedDuringRead = patchRevision !== syncPatchRevision.current;
-    setData((current) => current && patchedDuringRead ? {
-      ...snapshot,
-      items: current.items,
-      total: current.total,
-      runs: current.runs,
-      last_success: current.last_success,
-    } : snapshot);
+    setData((current) => {
+      let next = current && patchedDuringRead ? {
+        ...snapshot,
+        items: current.items,
+        total: current.total,
+        runs: current.runs,
+        last_success: current.last_success,
+      } : snapshot;
+      // 回读开始后取得的新名称不能被较早读取的目录覆盖；范围和偏好仍采用回读结果。
+      if (current && namesRevision !== typeNamesRevision.current && typeNameConnection(current) === typeNameConnection(snapshot)) {
+        for (const source of current.sources) {
+          const original = snapshot.sources.find((entry) => entry.id === source.id);
+          if (source.type_scope && original && typeNameSource(source) === typeNameSource(original))
+            next = applySourceTypeNames(next, source.id, source.type_scope);
+        }
+      }
+      return next;
+    });
     setSourceId((previous) => {
       const executable = snapshot.sources.filter((s) => s.executable);
       return (previous === "*" && snapshot.capabilities?.source_queries && executable.length > 0) || executable.some((s) => s.id === previous)
@@ -585,6 +609,7 @@ function Workspace() {
           : previous,
       );
       setCredentialFeedback({ state: "saved" });
+      setCredentialRevision((value) => value + 1);
       ++catalogRequest.current;
       catalogInFlight.current = null;
       setCatalogEpoch((value) => value + 1);
@@ -816,6 +841,7 @@ function Workspace() {
           }
           return next;
         });
+        typeNames.afterSync([...outcomes].filter(([, outcome]) => !outcome).map(([id]) => id));
       }
       syncRef.current = false;
       activeSyncIds.current = [];
@@ -901,7 +927,8 @@ function Workspace() {
     setNotice(null);
     try {
       if (action === "refresh") {
-        const result = await refreshSourceTypes(sourceId);
+        const result = await typeNames.refresh(sourceId);
+        if (!result) return false;
         await reload();
         if (result.failed.length)
           setError({
@@ -1648,6 +1675,7 @@ function Workspace() {
                 typeName={typeName}
                 typeKeys={knownTypes}
                 preferences={preferences}
+                readFailure={typeNames.failures[sourceId]}
                 updatePreferences={updatePreferences}
                 saveTypeOrder={updateTypeOrder}
                 apply={applySourceTypes}

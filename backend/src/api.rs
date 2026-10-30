@@ -34,6 +34,8 @@ pub struct TypeDiscovery {
     pub types: Vec<DiscoveredType>,
     /// `(project_key, 已脱敏的错误文本)`。空 = 每个空间都读到了。
     pub failed: Vec<(String, String)>,
+    /// 部分失败仍保留稳定错误类别，供来源内提示需要用户处理的问题。
+    pub failure_kinds: Vec<String>,
 }
 
 /// 一次命令的完整上下文：配置 + 已打开的缓存库。
@@ -417,6 +419,12 @@ impl Session {
         source_id: &str,
     ) -> Result<TypeDiscovery, BackendError> {
         let mut projects = self.store.distinct_projects()?;
+        // 升级后即使空间暂时没有个人事项，也能刷新此前发现过的类型名称。
+        for kind in self.store.source_types(source_id)? {
+            if !projects.iter().any(|(key, _)| key == &kind.project_key) {
+                projects.push((kind.project_key, kind.project_name));
+            }
+        }
         if let Some(source)=self.config.sources.iter().find(|s|s.id==source_id){
             let project=match &source.kind{SourceKind::WorkItemType{project_key,..}|SourceKind::View{project_key,..}=>project_key.as_ref(),_=>None};
             if let Some(p)=project {if !projects.iter().any(|(key,_)|key==p){projects.push((p.clone(),p.clone()));}}
@@ -426,83 +434,17 @@ impl Session {
                 "本地还没有任何带 project_key 的事项，无法确定要发现哪些空间的类型；请先同步一次",
             ));
         }
-        let now = crate::sync::now_ms();
-        let mut out: Vec<DiscoveredType> = Vec::new();
-        let mut failed: Vec<(String, String)> = Vec::new();
-        let mut first_error: Option<BackendError> = None;
-        // 失败文本必须带凭证做脱敏：safe_message 拿不到 token 时根本不擦除，
-        // 而上游（MCP SDK）的错误文本会原样回显请求内容。取不到凭证就退化为不脱敏
-        // ——那种情况连调用都发不出去，错误另有出处。
         let credential = self.credential().ok();
-        for (project_key, project_name) in &projects {
+        let started = std::time::Instant::now();
+        let result = refresh_type_snapshot(&self.store, source_id, &projects, crate::sync::now_ms(),
+            credential.as_ref().map(|c| c.token().expose()), |project_key| {
             let mut args = Map::new();
-            args.insert("project_key".to_string(), Value::String(project_key.clone()));
-            let value = match self.call_read_tool(TOOL_LIST_WORKITEM_TYPES, &args) {
-                Ok(value) => value,
-                Err(e) => {
-                    // 文本先取（已脱敏），再把错误本体留下：全失败时要拿它当整体错误返回，
-                    // 保留原本的错种（连接/鉴权/工具）而不是退化成一句泛泛的失败。
-                    let text = e.safe_message(credential.as_ref().map(|c| c.token().expose()));
-                    failed.push((project_key.clone(), text));
-                    if first_error.is_none() {
-                        first_error = Some(e);
-                    }
-                    continue;
-                }
-            };
-            for row in value.get("list").and_then(Value::as_array).into_iter().flatten() {
-                let type_key = row
-                    .get("type_key")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                // 没有 type_key 的行既不能拿来筛也不能拿来写，直接不要：留着只会让界面出现一个选了没用的选项。
-                if type_key.is_empty() {
-                    continue;
-                }
-                out.push(DiscoveredType {
-                    source_id: source_id.to_string(),
-                    project_key: project_key.clone(),
-                    // 响应里没有空间名，用缓存里那份（同一个 project_key 的名字）。
-                    project_name: project_name.clone(),
-                    type_name: row
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.trim().is_empty())
-                        .unwrap_or(&type_key)
-                        .to_string(),
-                    type_key,
-                    // 恒为 true：响应里的 `is_disable` 语义没做过验证（实测见过取值 2），
-                    // 拿一个没验证过的字段去过滤可选项，风险是「把能用的类型藏掉」。
-                    // 真正的可执行性由动作发现来判定——那里读不到动作就是没有动作。
-                    executable: true,
-                    discovered_at_ms: now,
-                });
-            }
-        }
-        if out.is_empty() && failed.len() == projects.len() {
-            if let Some(error) = first_error {
-                return Err(error);
-            }
-        }
-        // 一个类型都没发现时**不动旧快照**：清空它会让之后每次 `types use` 都报「不在快照里」，
-        // 而这次调用看起来仍是成功的——那是把可用状态销毁了却不留痕迹。远端真的删光了类型
-        // 是另一回事，本轮没有那样的证据，就不拿「覆盖」去冒充「同步」。
-        if !out.is_empty() {
-            let snapshot: Vec<CachedType> = out
-                .iter()
-                .map(|t| CachedType {
-                    project_key: t.project_key.clone(),
-                    project_name: t.project_name.clone(),
-                    type_key: t.type_key.clone(),
-                    type_name: t.type_name.clone(),
-                    discovered_at_ms: t.discovered_at_ms,
-                })
-                .collect();
-            self.store.save_source_types(source_id, &snapshot, now)?;
-        }
-        Ok(TypeDiscovery { types: out, failed })
+            args.insert("project_key".to_string(), Value::String(project_key.to_owned()));
+            self.call_read_tool(TOOL_LIST_WORKITEM_TYPES, &args)
+        });
+        crate::diagnostics::record("type_discovery", started,
+            result.as_ref().map_or_else(|e| e.kind().as_str(), |r| if r.failed.is_empty() { "ok" } else { "partial" }), false);
+        result
     }
 
     /// 已保存的类型快照（不联网；没发现过时是空表，不代表远端没有类型）。
@@ -586,6 +528,64 @@ impl Session {
         crate::remote::shared(&self.config, credential)
     }
 }
+
+fn refresh_type_snapshot(
+    store: &Store, source_id: &str, projects: &[(String, String)], now: i64,
+    secret: Option<&str>, mut read: impl FnMut(&str) -> Result<Value, BackendError>,
+) -> Result<TypeDiscovery, BackendError> {
+    let previous = store.source_types(source_id)?;
+    let mut out = Vec::new();
+    let mut failed = Vec::new();
+    let mut failure_kinds = Vec::new();
+    let mut first_error: Option<BackendError> = None;
+    let needs_action = |error: &BackendError| matches!(error.kind(),
+        crate::error::ErrorKind::Auth | crate::error::ErrorKind::Credential |
+        crate::error::ErrorKind::Permission | crate::error::ErrorKind::Config);
+    for (project_key, project_name) in projects {
+        let rows = read(project_key).and_then(|value| value.get("list").and_then(Value::as_array)
+            .cloned().ok_or_else(|| BackendError::parse("类型目录", "缺少 list")));
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(error) => {
+                failed.push((project_key.clone(), error.safe_message(secret)));
+                failure_kinds.push(error.kind().as_str().to_owned());
+                // 全部空间失败时，临时故障不能掩盖另一个空间的权限或配置问题。
+                if first_error.as_ref().is_none_or(|previous| !needs_action(previous) && needs_action(&error)) {
+                    first_error = Some(error);
+                }
+                continue;
+            },
+        };
+        let mut seen = std::collections::HashSet::new();
+        for row in rows {
+            let Some(key) = row["type_key"].as_str().map(str::trim).filter(|s| !s.is_empty()) else { continue };
+            if !seen.insert(key.to_owned()) { continue; }
+            let old_name = previous.iter().find(|t| t.project_key == *project_key && t.type_key == key)
+                .map(|t| t.type_name.as_str());
+            // 名称暂缺时保留上次确认值；有效远端名称始终覆盖旧名称。
+            let name = row["name"].as_str().map(str::trim).filter(|s| !s.is_empty())
+                .or(old_name).unwrap_or(key);
+            out.push(DiscoveredType {
+                source_id: source_id.into(), project_key: project_key.clone(), project_name: project_name.clone(),
+                type_key: key.into(), type_name: name.into(), executable: true, discovered_at_ms: now,
+            });
+        }
+    }
+    if out.is_empty() && failed.len() == projects.len() {
+        if let Some(error) = first_error { return Err(error); }
+    }
+    // 空目录没有删除类型的可靠证据；只替换本轮取得非空目录的空间。
+    let snapshot: Vec<_> = out.iter().map(|t| CachedType {
+        project_key: t.project_key.clone(), project_name: t.project_name.clone(),
+        type_key: t.type_key.clone(), type_name: t.type_name.clone(), discovered_at_ms: now,
+    }).collect();
+    store.save_source_type_projects(source_id, &snapshot, now)?;
+    Ok(TypeDiscovery { types: out, failed, failure_kinds })
+}
+
+#[cfg(test)]
+#[path = "api_type_tests.rs"]
+mod type_tests;
 
 /// 检查时间与出现次数属于同步元数据，不触发业务 patch。
 fn cache_patch(before: &[CachedItem], after: &[CachedItem]) -> Result<Value, BackendError> {

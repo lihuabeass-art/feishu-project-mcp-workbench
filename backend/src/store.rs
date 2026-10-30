@@ -1070,6 +1070,30 @@ impl Store {
         Ok(())
     }
 
+    /// 只替换本轮成功读到的空间；失败或空响应的空间保留名称及上次发现时间。
+    pub(crate) fn save_source_type_projects(
+        &self,
+        source_id: &str,
+        types: &[CachedType],
+        now_ms: i64,
+    ) -> Result<(), BackendError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+        let projects: std::collections::HashSet<_> = types.iter().map(|t| &t.project_key).collect();
+        for project in projects {
+            tx.execute("DELETE FROM work_item_type WHERE source_id=?1 AND project_key=?2",
+                params![source_id, project])?;
+        }
+        for t in types {
+            tx.execute("INSERT INTO work_item_type
+                (source_id, project_key, type_key, project_name, type_name, discovered_at_ms)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![source_id, t.project_key, t.type_key, t.project_name, t.type_name, now_ms])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn source_types(&self, source_id: &str) -> Result<Vec<CachedType>, BackendError> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(
