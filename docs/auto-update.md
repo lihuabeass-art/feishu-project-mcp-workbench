@@ -34,6 +34,8 @@ https://github.com/lihuabeass-art/feishu-project-mcp-workbench/releases/latest/d
 
 清单中的包 URL 始终指向固定 tag 的 `releases/download/<tag>/<文件名>`，避免检查后下载时跟随 `latest` 跳至另一版本。更换公开仓库时应同时修改应用构建配置和清单生成参数，已有客户端仍会查询其安装版本内保存的旧地址。
 
+更新检查和分段下载共用启用了 `system-proxy` 的 reqwest 0.12，读取 Windows / macOS 的系统 HTTP(S) 代理及代理环境变量。macOS 从图形界面启动时通常不继承终端代理环境变量，因此不能只验证终端可访问 GitHub；实机验收还须覆盖使用系统代理获取清单和下载更新包。
+
 ## 签名与 macOS 兼容
 
 有两种不同用途的签名：
