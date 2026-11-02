@@ -31,7 +31,6 @@ import {
   uploadCreationImages,
 } from "./creationImages";
 import {
-  loadCreationPrefill,
   loadLocalCreationDefaults,
   localCreationInitial,
   matchesLocalCreationDefault,
@@ -194,13 +193,12 @@ export function CreateWorkItem({
           /* 草稿读取失败不影响远端台账恢复 */
         }
         const localDefaults = loadLocalCreationDefaults(next);
-        const prefill = loadCreationPrefill();
         const values = Object.fromEntries(
           next.fields.map((f) => [
             f.key,
             saved?.values && Object.hasOwn(saved.values, f.key)
               ? saved.values[f.key]
-              : f.kind === "bool" && !f.required && f.initial == null ? null : localCreationInitial(f, localDefaults, prefill),
+              : f.kind === "bool" && !f.required && f.initial == null ? null : localCreationInitial(f, localDefaults),
           ]),
         );
         const restored: Draft = next.pending
@@ -327,7 +325,6 @@ export function CreateWorkItem({
           "创建位置或账号已变化，或仍有其他待核验记录，请重新核对。",
         );
       const localDefaults = loadLocalCreationDefaults(next);
-      const prefill = loadCreationPrefill();
       const nextDraft: Draft = {
         values: Object.fromEntries(
           next.fields.map((field) => [
@@ -339,7 +336,7 @@ export function CreateWorkItem({
               ? field.multiple
                 ? []
                 : ""
-              : field.kind === "bool" && !field.required && field.initial == null ? null : localCreationInitial(field, localDefaults, prefill),
+              : field.kind === "bool" && !field.required && field.initial == null ? null : localCreationInitial(field, localDefaults),
           ]),
         ),
         labels: {},

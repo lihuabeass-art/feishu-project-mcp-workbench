@@ -21,6 +21,7 @@ import {
   Inbox,
   Layers3,
   Leaf,
+  Link2,
   LoaderCircle,
   PictureInPicture2,
   RefreshCw,
@@ -67,7 +68,8 @@ import { WorkItemDetails } from "./WorkItemDetails";
 import { readFailureMessage, readFailureNeedsAction } from "./readFeedback";
 import { Select } from "./Select";
 import { LinkSettings } from "./LinkSettings";
-import { CreationSettings } from "./CreationSettings";
+import { WorkflowSettings } from "./WorkflowSettings";
+import { SettingsPage } from "./SettingsPage";
 import { DesktopSettings, useDesktopSettings } from "./DesktopSettings";
 import { ConnectionSettings } from "./ConnectionSettings";
 import { McpTokenGuide } from "./McpTokenGuide";
@@ -266,7 +268,7 @@ function Workspace() {
   const [connectionFeedback, setConnectionFeedback] = useState<SaveFeedback | null>(null);
   const [connectionUnsaved, setConnectionUnsaved] = useState(false);
   const [linkFeedback, setLinkFeedback] = useState<SaveFeedback | null>(null);
-  const [creationFeedback, setCreationFeedback] = useState<SaveFeedback | null>(null);
+  const [workflowFeedback, setWorkflowFeedback] = useState<SaveFeedback | null>(null);
   const [desktopFeedback, setDesktopFeedback] = useState<SaveFeedback | null>(null);
   const [credentialFeedback, setCredentialFeedback] = useState<SaveFeedback | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -326,7 +328,7 @@ function Workspace() {
         ? "MCP 服务地址尚未保存，请先保存或恢复原值后再安装。"
       : tokenDraft.trim()
         ? "Token 输入尚未保存，请先保存或清空输入后再安装。"
-        : [connectionFeedback, linkFeedback, creationFeedback, desktopFeedback, credentialFeedback].some((feedback) =>
+        : [connectionFeedback, linkFeedback, workflowFeedback, desktopFeedback, credentialFeedback].some((feedback) =>
           feedback && ["waiting", "saving", "invalid", "failed"].includes(feedback.state))
           ? "设置尚未保存成功，请先完成保存或处理错误后再安装。"
           : undefined,
@@ -1365,14 +1367,14 @@ function Workspace() {
         feedback={[
           connectionFeedback,
           linkFeedback,
-          creationFeedback,
+          workflowFeedback,
           desktopFeedback,
           credentialFeedback,
         ]}
         onDismiss={() => {
           setConnectionFeedback(null);
           setLinkFeedback(null);
-          setCreationFeedback(null);
+          setWorkflowFeedback(null);
           setDesktopFeedback(null);
           setCredentialFeedback(null);
         }}
@@ -1459,7 +1461,7 @@ function Workspace() {
         </div>
       </aside>
 
-      <main className="main">
+      <main className={view === "settings" ? "main main-settings" : "main"}>
         <header className="topbar">
           <span>
             <span className="breadcrumb">个人空间</span>
@@ -1840,7 +1842,8 @@ function Workspace() {
           )}
 
           {/* 保持配置编辑器挂载，切页不会取消自动保存或丢失失败草稿。 */}
-            <section className="settings-panel" aria-label="连接与配置" hidden={view !== "settings"}>
+            <SettingsPage active={view === "settings"} sections={[
+              { id: "feishu", label: "飞书连接", icon: Cloud, content: <>
               <div className="section-heading">
                 <div>
                   <h2>飞书连接</h2>
@@ -1899,18 +1902,19 @@ function Workspace() {
                 </p>
                 </McpTokenGuide>
               </form>}
-              {data?.settings && <ConnectionSettings
+              </> },
+              ...(data?.settings ? [{ id: "connection", label: "应用配置", icon: SlidersHorizontal, content: <ConnectionSettings
                 settings={data.settings}
                 disabled={!desktop || contextChangeDisabled}
                 save={saveSettings}
                 onFeedback={setConnectionFeedback}
                 onUnsavedChange={setConnectionUnsaved}
-              />}
-              <DesktopSettings settings={desktopSettings} onFeedback={setDesktopFeedback} />
-              <LinkSettings onFeedback={setLinkFeedback} disabled={!!contextOperation || loading} />
-              <CreationSettings onFeedback={setCreationFeedback} disabled={!!contextOperation || loading} />
-              <AppUpdateSettings updater={updater} />
-            </section>
+              /> }] : []),
+              { id: "desktop", label: "窗口与桌面", icon: PictureInPicture2, content: <DesktopSettings settings={desktopSettings} onFeedback={setDesktopFeedback} /> },
+              { id: "links", label: "链接打开方式", icon: Link2, content: <LinkSettings onFeedback={setLinkFeedback} disabled={!!contextOperation || loading} /> },
+              { id: "workflow", label: "流程操作", icon: ShieldCheck, content: <WorkflowSettings onFeedback={setWorkflowFeedback} disabled={!!contextOperation || loading} /> },
+              { id: "updates", label: "软件更新", icon: ArrowDownToLine, content: <AppUpdateSettings updater={updater} /> },
+            ]} />
         </div>
       </main>
       {!compact && view === "work" && selected && detailFor(selected, false)}

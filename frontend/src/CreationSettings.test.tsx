@@ -1,12 +1,7 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   canSetCreationDefault,
-  CreationSettings,
-  creationPrefillKey,
-  loadCreationPrefill,
   loadLocalCreationDefaults,
   localCreationInitial,
   matchesLocalCreationDefault,
@@ -43,18 +38,16 @@ const defaults = (value: unknown = "high"): LocalCreationDefaults => ({
 
 beforeEach(() => localStorage.clear());
 afterEach(() => {
-  cleanup();
   vi.restoreAllMocks();
 });
 
 describe("本地默认值与最新字段选项", () => {
   it("最新选项仍有原 ID 才采用本地默认，删除后留空而不回退云端默认", () => {
-    expect(localCreationInitial(field(), defaults(), true)).toBe("high");
+    expect(localCreationInitial(field(), defaults())).toBe("high");
     expect(
       localCreationInitial(
         field({ options: [{ value: "normal", label: "普通" }] }),
         defaults(),
-        true,
       ),
     ).toBe("");
     expect(
@@ -64,7 +57,6 @@ describe("本地默认值与最新字段选项", () => {
           options: [{ value: "high", label: "改名" }],
         }),
         defaults(),
-        true,
       ),
     ).toBe("high");
   });
@@ -73,11 +65,7 @@ describe("本地默认值与最新字段选项", () => {
     const saved: LocalCreationDefaults = {
       priority: { kind: "select", multiple: true, value: ["high", "normal"] },
     };
-    const selected = localCreationInitial(
-      field({ multiple: true }),
-      saved,
-      true,
-    );
+    const selected = localCreationInitial(field({ multiple: true }), saved);
     expect(selected).toEqual(["high", "normal"]);
     (selected as string[]).push("changed-copy");
     expect(saved.priority.value).toEqual(["high", "normal"]);
@@ -85,13 +73,12 @@ describe("本地默认值与最新字段选项", () => {
       localCreationInitial(
         field({ multiple: true, options: [{ value: "high", label: "高" }] }),
         saved,
-        true,
       ),
     ).toEqual([]);
-    expect(localCreationInitial(field(), saved, true)).toBe("");
-    expect(
-      localCreationInitial(field({ kind: "text" }), defaults(), true),
-    ).toBe("normal");
+    expect(localCreationInitial(field(), saved)).toBe("");
+    expect(localCreationInitial(field({ kind: "text" }), defaults())).toBe(
+      "normal",
+    );
   });
 
   it("默认值按账号数据库上下文、空间、类型隔离，字段中文名和配置版本不改变保存身份", () => {
@@ -133,7 +120,7 @@ describe("本地默认值与最新字段选项", () => {
       const current = field({ key: kind, kind, initial });
       expect(canSetCreationDefault(current)).toBe(false);
       expect(validLocalCreationDefault(current, loaded[kind])).toBe(false);
-      expect(localCreationInitial(current, loaded, true)).toBe(initial);
+      expect(localCreationInitial(current, loaded)).toBe(initial);
     }
     expect(loadLocalCreationDefaults(form())).toEqual(saved);
     expect(canSetCreationDefault(field())).toBe(true);
@@ -164,9 +151,8 @@ describe("本地默认值与最新字段选项", () => {
     ).toBe(false);
   });
 
-  it("未保存或关闭本地预填时沿用飞书表单默认，不为人员与关联事项套用未经校验的默认", () => {
-    expect(localCreationInitial(field(), {}, true)).toBe("normal");
-    expect(localCreationInitial(field(), defaults(), false)).toBe("normal");
+  it("未保存本地默认时沿用飞书表单默认，不为人员与关联事项套用未经校验的默认", () => {
+    expect(localCreationInitial(field(), {})).toBe("normal");
     for (const kind of ["people", "relation", "unsupported"]) {
       const f = field({ kind });
       expect(canSetCreationDefault(f)).toBe(false);
@@ -195,75 +181,5 @@ describe("本地默认值与最新字段选项", () => {
     expect(() => saveLocalCreationDefaults(form(), defaults())).toThrow(
       "disk full",
     );
-  });
-});
-
-describe("本地默认值预填偏好", () => {
-  it("默认开启，关闭后重挂载仍关闭，键盘可以重新开启", async () => {
-    const user = userEvent.setup();
-    const mounted = render(<CreationSettings />);
-    const toggle = screen.getByRole("switch", {
-      name: "预填本地默认值",
-    }) as HTMLInputElement;
-    expect(toggle.checked).toBe(true);
-    await user.click(toggle);
-    expect(toggle.checked).toBe(false);
-    expect(loadCreationPrefill()).toBe(false);
-    mounted.unmount();
-    render(<CreationSettings />);
-    const restored = screen.getByRole("switch", {
-      name: "预填本地默认值",
-    }) as HTMLInputElement;
-    expect(restored.checked).toBe(false);
-    restored.focus();
-    await user.keyboard(" ");
-    expect(restored.checked).toBe(true);
-    expect(localStorage.getItem(creationPrefillKey)).toBe("true");
-  });
-
-  it("其他窗口更新同一偏好时同步显示，禁用时不能修改", async () => {
-    const mounted = render(<CreationSettings />);
-    localStorage.setItem(creationPrefillKey, "false");
-    act(() =>
-      window.dispatchEvent(
-        new StorageEvent("storage", {
-          key: creationPrefillKey,
-          newValue: "false",
-        }),
-      ),
-    );
-    expect(
-      (
-        screen.getByRole("switch", {
-          name: "预填本地默认值",
-        }) as HTMLInputElement
-      ).checked,
-    ).toBe(false);
-    mounted.rerender(<CreationSettings disabled />);
-    await userEvent
-      .setup()
-      .click(screen.getByRole("switch", { name: "预填本地默认值" }));
-    expect(localStorage.getItem(creationPrefillKey)).toBe("false");
-  });
-
-  it("存储失败保留原偏好并提供重试，不谎报保存成功", async () => {
-    const user = userEvent.setup();
-    render(<CreationSettings />);
-    vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
-      throw new Error("disk full");
-    });
-    await user.click(screen.getByRole("switch", { name: "预填本地默认值" }));
-    expect(screen.getByRole("alert").textContent).toContain("未能保存");
-    expect(
-      (
-        screen.getByRole("switch", {
-          name: "预填本地默认值",
-        }) as HTMLInputElement
-      ).checked,
-    ).toBe(true);
-    expect(localStorage.getItem(creationPrefillKey)).toBeNull();
-    await user.click(screen.getByRole("button", { name: "重试保存预填偏好" }));
-    expect(loadCreationPrefill()).toBe(false);
-    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

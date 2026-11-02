@@ -15,7 +15,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { CreateWorkItem, creationContinuousKey } from "./CreateWorkItem";
 import { creationFieldTipSeenKey, creationVisibilityKey, loadCreationVisibility } from "./CreationFieldVisibility";
 import {
-  creationPrefillKey,
   saveLocalCreationDefaults,
 } from "./CreationSettings";
 import {
@@ -402,7 +401,8 @@ describe("通用创建表单", () => {
     expect(backgroundWheel).toHaveBeenCalledTimes(1);
   });
 
-  it("完整核对含默认值和人员名称，明确确认后才提交，成功刷新失败也保留成功", async () => {
+  it("关闭流程确认也不跳过新建核对，完整显示默认值和人员名称，确认后才创建", async () => {
+    localStorage.setItem("fstodo.workflow-skip-confirmation.v1", "true");
     const user = userEvent.setup();
     render(
       <CreateWorkItem
@@ -1638,12 +1638,12 @@ describe("连续创建", () => {
     expect(createWorkItem).toHaveBeenCalledTimes(1);
   });
 
-  it("新版本表单和来源变化后继承稳定键下的默认值、预填偏好及草稿", async () => {
+  it("旧版关闭预填后仍自动应用稳定键下的默认值，升级和来源变化保留草稿", async () => {
     const previous = formWithChoices();
     saveLocalCreationDefaults(previous, {
       template: { kind: "select", multiple: false, value: "2" },
     });
-    localStorage.setItem(creationPrefillKey, "true");
+    localStorage.setItem("fstodo.creation-prefill-local-defaults.v1", "false");
     localStorage.setItem(creationContinuousKey, "true");
     const key = `fstodo.creation.v1:account-a:${creationTargetKey(target)}`;
     localStorage.setItem(
@@ -1687,7 +1687,7 @@ describe("连续创建", () => {
     expect(
       screen.getByRole("combobox", { name: "流程" }).textContent,
     ).toContain("团队流程");
-    expect(localStorage.getItem(creationPrefillKey)).toBe("true");
+    expect(localStorage.getItem("fstodo.creation-prefill-local-defaults.v1")).toBe("false");
     expect(localStorage.getItem(creationContinuousKey)).toBe("true");
     expect(createWorkItem).not.toHaveBeenCalled();
   });

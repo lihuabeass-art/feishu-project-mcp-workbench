@@ -10,6 +10,7 @@ import { SteppedNumberInput } from "./SteppedNumberInput";
 import { displayFieldValue, WorkflowConflict } from "./WorkflowConflict";
 import { WorkflowReviewFields } from "./WorkflowReviewFields";
 import { layoutFields, ownerCell } from "./workflowLayout";
+import { loadWorkflowSkipConfirmation, useWorkflowSkipConfirmation } from "./workflowPreferences";
 import {
   changedFields,
   draftKey,
@@ -28,6 +29,8 @@ import type {
 } from "./types";
 
 type Field = WorkflowAction["fields"][number];
+const isWorkflowTransition = (candidate: WorkflowAction) =>
+  candidate.kind === "state" || candidate.id.startsWith("node:confirm:") || candidate.id.startsWith("node:rollback:");
 const feishuActionExplanation = "此操作所需字段暂无法在本软件中处理。点击上方按钮，即可打开对应的飞书事项，填写并完成流程。";
 const feishuEditorExplanation = "此操作所需字段暂无法在本软件中处理。请通过飞书链接打开对应事项，填写并完成流程。";
 
@@ -51,6 +54,7 @@ export function Workflow({
   busy: boolean;
   submit: (request: WorkflowRequest) => Promise<WorkflowResult | undefined>;
 }) {
+  const skipConfirmation = useWorkflowSkipConfirmation();
   const [options, setOptions] = useState<WorkflowOptions | null>(null);
   const [action, setAction] = useState<WorkflowAction | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -569,16 +573,17 @@ export function Workflow({
       setConflicts(merged.conflicts);
       setReview(null);
       setDraftStatus("草稿已保存在本机");
-      // 新出现或再次变化的冲突先展示；已展示的值由正常提交确认最终内容。
-      if (
-        merged.conflicts.some(
+      const skipReview = isWorkflowTransition(nextAction) && loadWorkflowSkipConfirmation();
+      // 新冲突先展示；跳过核对页时，云端清空也须在原表单提示后再由用户提交。
+      const newConflicts = merged.conflicts.filter(
           (key) =>
             nextAction.fields.some((field) => field.key === key) &&
-            !!merged.base_fields[key]?.trim() &&
             (!previous.conflicts.includes(key) ||
               previous.baseFields[key] !== merged.base_fields[key]),
-        )
-      ) {
+      );
+      if (newConflicts.some((key) => skipReview || !!merged.base_fields[key]?.trim())) {
+        const cleared = newConflicts.find((key) => !merged.base_fields[key]?.trim());
+        if (skipReview && cleared) setError(`${merged.field_labels[cleared]}的云端原值已清空，请核对当前填写后再次提交。`);
         return;
       }
       if (nextAction.disabled_reason) return;
@@ -602,14 +607,19 @@ export function Workflow({
         setError(`请重新选择${invalidOption.label}：原选项已不可用。`);
         return;
       }
-      setReview({
+      const request: WorkflowRequest = {
         item_id: item.id,
         action_id: action.id,
         version: latest.version,
         fields: changedFields(nextAction, merged.fields, merged.base_fields),
         request_id: crypto.randomUUID(),
-      });
-      setAcknowledged(false);
+      };
+      if (skipReview) {
+        await execute(request, nextAction, merged);
+      } else {
+        setReview(request);
+        setAcknowledged(false);
+      }
     } catch (e) {
       if (identityRef.current === origin && reads.current === read)
         setError(asError(e).message);
@@ -628,9 +638,21 @@ export function Workflow({
       !acknowledged
     )
       return;
+    await execute(review, action, {
+      fields,
+      base_fields: baseFields,
+      field_labels: fieldLabels,
+      conflicts,
+    });
+  }
+  async function execute(
+    request: WorkflowRequest,
+    action: WorkflowAction,
+    draft: ReturnType<typeof reconcileDraft>,
+  ) {
+    const { fields, base_fields: baseFields, field_labels: fieldLabels, conflicts } = draft;
     const origin = identity,
-      key = draftKey(identity, action.id),
-      request = review;
+      key = draftKey(identity, action.id);
     flight.current = true;
     reads.current += 1;
     setPending(true);
@@ -1528,6 +1550,9 @@ export function Workflow({
                       <p className="draft-status" role="status">
                         {draftStatus}
                       </p>
+                      {skipConfirmation && isWorkflowTransition(action) && (
+                        <p className="workflow-warning">已关闭流程操作二次确认，点击「提交」将直接执行。</p>
+                      )}
                       <div className="workflow-buttons">
                         <button
                           type="button"
