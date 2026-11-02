@@ -30,11 +30,11 @@ function canScroll(
   return false;
 }
 
-export function useScrollIsolation(
-  ref?: RefObject<HTMLDivElement | null>,
+export function useScrollIsolation<T extends HTMLElement = HTMLDivElement>(
+  ref?: RefObject<T | null>,
 ) {
   return useCallback(
-    (node: HTMLDivElement | null) => {
+    (node: T | null) => {
       if (ref) ref.current = node;
       if (!node) return;
       const boundary = node;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -16,9 +16,12 @@ function fixture(t) {
   });
   const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   git("init", "--initial-branch=main");
-  const tree = execFileSync("git", ["mktree"], { cwd, input: "", encoding: "utf8" }).trim();
+  mkdirSync(join(cwd, "docs"));
+  writeFileSync(join(cwd, "docs/first-release-notes.md"), readFileSync(new URL("../../docs/first-release-notes.md", import.meta.url), "utf8"));
+  git("add", "docs/first-release-notes.md");
   let head;
   const commit = (message) => {
+    const tree = git("write-tree");
     head = git("-c", "user.name=Release Test", "-c", "user.email=release@example.invalid", "commit-tree", tree, ...(head ? ["-p", head] : []), "-m", message);
     git("update-ref", "refs/heads/main", head);
     return head;
@@ -72,19 +75,34 @@ test("更新记录排除普通、带范围和带感叹号的 chore，并保留�
 
 test("正式版比较上一个正式 tag，包含预发布期间的变化并正确选择 1.10 而非 1.9", (t) => {
   const f = fixture(t);
-  f.git("tag", "v1.9.0");
+  f.git("-c", "user.name=Release Test", "-c", "user.email=release@example.invalid", "tag", "-a", "v1.9.0", "-m", "first release");
+  writeFileSync(join(f.cwd, "docs/first-release-notes.md"), "仅供后续版本的新介绍。\n");
+  f.git("add", "docs/first-release-notes.md");
   f.commit("fix: 已发布的旧修复");
   f.git("tag", "v1.10.0");
+  f.git("tag", "1.10.0");
   f.commit("feat: 新增版本记录");
   f.git("tag", "v1.11.0-beta.1");
   f.commit("fix: 修复版本展示");
   f.git("tag", "v1.11.0");
   const notes = f.notes();
-  assert.equal(notes.previousTag, "v1.10.0");
+  assert.equal(notes.previousTag, "1.10.0");
   assert.match(notes.markdown, /新增版本记录/);
   assert.match(notes.markdown, /修复版本展示/);
   assert.doesNotMatch(notes.markdown, /已发布的旧修复/);
   assert.doesNotMatch(notes.markdown, /https?:\/\//);
+  assert.deepEqual(notes.history.map((entry) => entry.version), ["1.11.0-beta.1", "1.10.0", "1.9.0"]);
+  const [beta, old, first] = notes.history;
+  assert.match(beta.markdown, /新增版本记录/);
+  assert.doesNotMatch(beta.markdown, /修复版本展示|已发布的旧修复/);
+  assert.match(old.markdown, /已发布的旧修复/);
+  assert.doesNotMatch(old.markdown, /新增版本记录|修复版本展示/);
+  assert.equal(old.commit, f.git("rev-parse", "v1.10.0^{commit}"));
+  assert.match(first.markdown, /首个正式版本/);
+  assert.match(first.markdown, /汇总飞书待办、已办和参与事项/);
+  assert.doesNotMatch(first.markdown, /仅供后续版本的新介绍/);
+  assert.equal(first.previousTag, null);
+  assert.equal(f.git("status", "--porcelain"), "");
 });
 
 test("预发布比较上一个较低版本，忽略不在当前历史中的 tag", (t) => {
@@ -102,6 +120,7 @@ test("预发布比较上一个较低版本，忽略不在当前历史中的 tag"
   assert.equal(notes.previousTag, "v1.1.0-beta.1");
   assert.doesNotMatch(notes.markdown, /测试版功能/);
   assert.match(notes.markdown, /第二轮测试修复/);
+  assert.deepEqual(notes.history.map((entry) => entry.version), ["1.1.0-beta.1", "1.0.0"]);
   assert.throws(() => f.notes({ version: "1.2.0", previousTag: "v1.1.0-beta.9" }), /当前历史可达/);
 });
 
@@ -114,7 +133,10 @@ test("本机和 CI 从相同 tag 生成一致记录，可复用快照并拒绝�
   const env = { FSTODO_RELEASE_NOTES_FILE: notesFile };
   assert.deepEqual(loadBuildReleaseNotes({ cwd: f.cwd, env }), notes);
   assert.deepEqual(appReleaseNotes({ cwd: f.cwd, env }), notes);
-  for (const changed of [{ version: "2.0.1" }, { tag: "v2.0.1" }, { commit: "0".repeat(40) }, { markdown: "" }]) {
+  const { history, ...legacy } = notes;
+  writeFileSync(notesFile, JSON.stringify(legacy));
+  assert.deepEqual(loadBuildReleaseNotes({ cwd: f.cwd, env }), notes);
+  for (const changed of [{ version: "2.0.1" }, { tag: "v2.0.1" }, { commit: "0".repeat(40) }, { markdown: "" }, { history: [{}] }, { history: null }]) {
     writeFileSync(notesFile, JSON.stringify({ ...notes, ...changed }));
     assert.throws(() => loadBuildReleaseNotes({ cwd: f.cwd, env }), /不一致/);
   }
@@ -135,8 +157,12 @@ test("手动 CI 运行明确使用指定 tag，不依赖事件默认分支或任
 
 test("无 tag 的开发界面提供离线提示，不伪造发布记录", (t) => {
   const f = fixture(t);
+  f.git("tag", "v1.0.0");
+  f.commit("feat: 尚未发布的新功能");
   const notes = appReleaseNotes({ cwd: f.cwd, env: {} });
   assert.equal(notes.tag, null);
   assert.match(notes.version, /^0\.0\.0-dev\.g/);
   assert.match(notes.markdown, /开发版本/);
+  assert.deepEqual(notes.history.map((entry) => entry.version), ["1.0.0"]);
+  assert.doesNotMatch(notes.history[0].markdown, /尚未发布的新功能/);
 });

@@ -44,8 +44,8 @@ function releaseTarget(cwd, env, tag) {
   return { version, tag: tag || env.FSTODO_RELEASE_TAG || (env.GITHUB_REF_TYPE === "tag" ? env.GITHUB_REF_NAME : tags.find((value) => value === `v${version}`) || tags[0]) };
 }
 
-function previousRelease(cwd, version, previousTag) {
-  const tags = git(cwd, "tag", "--merged", "HEAD").split(/\r?\n/).filter(Boolean);
+function previousRelease(cwd, version, previousTag, commit) {
+  const tags = git(cwd, "tag", "--merged", commit).split(/\r?\n/).filter(Boolean);
   if (previousTag) {
     const previousVersion = versionFromTag(previousTag);
     if (!tags.includes(previousTag) || !previousVersion || compareVersions(previousVersion, version) >= 0) {
@@ -62,15 +62,14 @@ function previousRelease(cwd, version, previousTag) {
   return candidates[0] || null;
 }
 
-export function generateReleaseNotes({ cwd = repository, env = process.env, version, tag, previousTag } = {}) {
-  if (version && tag) throw new Error("版本预览与已打 tag 的构建不能同时指定");
-  const target = version ? { version: versionFromTag(version), tag: null } : releaseTarget(cwd, env, tag);
-  if (!target.version) throw new Error("请先由用户指定有效版本号，例如 0.5.0 或 0.5.0-beta.1");
-  const commit = git(cwd, "rev-parse", "HEAD");
-  const previous = previousRelease(cwd, target.version, previousTag);
+function notesAt(cwd, target, previousTag) {
+  const { commit } = target;
+  const previous = previousRelease(cwd, target.version, previousTag, commit);
   const date = git(cwd, "show", "-s", "--format=%cs", commit);
   if (!previous) {
-    const introduction = readFileSync(new URL("../../docs/first-release-notes.md", import.meta.url), "utf8").trim();
+    const introduction = target.tag
+      ? git(cwd, "show", `${commit}:docs/first-release-notes.md`)
+      : readFileSync(join(cwd, "docs/first-release-notes.md"), "utf8").trim();
     const label = parts(target.version).pre.length ? "首个预览版本" : "首个正式版本";
     const markdown = `# FSTODO ${target.version}\n\n${label}，${introduction}\n`;
     return { version: target.version, tag: target.tag, previousTag: null, commit, date, markdown };
@@ -100,6 +99,28 @@ export function generateReleaseNotes({ cwd = repository, env = process.env, vers
   return { version: target.version, tag: target.tag, previousTag: previous, commit, date, markdown };
 }
 
+function historicalTargets(cwd, current) {
+  const tags = git(cwd, "tag", "--merged", current?.commit || "HEAD").split(/\r?\n/).filter(Boolean);
+  const versions = new Set();
+  return tags.map((tag) => ({ tag, version: versionFromTag(tag) }))
+    .filter(({ version }) => version && (!current || compareVersions(version, current.version) < 0))
+    .sort((a, b) => compareVersions(b.version, a.version) || a.tag.localeCompare(b.tag))
+    .filter(({ version }) => {
+      if (versions.has(version)) return false;
+      versions.add(version);
+      return true;
+    })
+    .map((target) => ({ ...target, commit: git(cwd, "rev-parse", `refs/tags/${target.tag}^{commit}`) }));
+}
+
+export function generateReleaseNotes({ cwd = repository, env = process.env, version, tag, previousTag } = {}) {
+  if (version && tag) throw new Error("版本预览与已打 tag 的构建不能同时指定");
+  const target = version ? { version: versionFromTag(version), tag: null } : releaseTarget(cwd, env, tag);
+  if (!target.version) throw new Error("请先由用户指定有效版本号，例如 0.5.0 或 0.5.0-beta.1");
+  const notes = notesAt(cwd, { ...target, commit: git(cwd, "rev-parse", "HEAD") }, previousTag);
+  return { ...notes, history: historicalTargets(cwd, notes).map((entry) => notesAt(cwd, entry)) };
+}
+
 export function loadBuildReleaseNotes({ cwd = repository, env = process.env } = {}) {
   const target = releaseTarget(cwd, env);
   if (!env.FSTODO_RELEASE_NOTES_FILE) return generateReleaseNotes({ cwd, env, tag: target.tag });
@@ -107,7 +128,14 @@ export function loadBuildReleaseNotes({ cwd = repository, env = process.env } = 
   if (notes.version !== target.version || notes.tag !== target.tag || notes.commit !== git(cwd, "rev-parse", "HEAD") || typeof notes.markdown !== "string" || !notes.markdown.trim()) {
     throw new Error("变更记录与当前 tag、版本号或提交不一致，不能用于本次构建");
   }
-  return notes;
+  const history = historicalTargets(cwd, notes);
+  if (notes.history !== undefined && (!Array.isArray(notes.history) || notes.history.length !== history.length || history.some((entry, index) => {
+    const saved = notes.history[index];
+    return !saved || saved.version !== entry.version || saved.tag !== entry.tag || saved.commit !== entry.commit || typeof saved.markdown !== "string" || !saved.markdown.trim();
+  }))) {
+    throw new Error("历史版本记录与当前 tag 的可达版本不一致，不能用于本次构建");
+  }
+  return { ...notes, history: notes.history ?? history.map((entry) => notesAt(cwd, entry)) };
 }
 
 export function appReleaseNotes({ cwd = repository, env = process.env } = {}) {
@@ -119,7 +147,13 @@ export function appReleaseNotes({ cwd = repository, env = process.env } = {}) {
   } catch {
     // Untagged development and source archives have no published release notes.
   }
-  return { version, tag: null, previousTag: null, commit: null, date: null, markdown: "这是开发版本，正式版本的更新记录将在发版构建时生成。" };
+  let history = [];
+  try {
+    history = historicalTargets(cwd).map((entry) => notesAt(cwd, entry));
+  } catch {
+    // Source archives without Git metadata can still open the development UI.
+  }
+  return { version, tag: null, previousTag: null, commit: null, date: null, markdown: "这是开发版本，正式版本的更新记录将在发版构建时生成。", history };
 }
 
 export function writeReleaseArtifacts({ cwd = repository, env = process.env, output = join(cwd, "artifacts/release") } = {}) {
