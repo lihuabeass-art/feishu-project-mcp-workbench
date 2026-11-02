@@ -11,7 +11,7 @@
     "build:windows:beta": "npm run build:windows",
     "build:macos": "node scripts/tauri.mjs build --target universal-apple-darwin -- --locked",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "npm run test:release && vitest run src --maxWorkers=1",
+    "test": "npm run test:release && vitest run src --maxWorkers=4",
     "test:release": "node --test scripts/*.test.mjs",
     "release:notes": "node scripts/release-notes.mjs",
     "format": "prettier --write src vite.config.ts",
