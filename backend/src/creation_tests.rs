@@ -148,6 +148,11 @@ impl TodoSource for Arc<Fake> {
                     .map(|f| {
                         let value = if self.mode == "trimmed-body" && f["field_key"] == "description" {
                             json!(f["field_value"].as_str().unwrap().trim())
+                        } else if self.mode == "normalized-image-body" && f["field_key"] == "description" {
+                            json!("![](https://example.invalid/image.png)<!-- image:{\"uuid\":\"12345678-1234-1234-1234-123456789abc\"} -->\n\n示例正文")
+                        } else if self.mode.starts_with("pure-image-placeholder") && f["field_key"] == "description" {
+                            let suffix = if self.mode.ends_with("omitted") { "" } else { "\n\n\u{200b}" };
+                            json!(format!("![](https://example.invalid/image.png)<!-- image:{{\"uuid\":\"12345678-1234-1234-1234-123456789abc\"}} -->{suffix}"))
                         } else {
                             match f["field_key"].as_str().unwrap() {
                                 "template" | "reporter" | "role_owners" | "field_expected" | "field_received" => serde_json::from_str(f["field_value"].as_str().unwrap()).unwrap(),
@@ -304,6 +309,94 @@ impl Drop for Harness {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+#[test]
+fn migrated_image_identity_requires_scoped_original_and_trusted_matching_bytes() {
+    let h = Harness::new("normal");
+    let form = discover(&h.session, &h.target()).unwrap();
+    let mut request = h.request();
+    let source_url = "https://example.invalid/source.png";
+    let source_token = "fixture-image-token";
+    let remote_url = format!("https://{}/file/migrated.png", reqwest::Url::parse(&h.session.config.endpoint).unwrap().host_str().unwrap());
+    let bytes = b"\x89PNG\r\n\x1a\nfixture-source-image";
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let image = images::save(&h.session, &request.target, &form.context, "description", &encoded, "image/png", "fixture.png").unwrap();
+    h.session.store.mark_creation_image_uploaded(&crate::store::CreationImageKey {context:&form.context,project_key:&request.target.project_key,type_key:&request.target.type_key,field_key:"description",image_id:&image.image_id}, source_url, source_token).unwrap();
+    request.fields.insert("description".into(), json!(format!("![截图]({source_url})<!--{source_token}-->正文")));
+    *h.fake.fields.lock().unwrap() = transport_fields(plan(&form, &request).unwrap());
+    let id = WorkItemId {project_key:Some(request.target.project_key.clone()),work_item_type_key:Some(request.target.type_key.clone()),work_item_id:"42".into()};
+    let mut detail = h.session.refresh_item_detail_fresh(&id).unwrap();
+    let fields = detail.data["work_item_fields"].as_array_mut().unwrap();
+    fields.iter_mut().find(|field| field["key"]=="description").unwrap()["value"] = json!(format!("![]({remote_url})<!-- image:{{\"uuid\":\"12345678-1234-1234-1234-123456789abc\"}} -->\n\n正文"));
+    let mut calls = 0;
+    matches_fields_with(&form, &request, &detail, |field, change| {
+        image_content_matches_with(&h.session, &form, &request, &detail, field, change, |_, actual_id, actual_field, actual_url| {
+            calls += 1;
+            assert_eq!(actual_id, &id); assert_eq!(actual_field, "description"); assert_eq!(actual_url, remote_url);
+            Ok(format!("data:image/png;base64,{encoded}"))
+        })
+    }).unwrap();
+    assert_eq!(calls, 1);
+    for case in ["no-cache", "wrong-context", "wrong-field", "wrong-token", "foreign-host", "different-bytes", "download-failed", "wrong-item"] {
+        let mut checked_form = form.clone();
+        let mut checked_detail = detail.clone();
+        if case=="wrong-context" { checked_form.context="other-context".into(); }
+        if case=="wrong-item" { checked_detail.id.work_item_type_key=Some("other-type".into()); }
+        let url = if case=="foreign-host" {"https://outside.invalid/image.png"} else {remote_url.as_str()};
+        let original = if case=="no-cache" {"https://example.invalid/missing.png"} else {source_url};
+        let token = if case=="wrong-token" {"other-token"} else {source_token};
+        let field = if case=="wrong-field" {"another-field"} else {"description"};
+        let mut loads = 0;
+        assert!(!image_content_matches_with(&h.session, &checked_form, &request, &checked_detail, field,
+            richtext::ImageChange {original_url:original,original_token:token,remote_url:url}, |_,_,_,_| {
+                loads += 1;
+                if case=="download-failed" {Err(BackendError::validation("fixture unavailable"))}
+                else {Ok(format!("data:image/png;base64,{}",base64::engine::general_purpose::STANDARD.encode(b"different image")))}
+            }), "{case}");
+        assert_eq!(loads, usize::from(case=="different-bytes" || case=="download-failed"));
+    }
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn pure_image_placeholder_is_transport_only_and_read_verification_never_recreates() {
+    for mode in ["pure-image-placeholder", "pure-image-placeholder-omitted"] {
+        let h = Harness::new(mode);
+        let mut request = h.request();
+        let original = "![截图](https://example.invalid/image.png)<!--fixture-token-->";
+        request.fields.insert("description".into(), json!(original));
+        let result = execute(&h.session, &request).unwrap();
+        assert_eq!(result.outcome, "verified");
+        assert_eq!(request.fields["description"], original);
+        let sent = h.fake.fields.lock().unwrap();
+        assert_eq!(sent.iter().find(|field|field["field_key"]=="description").unwrap()["field_value"], format!("{original}\u{200b}"));
+        drop(sent);
+        let record = h.session.store.action_by_request(&request.request_id).unwrap().unwrap();
+        let saved: Value = serde_json::from_str(record.detail.as_deref().unwrap()).unwrap();
+        assert_eq!(saved["request"]["fields"]["description"], original);
+        h.session.store.finish_action(&request.request_id, "unknown", false, record.detail.as_deref(), crate::sync::now_ms()).unwrap();
+        assert_eq!(verify(&h.session, &request.request_id, None, None).unwrap().outcome, "verified");
+        assert_eq!(execute(&h.session, &request).unwrap().outcome, "verified");
+        assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn normalized_uploaded_image_is_verified_on_execute_and_later_read_without_rewriting() {
+    let h = Harness::new("normalized-image-body");
+    let mut request = h.request();
+    request.fields.insert("description".into(), json!("![截图](https://example.invalid/image.png)<!--fixture-token-->示例正文"));
+    let result = execute(&h.session, &request).unwrap();
+    assert_eq!(result.outcome, "verified");
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
+    let record = h.session.store.action_by_request(&request.request_id).unwrap().unwrap();
+    // 模拟上一版本因富文本格式变化保留的待核验台账，只核验既有编号。
+    h.session.store.finish_action(&request.request_id, "unknown", false, record.detail.as_deref(), crate::sync::now_ms()).unwrap();
+    assert_eq!(verify(&h.session, &request.request_id, None, None).unwrap().outcome, "verified");
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
+    assert_eq!(execute(&h.session, &request).unwrap().outcome, "verified");
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
 }
 
 #[test]

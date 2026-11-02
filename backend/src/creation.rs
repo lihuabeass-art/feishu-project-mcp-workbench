@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 
 pub mod images;
 pub mod attachments;
+mod richtext;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Target {
@@ -733,7 +734,7 @@ fn encode(f: &Field, value: &Value) -> Result<Value, BackendError> {
             if input.contains("fstodo-image:") {
                 return Err(BackendError::validation(format!("「{}」还有未上传的图片，请先上传图片后再创建", f.label)));
             }
-            Ok(json!(if f.kind == "textarea" { input } else { input.trim() }))
+            Ok(if f.kind == "textarea" { json!(richtext::prepare_for_send(input)) } else { json!(input.trim()) })
         }
         "select" if f.multiple => {
             let list = value.as_array().ok_or_else(fail)?;
@@ -900,7 +901,37 @@ fn id_values(v: &Value) -> Vec<String> {
     values.dedup();
     values
 }
-fn matches_fields(form: &Form, request: &Request, detail: &ItemDetail) -> Result<(), BackendError> {
+fn image_content_matches_with(
+    session: &Session, form: &Form, request: &Request, detail: &ItemDetail,
+    field: &str, image: richtext::ImageChange<'_>,
+    load: impl FnOnce(&Session, &WorkItemId, &str, &str) -> Result<String, BackendError>,
+) -> bool {
+    let checked = || -> Result<bool, BackendError> {
+        let endpoint = reqwest::Url::parse(&session.config.endpoint).map_err(|_| BackendError::validation("图片服务地址无效"))?;
+        let remote = reqwest::Url::parse(image.remote_url).map_err(|_| BackendError::validation("图片地址无效"))?;
+        if remote.scheme() != "https" || remote.host_str().is_none() || remote.host_str() != endpoint.host_str()
+            || detail.id.project_key.as_deref() != Some(request.target.project_key.as_str())
+            || detail.id.work_item_type_key.as_deref() != Some(request.target.type_key.as_str())
+            || !detail.id.missing_parts().is_empty() { return Ok(false); }
+        let original = images::get_uploaded(session, &request.target, &form.context, field, image.original_url, image.original_token)?;
+        let original = original.data_url.split_once(',').ok_or_else(|| BackendError::validation("原图缓存无效"))?.1;
+        let original = base64::engine::general_purpose::STANDARD.decode(original).map_err(|_| BackendError::validation("原图缓存无效"))?;
+        let downloaded = load(session, &detail.id, field, image.remote_url)?;
+        let downloaded = downloaded.split_once(',').ok_or_else(|| BackendError::validation("回读图片无效"))?.1;
+        let downloaded = base64::engine::general_purpose::STANDARD.decode(downloaded).map_err(|_| BackendError::validation("回读图片无效"))?;
+        Ok(Sha256::digest(original) == Sha256::digest(downloaded))
+    };
+    checked().unwrap_or(false)
+}
+
+fn matches_fields(session: &Session, form: &Form, request: &Request, detail: &ItemDetail) -> Result<(), BackendError> {
+    matches_fields_with(form, request, detail, |field, image| {
+        image_content_matches_with(session, form, request, detail, field, image,
+            |session, id, field, url| crate::field_images::load(session, id, field, url, true))
+    })
+}
+
+fn matches_fields_with(form: &Form, request: &Request, detail: &ItemDetail, mut image_matches: impl FnMut(&str, richtext::ImageChange<'_>) -> bool) -> Result<(), BackendError> {
     for f in &form.fields {
         let input = request.fields.get(&f.key).unwrap_or(&Value::Null);
         if empty(input) {
@@ -926,7 +957,10 @@ fn matches_fields(form: &Form, request: &Request, detail: &ItemDetail) -> Result
             "text" => {
                 submitted.as_str().map(str::trim) == remote.as_str().map(str::trim)
             }
-            "textarea" => submitted.as_str() == remote.as_str(),
+            "textarea" => match (submitted.as_str(), remote.as_str()) {
+                (Some(submitted), Some(remote)) => richtext::matches_with_images(submitted, remote, |image| image_matches(&f.key, image)),
+                _ => submitted.as_str() == remote.as_str(),
+            },
             "number" => submitted.as_f64() == remote.as_f64(),
             "date" => submitted == remote["timestamp"] || submitted == remote,
             "attachment" => attachments::matches(&submitted, &remote),
@@ -1119,7 +1153,7 @@ pub fn execute(session: &Session, request: &Request) -> Result<ResultView, Backe
             if form.fields.iter().any(|f| f.kind == "attachment") {
                 attachments::complete(session, &form, request, id)
             } else {
-                session.refresh_item_detail_fresh(id).and_then(|detail| matches_fields(&form, request, &detail))
+                session.refresh_item_detail_fresh(id).and_then(|detail| matches_fields(session, &form, request, &detail))
             }
         })
     });
@@ -1223,7 +1257,7 @@ pub fn verify(
         .ok_or_else(|| BackendError::validation("请填写在飞书中找到的新事项编号，再回读核对"))?;
     let form: Form = serde_json::from_value(saved["form"].clone())?;
     let detail = session.refresh_item_detail_fresh(&id)?;
-    matches_fields(&form, &request, &detail)?;
+    matches_fields(session, &form, &request, &detail)?;
     if manual {
         let created = detail.data["work_item_attribute"]["create_time"]
             .as_i64()

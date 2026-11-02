@@ -344,7 +344,7 @@ pub(super) fn complete(
         crate::remote::runtime()?.block_on(crate::item_access::lock_workflow(&session.store, id));
     let mut current = first_request(form, request);
     let detail = session.refresh_item_detail_fresh(id)?;
-    super::matches_fields(form, &current, &detail)?;
+    super::matches_fields(session, form, &current, &detail)?;
     for field in form
         .fields
         .iter()
@@ -356,7 +356,7 @@ pub(super) fn complete(
         for next in list.iter().skip(1) {
             // 每次覆盖前重新读取；原样保留 uid/url/未知字段，远端有并发变化则停止。
             let before = session.refresh_item_detail_fresh(id)?;
-            super::matches_fields(form, &current, &before)?;
+            super::matches_fields(session, form, &current, &before)?;
             let mut remote = remote_files(&super::remote_value(&before.data, &field.key))?;
             let appended = remote_files(&encode(&json!([next]))?)?;
             remote.extend(appended);
@@ -377,7 +377,7 @@ pub(super) fn complete(
             // 不论写回执是否可解析，最终只看同字段远端回读；失败不重发写入。
             let checked = session
                 .refresh_item_detail_fresh(id)
-                .and_then(|detail| super::matches_fields(form, &current, &detail));
+                .and_then(|detail| super::matches_fields(session, form, &current, &detail));
             if let Err(error) = checked {
                 return Err(receipt.err().unwrap_or(error));
             }
