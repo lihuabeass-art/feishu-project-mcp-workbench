@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { Select } from "./Select";
@@ -15,6 +15,53 @@ const options = [
 ];
 
 describe("自定义选择框", () => {
+  it("滚轮保留菜单内部滚动，边界与短列表不穿透，关闭后恢复外部滚动", async () => {
+    const user = userEvent.setup();
+    const backgroundWheel = vi.fn();
+    const change = vi.fn();
+    const mounted = render(
+      <div onWheel={backgroundWheel}>
+        <Select ariaLabel="滚动筛选" value="" options={options} onChange={change} />
+        <p>背景清单</p>
+      </div>,
+    );
+    const trigger = screen.getByRole("combobox", { name: "滚动筛选" });
+    await user.click(trigger);
+    const menu = screen.getByRole("listbox");
+    menu.style.overflowY = "auto";
+    let height = 300;
+    Object.defineProperties(menu, {
+      clientHeight: { value: 100 },
+      scrollHeight: { get: () => height },
+    });
+    for (const [top, deltaY, blocked] of [
+      [0, -80, true], [0, 80, false], [80, 80, false],
+      [80, -80, false], [200, 80, true], [200, -80, false],
+    ] as const) {
+      menu.scrollTop = top;
+      const event = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY });
+      fireEvent(screen.getByRole("option", { name: "薄荷绿" }), event);
+      expect(event.defaultPrevented).toBe(blocked);
+      expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    }
+    height = 100;
+    menu.scrollTop = 0;
+    for (const deltaY of [-80, 80, 80]) {
+      expect(fireEvent.wheel(menu, { deltaY })).toBe(false);
+    }
+    expect(fireEvent.wheel(menu, { deltaX: 80 })).toBe(false);
+    expect(fireEvent.wheel(menu, { deltaY: 80, ctrlKey: true })).toBe(true);
+    expect(backgroundWheel).not.toHaveBeenCalled();
+    expect(change).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(trigger);
+    expect(fireEvent.wheel(screen.getByText("背景清单"), { deltaY: 80 })).toBe(true);
+    expect(backgroundWheel).toHaveBeenCalledTimes(1);
+    mounted.unmount();
+    // 卸载后的节点不再保留会取消默认滚动的监听。
+    expect(fireEvent.wheel(menu, { deltaY: 80 })).toBe(true);
+  });
+
   function MultiSelect() {
     const [value, setValue] = useState<string[]>([]);
     return (

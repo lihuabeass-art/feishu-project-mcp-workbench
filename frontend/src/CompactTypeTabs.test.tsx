@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CompactTypeTabs, type CompactTypeOption } from "./CompactTypeTabs";
 
@@ -83,6 +83,22 @@ afterEach(() => {
 });
 
 describe("清单类型的溢出菜单", () => {
+  it("短菜单连续滚轮不会穿透或关闭，关闭后恢复外部滚轮", async () => {
+    availableWidth = 260;
+    const backgroundWheel = vi.fn();
+    const user = userEvent.setup();
+    render(<div onWheel={backgroundWheel}><Harness /><p>背景清单</p></div>);
+    await user.click(screen.getByRole("button", { name: "查看全部事项类型" }));
+    const menu = screen.getByRole("menu");
+    for (const deltaY of [80, 80, -80])
+      expect(fireEvent.wheel(within(menu).getByText("事项类型"), { deltaY })).toBe(false);
+    expect(backgroundWheel).not.toHaveBeenCalled();
+    expect(screen.getByRole("menu")).toBe(menu);
+    await user.keyboard("{Escape}");
+    expect(fireEvent.wheel(screen.getByText("背景清单"), { deltaY: 80 })).toBe(true);
+    expect(backgroundWheel).toHaveBeenCalledTimes(1);
+  });
+
   it("宽度足够和恰好容纳时不显示更多，缩窄后出现，扩宽后移除", () => {
     render(<Harness />);
     expect(screen.getAllByRole("tab")).toHaveLength(options.length + 1);

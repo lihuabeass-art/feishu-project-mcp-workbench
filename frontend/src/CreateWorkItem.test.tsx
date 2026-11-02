@@ -164,6 +164,55 @@ async function fill(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("通用创建表单", () => {
+  it("表单空白、头尾、遮罩和滚动边界不带动背景，内部仍可正常滚动", async () => {
+    const user = userEvent.setup();
+    const backgroundWheel = vi.fn();
+    const mounted = render(
+      <div onWheel={backgroundWheel}>
+        <CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />
+        <p>背景清单</p>
+      </div>,
+    );
+    await screen.findByRole("textbox", { name: "标题" });
+    const dialog = screen.getByRole("dialog");
+    const content = dialog.querySelector<HTMLElement>(".creation-content")!;
+    content.style.overflowY = "auto";
+    let height = 400;
+    Object.defineProperties(content, {
+      clientHeight: { value: 100 }, scrollHeight: { get: () => height },
+    });
+    const blank = document.createElement("div");
+    content.append(blank);
+    expect(fireEvent.wheel(blank, { deltaY: -80 })).toBe(false);
+    expect(fireEvent.wheel(blank, { deltaY: 80 })).toBe(true);
+    content.scrollTop = 150;
+    expect(fireEvent.wheel(blank, { deltaY: -80 })).toBe(true);
+    expect(fireEvent.wheel(blank, { deltaY: 80 })).toBe(true);
+    content.scrollTop = 300;
+    for (let index = 0; index < 3; index += 1)
+      expect(fireEvent.wheel(blank, { deltaY: 80 })).toBe(false);
+    height = 100;
+    content.scrollTop = 0;
+    expect(fireEvent.wheel(blank, { deltaY: 80 })).toBe(false);
+    for (const area of [
+      dialog.querySelector(".creation-header")!,
+      screen.getByRole("button", { name: "核对内容" }),
+      dialog.parentElement!,
+    ]) expect(fireEvent.wheel(area, { deltaY: 80 })).toBe(false);
+    expect(backgroundWheel).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("combobox", { name: "流程" }));
+    expect(fireEvent.wheel(screen.getByRole("listbox"), { deltaY: 80 })).toBe(false);
+    expect(backgroundWheel).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    mounted.unmount();
+    expect(fireEvent.wheel(blank, { deltaY: 80 })).toBe(true);
+    render(<div onWheel={backgroundWheel}>背景清单</div>);
+    expect(fireEvent.wheel(screen.getByText("背景清单"), { deltaY: 80 })).toBe(true);
+    expect(backgroundWheel).toHaveBeenCalledTimes(1);
+  });
+
   it("完整核对含默认值和人员名称，明确确认后才提交，成功刷新失败也保留成功", async () => {
     const user = userEvent.setup();
     render(

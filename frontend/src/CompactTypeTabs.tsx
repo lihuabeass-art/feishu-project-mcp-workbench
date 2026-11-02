@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronDown } from "lucide-react";
 import { typeColorStyle } from "./model";
+import { useScrollIsolation } from "./useScrollIsolation";
 import "./CompactTypeTabs.css";
 
 export type CompactTypeOption = { key: string; label: string; count: number };
@@ -23,6 +24,7 @@ export function CompactTypeTabs({ options, selected, total, panelId, onChange }:
   const buttons = useRef(new Map<string, HTMLButtonElement>());
   const moreButton = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
+  const menuScrollRef = useScrollIsolation(menu);
   const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null);
   const [overflow, setOverflow] = useState(false);
   const [edges, setEdges] = useState({ start: false, end: false });
@@ -109,7 +111,7 @@ export function CompactTypeTabs({ options, selected, total, panelId, onChange }:
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
-        <DropdownMenu.Content ref={menu} className="list-mode-type-menu" align="end" sideOffset={6} collisionPadding={10}
+        <DropdownMenu.Content ref={menuScrollRef} className="list-mode-type-menu scroll-isolation-boundary" align="end" sideOffset={6} collisionPadding={10}
           aria-label="全部事项类型">
           <DropdownMenu.Label className="list-mode-type-menu-heading">事项类型</DropdownMenu.Label>
           <DropdownMenu.RadioGroup value={selected} onValueChange={onChange}>

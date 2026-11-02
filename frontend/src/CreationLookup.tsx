@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, LoaderCircle, Search, X } from "lucide-react";
 import { asError } from "./model";
+import { useScrollIsolation } from "./useScrollIsolation";
 import {
   lookupCreationField,
   type CreationField,
@@ -57,6 +58,7 @@ export function CreationLookup({
   } | null>(null);
   const trigger = useRef<HTMLDivElement>(null);
   const menu = useRef<HTMLDivElement>(null);
+  const menuScrollRef = useScrollIsolation(menu);
   const input = useRef<HTMLInputElement>(null);
   const listId = useId();
   const selected = (Array.isArray(value) ? value : value ? [value] : []).map(
@@ -234,7 +236,11 @@ export function CreationLookup({
       {open &&
         position &&
         createPortal(
-          <div className="creation-lookup-menu" ref={menu} style={position}>
+          <div
+            className="creation-lookup-menu scroll-isolation-boundary"
+            ref={menuScrollRef}
+            style={position}
+          >
             <div className="creation-lookup-search">
               <Search size={15} />
               <input

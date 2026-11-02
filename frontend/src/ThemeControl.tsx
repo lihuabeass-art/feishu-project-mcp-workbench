@@ -1,6 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Check, Monitor, Moon, Sun } from "lucide-react";
 import { useTheme, type Appearance, type Theme } from "./ThemeProvider";
+import { useScrollIsolation } from "./useScrollIsolation";
 
 const modes = [
   { value: "light", label: "日间模式", Icon: Sun },
@@ -14,6 +15,7 @@ const appearances = [
 ] as const;
 
 export function ThemeControl() {
+  const menuScrollRef = useScrollIsolation();
   const { theme, setTheme, appearance, setAppearance, error } = useTheme();
   const current = modes.find((mode) => mode.value === theme)!;
   const Icon = current.Icon;
@@ -37,7 +39,8 @@ export function ThemeControl() {
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>
           <DropdownMenu.Content
-            className="theme-menu"
+            ref={menuScrollRef}
+            className="theme-menu scroll-isolation-boundary"
             align="end"
             sideOffset={8}
             collisionPadding={10}

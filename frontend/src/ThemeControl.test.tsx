@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import bootstrap from "../public/theme-init.js?raw";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { ThemeControl } from "./ThemeControl";
@@ -157,6 +157,20 @@ it("图标菜单支持键盘选择与焦点返回", async () => {
   await user.keyboard("{Enter}{Home}{ArrowDown}{Enter}");
   expect(document.documentElement.dataset.theme).toBe("dark");
   expect(document.activeElement).toBe(trigger);
+});
+
+it("外观菜单短列表和提示区域的连续滚轮不会透传", async () => {
+  mount();
+  const user = userEvent.setup();
+  const trigger = screen.getByRole("button", { name: /^外观：/ });
+  await user.click(trigger);
+  const menu = screen.getByRole("menu");
+  for (const deltaY of [80, 80, -80])
+    expect(fireEvent.wheel(screen.getByText("明暗模式"), { deltaY })).toBe(false);
+  expect(screen.getByRole("menu")).toBe(menu);
+  await user.keyboard("{Escape}");
+  expect(document.activeElement).toBe(trigger);
+  expect(fireEvent.wheel(trigger, { deltaY: 80 })).toBe(true);
 });
 
 it("打开菜单展示明暗模式和主题风格，Escape 关闭且不改变主题", async () => {

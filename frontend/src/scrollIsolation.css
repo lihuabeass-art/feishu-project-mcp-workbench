@@ -1,0 +1,5 @@
+.scroll-isolation-boundary,
+.scroll-isolation-boundary [role="listbox"],
+.scroll-isolation-boundary .creation-content {
+  overscroll-behavior: contain;
+}

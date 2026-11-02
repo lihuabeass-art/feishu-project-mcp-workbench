@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Check, LoaderCircle, X } from "lucide-react";
 import { Select } from "./Select";
+import { useScrollIsolation } from "./useScrollIsolation";
 import { CreationLookup } from "./CreationLookup";
 import { CreationSelect } from "./CreationSelect";
 import { MarkdownPreview } from "./MarkdownPreview";
@@ -101,6 +102,7 @@ export function CreateWorkItem({
   const [previousCreated, setPreviousCreated] = useState("");
   const [entryGeneration, setEntryGeneration] = useState(0);
   const panel = useRef<HTMLElement>(null);
+  const backdropScrollRef = useScrollIsolation();
   const busyRef = useRef(false);
   const closeRef = useRef(close);
   closeRef.current = close;
@@ -633,7 +635,7 @@ export function CreateWorkItem({
     },
   ];
   return createPortal(
-    <div className="creation-backdrop">
+    <div className="creation-backdrop scroll-isolation-boundary" ref={backdropScrollRef}>
       <section
         className="creation-panel"
         role="dialog"

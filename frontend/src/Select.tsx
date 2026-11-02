@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
+import { useScrollIsolation } from "./useScrollIsolation";
 
 export type SelectOption = {
   value: string;
@@ -55,6 +56,7 @@ export function Select(props: SelectProps) {
   const listboxId = `${generatedId}-listbox`;
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const menuScrollRef = useScrollIsolation(menuRef);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
@@ -258,9 +260,9 @@ export function Select(props: SelectProps) {
         menuPosition &&
         createPortal(
           <div
-            ref={menuRef}
+            ref={menuScrollRef}
             id={listboxId}
-            className={`select-menu ${props.menuClassName || ""}`.trim()}
+            className={`select-menu scroll-isolation-boundary ${props.menuClassName || ""}`.trim()}
             role="listbox"
             aria-multiselectable={multiple || undefined}
             aria-label={ariaLabel}

@@ -375,6 +375,7 @@
   z-index: 140;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;

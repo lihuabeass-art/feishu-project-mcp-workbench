@@ -98,6 +98,58 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("新建人员与关联候选的查询归属", () => {
+  it.each(kinds)("$kind 的列表、搜索栏和提示区域均隔离滚轮", async (kind) => {
+    vi.mocked(lookupCreationField).mockResolvedValue({
+      options: Array.from({ length: 20 }, (_, index) => ({
+        value: String(index), label: `候选 ${index}`,
+      })),
+      warning: "候选提示",
+    });
+    const backgroundWheel = vi.fn();
+    const changed = vi.fn();
+    const user = userEvent.setup();
+    render(<div onWheel={backgroundWheel}><Harness currentField={field(kind)} changed={changed} /></div>);
+    const trigger = screen.getByRole("combobox", { name: kind.label });
+    await user.click(trigger);
+    const option = await screen.findByRole("option", { name: "候选 0" });
+    const list = screen.getByRole("listbox");
+    list.style.overflowY = "auto";
+    Object.defineProperties(list, {
+      clientHeight: { value: 100 }, scrollHeight: { value: 400 },
+    });
+    expect(fireEvent.wheel(option, { deltaY: -80 })).toBe(false);
+    expect(fireEvent.wheel(option, { deltaY: 80 })).toBe(true);
+    list.scrollTop = 150;
+    expect(fireEvent.wheel(option, { deltaY: 80 })).toBe(true);
+    list.scrollTop = 300;
+    for (let index = 0; index < 3; index += 1)
+      expect(fireEvent.wheel(option, { deltaY: 80 })).toBe(false);
+    expect(fireEvent.wheel(screen.getByRole("textbox"), { deltaY: 80 })).toBe(false);
+    expect(fireEvent.wheel(screen.getByText("候选提示"), { deltaY: 80 })).toBe(false);
+    fireEvent.scroll(list);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(backgroundWheel).not.toHaveBeenCalled();
+    expect(changed).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(fireEvent.wheel(trigger, { deltaY: 80 })).toBe(true);
+    expect(backgroundWheel).toHaveBeenCalledTimes(1);
+  });
+
+  it("搜索加载中和空结果不会让滚轮穿透", async () => {
+    const pending = deferred();
+    vi.mocked(lookupCreationField).mockReturnValue(pending.promise);
+    const user = userEvent.setup();
+    render(<Harness currentField={field(kinds[1])} changed={vi.fn()} />);
+    const trigger = screen.getByRole("combobox", { name: "关联事项" });
+    await user.click(trigger);
+    expect(fireEvent.wheel(screen.getByRole("status"), { deltaY: 80 })).toBe(false);
+    await act(async () => pending.resolve({ options: [], warning: null }));
+    expect(fireEvent.wheel(screen.getByText(/未找到匹配项/), { deltaY: -80 })).toBe(false);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it.each(kinds)(
     "$kind 的新查询失败不会重新启用旧候选，保留已选值且可继续搜索匹配缓存",
     async (kind) => {
