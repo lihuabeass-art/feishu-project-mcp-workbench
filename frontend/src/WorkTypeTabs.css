@@ -1,0 +1,40 @@
+.work-type-nav {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  gap: 4px;
+  min-width: 0;
+}
+.work-type-viewport {
+  flex: 1;
+  position: relative;
+  overscroll-behavior-x: contain;
+  user-select: none;
+}
+.work-type-track {
+  flex: 0 0 auto;
+  position: relative;
+  display: flex;
+  gap: 20px;
+  width: max-content;
+  min-width: 100%;
+  padding-right: 8px;
+}
+.work-type-viewport[data-overflow="true"],
+.work-type-viewport[data-overflow="true"] .tab {
+  cursor: grab;
+}
+.work-type-viewport[data-dragging="true"],
+.work-type-viewport[data-dragging="true"] .tab {
+  cursor: grabbing;
+}
+.work-type-viewport .tab:focus-visible {
+  outline-offset: -3px;
+}
+.work-type-scroll-button {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  align-self: center;
+  margin-bottom: 3px;
+}

@@ -79,6 +79,7 @@ import { SettingsSaveStatus, type SaveFeedback } from "./SettingsSaveStatus";
 import { ThemeProvider } from "./ThemeProvider";
 import { ThemeControl } from "./ThemeControl";
 import { CompactWorkspace } from "./CompactWorkspace";
+import { WorkTypeTabs } from "./WorkTypeTabs";
 import { FilterSchemeMenu } from "./FilterSchemeMenu";
 import { useFilterSchemes } from "./useFilterSchemes";
 import {
@@ -1580,29 +1581,9 @@ function Workspace() {
               <section className="work-panel" aria-label="工作清单">
                 <div className="work-panel-header">
                   <div className="list-toolbar">
-                    <div className="tabs">
-                      <button
-                        className={!type.length ? "tab active" : "tab"}
-                        onClick={() => changeType("")}
-                      >
-                        全部工作 <span>{items.length}</span>
-                      </button>
-                      {types.map((key) => (
-                        <button
-                          key={key}
-                          className={type.includes(key) ? "tab active" : "tab"}
-                          onClick={() => changeType(key)}
-                        >
-                          {displayType(key)}
-                          <span>
-                            {
-                              items.filter((i) => i.id.work_item_type_key === key)
-                                .length
-                            }
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                    <WorkTypeTabs selected={type} total={items.length} onChange={changeType}
+                      options={types.map((key) => ({ key, label: displayType(key),
+                        count: items.filter((item) => item.id.work_item_type_key === key).length }))} />
                     <div className="list-toolbar-actions"><label className="search">
                       <Search size={16} />
                       <input
