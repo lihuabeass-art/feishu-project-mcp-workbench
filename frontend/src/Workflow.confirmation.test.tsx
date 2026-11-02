@@ -131,9 +131,15 @@ it.each([
   },
 );
 
-it.each(["progress", "schedule"])(
-  "开关不会跳过仅同步 %s 的确认，也不会发送流程推进",
-  async (kind) => {
+it.each([
+  ["progress", false, "100"],
+  ["schedule", false, ""],
+  ["progress", true, "0"],
+  ["progress", true, "100"],
+  ["schedule", true, ""],
+] as const)(
+  "仅同步 %s 遵循跳过确认偏好 %s（进度 %s），只提交同步字段",
+  async (kind, skip, progress) => {
     const fields: WorkflowAction["fields"] =
       kind === "progress"
         ? [
@@ -162,35 +168,79 @@ it.each(["progress", "schedule"])(
               initial_value: "2030-01-02",
             },
           ];
-    const transition = { ...action, fields };
+    const transition = { ...action, fields: [...fields, ...action.fields] };
     const sync = {
-      ...transition,
+      ...action,
       id: `node:${kind}:design`,
       label: `同步${kind}`,
+      fields,
     };
-    vi.mocked(getWorkflowActions).mockResolvedValue({
+    const source = {
       version: "v1",
       actions: [transition, sync],
+    };
+    vi.mocked(getWorkflowActions).mockResolvedValue(source);
+    if (skip) saveWorkflowSkipConfirmation(true);
+    const key = draftKey(itemKey(item), sync.id);
+    const submit = vi.fn().mockImplementation(async (request) => {
+      expect(readDraft(key)?.pending).toEqual(request);
+      return { ...result, action_id: sync.id };
     });
-    saveWorkflowSkipConfirmation(true);
-    const submit = vi.fn();
     const user = userEvent.setup();
     render(<Workflow item={item} available busy={false} submit={submit} />);
     await user.click(await screen.findByRole("button", { name: action.label }));
+    await user.clear(screen.getByRole("textbox", { name: /^设计稿/ }));
+    await user.type(
+      screen.getByRole("textbox", { name: /^设计稿/ }),
+      "完整表单草稿",
+    );
+    if (kind === "progress") {
+      fireEvent.change(screen.getByRole("slider"), { target: { value: progress } });
+    } else {
+      fireEvent.change(screen.getByLabelText("开始日期（必填）"), {
+        target: { value: "2030-01-02" },
+      });
+    }
     await user.click(
       screen.getByRole("button", {
         name: kind === "progress" ? "仅同步此进度" : "仅同步此日期",
       }),
     );
-    await user.click(
-      screen.getByRole("button", {
-        name: kind === "progress" ? "同步进度" : "同步日期",
-      }),
+    const submitLabel = kind === "progress" ? "同步进度" : "同步日期";
+    if (skip) {
+      expect(
+        screen.getByText(`已关闭流程操作二次确认，点击「${submitLabel}」将直接执行。`),
+      ).toBeTruthy();
+    }
+    vi.mocked(getWorkflowActions).mockResolvedValue({ ...source, version: "v2" });
+    await user.click(screen.getByRole("button", { name: submitLabel }));
+    if (!skip) {
+      expect(
+        await screen.findByRole("region", { name: "提交前二次确认" }),
+      ).toBeTruthy();
+      expect(submit).not.toHaveBeenCalled();
+      await user.click(
+        screen.getByRole("button", {
+          name: kind === "progress"
+            ? "我已核对进度，本次仅同步进度并保留当前节点"
+            : "我已核对开始和结束日期，本次仅同步日期并保留当前节点",
+        }),
+      );
+      await user.click(screen.getByRole("button", { name: `确认${submitLabel}` }));
+    }
+    await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
+    expect(submit.mock.calls[0][0]).toMatchObject({
+      item_id: item.id,
+      action_id: sync.id,
+      version: "v2",
+    });
+    expect(submit.mock.calls[0][0].fields).toEqual(
+      kind === "progress" ? { progress } : { start: "2030-01-02" },
     );
-    expect(
-      await screen.findByRole("region", { name: "提交前二次确认" }),
-    ).toBeTruthy();
-    expect(submit).not.toHaveBeenCalled();
+    expect(readDraft(draftKey(itemKey(item), transition.id))?.fields.doc).toBe(
+      "完整表单草稿",
+    );
   },
 );
 

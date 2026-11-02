@@ -29,8 +29,12 @@ import type {
 } from "./types";
 
 type Field = WorkflowAction["fields"][number];
-const isWorkflowTransition = (candidate: WorkflowAction) =>
-  candidate.kind === "state" || candidate.id.startsWith("node:confirm:") || candidate.id.startsWith("node:rollback:");
+const canSkipConfirmation = (candidate: WorkflowAction) =>
+  candidate.kind === "state" ||
+  candidate.id.startsWith("node:confirm:") ||
+  candidate.id.startsWith("node:rollback:") ||
+  candidate.id.startsWith("node:progress:") ||
+  candidate.id.startsWith("node:schedule:");
 const feishuActionExplanation = "此操作所需字段暂无法在本软件中处理。点击上方按钮，即可打开对应的飞书事项，填写并完成流程。";
 const feishuEditorExplanation = "此操作所需字段暂无法在本软件中处理。请通过飞书链接打开对应事项，填写并完成流程。";
 
@@ -573,7 +577,7 @@ export function Workflow({
       setConflicts(merged.conflicts);
       setReview(null);
       setDraftStatus("草稿已保存在本机");
-      const skipReview = isWorkflowTransition(nextAction) && loadWorkflowSkipConfirmation();
+      const skipReview = canSkipConfirmation(nextAction) && loadWorkflowSkipConfirmation();
       // 新冲突先展示；跳过核对页时，云端清空也须在原表单提示后再由用户提交。
       const newConflicts = merged.conflicts.filter(
           (key) =>
@@ -1550,8 +1554,10 @@ export function Workflow({
                       <p className="draft-status" role="status">
                         {draftStatus}
                       </p>
-                      {skipConfirmation && isWorkflowTransition(action) && (
-                        <p className="workflow-warning">已关闭流程操作二次确认，点击「提交」将直接执行。</p>
+                      {skipConfirmation && canSkipConfirmation(action) && (
+                        <p className="workflow-warning">
+                          已关闭流程操作二次确认，点击「{progressOnly ? "同步进度" : scheduleOnly ? "同步日期" : "提交"}」将直接执行。
+                        </p>
                       )}
                       <div className="workflow-buttons">
                         <button

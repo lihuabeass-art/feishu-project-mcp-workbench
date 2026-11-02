@@ -59,6 +59,10 @@ it("默认保留确认；取消、Esc 和点击遮罩均不改变偏好并返回
   const user = userEvent.setup();
   render(<WorkflowSettings />);
   expect(toggle().checked).toBe(false);
+  expect(toggle().getAttribute("aria-describedby")).toBeTruthy();
+  expect(
+    document.getElementById(toggle().getAttribute("aria-describedby")!)?.textContent,
+  ).toContain("仅同步进度和日期将直接提交；新建表单仍需核对");
   await user.click(toggle());
   const dialog = screen.getByRole("dialog", { name: "关闭前，请三思" });
   expect(toggle().checked).toBe(false);
@@ -67,6 +71,7 @@ it("默认保留确认；取消、Esc 和点击遮罩均不改变偏好并返回
       .disabled,
   ).toBe(true);
   expect(dialog.textContent).toContain("新建表单的二次确认始终保留");
+  expect(dialog.textContent).toContain("仅同步进度和日期在提交时将直接执行");
   expect(document.activeElement).toBe(
     screen.getByRole("button", { name: "保留二次确认" }),
   );
