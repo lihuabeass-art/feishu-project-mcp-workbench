@@ -922,19 +922,18 @@ export function CreateWorkItem({
                 : ""}
           </span>
           {(stage === "edit" || stage === "review") && (
-            <label className="creation-continuous">
+            <label className="type-toggle creation-continuous">
+              <span>连续创建</span>
               <input
                 type="checkbox"
+                role="switch"
                 aria-label="连续创建"
                 aria-describedby="creation-continuous-hint"
                 checked={continuous}
                 disabled={loading || busy || imageBusy}
                 onChange={(event) => updateContinuous(event.target.checked)}
               />
-              <span className="creation-continuous-box" aria-hidden="true">
-                {continuous && <Check size={12} />}
-              </span>
-              <span>连续创建</span>
+              <span className="type-switch-track" aria-hidden="true" />
               <span className="sr-only" id="creation-continuous-hint">
                 创建并核验成功后，保留当前空间和类型，继续填写下一条。
               </span>

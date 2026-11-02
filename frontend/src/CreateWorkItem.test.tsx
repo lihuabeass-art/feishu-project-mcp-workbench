@@ -199,7 +199,7 @@ describe("通用创建表单", () => {
     await user.click(screen.getByRole("button", { name: /返回/ }));
     await user.click(screen.getByRole("switch", { name: "可选开关" }));
     await user.click(screen.getByRole("switch", { name: "可选开关" }));
-    await user.click(screen.getByRole("checkbox", { name: "连续创建" }));
+    await user.click(screen.getByRole("switch", { name: "连续创建" }));
     await user.click(screen.getByRole("button", { name: "核对内容" }));
     expect(within(document.querySelector(".creation-review")!).getByText("关闭")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "确认创建" }));
@@ -768,7 +768,7 @@ describe("通用创建表单", () => {
     await user.click(screen.getByRole("combobox", { name: "报告人" }));
     await user.click(await screen.findByRole("option", { name: "示例用户" }));
     await user.keyboard("{Escape}");
-    await user.click(screen.getByRole("checkbox", { name: "连续创建" }));
+    await user.click(screen.getByRole("switch", { name: "连续创建" }));
     await user.click(screen.getByRole("button", { name: "核对内容" }));
     await user.click(screen.getByRole("button", { name: "确认创建" }));
     await screen.findByText(/上一条工作事项已创建并核验/);
@@ -1364,7 +1364,7 @@ describe("连续创建", () => {
     const props = { locations, close: vi.fn(), created: vi.fn() };
     const first = render(<CreateWorkItem {...props} />);
     await screen.findByRole("textbox", { name: "标题" });
-    const checkbox = screen.getByRole("checkbox", {
+    const checkbox = screen.getByRole("switch", {
       name: "连续创建",
     }) as HTMLInputElement;
     expect(checkbox.checked).toBe(false);
@@ -1376,10 +1376,10 @@ describe("连续创建", () => {
     render(<CreateWorkItem {...props} />);
     await screen.findByRole("textbox", { name: "标题" });
     expect(
-      (screen.getByRole("checkbox", { name: "连续创建" }) as HTMLInputElement)
+      (screen.getByRole("switch", { name: "连续创建" }) as HTMLInputElement)
         .checked,
     ).toBe(true);
-    await user.click(screen.getByRole("checkbox", { name: "连续创建" }));
+    await user.click(screen.getByRole("switch", { name: "连续创建" }));
     expect(localStorage.getItem(creationContinuousKey)).toBe("false");
     expect(createWorkItem).not.toHaveBeenCalled();
   });
@@ -1422,7 +1422,7 @@ describe("连续创建", () => {
     editor.textContent =
       "第一条说明 ![截图](https://project.feishu.cn/example.png)";
     fireEvent.input(editor);
-    await user.click(screen.getByRole("checkbox", { name: "连续创建" }));
+    await user.click(screen.getByRole("switch", { name: "连续创建" }));
     await user.click(screen.getByRole("button", { name: "核对内容" }));
     await user.click(screen.getByRole("button", { name: "确认创建" }));
     expect(getCreationForm).toHaveBeenCalledTimes(1);
@@ -1441,7 +1441,7 @@ describe("连续创建", () => {
       screen.getByRole("combobox", { name: "流程" }).textContent,
     ).toContain("团队流程");
     expect(
-      (screen.getByRole("checkbox", { name: "连续创建" }) as HTMLInputElement)
+      (screen.getByRole("switch", { name: "连续创建" }) as HTMLInputElement)
         .checked,
     ).toBe(true);
     expect(screen.getByText(/上一条工作事项已创建并核验/)).toBeTruthy();
@@ -1540,7 +1540,7 @@ describe("连续创建", () => {
       />,
     );
     await fill(user);
-    await user.click(screen.getByRole("checkbox", { name: "连续创建" }));
+    await user.click(screen.getByRole("switch", { name: "连续创建" }));
     await user.click(screen.getByRole("button", { name: "核对内容" }));
     await user.click(screen.getByRole("button", { name: "确认创建" }));
     await screen.findByRole("button", { name: "重新核验结果" });
@@ -1572,7 +1572,7 @@ describe("连续创建", () => {
       />,
     );
     await fill(user);
-    await user.click(screen.getByRole("checkbox", { name: "连续创建" }));
+    await user.click(screen.getByRole("switch", { name: "连续创建" }));
     await user.click(screen.getByRole("button", { name: "核对内容" }));
     await user.click(screen.getByRole("button", { name: "确认创建" }));
     expect(
@@ -1586,7 +1586,7 @@ describe("连续创建", () => {
     expect(getCreationForm).toHaveBeenCalledTimes(1);
     expect(createWorkItem).toHaveBeenCalledTimes(1);
     expect(
-      (screen.getByRole("checkbox", { name: "连续创建" }) as HTMLInputElement)
+      (screen.getByRole("switch", { name: "连续创建" }) as HTMLInputElement)
         .checked,
     ).toBe(true);
   });
@@ -1658,7 +1658,7 @@ describe("连续创建", () => {
       />,
     );
     await fill(user);
-    await user.click(screen.getByRole("checkbox", { name: "连续创建" }));
+    await user.click(screen.getByRole("switch", { name: "连续创建" }));
     await user.click(screen.getByRole("button", { name: "核对内容" }));
     await user.click(screen.getByRole("button", { name: "确认创建" }));
     await screen.findByRole("button", { name: "重试继续创建" });
@@ -1708,7 +1708,7 @@ describe("连续创建", () => {
       />,
     );
     await fill(user);
-    await user.click(screen.getByRole("checkbox", { name: "连续创建" }));
+    await user.click(screen.getByRole("switch", { name: "连续创建" }));
     await user.click(screen.getByRole("button", { name: "核对内容" }));
     await user.click(screen.getByRole("button", { name: "确认创建" }));
     await screen.findByRole("button", { name: "重试继续创建" });
@@ -1757,7 +1757,7 @@ describe("连续创建", () => {
       screen.getByRole("combobox", { name: "流程" }).textContent,
     ).toContain("团队流程");
     expect(
-      (screen.getByRole("checkbox", { name: "连续创建" }) as HTMLInputElement)
+      (screen.getByRole("switch", { name: "连续创建" }) as HTMLInputElement)
         .checked,
     ).toBe(true);
     first.unmount();

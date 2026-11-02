@@ -156,7 +156,7 @@ describe("创建表单附件", () => {
       "示例缺陷",
     );
     await select([file(first.name), file(second.name)]);
-    await user.click(screen.getByRole("checkbox", { name: "连续创建" }));
+    await user.click(screen.getByRole("switch", { name: "连续创建" }));
     await user.click(screen.getByRole("button", { name: "核对内容" }));
     expect(invoke).toHaveBeenCalledTimes(2);
     await user.click(screen.getByRole("button", { name: "确认创建" }));
