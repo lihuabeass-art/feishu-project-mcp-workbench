@@ -6,6 +6,8 @@ import { useScrollIsolation } from "./useScrollIsolation";
 import { CreationLookup } from "./CreationLookup";
 import { CreationSelect } from "./CreationSelect";
 import { CreationFieldTip, CreationFieldVisibility, creationVisibilityKey, fixedCreationField, loadCreationVisibility, visibleCreationFields } from "./CreationFieldVisibility";
+import { CreationAttachmentPicker, CreationAttachmentReview } from "./CreationAttachmentPicker";
+import { creationAttachments, uploadCreationAttachments } from "./creationAttachments";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { asError } from "./model";
 import {
@@ -332,6 +334,7 @@ export function CreateWorkItem({
             field.key,
             field.key === "name" ||
             field.kind === "textarea" ||
+            field.kind === "attachment" ||
             (field.kind === "people" && !field.reporter_self)
               ? field.multiple
                 ? []
@@ -393,6 +396,13 @@ export function CreateWorkItem({
   }
   function review() {
     if (!form || imageBusy) return;
+    try {
+      for (const field of form.fields.filter((field) => field.kind === "attachment"))
+        creationAttachments(draft.values[field.key]);
+    } catch (failure) {
+      setError(asError(failure).message);
+      return;
+    }
     if (
       form.fields.some(
         (f) =>
@@ -441,9 +451,15 @@ export function CreateWorkItem({
                 : "图片已上传，正在准备创建…",
             ),
         );
+        values = await uploadCreationAttachments(
+          form, values,
+          (next) => save({ ...draftRef.current, values: next }, true),
+          (completed, total) => setUploadProgress(completed < total
+            ? `正在上传附件 ${completed + 1}/${total}…` : "附件已上传，正在准备创建…"),
+        );
       } catch (failure) {
         setError(
-          `${asError(failure).message} 尚未发起创建，图片和草稿已保留。`,
+          `${asError(failure).message} 尚未发起创建，文件和草稿已保留。`,
         );
         return;
       }
@@ -541,6 +557,14 @@ export function CreateWorkItem({
   function control(f: CreationField) {
     const value = draft.values[f.key];
     if (!form) return null;
+    if (f.kind === "attachment")
+      return <CreationAttachmentPicker
+        key={`${entryGeneration}:${form.context}:${creationTargetKey(form.target)}:${f.key}`}
+        form={form} field={f} value={value} onChange={(value) => change(f.key, value)}
+        onBusyChange={(busy) => {
+          imageBusyRef.current = { ...imageBusyRef.current, [f.key]: busy };
+          setImageBusyFields(imageBusyRef.current);
+        }} />;
     if (f.kind === "people" || f.kind === "relation")
       return (
         <CreationLookup
@@ -805,6 +829,8 @@ export function CreateWorkItem({
                   确认创建后会先上传正文图片，再创建工作事项。
                 </p>
               )}
+              {form.fields.some((field) => field.kind === "attachment" && !creationEmpty(draft.values[field.key])) &&
+                <p className="hint">确认创建后会先上传附件；全部附件写入并从飞书回读核对后才显示成功。</p>}
               <dl className="creation-review">
                 {displayedFields.map((f) => (
                   <div key={f.key}>
@@ -817,7 +843,9 @@ export function CreateWorkItem({
                       </small>
                     </dt>
                     <dd>
-                      {f.kind === "textarea" &&
+                      {f.kind === "attachment" ? (
+                        <CreationAttachmentReview value={draft.values[f.key]} />
+                      ) : f.kind === "textarea" &&
                       !creationEmpty(draft.values[f.key]) ? (
                         <MarkdownPreview
                           value={String(draft.values[f.key])}

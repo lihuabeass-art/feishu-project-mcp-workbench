@@ -465,6 +465,21 @@ async fn create_work_item(request: fstodo_backend::creation::Request) -> Result<
 }
 
 #[tauri::command]
+async fn save_creation_attachment(target: fstodo_backend::creation::Target, context: String, field_key: String, bytes_base64: String, mime_type: String, file_name: String) -> Result<fstodo_backend::creation::attachments::Attachment, UiError> {
+    blocking(move || fstodo_backend::creation::attachments::save(&open_session()?, &target, &context, &field_key, &bytes_base64, &mime_type, &file_name)).await
+}
+
+#[tauri::command]
+async fn get_creation_attachment(target: fstodo_backend::creation::Target, context: String, field_key: String, attachment_id: String) -> Result<fstodo_backend::creation::attachments::Attachment, UiError> {
+    blocking(move || fstodo_backend::creation::attachments::get(&open_session()?, &target, &context, &field_key, &attachment_id)).await
+}
+
+#[tauri::command]
+async fn upload_creation_attachment(target: fstodo_backend::creation::Target, context: String, field_key: String, attachment_id: String) -> Result<fstodo_backend::creation::attachments::Attachment, UiError> {
+    blocking(move || fstodo_backend::creation::attachments::upload(&open_session()?, &target, &context, &field_key, &attachment_id)).await
+}
+
+#[tauri::command]
 async fn verify_work_item_creation(request_id: String, item_number: Option<String>, local_request: Option<fstodo_backend::creation::Request>) -> Result<fstodo_backend::creation::ResultView, UiError> {
     blocking(move || fstodo_backend::creation::verify(&open_session()?, &request_id, item_number.as_deref(),local_request.as_ref())).await
 }
@@ -541,6 +556,9 @@ fn main() {
             get_creation_image,
             get_uploaded_creation_image,
             upload_creation_image,
+            save_creation_attachment,
+            get_creation_attachment,
+            upload_creation_attachment,
             create_work_item,
             verify_work_item_creation,
             execute_workflow_action

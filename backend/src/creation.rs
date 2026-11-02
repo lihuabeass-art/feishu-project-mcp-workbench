@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub mod images;
+pub mod attachments;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Target {
@@ -253,6 +254,7 @@ fn field(meta: &Value, config: &Value) -> Field {
             | "multi-select"
             | "workitem_related_multi_select"
             | "work_item_related_multi_select"
+            | "multi-file"
     );
     let kind = match remote {
         "text" | "_name" | "link" | "multi-pure-text" => "text",
@@ -268,6 +270,7 @@ fn field(meta: &Value, config: &Value) -> Field {
         "number" => "number",
         "bool" => "bool",
         "date" => "date",
+        "multi-file" => "attachment",
         _ => "unsupported",
     }
     .to_string();
@@ -654,6 +657,7 @@ fn empty(value: &Value) -> bool {
 fn encode(f: &Field, value: &Value) -> Result<Value, BackendError> {
     let fail = || BackendError::validation(format!("请检查「{}」的填写内容", f.label));
     match f.kind.as_str() {
+        "attachment" => attachments::encode(value),
         "text" | "textarea" => {
             let input = value.as_str().ok_or_else(fail)?;
             if input.contains("fstodo-image:") {
@@ -855,6 +859,7 @@ fn matches_fields(form: &Form, request: &Request, detail: &ItemDetail) -> Result
             "textarea" => submitted.as_str() == remote.as_str(),
             "number" => submitted.as_f64() == remote.as_f64(),
             "date" => submitted == remote["timestamp"] || submitted == remote,
+            "attachment" => attachments::matches(&submitted, &remote),
             _ => submitted == remote,
         };
         if !equal {
@@ -918,7 +923,10 @@ pub fn execute(session: &Session, request: &Request) -> Result<ResultView, Backe
             "创建配置或当前账号已变化，请重新读取并核对草稿",
         ));
     }
-    let fields = plan(&form, request)?;
+    attachments::validate(session, &form, request)?;
+    let fields = plan(&form, &attachments::first_request(&form, request))?;
+    // 完整请求仍须逐项校验，后续附件不能绕过类型与必填检查。
+    plan(&form, request)?;
     let saved = json!({"request":request,"item_id":null,"form":form}).to_string();
     let record = ActionRecord {
         request_id: request.request_id.clone(),
@@ -949,14 +957,18 @@ pub fn execute(session: &Session, request: &Request) -> Result<ResultView, Backe
             work_item_id,
         });
     // 编号先落盘：详情回读期间退出也能恢复，并且只重新读取、不重发创建。
-    let _ = session.store.save_creation_detail(
+    let id_saved = session.store.save_creation_detail(
         &request.request_id,
         &json!({"request":request,"item_id":id,"form":form}).to_string(),
     );
     let check = id.as_ref().map(|id| {
-        session
-            .refresh_item_detail_fresh(id)
-            .and_then(|detail| matches_fields(&form, request, &detail))
+        id_saved.and_then(|_| {
+            if form.fields.iter().any(|f| f.kind == "attachment") {
+                attachments::complete(session, &form, request, id)
+            } else {
+                session.refresh_item_detail_fresh(id).and_then(|detail| matches_fields(&form, request, &detail))
+            }
+        })
     });
     let verified = matches!(&check, Some(Ok(())));
     let secret = session

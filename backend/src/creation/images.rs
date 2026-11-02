@@ -43,14 +43,14 @@ pub struct UploadedImage {
     pub file_token: String,
 }
 
-fn hexadecimal_id(value: &str) -> bool {
+pub(super) fn hexadecimal_id(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
-fn scope(target: &Target, context: &str, field_key: &str) -> Result<(), BackendError> {
+pub(super) fn scope(target: &Target, context: &str, field_key: &str) -> Result<(), BackendError> {
     if !hexadecimal_id(context)
         || [
             target.source_id.as_str(),
@@ -62,7 +62,7 @@ fn scope(target: &Target, context: &str, field_key: &str) -> Result<(), BackendE
         .any(|v| v.trim().is_empty() || v.len() > 512 || v.chars().any(char::is_control))
     {
         return Err(BackendError::validation(
-            "图片所属表单已变化，请重新打开新建表单",
+            "文件所属表单已变化，请重新打开新建表单",
         ));
     }
     Ok(())
@@ -245,7 +245,7 @@ pub fn get_uploaded(
     Ok(preview(checked_image(image, &identity)?))
 }
 
-fn upload_lock(
+pub(super) fn upload_lock(
     session: &Session,
     target: &Target,
     context: &str,
@@ -274,15 +274,24 @@ fn upload_lock(
 }
 
 // 不实现 Debug/Serialize，避免签名随诊断或 IPC 被带出后端。
-struct UploadTicket {
+pub(super) struct UploadTicket {
     url: Url,
     sign: HeaderValue,
     target_unit: Option<HeaderValue>,
 }
 
 fn ticket(value: &Value, now_ms: i64) -> Result<UploadTicket, BackendError> {
+    ticket_for(value, now_ms, 16)
+}
+
+pub(super) fn ticket_for(value: &Value, now_ms: i64, resource_type: u8) -> Result<UploadTicket, BackendError> {
+    let upload_path = match resource_type {
+        15 => "/goapi/v5/platform/file/stream/mcp/upload/15/:part_number",
+        16 => UPLOAD_PATH,
+        _ => return Err(BackendError::validation("上传资源类型无效")),
+    };
     let failure =
-        || BackendError::validation("未取得可用的图片上传授权，请稍后重试；本机图片和草稿已保留");
+        || BackendError::validation("未取得可用的文件上传授权，请稍后重试；本机文件和草稿已保留");
     if value["is_multipart"] != false {
         return Err(failure());
     }
@@ -297,7 +306,7 @@ fn ticket(value: &Value, now_ms: i64) -> Result<UploadTicket, BackendError> {
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || url.path() != UPLOAD_PATH
+        || url.path() != upload_path
     {
         return Err(failure());
     }
@@ -325,7 +334,7 @@ fn ticket(value: &Value, now_ms: i64) -> Result<UploadTicket, BackendError> {
         Some(Value::String(unit)) => Some(HeaderValue::from_str(unit).map_err(|_| failure())?),
         _ => return Err(failure()),
     };
-    url.set_path(&UPLOAD_PATH.replace(":part_number", "0"));
+    url.set_path(&upload_path.replace(":part_number", "0"));
     Ok(UploadTicket {
         url,
         sign,
@@ -333,10 +342,10 @@ fn ticket(value: &Value, now_ms: i64) -> Result<UploadTicket, BackendError> {
     })
 }
 
-fn remote_url(value: &str) -> Result<String, BackendError> {
+pub(super) fn remote_url(value: &str) -> Result<String, BackendError> {
     let failure = || {
         BackendError::unknown_result(
-            "图片上传结果尚未确认，本机图片和草稿已保留，请稍后核对或重新上传",
+            "文件上传结果尚未确认，本机文件和草稿已保留，请稍后核对或重新上传",
         )
     };
     let url = Url::parse(value).map_err(|_| failure())?;
@@ -356,10 +365,10 @@ fn remote_url(value: &str) -> Result<String, BackendError> {
     Ok(url.to_string().replace('(', "%28").replace(')', "%29"))
 }
 
-fn file_token(value: &str) -> Result<String, BackendError> {
+pub(super) fn file_token(value: &str) -> Result<String, BackendError> {
     let failure = || {
         BackendError::unknown_result(
-            "图片上传结果尚未确认，本机图片和草稿已保留，请稍后核对或重新上传",
+            "文件上传结果尚未确认，本机文件和草稿已保留，请稍后核对或重新上传",
         )
     };
     if value.is_empty()
@@ -374,10 +383,10 @@ fn file_token(value: &str) -> Result<String, BackendError> {
     Ok(value.into())
 }
 
-fn checked_upload_status(value: &Value) -> Result<(), BackendError> {
+pub(super) fn checked_upload_status(value: &Value) -> Result<(), BackendError> {
     let failure = || {
         BackendError::unknown_result(
-            "图片上传结果尚未确认，本机图片和草稿已保留，请稍后核对或重新上传",
+            "文件上传结果尚未确认，本机文件和草稿已保留，请稍后核对或重新上传",
         )
     };
     if !value.is_object() {
@@ -446,24 +455,24 @@ fn stored_upload(image: &CreationImage) -> Option<UploadedImage> {
     })
 }
 
-fn safe_authorization_failure(error: BackendError) -> BackendError {
+pub(super) fn safe_authorization_failure(error: BackendError) -> BackendError {
     // 签名接口错误可能回显参数或响应，丢弃原文，保留可操作的错误类别。
     match error.kind() {
         ErrorKind::Auth => BackendError::Auth {
             endpoint: "飞书项目".into(),
             challenge: None,
-            detail: "请检查当前连接凭证后重试图片上传".into(),
+            detail: "请检查当前连接凭证后重试文件上传".into(),
         },
-        ErrorKind::Credential => BackendError::credential("请检查当前连接凭证后重试图片上传"),
+        ErrorKind::Credential => BackendError::credential("请检查当前连接凭证后重试文件上传"),
         ErrorKind::Permission => {
-            BackendError::permission("当前账号暂不能上传图片，请检查飞书项目权限")
+            BackendError::permission("当前账号暂不能上传文件，请检查飞书项目权限")
         }
         ErrorKind::Connection => BackendError::Connection {
             endpoint: "飞书项目".into(),
-            detail: "暂时无法获取图片上传授权，请稍后重试".into(),
+            detail: "暂时无法获取文件上传授权，请稍后重试".into(),
         },
         _ => BackendError::validation(
-            "未取得图片上传授权，请检查连接和权限后重试；本机图片和草稿已保留",
+            "未取得文件上传授权，请检查连接和权限后重试；本机文件和草稿已保留",
         ),
     }
 }
@@ -484,10 +493,10 @@ fn image_request(
     request
 }
 
-fn post_image(ticket: &UploadTicket, image: &CreationImage) -> Result<Value, BackendError> {
+pub(super) fn post_image(ticket: &UploadTicket, image: &CreationImage) -> Result<Value, BackendError> {
     let unknown = || {
         BackendError::unknown_result(
-            "图片上传结果尚未确认，本机图片和草稿已保留，请稍后核对或重新上传",
+            "文件上传结果尚未确认，本机文件和草稿已保留，请稍后核对或重新上传",
         )
     };
     let client = Client::builder()

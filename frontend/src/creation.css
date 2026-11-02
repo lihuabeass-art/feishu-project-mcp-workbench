@@ -498,3 +498,40 @@
     gap: 12px;
   }
 }
+.creation-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.creation-attachment-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.creation-attachment-list {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.creation-attachment-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-solid);
+}
+.creation-attachment-name {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.creation-attachment-name small {
+  display: block;
+  color: var(--text-secondary);
+}

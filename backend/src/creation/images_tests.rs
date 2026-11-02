@@ -797,6 +797,20 @@ fn signed_destination_and_expiration_are_strictly_validated() {
 }
 
 #[test]
+fn attachment_and_inline_image_authorizations_cannot_be_interchanged() {
+    let now = crate::sync::now_ms();
+    let image = signature();
+    let mut attachment = image.clone();
+    attachment["upload_url"] = json!("https://project.feishu.cn/goapi/v5/platform/file/stream/mcp/upload/15/:part_number");
+    assert_eq!(ticket_for(&attachment, now, 15).unwrap().url.as_str(),
+        "https://project.feishu.cn/goapi/v5/platform/file/stream/mcp/upload/15/0");
+    assert!(ticket_for(&attachment, now, 16).is_err());
+    assert!(ticket_for(&image, now, 15).is_err());
+    attachment["is_multipart"] = json!(true);
+    assert!(ticket_for(&attachment, now, 15).is_err());
+}
+
+#[test]
 fn target_unit_is_optional_and_forwarded_with_sensitive_signature_only_to_upload_request() {
     let now = crate::sync::now_ms();
     let mut authorization = signature();
