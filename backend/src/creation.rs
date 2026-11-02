@@ -85,6 +85,8 @@ pub struct ResultView {
     pub request_id: String,
     pub item_id: Option<WorkItemId>,
     pub can_verify: bool,
+    #[serde(default)]
+    pub rejected_field_keys: Vec<String>,
 }
 
 pub fn pending_forms(session: &Session) -> Result<Vec<Form>, BackendError> {
@@ -105,7 +107,7 @@ pub fn pending_forms(session: &Session) -> Result<Vec<Form>, BackendError> {
         let mut form: Form = serde_json::from_value(saved["form"].clone())?;
         let rejected = is_rejected(&record, &saved);
         form.pending = Some(Pending {
-            result: if rejected { rejected_result(&request) } else { result(&request, id, false) },
+            result: if rejected { rejected_result(&request, &saved) } else { result(&request, id, false) },
             request,
         });
         forms.push(form);
@@ -614,6 +616,73 @@ pub fn lookup(
     })
 }
 
+/// 补齐已选关联名称，独立于按名称搜索的前二十条候选。
+fn selected_relation_rows(value: &Value, limit: usize) -> Result<&Vec<Value>, BackendError> {
+    let invalid = || BackendError::parse("关联事项", "精确查询结果不完整");
+    let list = value["list"].as_array().filter(|list| list.len() == 1).ok_or_else(invalid)?;
+    let count = list[0]["count"].as_u64().filter(|count| *count <= limit as u64).ok_or_else(invalid)? as usize;
+    if detail::text(&value["session_id"]).is_none() { return Err(invalid()); }
+    let groups = list[0]["group_infos"].as_array().filter(|groups| groups.len() == 1).ok_or_else(invalid)?;
+    let group = detail::text(&groups[0]["group_id"]).ok_or_else(invalid)?;
+    let rows = value["data"][&group].as_array().ok_or_else(invalid)?;
+    if rows.len() != count { return Err(invalid()); }
+    Ok(rows)
+}
+
+pub fn resolve_relation_labels(session: &Session, target: &Target, field_key: &str, ids: Vec<String>) -> Result<LookupResult, BackendError> {
+    if ids.len() > 50 || ids.iter().any(|id| id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) || !id.parse::<u64>().is_ok_and(|n| n > 0)) {
+        return Err(BackendError::validation("关联事项编号无效或数量超过50项"));
+    }
+    let form = discover(session, target)?;
+    let field = form.fields.iter().find(|field| field.key == field_key && field.kind == "relation")
+        .ok_or_else(|| BackendError::validation("所选关联字段已变化，请重新打开表单"))?;
+    let ids: Vec<_> = ids.into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let mut found: BTreeMap<String, BTreeMap<(String, String), String>> = BTreeMap::new();
+    let mut warning = false;
+    let mut unresolved = std::collections::BTreeSet::new();
+    let ranges: std::collections::BTreeSet<_> = field.related.iter().map(|range| (range.project_key.clone(), range.type_key.clone())).collect();
+    if ranges.len() > 10 { return Ok(LookupResult { options: vec![], warning: Some("关联范围较多，暂无法确认名称，已保留原有选择。".into()) }); }
+    for (project, kind) in ranges {
+        let cached = session.store.creation_relation_titles(&project, &kind, &ids)?;
+        for (id, title) in &cached { found.entry(id.clone()).or_default().insert((project.clone(), kind.clone()), title.clone()); }
+        let missing: Vec<_> = ids.iter().filter(|id| !cached.contains_key(*id)).collect();
+        if missing.is_empty() { continue; }
+        let mql = format!("SELECT `work_item_id`, `name` FROM {}.{} WHERE `work_item_id` IN ({}) LIMIT 50", identifier(&project)?, identifier(&kind)?, missing.iter().map(|id| id.as_str()).collect::<Vec<_>>().join(","));
+        let response = session.call_read_tool("search_by_mql", json!({"project_key":project,"mql":mql}).as_object().unwrap());
+        let parsed = response.and_then(|value| {
+            if value.get("list") == Some(&Value::Null)
+                && value["data"].as_object().is_some_and(|data| data.is_empty())
+                && detail::text(&value["session_id"]).is_some()
+                && value.get("search_status_info") == Some(&Value::Null)
+                && value.get("extra_info") == Some(&Value::Null) { return Ok(Vec::new()); }
+            let rows = selected_relation_rows(&value, missing.len())?;
+            let mut titles = Vec::new();
+            for row in rows {
+                let fields = row["moql_field_list"].as_array().ok_or_else(|| BackendError::parse("关联事项", "缺少查询字段"))?;
+                let id = fields.iter().find(|field| field["key"] == "work_item_id").map(|field| text(&field["value"]["long_value"])).unwrap_or_default();
+                let title = fields.iter().find(|field| field["key"] == "name").map(|field| text(&field["value"]["string_value"])).unwrap_or_default();
+                if !missing.iter().any(|expected| expected.as_str() == id) || titles.iter().any(|(seen, _)| seen == &id) {
+                    return Err(BackendError::parse("关联事项", "精确查询返回意外编号"));
+                }
+                titles.push((id, title));
+            }
+            Ok(titles)
+        });
+        match parsed {
+            Ok(titles) => for (id, title) in titles {
+                if title.trim().is_empty() { unresolved.insert(id); }
+                else { found.entry(id).or_default().insert((project.clone(), kind.clone()), title); }
+            },
+            Err(_) => { warning = true; unresolved.extend(missing.into_iter().cloned()); },
+        }
+    }
+    let options = found.into_iter().filter_map(|(value, titles)| {
+        if titles.len() != 1 || unresolved.contains(&value) { warning = true; return None; }
+        Some(OptionValue { value, label: titles.into_values().next().unwrap(), color: None })
+    }).collect();
+    Ok(LookupResult { options, warning: warning.then(|| "部分关联事项名称暂无法确认，已保留原有选择，可稍后重试。".into()) })
+}
+
 fn collect_people(value: &Value, people: &mut BTreeMap<String, String>) {
     fn visit(value: &Value, people: &mut BTreeMap<String, String>, person: bool, role: bool) {
         match value {
@@ -874,6 +943,7 @@ fn matches_fields(form: &Form, request: &Request, detail: &ItemDetail) -> Result
 }
 fn result(request: &Request, item_id: Option<WorkItemId>, verified: bool) -> ResultView {
     ResultView {
+        rejected_field_keys: Vec::new(),
         outcome: if verified { "verified" } else { "unknown" }.into(),
         message: if verified {
             "工作事项已创建，并已从飞书回读确认。"
@@ -888,6 +958,7 @@ fn result(request: &Request, item_id: Option<WorkItemId>, verified: bool) -> Res
 }
 fn not_submitted(request: &Request) -> ResultView {
     ResultView {
+        rejected_field_keys: Vec::new(),
         outcome: "not_submitted".into(),
         message: "此请求未发往飞书，草稿已恢复。请核对后重新创建。".into(),
         request_id: request.request_id.clone(),
@@ -904,16 +975,48 @@ fn gateway_field_rejection(message: &str) -> bool {
             tail.strip_prefix(kind).is_some_and(|rest| rest == ",retriable=false" || rest.strip_prefix(",retriable=false\nlogid: ").is_some_and(|id| !id.trim().is_empty() && !id.contains('\n')))
         })
 }
-fn saved_gateway_rejection(saved: &Value) -> bool {
-    saved["diagnostic"].as_str().and_then(|s| s.strip_prefix("工具调用失败: 工具 create_workitem 返回错误（code=None）: "))
-        .is_some_and(gateway_field_rejection)
+// 仅接受本连接已观测的创建必填校验格式；远端名称只用于校验语法，不进入界面。
+fn required_rejection_keys(message: &str) -> Option<Vec<&str>> {
+    let tail = message.strip_prefix("error=ErrFieldRequired,message={field_name}({field_key}) 必填,")?;
+    let (body, suffix) = tail.split_once(",retriable=false")?;
+    if !(suffix.is_empty() || suffix.strip_prefix("\nlogid: ").is_some_and(|id| !id.trim().is_empty() && !id.contains(['\n', '\r']))) { return None; }
+    let body = body.strip_suffix(") 必填")?;
+    let (names, keys) = body.split_once('(')?;
+    let keys: Vec<_> = keys.split(',').collect();
+    if names.split(',').count() != keys.len()
+        || names.split(',').any(|name| name.trim().is_empty() || name.contains(['(', ')', '\n', '\r']))
+        || keys.iter().any(|key| key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')) { return None; }
+    Some(keys)
 }
-fn rejected_result(request: &Request) -> ResultView {
-    ResultView { message: "飞书未接受本次创建参数，事项未创建。草稿已保留，请重新核对后创建。".into(), ..not_submitted(request) }
+fn saved_rejection_message(saved: &Value) -> Option<&str> {
+    saved["diagnostic"].as_str().and_then(|s| s.strip_prefix("工具调用失败: 工具 create_workitem 返回错误（code=None）: "))
+}
+fn rejected_result(request: &Request, saved: &Value) -> ResultView {
+    let keys = saved_rejection_message(saved).and_then(required_rejection_keys);
+    let mut rejected_field_keys = Vec::new();
+    let message = if let Some(keys) = keys {
+        let form = serde_json::from_value::<Form>(saved["form"].clone()).ok();
+        let mut labels = Vec::new();
+        let mut unknown = false;
+        for key in keys {
+            let field = form.as_ref().and_then(|form| form.fields.iter().find(|field| {
+                if let Some(role) = &field.role_id { key == format!("role_{}_{}_{}", request.target.project_key, request.target.type_key, role) }
+                else { field.key == key }
+            }));
+            if let Some(field) = field {
+                if !rejected_field_keys.contains(&field.key) { rejected_field_keys.push(field.key.clone()); }
+                if !labels.contains(&field.label) { labels.push(field.label.clone()); }
+            }
+            else { unknown = true; }
+        }
+        if unknown { labels.push("其他必填项（请在飞书核对）".into()); }
+        format!("飞书未通过必填校验：{}。事项未创建，草稿已保留，请返回草稿核对后重新创建。", labels.join("、"))
+    } else { "飞书未接受本次创建参数，事项未创建。草稿已保留，请重新核对后创建。".into() };
+    ResultView { message, rejected_field_keys, ..not_submitted(request) }
 }
 fn is_rejected(record: &ActionRecord, saved: &Value) -> bool {
     !record.verified && saved["item_id"].is_null()
-        && (saved["rejected_before_creation"] == true || saved_gateway_rejection(saved))
+        && (saved["rejected_before_creation"] == true || saved_rejection_message(saved).is_some_and(|message| gateway_field_rejection(message) || required_rejection_keys(message).is_some()))
 }
 /// 只有界面确认编辑草稿已可靠保存后才释放创建锁；枚举和核验均不消费恢复记录。
 pub fn acknowledge_recovery(session: &Session, request_id: &str) -> Result<(), BackendError> {
@@ -954,7 +1057,7 @@ pub fn execute(session: &Session, request: &Request) -> Result<ResultView, Backe
         if saved["cancelled_before_write"] == true {
             return Ok(not_submitted(request));
         }
-        if is_rejected(&record, &saved) { return Ok(rejected_result(request)); }
+        if is_rejected(&record, &saved) { return Ok(rejected_result(request, &saved)); }
         return Ok(result(
             request,
             serde_json::from_value(saved["item_id"].clone())?,
@@ -990,11 +1093,11 @@ pub fn execute(session: &Session, request: &Request) -> Result<ResultView, Backe
         ));
     }
     let receipt=session.call_tool_any(TOOL_CREATE_WORKITEM,json!({"project_key":request.target.project_key,"work_item_type":request.target.type_key,"fields":transport_fields(fields)}).as_object().unwrap(),true);
-    if matches!(&receipt, Err(BackendError::Tool { tool, code: None, message }) if tool == TOOL_CREATE_WORKITEM && gateway_field_rejection(message)) {
+    if matches!(&receipt, Err(BackendError::Tool { tool, code: None, message }) if tool == TOOL_CREATE_WORKITEM && (gateway_field_rejection(message) || required_rejection_keys(message).is_some())) {
         let diagnostic = receipt.as_ref().err().map(|e| e.safe_message(None));
         let saved = json!({"request":request,"item_id":null,"form":form,"diagnostic":diagnostic,"rejected_before_creation":true});
         session.store.finish_action(&request.request_id, "unknown", false, Some(&saved.to_string()), crate::sync::now_ms())?;
-        return Ok(rejected_result(request));
+        return Ok(rejected_result(request, &saved));
     }
     let id = receipt
         .as_ref()
@@ -1101,7 +1204,7 @@ pub fn verify(
     if saved["cancelled_before_write"] == true {
         return Ok(not_submitted(&request));
     }
-    if is_rejected(&record, &saved) { return Ok(rejected_result(&request)); }
+    if is_rejected(&record, &saved) { return Ok(rejected_result(&request, &saved)); }
     let id: Option<WorkItemId> = serde_json::from_value(saved["item_id"].clone())?;
     if record.verified {
         return Ok(result(&request, id, true));

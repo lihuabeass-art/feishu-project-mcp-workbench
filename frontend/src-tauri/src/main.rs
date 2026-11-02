@@ -442,6 +442,11 @@ async fn get_creation_form(target: fstodo_backend::creation::Target) -> Result<f
 }
 
 #[tauri::command]
+async fn resolve_creation_relation_labels(target: fstodo_backend::creation::Target, field_key: String, ids: Vec<String>) -> Result<fstodo_backend::creation::LookupResult, UiError> {
+    blocking(move || fstodo_backend::creation::resolve_relation_labels(&open_session()?, &target, &field_key, ids)).await
+}
+
+#[tauri::command]
 async fn lookup_creation_field(target: fstodo_backend::creation::Target, field_key: String, query: String) -> Result<fstodo_backend::creation::LookupResult, UiError> {
     blocking(move || fstodo_backend::creation::lookup(&open_session()?, &target, &field_key, &query)).await
 }
@@ -571,6 +576,7 @@ fn main() {
             get_pending_creations,
             get_creation_form,
             lookup_creation_field,
+            resolve_creation_relation_labels,
             save_creation_image,
             get_creation_image,
             get_uploaded_creation_image,

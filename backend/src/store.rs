@@ -1316,6 +1316,17 @@ impl Store {
         rows.map(|row|serde_json::from_str(&row?).map_err(BackendError::from)).collect()
     }
 
+    pub(crate) fn creation_relation_titles(&self, project: &str, kind: &str, ids: &[String]) -> Result<std::collections::BTreeMap<String, String>, BackendError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare("SELECT work_item_name FROM work_item WHERE project_key=?1 AND work_item_type_key=?2 AND work_item_id=?3")?;
+        let mut titles = std::collections::BTreeMap::new();
+        for id in ids {
+            let title = stmt.query_row(params![project, kind, id], |row| row.get::<_, Option<String>>(0)).optional()?.flatten();
+            if let Some(title) = title.filter(|title| !title.trim().is_empty()) { titles.insert(id.clone(), title); }
+        }
+        Ok(titles)
+    }
+
     pub(crate) fn cancel_unregistered_creation(&self, record:&ActionRecord) -> Result<(),BackendError> {
         self.conn.lock().expect("store mutex poisoned").execute(
             "INSERT OR IGNORE INTO workflow_action_run(request_id,item_id,action_kind,target,version,status,verified,detail,created_at,finished_at)

@@ -15,6 +15,7 @@ struct Fake {
     writes: AtomicUsize,
     fields: Mutex<Vec<Value>>,
     user: Mutex<String>,
+    relation_queries: Mutex<Vec<String>>,
 }
 #[async_trait]
 impl TodoSource for Arc<Fake> {
@@ -58,6 +59,9 @@ impl TodoSource for Arc<Fake> {
                 configs.as_array_mut().unwrap().push(json!({"field_key":key,"field_name":key,"field_type":kind}));
             }
         }
+        if self.mode.starts_with("relation-multi") {
+            configs[5]["related_work_item_info"] = json!([{"project_key":"space","work_item_type":"project"},{"project_key":"space","work_item_type":"other"}]);
+        }
         let mut value = match tool {
             "get_workitem_field_meta" => json!({"FieldConfList":[
                 {"field_key":"name","field_name":"标题","is_required":1},
@@ -89,6 +93,20 @@ impl TodoSource for Arc<Fake> {
                 "示例同事" => json!([{"user_key":"ou_colleague","name_cn":"示例同事"}]),
                 _ => json!([]),
             },
+            "search_by_mql" if self.mode.starts_with("relation-") => {
+                let mql = args["mql"].as_str().unwrap();
+                self.relation_queries.lock().unwrap().push(mql.into());
+                assert!(mql.contains("WHERE `work_item_id` IN ("));
+                assert!(!mql.contains("LIKE") && !mql.contains("LIMIT 20"));
+                if self.mode == "relation-failure" || (self.mode == "relation-multi-failure" && mql.contains("`other`")) { return Err(BackendError::validation("fixture read unavailable")); }
+                if self.mode == "relation-multi-zero" && mql.contains("`other`") {
+                    return Ok(ToolResultPayload { is_error: false, structured: Some(json!({"list":null,"session_id":"fixture-session","data":{},"search_status_info":null,"extra_info":null})), text_blocks: vec![] });
+                }
+                let range = if mql.contains("`other`") { "space.other" } else { "space.project" };
+                let title = if self.mode == "relation-multi-empty-title" && range == "space.other" { "  " } else { "精确查询名称" };
+                let count = if self.mode == "relation-multi-incomplete" && range == "space.other" { 2 } else { 1 };
+                json!({"session_id":"fixture-session","list":[{"count":count,"group_infos":[{"group_id":"fixture-group"}]}],"data":{"fixture-group":[{"moql_field_list":[{"key":"work_item_id","value":{"long_value":999}},{"key":"name","value":{"string_value":title}}]}]}})
+            },
             "search_by_mql" => json!({"data":{"space.project":[{"moql_field_list":[
                 {"key":"work_item_id","value":{"long_value":789}},{"key":"name","value":{"string_value":"示例项目"}}
             ]}]}}),
@@ -97,6 +115,7 @@ impl TodoSource for Arc<Fake> {
                 *self.fields.lock().unwrap() = args["fields"].as_array().unwrap().clone();
                 assert!(args["fields"].as_array().unwrap().iter().all(|f| f["field_value"].is_string()), "create transport requires string field values");
                 match self.mode {
+                    "required-rejection" => return Err(BackendError::Tool { tool: tool.into(), code: None, message: "error=ErrFieldRequired,message={field_name}({field_key}) 必填,远端说明,远端角色(description,role_space_custom-key_quality_owner) 必填,retriable=false\nlogid: fixture-only".into() }),
                     "gateway-rejection" => return Err(BackendError::Tool { tool: tool.into(), code: None, message: "error=MCPGatewayRequestMismatch,message=argument arguments.fields[1].field_value must be string, got number,retriable=false\nlogid: fixture-only".into() }),
                     "unknown" | "old_item" => {
                         return Ok(ToolResultPayload {
@@ -215,6 +234,7 @@ impl Harness {
             writes: AtomicUsize::new(0),
             fields: Mutex::new(vec![]),
             user: Mutex::new("ou_person".into()),
+            relation_queries: Mutex::new(vec![]),
         });
         let remote = crate::remote::install_test_client(
             &session.config,
@@ -287,6 +307,60 @@ impl Drop for Harness {
 }
 
 #[test]
+fn selected_relation_mql_requires_complete_single_group() {
+    let complete = json!({"session_id":"fixture-session","list":[{"count":1,"group_infos":[{"group_id":"fixture-group"}]}],"data":{"fixture-group":[{}]}});
+    assert_eq!(selected_relation_rows(&complete, 50).unwrap().len(), 1);
+    for broken in [
+        json!({"session_id":"fixture-session","list":[{"count":2,"group_infos":[{"group_id":"fixture-group"}]}],"data":{"fixture-group":[{}]}}),
+        json!({"session_id":"fixture-session","list":[{"count":1,"group_infos":[{"group_id":"fixture-group"},{"group_id":"other"}]}],"data":{"fixture-group":[{}]}}),
+        json!({"session_id":"fixture-session","list":[{"count":1,"group_infos":[{"group_id":"fixture-group"}]}],"data":{"space.project":[{}]}}),
+    ] { assert!(selected_relation_rows(&broken, 50).is_err()); }
+}
+
+#[test]
+fn selected_relation_labels_use_scoped_cache_and_exact_id_queries() {
+    fn cache(h: &Harness, project: &str, kind: &str, id: &str, title: &str) {
+        let conn = rusqlite::Connection::open(h.dir.join("cache.db")).unwrap();
+        conn.execute("INSERT INTO work_item(project_key,work_item_type_key,work_item_id,work_item_name,flow_kind,raw_json,first_seen_at_ms,last_seen_at_ms) VALUES(?1,?2,?3,?4,'none','{}',1,1)", rusqlite::params![project,kind,id,title]).unwrap();
+    }
+    let h = Harness::new("relation-cache");
+    cache(&h, "space", "project", "789", "缓存标题");
+    cache(&h, "elsewhere", "project", "999", "其他空间标题");
+    cache(&h, "space", "elsewhere", "999", "其他类型标题");
+    let result = resolve_relation_labels(&h.session, &h.target(), "related", vec!["789".into()]).unwrap();
+    assert_eq!(result.options[0].label, "缓存标题");
+    assert!(h.fake.relation_queries.lock().unwrap().is_empty());
+    let result = resolve_relation_labels(&h.session, &h.target(), "related", vec!["999".into()]).unwrap();
+    assert_eq!(result.options[0].label, "精确查询名称");
+    assert_eq!(h.fake.relation_queries.lock().unwrap().len(), 1);
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 0);
+    for mode in ["relation-multi", "relation-multi-failure", "relation-multi-empty-title", "relation-multi-incomplete"] {
+        let h = Harness::new(mode);
+        cache(&h, "space", "project", "999", "缓存标题");
+        let result = resolve_relation_labels(&h.session, &h.target(), "related", vec!["999".into()]).unwrap();
+        assert!(result.options.is_empty(), "must not guess across allowed ranges");
+        assert!(result.warning.is_some());
+        assert_eq!(h.fake.writes.load(Ordering::SeqCst), 0);
+    }
+    let h = Harness::new("relation-multi-zero");
+    cache(&h, "space", "project", "999", "缓存标题");
+    let result = resolve_relation_labels(&h.session, &h.target(), "related", vec!["999".into()]).unwrap();
+    assert_eq!(result.options[0].label, "缓存标题");
+    assert!(result.warning.is_none());
+    let h = Harness::new("relation-failure");
+    cache(&h, "space", "project", "789", "缓存标题");
+    let result = resolve_relation_labels(&h.session, &h.target(), "related", vec!["789".into(), "999".into()]).unwrap();
+    assert_eq!(result.options.len(), 1);
+    assert_eq!(result.options[0].value, "789");
+    assert!(result.warning.is_some());
+    for ids in [vec!["1 OR 1=1".into()], vec!["0".into()], vec!["1".into(); 51]] {
+        assert!(resolve_relation_labels(&h.session, &h.target(), "related", ids).is_err());
+    }
+    assert!(resolve_relation_labels(&h.session, &h.target(), "name", vec!["789".into()]).is_err());
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn transport_stringifies_typed_values_without_double_encoding_text() {
     let cases = [
         (json!(123), "123"),
@@ -302,6 +376,72 @@ fn transport_stringifies_typed_values_without_double_encoding_text() {
     for ((_, expected), sent) in cases.iter().zip(fields) {
         assert_eq!(sent["field_value"].as_str().unwrap(), *expected);
     }
+}
+
+#[test]
+fn required_rejection_preserves_populated_draft_and_uses_form_labels() {
+    let h = Harness::new("required-rejection");
+    let request = h.request();
+    let result = execute(&h.session, &request).unwrap();
+    assert_eq!(result.outcome, "not_submitted");
+    assert_eq!(result.rejected_field_keys, vec!["description", "role:quality_owner"]);
+    assert_eq!(result.message, "飞书未通过必填校验：说明、质量负责人。事项未创建，草稿已保留，请返回草稿核对后重新创建。");
+    for _ in 0..2 {
+        let pending = pending_forms(&h.session).unwrap().pop().unwrap().pending.unwrap();
+        assert_eq!(pending.request.fields, request.fields);
+        assert_eq!(pending.result.message, result.message);
+        assert_eq!(pending.result.rejected_field_keys, result.rejected_field_keys);
+    }
+    assert_eq!(verify(&h.session, &request.request_id, None, None).unwrap().message, result.message);
+    acknowledge_recovery(&h.session, &request.request_id).unwrap();
+    assert!(pending_forms(&h.session).unwrap().is_empty());
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn required_rejection_role_mapping_requires_current_space_and_type() {
+    let h = Harness::new("required-rejection");
+    let request = h.request();
+    let form = discover(&h.session, &request.target).unwrap();
+    for key in ["role_other_custom-key_quality_owner", "role_space_other_quality_owner", "role_quality_owner"] {
+        let saved = json!({"form":form,"diagnostic":format!("工具调用失败: 工具 create_workitem 返回错误（code=None）: error=ErrFieldRequired,message={{field_name}}({{field_key}}) 必填,任意远端名称({key}) 必填,retriable=false")});
+        let result = rejected_result(&request, &saved);
+        assert!(result.rejected_field_keys.is_empty());
+        assert!(result.message.contains("其他必填项（请在飞书核对）"));
+        assert!(!result.message.contains("质量负责人"));
+    }
+}
+
+#[test]
+fn historical_required_rejection_is_narrow_and_does_not_consume_recovery() {
+    let message = "error=ErrFieldRequired,message={field_name}({field_key}) 必填,旧显示名,陌生字段(description,unknown_field) 必填,retriable=false\nlogid: fixture-history";
+    let h = Harness::new("unknown");
+    let request = h.request();
+    execute(&h.session, &request).unwrap();
+    let record = h.session.store.action_by_request(&request.request_id).unwrap().unwrap();
+    let mut saved: Value = serde_json::from_str(record.detail.as_deref().unwrap()).unwrap();
+    saved["diagnostic"] = json!(format!("工具调用失败: 工具 create_workitem 返回错误（code=None）: {message}"));
+    h.session.store.save_creation_detail(&request.request_id, &saved.to_string()).unwrap();
+    for _ in 0..2 {
+        let pending = pending_forms(&h.session).unwrap().pop().unwrap().pending.unwrap();
+        assert_eq!(pending.request.fields, request.fields);
+        assert!(pending.result.message.contains("说明、其他必填项（请在飞书核对）"));
+        assert_eq!(pending.result.rejected_field_keys, vec!["description"]);
+        assert!(!pending.result.message.contains("unknown_field"));
+        assert_eq!(verify(&h.session, &request.request_id, None, None).unwrap().outcome, "not_submitted");
+    }
+    acknowledge_recovery(&h.session, &request.request_id).unwrap();
+    acknowledge_recovery(&h.session, &request.request_id).unwrap();
+    assert!(pending_forms(&h.session).unwrap().is_empty());
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
+    for invalid in [
+        message.replace("retriable=false", "retriable=true"),
+        message.replace("{field_name}({field_key}) 必填,", ""),
+        message.replace("ErrFieldRequired", "OtherErrFieldRequired"),
+        format!("prefix {message}"),
+        format!("{message}\nerror=Other"),
+        message.replace("description,unknown_field", "description"),
+    ] { assert!(required_rejection_keys(&invalid).is_none(), "{invalid}"); }
 }
 
 #[test]
