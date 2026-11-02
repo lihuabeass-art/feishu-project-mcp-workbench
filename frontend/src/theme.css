@@ -15,9 +15,15 @@
   --muted: #71806f;
   --heading: #405d46;
   --green: #357564;
-  --focus: #4f9f85;
+  --focus: #397c67;
   --line: #e5eae5;
   --border-strong: #b8cdc3;
+  /* 表单共用边界与焦点规则；主题只提供语义值。 */
+  --control-border: var(--line);
+  --control-hover-border: var(--border-strong);
+  --control-shadow: none;
+  --control-focus-ring: 2px solid var(--focus);
+  --control-focus-offset: -1px;
   --surface: rgba(255, 255, 255, 0.78);
   --surface-solid: #fff;
   --surface-raised: #fcfdfb;

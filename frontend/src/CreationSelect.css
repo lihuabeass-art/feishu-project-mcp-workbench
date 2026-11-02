@@ -18,10 +18,10 @@
   height: 100%;
   min-height: 38px;
   padding: 7px 10px 7px 12px;
-  border-color: var(--line);
+  border-color: var(--control-border);
   border-radius: 6px;
   background: var(--input-bg);
-  box-shadow: none;
+  box-shadow: var(--control-shadow);
 }
 
 .creation-select-control .select-trigger > span:first-child {

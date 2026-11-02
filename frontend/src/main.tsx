@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
+import "./form-controls.css";
 
 // 窗口关闭了 Tauri 原生拖放以启用 HTML5 拖拽排序；拖入外部文件时不让 WebView 导航到该文件。
 for (const type of ["dragover", "drop"] as const) {

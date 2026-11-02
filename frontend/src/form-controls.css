@@ -1,0 +1,74 @@
+/* 在页面和组件样式后加载：表单共用状态规则，颜色与轮廓由主题提供。 */
+input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]),
+textarea {
+  border: 1px solid var(--control-border);
+  border-radius: 11px;
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]),
+textarea,
+.select-trigger,
+.markdown-clipboard-editor,
+.creation-picker,
+.creation-field-search,
+.creation-lookup-search,
+.workflow-stepped-number {
+  box-shadow: var(--control-shadow);
+  transition:
+    border-color 0.16s,
+    background 0.16s,
+    box-shadow 0.16s;
+}
+
+input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]):hover:not(:disabled, :focus-visible),
+textarea:hover:not(:disabled, :focus-visible),
+.select-trigger:hover:not(:disabled, :focus-visible, [aria-expanded="true"]),
+.markdown-clipboard-editor:hover:not([aria-disabled="true"], :focus-visible),
+.creation-picker:hover:not(:disabled, :focus-visible, [aria-expanded="true"]) {
+  border-color: var(--control-hover-border);
+}
+
+/* 焦点轮廓贴合原边界，避免内边框、间隙与外圈叠成多个框。 */
+input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]):focus-visible,
+textarea:focus-visible,
+.select-trigger:focus-visible,
+.select-control.open > .select-trigger,
+.markdown-clipboard-editor:focus-visible,
+.creation-picker:focus-visible,
+.creation-picker[aria-expanded="true"],
+.creation-field-search:focus-within,
+.creation-lookup-search:focus-within,
+.workflow-stepped-number:has(> input:focus-visible),
+.search:focus-within {
+  border-color: var(--focus);
+  outline: var(--control-focus-ring);
+  outline-offset: var(--control-focus-offset);
+  box-shadow: var(--control-shadow);
+}
+
+/* 复合搜索框的边界由外层承载，内部输入框保持透明且不重复描边。 */
+.search input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]),
+.search input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]):focus-visible {
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: none;
+  color: var(--text);
+  box-shadow: none;
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  input,
+  textarea,
+  .select-trigger,
+  .markdown-clipboard-editor,
+  .creation-picker,
+  .creation-field-search,
+  .creation-lookup-search,
+  .workflow-stepped-number {
+    transition: none;
+  }
+}

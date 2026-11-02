@@ -5,7 +5,7 @@
   --muted: #70778b;
   --heading: #343d59;
   --green: #297767;
-  --focus: #448d80;
+  --focus: #697b9e;
   --line: #dce0ed;
   --border-strong: #abb9d2;
   --surface: #ffffffb8;
@@ -78,7 +78,7 @@
   --muted: #a3aec9;
   --heading: #eef0ff;
   --green: #8bd7bd;
-  --focus: #9be4d0;
+  --focus: #a5b4d6;
   --line: #3d455e;
   --border-strong: #7584aa;
   --surface: #1c2236e8;
@@ -241,8 +241,7 @@
   background: var(--pearl-spectrum);
 }
 
-:root[data-appearance="pearl"]
-  :is(.select-trigger, .theme-trigger) {
+:root[data-appearance="pearl"] .theme-trigger {
   box-shadow: 0 2px 6px var(--pearl-shadow);
 }
 

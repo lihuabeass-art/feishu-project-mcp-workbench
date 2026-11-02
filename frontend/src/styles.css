@@ -140,16 +140,11 @@ svg {
   justify-content: space-between;
   gap: 14px;
   padding: 8px 10px 8px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-border);
   border-radius: 11px;
   background: var(--input-bg);
   color: var(--text);
   text-align: left;
-  box-shadow: 0 3px 10px rgba(46, 70, 60, 0.06);
-  transition:
-    border-color 0.16s,
-    background 0.16s,
-    box-shadow 0.16s;
 }
 .select-trigger > span:first-child {
   min-width: 0;
@@ -159,21 +154,6 @@ svg {
 }
 .select-trigger .placeholder {
   color: var(--muted);
-}
-.select-trigger:hover:not(:disabled) {
-  border-color: var(--border-strong);
-  background: var(--surface-solid);
-}
-.select-trigger:focus-visible {
-  outline: none;
-}
-.select-control:focus-within .select-trigger,
-.select-control.open .select-trigger {
-  border-color: var(--focus);
-  box-shadow:
-    0 0 0 2px rgba(87, 174, 144, 0.48),
-    0 0 0 4px rgba(175, 116, 207, 0.22),
-    0 6px 18px rgba(48, 87, 72, 0.1);
 }
 .select-chevron {
   color: var(--text-secondary);
@@ -473,7 +453,7 @@ input {
   border-color: var(--border-strong);
 }
 .type-setting .type-alias-input:focus {
-  border-color: var(--green);
+  border-color: var(--focus);
 }
 .unified-types {
   margin-top: 18px;
@@ -1005,20 +985,9 @@ input {
   height: var(--workflow-control-height, 34px);
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-border);
   border-radius: 11px;
   background: var(--input-bg);
-  box-shadow: 0 3px 10px rgba(46, 70, 60, 0.06);
-  transition:
-    border-color 0.16s,
-    box-shadow 0.16s;
-}
-.workflow-stepped-number:has(> input:focus-visible) {
-  border-color: var(--focus);
-  box-shadow:
-    0 0 0 2px rgba(87, 174, 144, 0.48),
-    0 0 0 4px rgba(175, 116, 207, 0.22),
-    0 6px 18px rgba(48, 87, 72, 0.1);
 }
 .workflow-scroll .workflow-stepped-number > input,
 .workflow-scroll .workflow-stepped-number > input:focus-visible {
@@ -1027,6 +996,7 @@ input {
   height: 100%;
   border: 0;
   border-radius: 0;
+  outline: none;
   background: transparent;
   box-shadow: none;
   appearance: textfield;
@@ -2194,10 +2164,6 @@ input {
   color: var(--text);
   font: inherit;
 }
-.token-input-row input:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
 .token-form .hint {
   margin-top: 10px;
 }
@@ -2695,40 +2661,6 @@ input {
 }
 .workflow-acknowledge[aria-pressed="true"]:hover:not(:disabled) {
   background: var(--surface-selected-hover);
-}
-
-input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]),
-textarea {
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--input-bg);
-  color: var(--text);
-  box-shadow: 0 3px 10px rgba(46, 70, 60, 0.06);
-  transition:
-    border-color 0.16s,
-    background 0.16s,
-    box-shadow 0.16s;
-}
-input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]):focus-visible,
-textarea:focus-visible {
-  outline: none;
-  border-color: var(--focus);
-  box-shadow:
-    0 0 0 2px rgba(87, 174, 144, 0.48),
-    0 0 0 4px rgba(175, 116, 207, 0.22),
-    0 6px 18px rgba(48, 87, 72, 0.1);
-}
-.search input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]) {
-  border: 0;
-  border-radius: 0;
-  background: none;
-  color: var(--text);
-  box-shadow: none;
-  transition: none;
-}
-.search input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]):focus-visible {
-  outline: none;
-  box-shadow: none;
 }
 
 /* 清单模式：同一窗口的紧凑显示，只保留清单与详情。 */

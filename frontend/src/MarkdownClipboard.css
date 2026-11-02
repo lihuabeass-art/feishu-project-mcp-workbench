@@ -9,7 +9,7 @@
   min-width: 0;
   min-height: 160px;
   padding: 10px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
   color: var(--text);
   background: var(--input-bg);
@@ -19,10 +19,6 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   cursor: text;
-}
-.markdown-clipboard-editor:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
 }
 .markdown-clipboard-editor[aria-disabled="true"] {
   opacity: 0.6;
@@ -53,7 +49,7 @@
   max-width: 100%;
   margin: 6px 2px;
   padding: 6px;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   border-radius: 6px;
   background: var(--surface-solid);
   vertical-align: text-bottom;
