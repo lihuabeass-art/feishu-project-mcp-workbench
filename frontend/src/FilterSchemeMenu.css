@@ -1,7 +1,7 @@
 .filter-scheme-control { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .filter-scheme-trigger { display: inline-flex; align-items: center; gap: 7px; min-width: 0; min-height: 30px; max-width: 260px; padding: 5px 6px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--button-secondary-text); font-size: 12px; line-height: 18px; box-shadow: none; }
-.filter-scheme-trigger:hover:not(:disabled), .filter-scheme-trigger[data-state="open"] { background: var(--button-secondary-hover-bg); color: var(--text); filter: none; }
-.filter-scheme-trigger:active:not(:disabled) { transform: none; background: var(--surface-selected); }
+.filter-scheme-trigger:hover:not(:disabled), .filter-scheme-trigger[data-state="open"] { background: transparent; color: var(--green); filter: none; }
+.filter-scheme-trigger:active:not(:disabled) { transform: none; background: transparent; }
 .filter-scheme-icon { color: var(--green); }
 .filter-scheme-icon-error { color: var(--warning-text); }
 .filterbar > .filter-scheme-control { position: relative; padding-right: 14px; margin-right: 2px; }
