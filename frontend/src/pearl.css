@@ -28,27 +28,33 @@
   --primary-hover: #286657;
   --on-primary: #fff;
   --button-primary-bg:
-    linear-gradient(160deg, #ffffffb8, transparent 58%),
-    linear-gradient(115deg, #c8e9e5, #d8d2f1 48%, #edcddd);
+    linear-gradient(115deg, #d4eeeb80, #e8e3f780 52%, #f6e4ee80),
+    var(--input-bg);
   --button-primary-hover-bg:
-    linear-gradient(160deg, #ffffffc7, transparent 58%),
-    linear-gradient(115deg, #bce5df, #cfc5ef 48%, #eac2d9);
-  --button-primary-text: #34435c;
-  --button-primary-border: #b3bbd4;
-  --button-primary-hover-border: #939fbe;
-  --button-primary-shadow: inset 0 1px 0 #ffffffde, 0 4px 12px #7979a921;
-  --button-primary-hover-shadow: inset 0 1px 0 #fff, 0 5px 16px #7979a930;
+    linear-gradient(115deg, #ccebe580, #dfd8f280 52%, #f2dce880),
+    var(--input-bg);
+  --button-primary-active-bg:
+    linear-gradient(115deg, #c4e3de99, #d7d0ea99 52%, #ead4e199),
+    var(--input-bg);
+  --button-primary-text: var(--heading);
+  --button-primary-border: #ced1e2;
+  --button-primary-hover-border: #bfc6db;
+  --button-primary-shadow: 0 2px 6px var(--pearl-shadow);
+  --button-primary-hover-shadow: 0 2px 8px var(--pearl-shadow);
   --button-secondary-bg:
-    linear-gradient(120deg, #dff5f12e, #e6e0fb40 55%, #f8e3ee38),
-    var(--glass-hover);
+    linear-gradient(115deg, #dff4f12e, #e8e4f62e 52%, #f7e7ef2e),
+    var(--input-bg);
   --button-secondary-hover-bg:
-    linear-gradient(120deg, #dcf2ed80, #e6def58c 55%, #f4deeb80),
-    var(--surface-solid);
-  --button-secondary-text: var(--heading);
-  --button-secondary-border: #cbd0e2;
+    linear-gradient(115deg, #d9eeeb50, #e8e0f550 52%, #f5e0ec50),
+    var(--input-bg);
+  --button-secondary-active-bg:
+    linear-gradient(115deg, #d2e7e370, #ded7ee70 52%, #ecdae770),
+    var(--input-bg);
+  --button-secondary-text: var(--text);
+  --button-secondary-border: var(--line);
   --button-secondary-hover-border: var(--border-strong);
-  --button-secondary-shadow: inset 0 1px 0 #ffffffcf, 0 2px 6px var(--pearl-shadow);
-  --button-secondary-hover-shadow: inset 0 1px 0 #fff, 0 3px 10px var(--pearl-shadow);
+  --button-secondary-shadow: 0 2px 6px var(--pearl-shadow);
+  --button-secondary-hover-shadow: 0 2px 8px var(--pearl-shadow);
   --switch-off: #959eaf;
   --pearl-cyan: #9ce9ed70;
   --pearl-violet: #c1b1f566;
@@ -95,25 +101,26 @@
   --primary-hover: #aae5d0;
   --on-primary: #162d29;
   --button-primary-bg:
-    linear-gradient(160deg, #dceaff24, transparent 58%),
-    linear-gradient(115deg, #34555a, #514b70 48%, #65485e);
+    linear-gradient(115deg, #609c982e, #9b86c42e 52%, #bc8cab2e),
+    var(--input-bg);
   --button-primary-hover-bg:
-    linear-gradient(160deg, #dceaff30, transparent 58%),
-    linear-gradient(115deg, #3e6568, #605884 48%, #785570);
-  --button-primary-text: #f0f3ff;
-  --button-primary-border: #7d89ab;
-  --button-primary-hover-border: #a3b2d5;
-  --button-primary-shadow: inset 0 1px 0 #c5d3f53b, 0 4px 14px #070b1c40;
-  --button-primary-hover-shadow: inset 0 1px 0 #d6e4ff57, 0 5px 18px #070b1c59;
+    linear-gradient(115deg, #609c9840, #9b86c440 52%, #bc8cab40),
+    var(--input-bg);
+  --button-primary-active-bg:
+    linear-gradient(115deg, #609c9824, #9b86c424 52%, #bc8cab24),
+    var(--input-bg);
+  --button-primary-border: #505a76;
+  --button-primary-hover-border: #65718e;
   --button-secondary-bg:
-    linear-gradient(120deg, #66afae12, #b2a0e81c 55%, #d394b917),
-    var(--surface-solid);
+    linear-gradient(115deg, #78b8b30a, #b2a0d60a 52%, #c99bb50a),
+    var(--input-bg);
   --button-secondary-hover-bg:
-    linear-gradient(120deg, #66afae24, #b2a0e82e 55%, #d394b924),
-    var(--surface-hover);
-  --button-secondary-border: #56617f;
-  --button-secondary-shadow: inset 0 1px 0 #b4c5ee24, 0 2px 6px var(--pearl-shadow);
-  --button-secondary-hover-shadow: inset 0 1px 0 #b4c5ee38, 0 3px 10px var(--pearl-shadow);
+    linear-gradient(115deg, #78b8b31c, #b2a0d61c 52%, #c99bb51c),
+    var(--input-bg);
+  --button-secondary-active-bg:
+    linear-gradient(115deg, #78b8b308, #b2a0d608 52%, #c99bb508),
+    var(--input-bg);
+  --button-secondary-hover-border: #59647f;
   --switch-off: #626e88;
   --pearl-cyan: #62c8d026;
   --pearl-violet: #9c84e833;
@@ -258,12 +265,29 @@
 }
 
 :root[data-appearance="pearl"] :is(.primary, .secondary) {
-  border-radius: 10px;
+  border-radius: 11px;
+  transition:
+    background 150ms ease, border-color 150ms ease, color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+/* 小按钮融入面板，按下时只收深表面，不额外叠加玻璃厚度。 */
+:root[data-appearance="pearl"] :is(.primary, .secondary):active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
+:root[data-appearance="pearl"] .primary:active:not(:disabled) {
+  background: var(--button-primary-active-bg);
+}
+
+:root[data-appearance="pearl"] .secondary:active:not(:disabled) {
+  background: var(--button-secondary-active-bg);
 }
 
 :root[data-appearance="pearl"] .icon-button:hover:not(:disabled) {
   background: var(--button-secondary-hover-bg);
-  box-shadow: inset 0 1px 0 var(--pearl-reflection);
+  box-shadow: var(--button-secondary-hover-shadow);
   filter: none;
 }
 
@@ -285,6 +309,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root[data-appearance="pearl"] :is(.primary, .secondary, .icon-button) {
+    transition: none;
+  }
   :root[data-appearance="pearl"] .overview::after {
     transition: none;
     background: none;

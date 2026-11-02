@@ -1336,7 +1336,7 @@ input {
   max-width: none;
   flex: 1 1 0;
 }
-.overview-actions .primary {
+.overview-actions :is(.primary, .secondary) {
   flex: 0 0 auto;
   height: 38px;
 }

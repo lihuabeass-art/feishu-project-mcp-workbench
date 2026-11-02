@@ -1558,7 +1558,7 @@ function Workspace() {
                     ]}
                   />
                   <button
-                    className="primary"
+                    className="secondary"
                     disabled={syncDisabled}
                     onClick={() => void run("sync")}
                   >
