@@ -20,6 +20,10 @@ impl TodoSource for Fake {
         tool: &str,
         args: &Map<String, Value>,
     ) -> Result<ToolResultPayload, BackendError> {
+        if tool == "list_todo" {
+            return Ok(ToolResultPayload::from_json(json!({"list":[{"project_key":"p",
+                "work_item_info":{"work_item_type_key":"story","work_item_id":"1"}}],"total":1})));
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
         if tool == "get_workitem_brief" {
             self.details.fetch_add(1, Ordering::SeqCst);
@@ -86,13 +90,66 @@ async fn detail_flights_merge_but_writes_and_generations_force_new_reads() {
     let slot = Arc::new(OnceCell::new());
     slot.set((Instant::now() - Duration::from_secs(2), a_detail(&id)))
         .unwrap();
-    remote.details.lock().unwrap().insert((id.clone(), 1), slot);
+    remote.details.lock().unwrap().insert((id.clone(), 1, None), slot);
     remote.detail(&id, 1, false).await.unwrap();
     assert_eq!(
         fake.details.load(Ordering::SeqCst),
         4,
         "过期的短时结果必须重读"
     );
+}
+
+#[tokio::test]
+async fn sync_and_foreground_merge_only_running_details_and_keep_fresh_reads_independent() {
+    let fake = Fake::default();
+    let remote = reader(fake.clone());
+    let id = id();
+    let (a, b) = tokio::join!(remote.sync_detail(&id, 0, None, &remote), remote.detail(&id, 0, false));
+    assert_eq!(a.unwrap().0.data, b.unwrap().data);
+    assert_eq!(fake.details.load(Ordering::SeqCst), 1);
+    remote.sync_detail(&id, 0, None, &remote).await.unwrap();
+    assert_eq!(fake.details.load(Ordering::SeqCst), 2, "新一轮完整检查不复用刚完成的快照");
+    let (a, b) = tokio::join!(remote.sync_detail(&id, 1, None, &remote), remote.detail(&id, 1, true));
+    a.unwrap(); b.unwrap();
+    assert_eq!(fake.details.load(Ordering::SeqCst), 4, "写后核验强制新读，不能加入在途检查");
+    let other = WorkItemId { project_key: Some("other".into()), ..id.clone() };
+    let (a, b) = tokio::join!(remote.sync_detail(&id, 2, None, &remote), remote.detail(&other, 2, false));
+    a.unwrap(); b.unwrap();
+    assert_eq!(fake.details.load(Ordering::SeqCst), 6, "复合身份和代次隔离");
+}
+
+#[tokio::test]
+async fn known_conflicting_versions_do_not_merge_through_an_unknown_foreground_slot() {
+    let fake = Fake::default();
+    let remote = reader(fake.clone());
+    let id = id();
+    let (foreground, v1, v2, repeated) = tokio::join!(
+        remote.detail(&id, 0, false), remote.sync_detail(&id, 0, Some("v1"), &remote),
+        remote.sync_detail(&id, 0, Some("v2"), &remote), remote.sync_detail(&id, 0, Some("v1"), &remote));
+    foreground.unwrap();
+    assert!(v1.unwrap().1, "后台复用前台在途任务时准确报告复用");
+    assert!(!v2.unwrap().1, "已知冲突版本必须新读");
+    assert!(repeated.unwrap().1);
+    assert_eq!(fake.details.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn background_reuse_of_foreground_detail_is_counted_as_a_hit_without_an_extra_request() {
+    let fake = Fake::default();
+    let remote = reader(fake.clone());
+    let store = crate::Store::in_memory().unwrap();
+    let source = crate::model::source::WorkSource { id: "a".into(), enabled: true,
+        kind: crate::model::source::SourceKind::PersonalTodo, todo: None, association_rule: None };
+    let reader = crate::source_query::SourceReader::new(&remote, &source, &store, None, 2).with_remote(&remote);
+    let id = id();
+    let args = json!({"page_num":1});
+    let (foreground, sync) = tokio::join!(remote.detail(&id, 0, false), reader.call_list_todo(args.as_object().unwrap()));
+    foreground.unwrap(); sync.unwrap();
+    assert_eq!(fake.details.load(Ordering::SeqCst), 1);
+    let metrics = reader.sync_performance();
+    assert_eq!(metrics.detail_cache_hits, 1);
+    assert_eq!(metrics.detail_items_fetched, 0);
+    assert!(!metrics.requests.contains_key("get_workitem_brief"));
 }
 
 fn a_detail(id: &WorkItemId) -> ItemDetail {

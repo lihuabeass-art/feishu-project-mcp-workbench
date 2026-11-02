@@ -15,7 +15,7 @@ use fstodo_backend::model::domain::WorkItemId;
 use fstodo_backend::store::{CachedItem, CachedType, ItemFilter, RunTrigger, SyncRun, TypeScope};
 use fstodo_backend::workflow::{self, WorkflowOptions, WorkflowRequest, WorkflowResult};
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 
 #[derive(Serialize)]
 struct UiError {
@@ -122,6 +122,7 @@ struct Capabilities {
     type_order: bool,
     source_type_preferences: bool,
     incremental_sync: bool,
+    progressive_sync: bool,
     workspace_catalog: bool,
     creation: bool,
 }
@@ -210,6 +211,7 @@ async fn load_snapshot() -> Result<Snapshot, UiError> {
                 type_order: true,
                 source_type_preferences: true,
                 incremental_sync: true,
+                progressive_sync: true,
                 workspace_catalog: true,
                 creation: true,
             },
@@ -287,7 +289,7 @@ async fn set_work_source_enabled(source_id: String, enabled: bool) -> Result<(),
 }
 
 #[tauri::command]
-async fn sync_todos(source_id: String, automatic: Option<bool>, source_ids: Option<Vec<String>>) -> Result<serde_json::Value, UiError> {
+async fn sync_todos(window: tauri::WebviewWindow, source_id: String, automatic: Option<bool>, source_ids: Option<Vec<String>>, request_id: Option<String>) -> Result<serde_json::Value, UiError> {
     blocking(move || {
         let session = open_session()?;
         // UI 只能同步启用的来源，不利用显式 ID 绕过 enabled。
@@ -297,7 +299,16 @@ async fn sync_todos(source_id: String, automatic: Option<bool>, source_ids: Opti
         } else {
             RunTrigger::Manual
         };
-        if let Some(ids) = source_ids { return session.sync_sources(&ids, trigger); }
+        if let Some(ids) = source_ids {
+            let sequence = std::sync::atomic::AtomicU64::new(0);
+            return session.sync_sources_with_progress(&ids, trigger, |mut event| {
+                if let Some(request_id) = &request_id {
+                    event["request_id"] = serde_json::json!(request_id);
+                    event["sequence"] = serde_json::json!(sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1);
+                    let _ = window.emit("sync-progress", event);
+                }
+            });
+        }
         let report = if source_id=="*" {session.sync_enabled_sources(trigger)}else{session.sync_personal_todos(Some(&source_id), trigger)}?;
         Ok(serde_json::to_value(report)?)
     })

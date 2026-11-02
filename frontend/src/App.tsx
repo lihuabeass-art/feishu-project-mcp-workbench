@@ -340,6 +340,13 @@ function Workspace() {
   const workflowAttempt = useRef(0);
   const snapshotRequest = useRef(0);
   const syncPatchRevision = useRef(0);
+  const syncProgressAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => { syncProgressAbort.current?.abort(); }, []);
+  const syncConfiguration = (snapshot: Snapshot) => JSON.stringify([
+    snapshot.config_path, snapshot.db_path, snapshot.settings?.endpoint,
+    credentialRevision,
+  ]);
+  const activeSyncConfiguration = useRef<string | null>(null);
   const typeNamesRevision = useRef(0);
   const typeOrderRevision = useRef(0);
   const [credentialRevision, setCredentialRevision] = useState(0);
@@ -356,6 +363,10 @@ function Workspace() {
   const searchRef = useRef<HTMLInputElement>(null);
   const autoRunRef = useRef<() => void>(() => {});
   const activeSyncIds = useRef<string[]>([]);
+  useEffect(() => {
+    if (syncProgressAbort.current && data && activeSyncConfiguration.current !== syncConfiguration(data))
+      syncProgressAbort.current.abort();
+  }, [data, credentialRevision]);
   const pendingManual = useRef(new Set<string>());
   const manualSync = useRef<ManualSync | null>(null);
   const incremental = !!data?.capabilities?.incremental_sync;
@@ -754,34 +765,46 @@ function Workspace() {
     let failure: AppError | null = null;
     let successText = "";
     let patched = false;
+    let finalPatchReceived = false;
     let checksReceived = false;
     let cacheReadFailure: AppError | null = null;
     const outcomes = new Map<string, AppError | null>();
+    const progressAbort = new AbortController();
+    if (workflowInFlightAtStart) progressAbort.abort();
+    const patchContext = data && syncConfiguration(data);
+    if (action === "sync") activeSyncConfiguration.current = patchContext || null;
+    if (action === "sync") syncProgressAbort.current = progressAbort;
+    const applyPatch = (report: Pick<import("./types").SyncReport, "patch" | "total" | "runs" | "last_success">) => {
+      if (progressAbort.signal.aborted || !report.patch) return;
+      patched = true;
+      ++syncPatchRevision.current;
+      const patch = report.patch;
+      const key = (id: CachedItem["id"]) => JSON.stringify([id.project_key, id.work_item_type_key, id.work_item_id]);
+      setData((current) => {
+        if (!current || syncConfiguration(current) !== patchContext) return current;
+        const removed = new Set(patch.removed.map(key));
+        const changes = new Map([...patch.added, ...patch.modified].map((item) => [key(item.id), item]));
+        const items = patch.added.length || patch.modified.length || patch.removed.length
+          ? current.items.filter((item) => !removed.has(key(item.id))).map((item) => {
+              const next = changes.get(key(item.id));
+              changes.delete(key(item.id));
+              return next || item;
+            }).concat([...changes.values()]) : current.items;
+        return { ...current, items, total: report.total ?? items.length,
+          runs: report.runs ?? current.runs,
+          last_success: report.last_success === undefined ? current.last_success : report.last_success };
+      });
+    };
     try {
       if (action === "sync") {
         const report = incremental
-          ? await syncTodos("*", automatic, ids)
+          ? data?.capabilities?.progressive_sync && !workflowInFlightAtStart
+            ? await syncTodos("*", automatic, ids, { receive: applyPatch, signal: progressAbort.signal })
+            : await syncTodos("*", automatic, ids)
           : await syncTodos(sourceId, automatic);
         if (report.patch) {
-          patched = true;
-          ++syncPatchRevision.current;
-          const patch = report.patch;
-          const key = (id: CachedItem["id"]) => JSON.stringify([id.project_key, id.work_item_type_key, id.work_item_id]);
-          setData((current) => {
-            if (!current) return current;
-            const removed = new Set(patch.removed.map(key));
-            const changes = new Map([...patch.added, ...patch.modified].map((item) => [key(item.id), item]));
-            const items = patch.added.length || patch.modified.length || patch.removed.length
-              ? current.items.filter((item) => !removed.has(key(item.id))).map((item) => {
-                  const next = changes.get(key(item.id));
-                  changes.delete(key(item.id));
-                  return next || item;
-                }).concat([...changes.values()])
-              : current.items;
-            return { ...current, items, total: report.total ?? items.length,
-              runs: report.runs ?? current.runs,
-              last_success: report.last_success === undefined ? current.last_success : report.last_success };
-          });
+          finalPatchReceived = !progressAbort.signal.aborted;
+          applyPatch(report);
         }
         if (report.checks) {
           checksReceived = true;
@@ -798,9 +821,9 @@ function Workspace() {
           report.complete &&
           !report.items_rejected;
         if (success) {
-          const added = report.patch?.added.length ?? report.items_inserted;
-          const updated = report.patch?.updated_count ?? report.patch?.modified.length ?? report.items_updated;
-          const removed = report.patch?.removed.length ?? 0;
+          const added = report.changes?.added ?? report.patch?.added.length ?? report.items_inserted;
+          const updated = report.changes?.updated ?? report.patch?.updated_count ?? report.patch?.modified.length ?? report.items_updated;
+          const removed = report.changes?.removed ?? report.patch?.removed.length ?? 0;
           successText = added || updated || removed
             ? `同步完成，新增 ${added} 条、更新 ${updated} 条${removed ? `、移出 ${removed} 条` : ""}。`
             : "检查完成，数据无变化。";
@@ -822,12 +845,14 @@ function Workspace() {
     } finally {
       // 同步中途失败也可能已落库部分页，必须回读缓存和失败台账。
       try {
-        if (!patched) await reload();
+        if (!finalPatchReceived) await reload();
       } catch (e) {
         if (action === "sync") cacheReadFailure = asError(e);
         else setError((previous) => previous || asError(e));
       }
       if (action === "sync") {
+        progressAbort.abort();
+        if (syncProgressAbort.current === progressAbort) syncProgressAbort.current = null;
         if (!pendingManual.current.size) {
           // 全量回读已触发目录读取；增量路径在整轮手动刷新结束后补一次。
           if (patched && refreshCatalogAfterSync.current) setCatalogEpoch((value) => value + 1);
@@ -912,6 +937,9 @@ function Workspace() {
 
   async function submitWorkflow(request: WorkflowRequest) {
     if (workspaceActionBlocked("workflow", currentActivity()) || !desktop) throw { kind: "conflict", message: "当前有其他操作正在执行或桌面连接不可用，本次尚未发送，请稍后重新检查。" };
+    // 流程可能与完整检查并行。写入开始后停止本轮快照补丁，整轮结束
+    // 再回读当前缓存，防止写前已发出的批次覆盖写后核验的清单。
+    syncProgressAbort.current?.abort();
     workflowRef.current = true;
     workflowAttempt.current += 1;
     setWorkflowBusy(true);

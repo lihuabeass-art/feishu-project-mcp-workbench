@@ -693,12 +693,30 @@ impl Store {
     ///
     /// 每页一个事务；页与页之间不加全局事务，理由见模块头。
     pub fn upsert_items(&self, run_id: i64, items: &[WorkItem], now_ms: i64) -> Result<UpsertStats, BackendError> {
+        self.upsert_items_observed(run_id, items, now_ms, None)
+    }
+
+    /// 摘要与其完整详情必须来自同一写入代次；检查和保存共用事务，避免批次等待期间的旧结果回写。
+    pub(crate) fn upsert_items_observed(&self, run_id: i64, items: &[WorkItem], now_ms: i64,
+        generations: Option<&std::collections::HashMap<(String, String, String), i64>>,
+    ) -> Result<UpsertStats, BackendError> {
         let mut stats = UpsertStats::default();
         if items.is_empty() {
             return Ok(stats);
         }
         let conn = self.conn.lock().expect("store mutex poisoned");
         let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+
+        if let Some(generations) = generations {
+            for item in items {
+                let (p, t, i) = item.id.key_tuple();
+                if let Some(expected) = generations.get(&(p.clone(), t.clone(), i.clone())) {
+                    let current: i64 = tx.query_row("SELECT refresh_generation FROM item_detail WHERE project_key=?1 AND type_key=?2 AND item_id=?3",
+                        params![p,t,i], |row| row.get(0)).optional()?.unwrap_or(0);
+                    if current != *expected { return Err(BackendError::conflict("摘要等待保存期间发生了流程写入，请重新检查")); }
+                }
+            }
+        }
 
         let (source_id, personal): (Option<String>, bool) = tx.query_row(
             "SELECT source_id, action IN ('todo','done','overdue','this_week') FROM sync_run WHERE id=?1",

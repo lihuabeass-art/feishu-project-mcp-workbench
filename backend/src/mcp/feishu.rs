@@ -342,8 +342,10 @@ impl TodoSource for FeishuMcp {
                     return Err(error);
                 }
             };
-            let permit = tokio::time::timeout_at(deadline, self.scheduler.acquire())
-                .await
+            let schedule_started = std::time::Instant::now();
+            let permit = tokio::time::timeout_at(deadline, self.scheduler.acquire()).await;
+            crate::sync_metrics::request_segments(crate::sync_metrics::elapsed_ms(schedule_started), 0);
+            let permit = permit
                 .map_err(|_| BackendError::Connection {
                     endpoint: self.endpoint.clone(),
                     detail: format!("{tool} 等待请求调度超时"),
@@ -358,7 +360,7 @@ impl TodoSource for FeishuMcp {
             let owned_tool = tool.to_owned();
             let arguments = arguments.clone();
             // 调用方取消后，已发请求仍由独立任务持有名额，直到响应或有界超时清理完成。
-            let (result, throttle) = crate::diagnostics::spawn(async move {
+            let (result, throttle, execution_ms) = crate::diagnostics::spawn(async move {
                 let tool = owned_tool.as_str();
                 let started = std::time::Instant::now();
                 crate::diagnostics::tool_started();
@@ -417,10 +419,11 @@ impl TodoSource for FeishuMcp {
                     ),
                     false,
                 );
-                (result, throttle)
+                (result, throttle, crate::sync_metrics::elapsed_ms(started))
             })
             .await
             .map_err(|_| BackendError::config("MCP 请求任务意外结束"))?;
+            crate::sync_metrics::request_segments(0, execution_ms);
             if throttle.is_some()
                 && retryable_read(tool)
                 && retries < 2

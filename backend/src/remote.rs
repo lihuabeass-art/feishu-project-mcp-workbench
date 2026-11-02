@@ -58,7 +58,7 @@ type MetadataSlot = Arc<OnceCell<(Instant, Vec<Value>)>>;
 pub(crate) struct Remote {
     key: ContextKey,
     client: Box<dyn TodoSource>,
-    details: Mutex<HashMap<(WorkItemId, i64), DetailSlot>>,
+    details: Mutex<HashMap<(WorkItemId, i64, Option<String>), DetailSlot>>,
     metadata: Mutex<HashMap<(String, String, &'static str), MetadataSlot>>,
 }
 
@@ -123,6 +123,15 @@ impl Remote {
         generation: i64,
         fresh: bool,
     ) -> Result<ItemDetail, BackendError> {
+        self.detail_with_policy(id, generation, fresh, true, None, None).await.map(|(detail, _)| detail)
+    }
+
+    /// 完整检查只复用在途读取，不将上一次已完成快照变成新的检查证据。
+    pub(crate) async fn sync_detail(&self, id: &WorkItemId, generation: i64, version: Option<&str>, measured: &dyn TodoSource) -> Result<(ItemDetail, bool), BackendError> {
+        self.detail_with_policy(id, generation, false, false, version, Some(measured)).await
+    }
+
+    async fn detail_with_policy(&self, id: &WorkItemId, generation: i64, fresh: bool, reuse_completed: bool, version: Option<&str>, measured: Option<&dyn TodoSource>) -> Result<(ItemDetail, bool), BackendError> {
         if fresh {
             let detail = crate::detail::fetch(self, id, self.key.max_pages).await?;
             let slot = Arc::new(OnceCell::new());
@@ -130,8 +139,8 @@ impl Remote {
             self.details
                 .lock()
                 .unwrap()
-                .insert((id.clone(), generation), slot);
-            return Ok(detail);
+                .insert((id.clone(), generation, None), slot);
+            return Ok((detail, false));
         }
         let started = Instant::now();
         let slot = {
@@ -145,13 +154,31 @@ impl Remote {
             if slots.len() >= 128 {
                 slots.retain(|_, cell| cell.get().is_none());
             }
-            slots.entry((id.clone(), generation)).or_default().clone()
+            let existing = slots.iter().filter(|((item, epoch, observed), slot)| {
+                item == id && *epoch == generation
+                    && (version.is_none() || observed.is_none() || observed.as_deref() == version)
+                    && (reuse_completed || slot.get().is_none())
+            }).max_by_key(|(_, slot)| (slot.get().is_none(), slot.get().map(|(at, _)| *at))).map(|(key, _)| key.clone());
+            let key = (id.clone(), generation, version.map(str::to_owned));
+            if let Some(existing) = existing {
+                let slot = slots.get(&existing).expect("existing detail slot").clone();
+                // 首个已知版本绑定未知在途读取，后续冲突版本不能再次通过未知槽合并。
+                if version.is_some() && existing.2.is_none() {
+                    slots.remove(&existing);
+                    slots.insert(key, slot.clone());
+                }
+                slot
+            } else {
+                let slot = Arc::new(OnceCell::new());
+                slots.insert(key, slot.clone());
+                slot
+            }
         };
         let mut fetched = false;
         let result = slot
             .get_or_try_init(|| async {
                 fetched = true;
-                let detail = crate::detail::fetch(self, id, self.key.max_pages).await?;
+                let detail = crate::detail::fetch(measured.unwrap_or(self), id, self.key.max_pages).await?;
                 Ok::<_, BackendError>((Instant::now(), detail))
             })
             .await;
@@ -161,7 +188,7 @@ impl Remote {
             result.as_ref().map_or_else(|e| e.kind().as_str(), |_| "ok"),
             !fetched,
         );
-        result.map(|(_, detail)| detail.clone())
+        result.map(|(_, detail)| (detail.clone(), !fetched))
     }
 
     pub(crate) async fn metadata(

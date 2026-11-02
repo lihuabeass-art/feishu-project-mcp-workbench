@@ -334,7 +334,11 @@ impl Permit {
                 });
                 timing.deviation = 0.75 * timing.deviation + 0.25 * (timing.mean - seconds).abs();
                 timing.mean = 0.875 * timing.mean + 0.125 * seconds;
-                state.latency = state.latency.mul_f64(0.875) + elapsed.mul_f64(0.125);
+                // 后台详情的发送间隔只受同类详情耗时影响，避免慢清单/元数据
+                // 查询把整批详情的等待一并拉长；窗口与退避仍跨类别共享。
+                if tool == "get_workitem_brief" {
+                    state.latency = state.latency.mul_f64(0.875) + elapsed.mul_f64(0.125);
+                }
                 state.backoff = Duration::from_secs(1);
                 if self.pressured {
                     state.successes += 1;

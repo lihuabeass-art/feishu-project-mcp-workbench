@@ -147,7 +147,7 @@ impl Session {
         trigger: RunTrigger,
         cache: std::sync::Arc<crate::source_query::DetailCache>,
     ) -> Result<SyncReport, BackendError> {
-        runtime()?.block_on(self.sync_source_async(source_id, trigger, cache))
+        runtime()?.block_on(self.sync_source_async(source_id, trigger, cache, None))
     }
 
     async fn sync_source_async(
@@ -155,6 +155,7 @@ impl Session {
         source_id: Option<&str>,
         trigger: RunTrigger,
         cache: std::sync::Arc<crate::source_query::DetailCache>,
+        progress: Option<&(dyn Fn() + Send + Sync)>,
     ) -> Result<SyncReport, BackendError> {
         // 来源 id 既用于「本轮是否可执行」的校验，也是类型范围的存储键。
         let source = self.config.select_todo_source(source_id)?.clone();
@@ -165,7 +166,7 @@ impl Session {
         let credential = self.credential()?;
         let mut client = self.client(&credential);
         let mut reader=crate::source_query::SourceReader::new(&client,&source,&self.store,scope.as_ref(),self.config.max_pages)
-            .with_cache(cache);
+            .with_cache(cache).with_remote(client.as_ref()).with_progress(progress).with_trigger(trigger);
         let report = crate::sync::sync_personal_todos(
             &mut reader,
             &self.store,
@@ -266,14 +267,45 @@ impl Session {
 
     /// 调度入口：一个来源失败继续检查其他来源，共用详情任务和请求预算。
     pub fn sync_sources(&self, ids: &[String], trigger: RunTrigger) -> Result<serde_json::Value, BackendError> {
+        self.sync_sources_with_progress(ids, trigger, |_| {})
+    }
+
+    pub fn sync_sources_with_progress(&self, ids: &[String], trigger: RunTrigger,
+        on_patch: impl Fn(Value) + Send + Sync,
+    ) -> Result<serde_json::Value, BackendError> {
         if ids.is_empty() { return Err(BackendError::validation("请选择至少一个已启用来源")); }
+        let started = std::time::Instant::now();
         let filter = ItemFilter { limit: Some(i64::MAX), ..Default::default() };
         let before = self.store.query_items(&filter)?;
+        let progress_state = std::sync::Mutex::new((before.clone(), None, 0usize,
+            std::collections::HashMap::<(String, String, String), WorkItemId>::new()));
+        let progress = || {
+            // 同批来源串行发布，序号与 snapshot 基线保持同一顺序。
+            let mut state = progress_state.lock().expect("sync progress poisoned");
+            let Ok(after) = self.store.query_items(&filter) else { return; };
+            let Ok(mut patch) = cache_patch(&state.0, &after) else { return; };
+            patch["removed"] = serde_json::json!([]);
+            if patch["added"].as_array().is_some_and(|rows| !rows.is_empty())
+                || patch["modified"].as_array().is_some_and(|rows| !rows.is_empty()) {
+                if state.1.is_none() {
+                    state.1 = Some(crate::sync_metrics::elapsed_ms(started));
+                    crate::diagnostics::record("sync_first_patch", started, "ok", false);
+                }
+                state.2 += 1;
+                for sent in patch["added"].as_array().unwrap().iter().chain(patch["modified"].as_array().unwrap()) {
+                    if let Ok(id) = serde_json::from_value::<WorkItemId>(sent["id"].clone()) {
+                        state.3.insert(id.key_tuple(), id);
+                    }
+                }
+                on_patch(serde_json::json!({"patch":patch,"total":after.len()}));
+                state.0 = after;
+            }
+        };
         let cache = std::sync::Arc::new(crate::source_query::DetailCache::default());
         let mut checks = Vec::new();
         let mut rejected = 0;
         let mut success = true;
-        for (id, result) in self.sync_source_batch(ids, trigger, cache)? {
+        for (id, result) in self.sync_source_batch(ids, trigger, cache, Some(&progress))? {
             match result {
                 Ok(report) => {
                     success &= report.is_success() && report.complete;
@@ -289,16 +321,22 @@ impl Session {
             }
         }
         let after = self.store.query_items(&filter)?;
-        let patch = cache_patch(&before, &after)?;
+        let business_patch = cache_patch(&before, &after)?;
         // 聚合计数以最终业务差异为准，避免重叠来源的中间摘要覆盖制造修改数。
-        let inserted = patch["added"].as_array().unwrap().len();
-        let updated = patch["updated_count"].as_u64().unwrap() as usize;
+        let inserted = business_patch["added"].as_array().unwrap().len();
+        let updated = business_patch["updated_count"].as_u64().unwrap() as usize;
+        let removed = business_patch["removed"].as_array().unwrap().len();
+        crate::diagnostics::record("sync_round", started, if success { "ok" } else { "incomplete" }, false);
+        let progress_state = progress_state.lock().expect("sync progress poisoned");
+        let patch = final_cache_patch(&before, &after, &progress_state.3)?;
         Ok(serde_json::json!({
             "status":if success {"success"} else {"failed"}, "complete":success,
             "items_inserted":inserted,"items_updated":updated,"items_rejected":rejected,
             "items_upserted":inserted+updated,"stop_reason":if success {"total_reached"} else {"error"},
+            "changes":{"added":inserted,"updated":updated,"removed":removed},
             "checks":checks,"patch":patch,"total":after.len(),
-            "last_success":self.store.last_successful_sync()?,"runs":self.store.recent_runs(20)?
+            "last_success":self.store.last_successful_sync()?,"runs":self.store.recent_runs(20)?,
+            "performance":{"elapsed_ms":crate::sync_metrics::elapsed_ms(started),"first_patch_ms":progress_state.1,"patch_batches":progress_state.2}
         }))
     }
 
@@ -310,7 +348,7 @@ impl Session {
         let mut primary_error:Option<BackendError>=None;
         let mut succeeded=0;
         let cache=std::sync::Arc::new(crate::source_query::DetailCache::default());
-        for (id, result) in self.sync_source_batch(&ids, trigger, cache)? {
+        for (id, result) in self.sync_source_batch(&ids, trigger, cache, None)? {
             let report=match result{Ok(r)=>r,Err(e)=>{
                 errors.push(format!("{id}: {e}"));
                 if primary_error.is_none() || matches!(e.kind(),crate::error::ErrorKind::Auth|crate::error::ErrorKind::Credential|crate::error::ErrorKind::Config|crate::error::ErrorKind::Validation){primary_error=Some(e);}
@@ -344,12 +382,13 @@ impl Session {
 
     fn sync_source_batch(&self, ids: &[String], trigger: RunTrigger,
         cache: std::sync::Arc<crate::source_query::DetailCache>,
+        progress: Option<&(dyn Fn() + Send + Sync)>,
     ) -> Result<Vec<(String, Result<SyncReport, BackendError>)>, BackendError> {
         Ok(runtime()?.block_on(collect_source_checks(ids, |id| {
             let cache = cache.clone();
             async move {
                 let result = if self.config.sources.iter().any(|s| s.id == id && s.enabled) {
-                    self.sync_source_async(Some(&id), trigger, cache).await
+                    self.sync_source_async(Some(&id), trigger, cache, progress).await
                 } else { Err(BackendError::validation("来源不存在或已停用")) };
                 result
             }
@@ -621,6 +660,34 @@ fn cache_patch(before: &[CachedItem], after: &[CachedItem]) -> Result<Value, Bac
     Ok(serde_json::json!({"added":added,"modified":modified,"removed":removed,"updated_count":updated_count}))
 }
 
+/// 最终响应重放所有曾发布身份的当前值，即使中间事件丢失或事项变更后还原也能收敛。
+/// 业务计数始终独立使用整轮 before→after，不能从本函数的传输条数推断。
+fn final_cache_patch(before: &[CachedItem], after: &[CachedItem],
+    published: &std::collections::HashMap<(String, String, String), WorkItemId>,
+) -> Result<Value, BackendError> {
+    let mut patch = cache_patch(before, after)?;
+    let mut included = std::collections::HashSet::new();
+    for row in patch["added"].as_array().unwrap().iter().chain(patch["modified"].as_array().unwrap()) {
+        included.insert(serde_json::from_value::<WorkItemId>(row["id"].clone())?.key_tuple());
+    }
+    let current: std::collections::HashSet<_> = after.iter().map(|row| row.item.id.key_tuple()).collect();
+    for row in after.iter().filter(|row| published.contains_key(&row.item.id.key_tuple())) {
+        if included.insert(row.item.id.key_tuple()) {
+            patch["modified"].as_array_mut().unwrap().push(serde_json::to_value(row)?);
+        }
+    }
+    let mut removed = std::collections::HashSet::new();
+    for id in patch["removed"].as_array().unwrap() {
+        removed.insert(serde_json::from_value::<WorkItemId>(id.clone())?.key_tuple());
+    }
+    for (key, id) in published.iter().filter(|(key, _)| !current.contains(*key)) {
+        if removed.insert(key.clone()) {
+            patch["removed"].as_array_mut().unwrap().push(serde_json::to_value(id)?);
+        }
+    }
+    Ok(patch)
+}
+
 // 所有来源先参与调度，慢详情不占检查名额；实际请求由各阶段的共享预算限流。
 async fn collect_source_checks<F, Fut>(ids: &[String], mut check: F)
     -> Vec<(String, Result<SyncReport, BackendError>)>
@@ -800,6 +867,42 @@ mod sync_schedule_tests;
 #[cfg(test)]
 mod incremental_api_tests {
     use super::*;
+    #[test]
+    fn final_patch_reconciles_reverted_values_temporary_items_and_missed_batches_without_counting_them() {
+        let store = Store::in_memory().unwrap();
+        let raw = serde_json::json!({"project_key":"p","work_item_info":{
+            "work_item_id":"1","work_item_type_key":"story","work_item_name":"初始X"}});
+        let item = crate::model::domain::to_work_item(&crate::model::raw::RawTodoRecord {
+            item: serde_json::from_value(raw.clone()).unwrap(), raw }).unwrap();
+        let run = store.begin_run("todo", None, RunTrigger::Manual, Some("a"), 1).unwrap();
+        store.upsert_items(run, &[item], 1).unwrap();
+        let before = store.query_items(&ItemFilter::default()).unwrap();
+        let original = before[0].clone();
+        let mut intermediate = original.clone();
+        intermediate.item.name = Some("中间Y".into());
+        let mut temporary = intermediate.clone();
+        temporary.item.id.work_item_id = "temporary".into();
+        let published = [intermediate.clone(), temporary.clone()].into_iter()
+            .map(|row| (row.item.id.key_tuple(), row.item.id)).collect();
+        let patch = final_cache_patch(&before, &before, &published).unwrap();
+        assert_eq!(patch["modified"], serde_json::json!([original]));
+        assert_eq!(patch["removed"], serde_json::json!([temporary.item.id]));
+        assert_eq!(patch["updated_count"], 0, "还原与临时新增后删除均不是整轮业务变化");
+        assert_eq!(patch["added"], serde_json::json!([]));
+        for received in [vec![], vec![intermediate.clone()], vec![intermediate, temporary]] {
+            let mut visible: std::collections::HashMap<_, _> = before.iter().cloned()
+                .chain(received).map(|row| (row.item.id.key_tuple(), serde_json::to_value(row).unwrap())).collect();
+            for row in patch["added"].as_array().unwrap().iter().chain(patch["modified"].as_array().unwrap()) {
+                let id: WorkItemId = serde_json::from_value(row["id"].clone()).unwrap();
+                visible.insert(id.key_tuple(), row.clone());
+            }
+            for id in patch["removed"].as_array().unwrap() {
+                visible.remove(&serde_json::from_value::<WorkItemId>(id.clone()).unwrap().key_tuple());
+            }
+            assert_eq!(visible.len(), 1);
+            assert_eq!(visible.values().next().unwrap()["name"], "初始X");
+        }
+    }
     #[test]
     fn overlapping_sources_keep_personal_nodes_and_repeated_batches_have_no_patch() {
         let store = Store::in_memory().unwrap();

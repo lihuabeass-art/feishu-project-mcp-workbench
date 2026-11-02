@@ -1,5 +1,5 @@
 //! 已验证的 MCP 查询适配：统一复用同步台账，但保留各工具自己的分页协议。
-use std::{collections::HashMap, sync::{Arc, Mutex}, time::Instant};
+use std::{collections::HashMap, sync::{Arc, Mutex, atomic::{AtomicI64, Ordering}}, time::Instant};
 
 use async_trait::async_trait;
 use futures_util::{stream, StreamExt, TryStreamExt};
@@ -63,6 +63,18 @@ enum EnrichedRow {
     ReloadPersonalPage,
 }
 
+struct RawPage {
+    rows: Vec<Value>,
+    total: Option<i64>,
+    versions: HashMap<ItemKey, crate::store::DetailCacheState>,
+}
+
+struct EarlySummaries {
+    items: Vec<crate::model::domain::WorkItem>,
+    stats: crate::store::UpsertStats,
+    last_flush: Instant,
+}
+
 pub struct SourceReader<'a> {
     pub client: &'a dyn TodoSource,
     pub source: &'a WorkSource,
@@ -72,6 +84,14 @@ pub struct SourceReader<'a> {
     state: Mutex<QueryState>,
     cache: Arc<DetailCache>,
     metrics: Metrics,
+    remote: Option<&'a crate::remote::Remote>,
+    progress: Option<&'a (dyn Fn() + Send + Sync)>,
+    run_id: AtomicI64,
+    early: Mutex<EarlySummaries>,
+    prefetched: Mutex<Option<(u32, Result<RawPage, BackendError>)>>,
+    received: Mutex<usize>,
+    detail_priority: crate::mcp::scheduler::Priority,
+    observations: Mutex<HashMap<ItemKey, i64>>,
 }
 
 impl<'a> SourceReader<'a> {
@@ -91,6 +111,14 @@ impl<'a> SourceReader<'a> {
             state: Mutex::new(QueryState::default()),
             cache: Arc::new(DetailCache::default()),
             metrics: Metrics::default(),
+            remote: None,
+            progress: None,
+            run_id: AtomicI64::new(0),
+            early: Mutex::new(EarlySummaries { items: Vec::new(), stats: Default::default(), last_flush: Instant::now() }),
+            prefetched: Mutex::new(None),
+            received: Mutex::new(0),
+            detail_priority: crate::mcp::scheduler::Priority::Background,
+            observations: Mutex::new(HashMap::new()),
         }
     }
 
@@ -99,8 +127,39 @@ impl<'a> SourceReader<'a> {
         self
     }
 
+    pub(crate) fn with_remote(mut self, remote: &'a crate::remote::Remote) -> Self { self.remote = Some(remote); self }
+    pub(crate) fn with_progress(mut self, progress: Option<&'a (dyn Fn() + Send + Sync)>) -> Self { self.progress = progress; self }
+    pub(crate) fn with_trigger(mut self, trigger: crate::store::RunTrigger) -> Self {
+        if trigger == crate::store::RunTrigger::Manual { self.detail_priority = crate::mcp::scheduler::Priority::Check; }
+        self
+    }
+
+    fn save_early(&self, row: &Value, flush: bool) -> Result<(), BackendError> {
+        let run_id = self.run_id.load(Ordering::Relaxed);
+        if run_id == 0 || self.progress.is_none() { return Ok(()); }
+        let mut early = self.early.lock().expect("early summaries poisoned");
+        if let Ok(item) = serde_json::from_value::<crate::model::raw::RawTodoItem>(row.clone()) {
+            let record = crate::model::raw::RawTodoRecord { item, raw: row.clone() };
+            if let Ok(item) = crate::model::domain::to_work_item(&record) { early.items.push(item); }
+        }
+        if !early.items.is_empty() && (flush || early.items.len() >= 8 || early.last_flush.elapsed().as_millis() >= 100) {
+            let started = Instant::now();
+            let observations = self.observations.lock().expect("summary observations poisoned");
+            let stats = self.store.upsert_items_observed(run_id, &early.items, crate::sync::now_ms(), Some(&observations))?;
+            drop(observations);
+            self.metrics.update(|p| p.summary_store_ms += elapsed_ms(started));
+            early.items.clear();
+            early.stats.inserted += stats.inserted;
+            early.stats.updated += stats.updated;
+            early.last_flush = Instant::now();
+            drop(early);
+            if let Some(progress) = self.progress { progress(); }
+        }
+        Ok(())
+    }
+
     fn measured(&self) -> MeteredSource<'_> {
-        MeteredSource { client: self.client, metrics: &self.metrics, priority: crate::mcp::scheduler::Priority::Background }
+        MeteredSource { client: self.client, metrics: &self.metrics, priority: self.detail_priority }
     }
 
     fn measured_check(&self) -> MeteredSource<'_> {
@@ -145,12 +204,15 @@ impl<'a> SourceReader<'a> {
             let mut fetched_remote = false;
             let detail = fresh.get_or_try_init(|| async {
                 fetched_remote = true;
-                let detail = detail::fetch(&self.measured(), &requested, self.max_pages).await?;
+                let (detail, reused) = match self.remote {
+                    Some(remote) => remote.sync_detail(&requested, generation, version.as_deref(), &self.measured()).await?,
+                    None => (detail::fetch(&self.measured(), &requested, self.max_pages).await?, false),
+                };
                 let started = Instant::now();
                 let saved = self.store.save_item_detail_observed(&detail, version.as_deref(), generation);
                 self.metrics.update(|p| p.detail_store_ms += elapsed_ms(started));
                 saved?;
-                self.metrics.update(|p| p.detail_items_fetched += 1);
+                self.metrics.update(|p| if reused { p.detail_cache_hits += 1; } else { p.detail_items_fetched += 1; });
                 Ok::<_, BackendError>(Arc::new(detail))
             }).await?;
             if !fetched_remote { self.metrics.update(|p| p.detail_cache_hits += 1); }
@@ -160,9 +222,16 @@ impl<'a> SourceReader<'a> {
         // 别名请求也可供后续使用正式 project_key 的来源复用。
         self.cache.entries.lock().expect("detail cache poisoned")
             .entry((detail.id.key_tuple(), version, generation)).or_insert_with(|| entry.clone());
-        Ok(EnrichedRow::Row(if matches!(self.source.kind, SourceKind::PersonalTodo) {
+        let summary = if matches!(self.source.kind, SourceKind::PersonalTodo) {
             detail::todo_summary(detail, row)
-        } else { detail::summary(detail, row) }))
+        } else { detail::summary(detail, row) };
+        self.observations.lock().expect("summary observations poisoned")
+            .entry(detail.id.key_tuple()).and_modify(|observed| {
+                // 一次来源扫描跨过写入，混合代次不能当作同一完整快照提交。
+                if *observed != generation { *observed = -1; }
+            }).or_insert(generation);
+        self.save_early(&summary, false)?;
+        Ok(EnrichedRow::Row(summary))
     }
 
     async fn personal_page(&self, args: &Map<String, Value>) -> Result<(Vec<Value>, Option<i64>), BackendError> {
@@ -295,6 +364,13 @@ impl<'a> SourceReader<'a> {
 
 #[async_trait]
 impl TodoSource for SourceReader<'_> {
+    fn begin_sync(&self, run_id: i64) { self.run_id.store(run_id, Ordering::Relaxed); }
+    fn drain_early_upserts(&self) -> crate::store::UpsertStats {
+        std::mem::take(&mut self.early.lock().expect("early summaries poisoned").stats)
+    }
+    fn summary_generations(&self) -> Option<HashMap<ItemKey, i64>> {
+        Some(self.observations.lock().expect("summary observations poisoned").clone())
+    }
     fn is_full_scan(&self) -> bool { true }
     fn sync_performance(&self) -> SyncPerformance { self.metrics.snapshot() }
     fn query_kind(&self) -> Option<&str> {
@@ -320,8 +396,74 @@ impl TodoSource for SourceReader<'_> {
         args: &Map<String, Value>,
     ) -> Result<ToolResultPayload, BackendError> {
         let page = args.get("page_num").and_then(Value::as_u64).unwrap_or(1) as u32;
-        let query_timer = self.metrics.phase(true);
-        let (mut rows, mut total) = match &self.source.kind {
+        let waiting = Instant::now();
+        let pending = self.prefetched.lock().expect("prefetch poisoned").take();
+        let raw = match pending {
+            Some((expected, result)) if expected == page => result?,
+            _ => self.query_page(args).await?,
+        };
+        self.metrics.update(|p| p.page_wait_ms += elapsed_ms(waiting));
+        let RawPage { mut rows, mut total, mut versions } = raw;
+        let received = { let mut received = self.received.lock().unwrap(); *received += rows.len(); *received };
+        let prefetch = page < self.max_pages && !rows.is_empty() && total.is_none_or(|total| received < total as usize);
+        let next_args = { let mut args = args.clone(); args.insert("page_num".into(), Value::from(page + 1)); args };
+        let field = self.store.source_version_field(self.source)?;
+        let enrich = async {
+            for recheck in 0..=2 {
+                let enriched: Result<Vec<EnrichedRow>, BackendError> = {
+                    let _details_timer = self.metrics.phase(false);
+                    stream::iter(rows).map(|row| self.enrich(row, &versions, field.as_deref()))
+                        .buffered(crate::mcp::scheduler::MAX_PENDING_READS).try_collect().await
+                };
+                // 即使本页后续失败，已完成的完整详情与小批摘要仍保留。
+                self.save_early(&Value::Null, true)?;
+                let enriched: Option<Vec<Value>> = enriched?.into_iter().map(|row| match row {
+                    EnrichedRow::Row(row) => Some(row),
+                    EnrichedRow::ReloadPersonalPage => None,
+                }).collect();
+                if let Some(enriched) = enriched {
+                    return Ok(ToolResultPayload::from_json(json!({"list":enriched,"total":total})));
+                }
+                if recheck == 2 { return Err(BackendError::conflict("个人待办读取期间流程持续变化，请重新检查")); }
+                let raw = self.query_page(args).await?;
+                rows = raw.rows; total = raw.total; versions = raw.versions;
+            }
+            unreachable!("个人待办重查次数已受限")
+        };
+        // 只保留下一页；分页游标按顺序推进，详情仍受共享调度窗口约束。
+        let next = async {
+            if prefetch { Some((page + 1, self.query_page(&next_args).await)) } else { None }
+        };
+        let enriched_done = tokio::sync::Notify::new();
+        let flush = async {
+            loop {
+                tokio::select! {
+                    _ = enriched_done.notified() => return Ok::<_, BackendError>(()),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)), if self.progress.is_some() => {
+                        self.save_early(&Value::Null, true)?;
+                    }
+                }
+            }
+        };
+        let (result, prefetched, flushed) = tokio::join!(
+            async { let result = enrich.await; enriched_done.notify_one(); (result, Instant::now()) },
+            async { let result = next.await; (result, Instant::now()) },
+            flush,
+        );
+        if prefetched.0.is_some() && prefetched.1 > result.1 {
+            self.metrics.update(|p| p.page_wait_ms += prefetched.1.duration_since(result.1).as_millis() as u64);
+        }
+        *self.prefetched.lock().expect("prefetch poisoned") = prefetched.0;
+        flushed?;
+        result.0
+    }
+}
+
+impl SourceReader<'_> {
+    async fn query_page(&self, args: &Map<String, Value>) -> Result<RawPage, BackendError> {
+        let page = args.get("page_num").and_then(Value::as_u64).unwrap_or(1) as u32;
+        let _query_timer = self.metrics.phase(true);
+        let (rows, total) = match &self.source.kind {
             SourceKind::PersonalTodo => self.personal_page(args).await?,
             SourceKind::WorkItemType {
                 project_key: Some(p),
@@ -372,32 +514,8 @@ impl TodoSource for SourceReader<'_> {
             }
             _ => return Err(BackendError::validation("来源缺少空间、类型或视图标识")),
         };
-        drop(query_timer);
-        let field = self.store.source_version_field(self.source)?;
-        for recheck in 0..=2 {
-            let enriched: Vec<EnrichedRow> = {
-                let _details_timer = self.metrics.phase(false);
-                // 先按页批量读小字段；未取详情的成员仍交给同步驱动核对归属。
-                let ids: Vec<_> = rows.iter().map(row_identity).collect();
-                let versions = self.store.detail_versions(&ids)?;
-                // 保留原始清单顺序；同项待办的不同本人节点仍逐条派生摘要。
-                stream::iter(rows).map(|row| self.enrich(row, &versions, field.as_deref()))
-                    .buffered(crate::mcp::scheduler::MAX_PENDING_READS).try_collect().await?
-            };
-            let enriched: Option<Vec<Value>> = enriched.into_iter().map(|row| match row {
-                EnrichedRow::Row(row) => Some(row),
-                EnrichedRow::ReloadPersonalPage => None,
-            }).collect();
-            if let Some(enriched) = enriched {
-                return Ok(ToolResultPayload::from_json(json!({"list":enriched,"total":total})));
-            }
-            if recheck == 2 {
-                return Err(BackendError::conflict("个人待办读取期间流程持续变化，请重新检查"));
-            }
-            let _query_timer = self.metrics.phase(true);
-            (rows, total) = self.personal_page(args).await?;
-        }
-        unreachable!("个人待办重查次数已受限")
+        let versions = self.store.detail_versions(&rows.iter().map(row_identity).collect::<Vec<_>>())?;
+        Ok(RawPage { rows, total, versions })
     }
 }
 
@@ -498,3 +616,7 @@ async fn validate_personnel(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "source_query_progress_tests.rs"]
+mod progress_tests;

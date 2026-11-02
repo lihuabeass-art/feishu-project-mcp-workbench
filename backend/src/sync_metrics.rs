@@ -12,6 +12,10 @@ pub struct RequestTiming {
     pub count: usize,
     /// 各次请求耗时之和；并发时可能超过整轮实际耗时。
     pub elapsed_ms: u64,
+    #[serde(default)]
+    pub schedule_wait_ms: u64,
+    #[serde(default)]
+    pub execution_ms: u64,
     pub failed: usize,
     pub cancelled: usize,
 }
@@ -26,6 +30,8 @@ pub struct SyncPerformance {
     pub details_ms: u64,
     pub detail_store_ms: u64,
     pub summary_store_ms: u64,
+    #[serde(default)]
+    pub page_wait_ms: u64,
     pub detail_items_fetched: usize,
     pub detail_cache_hits: usize,
     pub peak_in_flight: usize,
@@ -39,6 +45,7 @@ impl SyncPerformance {
         self.details_ms += other.details_ms;
         self.detail_store_ms += other.detail_store_ms;
         self.summary_store_ms += other.summary_store_ms;
+        self.page_wait_ms += other.page_wait_ms;
         self.detail_items_fetched += other.detail_items_fetched;
         self.detail_cache_hits += other.detail_cache_hits;
         self.peak_in_flight = self.peak_in_flight.max(other.peak_in_flight);
@@ -46,10 +53,24 @@ impl SyncPerformance {
             let total = self.requests.entry(tool.clone()).or_default();
             total.count += value.count;
             total.elapsed_ms += value.elapsed_ms;
+            total.schedule_wait_ms += value.schedule_wait_ms;
+            total.execution_ms += value.execution_ms;
             total.failed += value.failed;
             total.cancelled += value.cancelled;
         }
     }
+}
+
+#[derive(Default)]
+struct RequestSegments { schedule_wait_ms: u64, execution_ms: u64 }
+tokio::task_local! { static SEGMENTS: std::sync::Arc<Mutex<RequestSegments>>; }
+
+pub(crate) fn request_segments(wait_ms: u64, execution_ms: u64) {
+    let _ = SEGMENTS.try_with(|segments| {
+        let mut segments = segments.lock().expect("request metrics poisoned");
+        segments.schedule_wait_ms += wait_ms;
+        segments.execution_ms += execution_ms;
+    });
 }
 
 pub(crate) fn elapsed_ms(start: Instant) -> u64 {
@@ -133,7 +154,14 @@ impl TodoSource for MeteredSource<'_> {
     async fn close(&mut self) {} // 客户端生命周期由 Session 管理。
     async fn call_tool(&self, tool: &str, args: &Map<String, Value>) -> Result<ToolResultPayload, BackendError> {
         let mut timer = self.metrics.request(tool);
-        let result = crate::mcp::scheduler::with_priority(self.priority, self.client.call_tool(tool, args)).await;
+        let segments = std::sync::Arc::new(Mutex::new(RequestSegments::default()));
+        let result = SEGMENTS.scope(segments.clone(), crate::mcp::scheduler::with_priority(self.priority, self.client.call_tool(tool, args))).await;
+        let segments = segments.lock().expect("request metrics poisoned");
+        self.metrics.update(|p| {
+            let timing = p.requests.get_mut(tool).expect("request registered");
+            timing.schedule_wait_ms += segments.schedule_wait_ms;
+            timing.execution_ms += segments.execution_ms;
+        });
         timer.failed = Some(result.as_ref().map_or(true, |payload| payload.is_error));
         result
     }

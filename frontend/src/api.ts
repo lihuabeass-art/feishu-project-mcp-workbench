@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
   CachedItem,
   ConnectionInfo,
@@ -13,6 +14,7 @@ import type {
   ConnectionSettings,
   CatalogRefresh,
   SourceTypeScope,
+  SyncProgress,
 } from "./types";
 
 export const desktop = isTauri();
@@ -61,8 +63,28 @@ export const loadSnapshot = async () => {
   }
   return { ...snapshot, type_order: localOrder };
 };
-export const syncTodos = (sourceId: string, automatic = false, sourceIds?: string[]) =>
-  invoke<SyncReport>("sync_todos", { sourceId, automatic, ...(sourceIds ? { sourceIds } : {}) });
+export const syncTodos = async (sourceId: string, automatic = false, sourceIds?: string[],
+  progress?: { receive: (progress: SyncProgress) => void; signal: AbortSignal }) => {
+  if (!progress) return invoke<SyncReport>("sync_todos", { sourceId, automatic, ...(sourceIds ? { sourceIds } : {}) });
+  const requestId = crypto.randomUUID();
+  let active = true;
+  let sequence = 0;
+  const unlisten = await listen<SyncProgress>("sync-progress", ({ payload }) => {
+    if (!active || progress.signal.aborted || payload.request_id !== requestId || payload.sequence <= sequence) return;
+    sequence = payload.sequence;
+    progress.receive(payload);
+  });
+  const stop = () => { if (active) { active = false; unlisten(); } };
+  progress.signal.addEventListener("abort", stop, { once: true });
+  if (progress.signal.aborted) stop();
+  try {
+    if (progress.signal.aborted) throw new DOMException("同步监听已结束", "AbortError");
+    return await invoke<SyncReport>("sync_todos", { sourceId, automatic, sourceIds, requestId });
+  } finally {
+    progress.signal.removeEventListener("abort", stop);
+    stop();
+  }
+};
 export const refreshSourceTypes = (sourceId: string) =>
   invoke<{ discovered_count: number; failed: [string, string][]; failure_kinds?: string[]; type_scope?: SourceTypeScope }>(
     "refresh_source_types",

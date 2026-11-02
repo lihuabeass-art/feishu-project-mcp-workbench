@@ -308,9 +308,15 @@ async fn queued_old_peer_yields_its_slot_to_a_waiting_handshake() {
     client.describe_reusing().await.unwrap();
     client.scheduler.test_window(1);
     let held = client.scheduler.acquire().await;
+    let metrics = Arc::new(crate::sync_metrics::Metrics::default());
     let queued = tokio::spawn({
         let client = client.clone();
-        async move { client.call_tool("get_workitem_brief", &Map::new()).await }
+        let metrics = metrics.clone();
+        async move {
+            crate::sync_metrics::MeteredSource { client: &client, metrics: &metrics,
+                priority: crate::mcp::scheduler::Priority::Check }
+                .call_tool("get_workitem_brief", &Map::new()).await
+        }
     });
     tokio::time::timeout(Duration::from_secs(5), async {
         while client.scheduler.queued() < 1 {
@@ -319,6 +325,7 @@ async fn queued_old_peer_yields_its_slot_to_a_waiting_handshake() {
     })
     .await
     .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
     client.invalidate(None).await;
     let handshake = tokio::spawn({
         let client = client.clone();
@@ -339,5 +346,7 @@ async fn queued_old_peer_yields_its_slot_to_a_waiting_handshake() {
     .await
     .expect("单名额下旧调用应让出名额，不能与握手互等");
     assert_eq!(server.init.load(Ordering::SeqCst), 2);
+    assert!(metrics.snapshot().requests["get_workitem_brief"].schedule_wait_ms >= 150,
+        "旧会话排队已消耗的时间不能因未发送而丢失");
     client.close().await;
 }

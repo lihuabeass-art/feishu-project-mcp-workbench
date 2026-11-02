@@ -173,6 +173,7 @@ pub async fn sync_personal_todos(
     )?;
 
     store.set_run_scan_mode(run_id, source.is_full_scan())?;
+    source.begin_sync(run_id);
     let mut summary_store_ms = 0;
     let result = async {
     let mut pages_fetched = 0usize;
@@ -190,6 +191,9 @@ pub async fn sync_personal_todos(
             parse_todo_page(crate::mcp::feishu::TOOL_LIST_TODO, &payload)
         }
         .await;
+        let early = source.drain_early_upserts();
+        upserted.inserted += early.inserted;
+        upserted.updated += early.updated;
 
         let page = match outcome {
             Ok(page) => page,
@@ -245,7 +249,8 @@ pub async fn sync_personal_todos(
         seen_items.extend(items.iter().map(|item| item.id.key_tuple()));
 
         let store_started = Instant::now();
-        let saved = store.upsert_items(run_id, &items, now_ms());
+        let generations = source.summary_generations();
+        let saved = store.upsert_items_observed(run_id, &items, now_ms(), generations.as_ref());
         summary_store_ms += elapsed_ms(store_started);
         let stats = match saved {
             Ok(stats) => stats,
@@ -341,7 +346,7 @@ pub async fn sync_personal_todos(
     }.await;
     let mut performance = source.sync_performance();
     performance.elapsed_ms = elapsed_ms(clock);
-    performance.summary_store_ms = summary_store_ms;
+    performance.summary_store_ms += summary_store_ms;
     // 诊断失败不覆盖同步的业务结果，失败运行同样尽力保留统计。
     let _ = store.save_run_performance(run_id, &performance);
     result.map(|mut report: SyncReport| { report.performance = performance; report })

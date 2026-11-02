@@ -105,6 +105,7 @@ export interface Snapshot {
     workflow: boolean;
     source_queries?: boolean;
     incremental_sync?: boolean;
+    progressive_sync?: boolean;
     details?: boolean;
     type_order?: boolean;
     source_type_preferences?: boolean;
@@ -132,6 +133,7 @@ export interface ItemPatch {
   removed: CachedItem["id"][];
 }
 export interface SyncReport {
+  changes?: { added: number; updated: number; removed: number };
   patch?: ItemPatch;
   checks?: { source_id: string; report: SyncReport | null; error_kind: string | null; error_message: string | null }[];
   total?: number;
@@ -149,6 +151,12 @@ export interface SyncReport {
   trigger?: "manual" | "automatic";
   source_id?: string | null;
   items_out_of_scope?: number;
+}
+export interface SyncProgress {
+  request_id: string;
+  sequence: number;
+  patch: ItemPatch;
+  total: number;
 }
 export interface ConnectionInfo {
   session_established: boolean;

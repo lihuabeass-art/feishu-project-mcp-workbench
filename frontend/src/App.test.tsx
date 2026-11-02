@@ -100,6 +100,42 @@ function snapshot(): Snapshot {
   };
 }
 
+it.each([false, true])("完整检查期间先显示分批补丁，最终反馈仍只使用整轮结果（最终还原=%s）", async (reverted) => {
+  const data = snapshot();
+  data.capabilities = { workflow: false, source_queries: true, incremental_sync: true, progressive_sync: true };
+  vi.mocked(loadSnapshot).mockResolvedValue(data);
+  let receive!: (progress: import("./types").SyncProgress) => void;
+  let finish!: (report: import("./types").SyncReport) => void;
+  vi.mocked(syncTodos).mockImplementation((_id, _auto, _ids, progress) => {
+    receive = progress!.receive;
+    return new Promise((resolve) => { finish = resolve; });
+  });
+  render(<App />);
+  const user = userEvent.setup();
+  await screen.findByText("需求甲");
+  await user.click(await screen.findByRole("button", { name: "立即刷新" }));
+  await waitFor(() => expect(syncTodos).toHaveBeenCalledOnce());
+  const changed = { ...data.items[0], name: "先到达的完整需求", detail_revision: "fresh" };
+  const temporary = { ...changed, id: { ...changed.id, work_item_id: "temporary" }, name: "中途新增后移出的事项" };
+  await act(async () => receive({ request_id: "test", sequence: 1,
+    patch: { added: [temporary], modified: [changed], removed: [] }, total: 3 }));
+  expect(screen.getByText("先到达的完整需求")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "正在同步" })).toBeTruthy();
+  expect(screen.queryByText(/同步完成/)).toBeNull();
+  await act(async () => finish({ status: "success", complete: true, items_upserted: 1,
+    items_inserted: 0, items_updated: 1, items_rejected: 0, stop_reason: "total_reached",
+    changes: { added: 0, updated: reverted ? 0 : 1, removed: 0 },
+    patch: { added: [], modified: [reverted ? data.items[0] : changed], removed: [temporary.id], updated_count: reverted ? 0 : 1 }, total: 2 }));
+  expect(await screen.findByText(reverted ? "检查完成，数据无变化。" : "同步完成，新增 0 条、更新 1 条。")).toBeTruthy();
+  expect(screen.queryByText("中途新增后移出的事项")).toBeNull();
+  if (reverted) expect(screen.getByText("需求甲")).toBeTruthy();
+  const calls = vi.mocked(loadSnapshot).mock.calls.length;
+  await act(async () => receive({ request_id: "test", sequence: 2,
+    patch: { added: [], modified: [{ ...changed, name: "迟到的内容" }], removed: [] }, total: 2 }));
+  expect(screen.queryByText("迟到的内容")).toBeNull();
+  expect(vi.mocked(loadSnapshot).mock.calls.length).toBe(calls);
+});
+
 async function chooseOption(
   user: ReturnType<typeof userEvent.setup>,
   label: string,

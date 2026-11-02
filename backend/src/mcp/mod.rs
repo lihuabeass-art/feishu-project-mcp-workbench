@@ -94,6 +94,10 @@ pub trait TodoSource: Send + Sync {
     fn is_full_scan(&self) -> bool { false }
     /// 同步适配器的诊断快照；普通工具实现不需要维护这份统计。
     fn sync_performance(&self) -> crate::sync_metrics::SyncPerformance { Default::default() }
+    /// 同步适配器可在完整详情落库后提前保存小批摘要；普通来源仍按页保存。
+    fn begin_sync(&self, _run_id: i64) {}
+    fn drain_early_upserts(&self) -> crate::store::UpsertStats { Default::default() }
+    fn summary_generations(&self) -> Option<std::collections::HashMap<(String, String, String), i64>> { None }
     /// 建立/复用会话并回报服务端信息。
     async fn describe(&self) -> Result<ConnectionInfo, BackendError>;
 
