@@ -1831,6 +1831,7 @@ fn schema_is_current(conn: &Connection) -> Result<bool, BackendError> {
         ("source_version_evidence", &["scope"][..]),
         ("source_type_disabled", &[][..]), ("item_cache_gc", &[][..]),
         ("source_type_preferences", &["preferences_json"][..]),
+        ("filter_scheme_preferences", &["account_key", "document_json"][..]),
         ("creation_people", &["context", "project_key", "user_key", "name"][..]),
         ("creation_image", &["context", "project_key", "type_key", "field_key", "image_id", "mime_type", "file_name", "bytes", "uploaded_url", "uploaded_token"][..]),
     ] {

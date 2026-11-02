@@ -25,6 +25,34 @@ impl Store {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn current_version_missing_scheme_table_is_repaired_on_open_without_losing_preferences() {
+        let path = std::env::temp_dir().join(format!("fstodo-filter-upgrade-{}-{}.db", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        let preferences = std::collections::BTreeMap::from([("issue".into(), super::super::TypePreference {
+            enabled: true, alias: "缺陷".into(), create_enabled: true,
+        })]);
+        {
+            let store = Store::open(&path).unwrap();
+            store.set_source_type_preferences("personal", &preferences).unwrap();
+            store.conn.lock().unwrap().execute_batch("DROP TABLE filter_scheme_preferences;").unwrap();
+        }
+        let document = json!({"schemaVersion":1,"schemes":[{"id":"saved","name":"个人方案"}],"defaultId":"saved"});
+        for reopen in 0..2 {
+            let store = Store::open(&path).unwrap();
+            assert!(super::super::schema_is_current(&store.conn.lock().unwrap()).unwrap());
+            assert_eq!(store.conn.lock().unwrap().query_row::<i64, _, _>("PRAGMA user_version", [], |row| row.get(0)).unwrap(), super::super::SCHEMA_VERSION);
+            assert_eq!(store.source_type_preferences().unwrap().unwrap()["personal"], preferences);
+            assert_eq!(store.filter_schemes("feishu-project:other").unwrap(), None);
+            if reopen == 0 {
+                assert_eq!(store.filter_schemes("feishu-project:owner").unwrap(), None);
+                store.set_filter_schemes("feishu-project:owner", &document).unwrap();
+            }
+            assert_eq!(store.filter_schemes("feishu-project:owner").unwrap(), Some(document.clone()));
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn upgrade_reopen_preserves_all_schemes_and_default_and_account_isolation() {
         let path = std::env::temp_dir().join(format!("fstodo-filter-{}-{}.db", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
