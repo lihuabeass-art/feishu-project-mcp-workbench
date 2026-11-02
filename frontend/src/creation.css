@@ -19,6 +19,7 @@
 }
 .creation-header {
   display: flex;
+  flex-shrink: 0;
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
@@ -177,8 +178,6 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  max-height: 264px;
-  overflow-y: auto;
   padding: 3px;
   margin: -3px;
 }
@@ -314,6 +313,7 @@
 }
 .creation-footer {
   display: flex;
+  flex-shrink: 0;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;

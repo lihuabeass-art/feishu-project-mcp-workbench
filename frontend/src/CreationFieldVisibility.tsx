@@ -1,6 +1,5 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Link2, LockKeyhole, Plus, Search, SlidersHorizontal, UsersRound, X } from "lucide-react";
-import { useScrollIsolation } from "./useScrollIsolation";
 import { creationEmpty, creationTargetKey, type CreationField, type CreationForm } from "./creation";
 
 export const creationVisibilityKey = (form: CreationForm) =>
@@ -54,9 +53,23 @@ export function CreationFieldVisibility({ form, selected, values, disabled, onCh
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState<string>("all");
   const panelId = useId();
+  const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const choicesScrollRef = useScrollIsolation();
+  useLayoutEffect(() => {
+    if (!open) return;
+    const container = containerRef.current;
+    const content = container?.closest<HTMLElement>(".creation-content");
+    if (!container || !content) return;
+    const bounds = container.getBoundingClientRect();
+    const top = content.getBoundingClientRect().top + content.clientTop + 12;
+    const bottom = top + content.clientHeight - 24;
+    // 仅在展开时调整抽屉正文；过长时先露出入口和搜索，后续沿正文滚动。
+    const offset = bounds.height > bottom - top || bounds.top < top
+      ? bounds.top - top
+      : Math.max(0, bounds.bottom - bottom);
+    content.scrollTop += offset;
+  }, [open]);
   const optional = form.fields.filter((field) => !fixedCreationField(field));
   if (!optional.length) return null;
   const visible = visibleCreationFields(form, selected, values);
@@ -64,7 +77,7 @@ export function CreationFieldVisibility({ form, selected, values, disabled, onCh
     field.label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   const candidates = optional.filter(matches);
   const fixed = form.fields.filter((field) => fixedCreationField(field) && matches(field));
-  return <div className="creation-field-visibility">
+  return <div className="creation-field-visibility" ref={containerRef}>
     <button type="button" className="creation-field-toggle" ref={triggerRef}
       aria-label={`显示字段 · ${visible.length}/${form.fields.length}`} aria-expanded={open}
       aria-controls={panelId} disabled={disabled} onClick={() => setOpen(!open)}>
@@ -73,8 +86,8 @@ export function CreationFieldVisibility({ form, selected, values, disabled, onCh
       <span className="creation-field-count">{visible.length}<span> / {form.fields.length}</span></span>
       <ChevronDown size={16} className="creation-field-chevron" aria-hidden="true" />
     </button>
-    {open && <div id={panelId} className="creation-field-choices scroll-isolation-boundary"
-      ref={choicesScrollRef} role="region" aria-label="表单字段配置"
+    {open && <div id={panelId} className="creation-field-choices"
+      role="region" aria-label="表单字段配置"
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -95,7 +108,7 @@ export function CreationFieldVisibility({ form, selected, values, disabled, onCh
           .map((entry) => <button type="button" key={entry.key} aria-pressed={group === entry.key}
             disabled={disabled} onClick={() => setGroup(entry.key)}>{entry.label}</button>)}
       </div>
-      <div className="creation-field-cards scroll-isolation-boundary" role="group" aria-label="可选字段">
+      <div className="creation-field-cards" role="group" aria-label="可选字段">
         {candidates.map((field) => {
           const shown = visible.includes(field);
           const filled = !creationEmpty(values[field.key]);
