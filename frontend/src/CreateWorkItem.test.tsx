@@ -185,8 +185,7 @@ describe("通用创建表单", () => {
     render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
     await fill(user);
     await user.click(screen.getByRole("button", { name: /显示字段/ }));
-    await user.click(screen.getByRole("combobox", { name: "添加字段" }));
-    await user.click(screen.getByRole("option", { name: "可选开关" }));
+    await user.click(screen.getByRole("button", { name: "显示可选开关" }));
     const toggle = screen.getByRole("switch", { name: "可选开关" });
     expect(toggle.parentElement?.textContent).toContain("未填写");
     await user.click(toggle);
@@ -224,8 +223,7 @@ describe("通用创建表单", () => {
       original.call(this, key, value);
     });
     await user.click(screen.getByRole("button", { name: /显示字段/ }));
-    await user.click(screen.getByRole("combobox", { name: "添加字段" }));
-    await user.click(screen.getByRole("option", { name: "可选补充" }));
+    await user.click(screen.getByRole("button", { name: "显示可选补充" }));
     expect(screen.getByText("字段显示偏好未能保存，请重试。")).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "可选补充" })).toBeNull();
     expect(loadCreationVisibility(next)).toEqual([]);
@@ -253,13 +251,11 @@ describe("通用创建表单", () => {
     const mounted = render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
     await screen.findByRole("textbox", { name: "标题" });
     await user.click(screen.getByRole("button", { name: /显示字段/ }));
-    await user.click(screen.getByRole("combobox", { name: "添加字段" }));
-    await user.click(screen.getByRole("option", { name: "补充信息" }));
+    await user.click(screen.getByRole("button", { name: "显示补充信息" }));
     expect(screen.getByRole("textbox", { name: "补充信息" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "隐藏补充信息" }));
     expect(screen.queryByRole("textbox", { name: "补充信息" })).toBeNull();
-    await user.click(screen.getByRole("combobox", { name: "添加字段" }));
-    await user.click(screen.getByRole("option", { name: "补充信息" }));
+    await user.click(screen.getByRole("button", { name: "显示补充信息" }));
     mounted.unmount();
     // form.version 是远端配置指纹；存储键同样不包含应用版本，升级继续读取。
     const updated = { ...next, version: "new-config", target: { ...target, source_id: "another-source" } };
@@ -274,12 +270,81 @@ describe("通用创建表单", () => {
     expect(creationVisibilityKey(updated)).toBe(creationVisibilityKey(next));
   });
 
-  it("未启用的空布尔和文本不核对也不写入，草稿false和零值自动可见", async () => {
+  it("空人员与角色按需显示，已填写人员先清空才能隐藏，旧配置在升级后继续恢复", async () => {
+    const next = form();
+    next.fields.push(
+      { key: "watchers", label: "关注人", kind: "people", required: false, multiple: true, initial: null, options: [] },
+      { key: "role:pm", label: "项目经理", kind: "people", required: false, multiple: true, initial: null, options: [], role_id: "pm" },
+      { key: "optional", label: "补充信息", kind: "text", required: false, multiple: false, initial: null, options: [] },
+    );
+    // 沿用旧版数组格式及存储键，失效字段逐项忽略。
+    localStorage.setItem(creationVisibilityKey(next), JSON.stringify(["optional", "removed"]));
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const user = userEvent.setup();
+    const close = vi.fn();
+    const mounted = render(<CreateWorkItem locations={locations} close={close} created={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "标题" });
+    expect(screen.getByRole("textbox", { name: "补充信息" })).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "关注人" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "项目经理" })).toBeNull();
+    const trigger = screen.getByRole("button", { name: /显示字段/ });
+    await user.click(trigger);
+    await user.click(within(screen.getByRole("group", { name: "字段分类" })).getByRole("button", { name: "人员信息" }));
+    expect(within(screen.getByRole("group", { name: "固定显示的字段" })).getByText("报告人")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "隐藏报告人" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "显示关注人" }));
+    await user.click(screen.getByRole("button", { name: "显示项目经理" }));
+    await user.click(screen.getByRole("combobox", { name: "项目经理" }));
+    await user.click(await screen.findByRole("option", { name: "示例用户" }));
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "隐藏项目经理" })).toHaveProperty("disabled", true);
+    await user.click(screen.getByRole("button", { name: "清空项目经理" }));
+    await user.click(screen.getByRole("button", { name: "隐藏项目经理" }));
+    expect(screen.queryByRole("combobox", { name: "项目经理" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "显示项目经理" }));
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(trigger);
+    expect(close).not.toHaveBeenCalled();
+    mounted.unmount();
+
+    const updated = { ...next, version: "new-config", target: { ...target, source_id: "other-source" },
+      fields: next.fields.filter((field) => field.key !== "optional").map((field) =>
+        field.key === "role:pm" ? { ...field, label: "项目负责人" } : field) };
+    expect(loadCreationVisibility(updated)).toEqual(["watchers", "role:pm"]);
+    expect(loadCreationVisibility({ ...updated, context: "other-account" })).toEqual([]);
+    expect(loadCreationVisibility({ ...updated, target: { ...target, project_key: "other-space" } })).toEqual([]);
+    expect(loadCreationVisibility({ ...updated, target: { ...target, type_key: "other-type" } })).toEqual([]);
+    vi.mocked(getCreationForm).mockResolvedValue(updated);
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    expect(await screen.findByRole("combobox", { name: "关注人" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "项目负责人" })).toBeTruthy();
+    expect(creationVisibilityKey(updated)).toBe(creationVisibilityKey(next));
+  });
+
+  it("所有可选人员收起后仍说明角色必填规则与添加入口", async () => {
+    const next = form();
+    next.role_requirements_complete = false;
+    next.fields.find((field) => field.key === "reporter")!.required = false;
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "标题" });
+    expect(screen.queryByRole("region", { name: "人员信息" })).toBeNull();
+    expect(screen.getByText(/请在「显示字段 → 人员信息」/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /显示字段/ }));
+    await user.click(screen.getByRole("button", { name: "显示报告人" }));
+    expect(screen.getByRole("region", { name: "人员信息" })).toBeTruthy();
+    expect(screen.getByText(/请按该类型在飞书中的要求填写人员/)).toBeTruthy();
+  });
+
+  it("未启用的空布尔、文本和人员不核对也不写入，草稿false和零值自动可见", async () => {
     const next = form();
     next.fields.push(
       { key: "flag", label: "可选开关", kind: "bool", required: false, multiple: false, initial: null, options: [] },
       { key: "empty", label: "空补充", kind: "text", required: false, multiple: false, initial: null, options: [] },
       { key: "saved", label: "已存开关", kind: "bool", required: false, multiple: false, initial: null, options: [] },
+      { key: "watchers", label: "关注人", kind: "people", required: false, multiple: true, initial: null, options: [] },
+      { key: "role:pm", label: "项目经理", kind: "people", required: false, multiple: true, initial: null, options: [], role_id: "pm" },
     );
     localStorage.setItem(`fstodo.creation.v1:${next.context}:${creationTargetKey(next.target)}`, JSON.stringify({ values: { saved: false }, labels: {} }));
     vi.mocked(getCreationForm).mockResolvedValue(next);
@@ -298,6 +363,8 @@ describe("通用创建表单", () => {
     const fields = vi.mocked(createWorkItem).mock.calls[0][0].fields;
     expect(fields).not.toHaveProperty("flag");
     expect(fields).not.toHaveProperty("empty");
+    expect(fields).not.toHaveProperty("watchers");
+    expect(fields).not.toHaveProperty("role:pm");
     expect(fields.saved).toBe(false);
     expect(fields.zero).toBe(0);
   });
@@ -328,9 +395,10 @@ describe("通用创建表单", () => {
     expect(screen.queryByRole("textbox", { name: "反馈说明" })).toBeNull();
     await user.click(screen.getByRole("button", { name: /显示字段/ }));
     for (const label of ["反馈说明", "期望时间", "需求分类", "需求来源"]) {
-      await user.type(screen.getByRole("textbox", { name: "搜索可选字段" }), label);
-      await user.click(screen.getByRole("combobox", { name: "添加字段" }));
-      await user.click(screen.getByRole("option", { name: label }));
+      const search = screen.getByRole("textbox", { name: "搜索可选字段" });
+      await user.clear(search);
+      await user.type(search, label);
+      await user.click(screen.getByRole("button", { name: `显示${label}` }));
     }
     expect(screen.getByRole("combobox", { name: "需求流程" })).toBeTruthy();
     for (const [name, choice] of [["所属项目", "示例项目"], ["产品经理", "示例用户"]]) {
@@ -631,6 +699,10 @@ describe("通用创建表单", () => {
     expect(
       (await screen.findByRole("combobox", { name: "报告人" })).textContent,
     ).toContain("Token本人");
+    expect(screen.queryByRole("combobox", { name: "修复人" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /显示字段/ }));
+    await user.click(screen.getByRole("button", { name: "显示修复人" }));
+    await user.keyboard("{Escape}");
     expect(
       screen.getByRole("combobox", { name: "修复人" }).textContent,
     ).not.toContain("Token本人");

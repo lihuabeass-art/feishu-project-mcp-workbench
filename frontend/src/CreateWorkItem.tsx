@@ -762,6 +762,12 @@ export function CreateWorkItem({
                       setError("");
                     } catch { setError("字段显示偏好未能保存，请重试。"); }
                   }} />
+                {!groups.find((group) => group.title === "人员信息")?.fields.length &&
+                  form.role_requirements_complete === false && (
+                    <p className="creation-role-note hint">
+                      飞书未提供部分角色的必填规则，请在「显示字段 → 人员信息」中按该类型的要求添加并填写人员。
+                    </p>
+                  )}
                 {groups
                   .filter((g) => g.fields.length)
                   .map((g) => (
