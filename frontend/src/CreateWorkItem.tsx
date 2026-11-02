@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Check, LoaderCircle, X } from "lucide-react";
 import { Select } from "./Select";
@@ -6,15 +6,14 @@ import { useScrollIsolation } from "./useScrollIsolation";
 import { CreationLookup } from "./CreationLookup";
 import { CreationSelect } from "./CreationSelect";
 import { CreationFieldTip, CreationFieldVisibility, creationVisibilityKey, fixedCreationField, loadCreationVisibility, visibleCreationFields } from "./CreationFieldVisibility";
-import { CreationAttachmentPicker, CreationAttachmentReview } from "./CreationAttachmentPicker";
+import { CreationAttachmentPicker } from "./CreationAttachmentPicker";
+import { CreationReview } from "./CreationReview";
 import { creationAttachments, uploadCreationAttachments } from "./creationAttachments";
-import { MarkdownPreview } from "./MarkdownPreview";
 import { asError } from "./model";
 import {
   createWorkItem,
   creationEmpty,
   creationTargetKey,
-  creationValue,
   getCreationForm,
   verifyCreation,
   type CreationField,
@@ -105,10 +104,17 @@ export function CreateWorkItem({
   const [previousCreated, setPreviousCreated] = useState("");
   const [entryGeneration, setEntryGeneration] = useState(0);
   const panel = useRef<HTMLElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const backdropScrollRef = useScrollIsolation();
   const busyRef = useRef(false);
   const closeRef = useRef(close);
   closeRef.current = close;
+  useLayoutEffect(() => {
+    if (stage !== "review") return;
+    if (content.current) content.current.scrollTop = 0;
+    heading.current?.focus({ preventScroll: true });
+  }, [stage]);
   useEffect(() => {
     function preferenceChanged(event: StorageEvent) {
       if (event.key === creationContinuousKey || event.key === null)
@@ -148,7 +154,8 @@ export function CreateWorkItem({
       if (
         e.shiftKey &&
         (document.activeElement === first ||
-          document.activeElement === panel.current)
+          document.activeElement === panel.current ||
+          document.activeElement === heading.current)
       ) {
         e.preventDefault();
         last?.focus();
@@ -672,7 +679,7 @@ export function CreateWorkItem({
       >
         <header className="creation-header">
           <div>
-            <h2 id="creation-title">
+            <h2 id="creation-title" ref={heading} tabIndex={-1}>
               {stage === "review"
                 ? "核对创建内容"
                 : stage === "result"
@@ -698,7 +705,7 @@ export function CreateWorkItem({
             <X size={19} />
           </button>
         </header>
-        <div className="creation-content">
+        <div className="creation-content" ref={content}>
           {stage === "edit" && (
             <div className="creation-location">
               <div>
@@ -821,10 +828,10 @@ export function CreateWorkItem({
             </>
           ) : form && stage === "review" ? (
             <>
-              <p className="hint">
-                将在「{location?.space} / {location?.name}
-                」创建工作事项，请核对以下全部内容。
-              </p>
+              <div className="creation-review-intro">
+                <p>请核对以下内容，确认后将创建到飞书项目。</p>
+                <span>共 {displayedFields.length} 项</span>
+              </div>
               {form.fields.some((field) =>
                 hasLocalCreationImages(draft.values[field.key]),
               ) && (
@@ -834,37 +841,12 @@ export function CreateWorkItem({
               )}
               {form.fields.some((field) => field.kind === "attachment" && !creationEmpty(draft.values[field.key])) &&
                 <p className="hint">确认创建后会先上传附件；全部附件写入并从飞书回读核对后才显示成功。</p>}
-              <dl className="creation-review">
-                {displayedFields.map((f) => (
-                  <div key={f.key}>
-                    <dt>
-                      {f.label}
-                      <small>
-                        {creationEmpty(draft.values[f.key])
-                          ? "沿用飞书默认值"
-                          : "本次新增"}
-                      </small>
-                    </dt>
-                    <dd>
-                      {f.kind === "attachment" ? (
-                        <CreationAttachmentReview value={draft.values[f.key]} />
-                      ) : f.kind === "textarea" &&
-                      !creationEmpty(draft.values[f.key]) ? (
-                        <MarkdownPreview
-                          value={String(draft.values[f.key])}
-                          scope={{
-                            target: form.target,
-                            context: form.context,
-                            fieldKey: f.key,
-                          }}
-                        />
-                      ) : (
-                        creationValue(f, draft.values[f.key], draft.labels)
-                      )}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
+              <CreationReview
+                form={form}
+                groups={groups}
+                values={draft.values}
+                labels={draft.labels}
+              />
             </>
           ) : (
             form && (
