@@ -95,7 +95,9 @@ impl TodoSource for Arc<Fake> {
             "create_workitem" => {
                 self.writes.fetch_add(1, Ordering::SeqCst);
                 *self.fields.lock().unwrap() = args["fields"].as_array().unwrap().clone();
+                assert!(args["fields"].as_array().unwrap().iter().all(|f| f["field_value"].is_string()), "create transport requires string field values");
                 match self.mode {
+                    "gateway-rejection" => return Err(BackendError::Tool { tool: tool.into(), code: None, message: "error=MCPGatewayRequestMismatch,message=argument arguments.fields[1].field_value must be string, got number,retriable=false\nlogid: fixture-only".into() }),
                     "unknown" | "old_item" => {
                         return Ok(ToolResultPayload {
                             is_error: false,
@@ -128,12 +130,16 @@ impl TodoSource for Arc<Fake> {
                         let value = if self.mode == "trimmed-body" && f["field_key"] == "description" {
                             json!(f["field_value"].as_str().unwrap().trim())
                         } else {
-                            f["field_value"].clone()
+                            match f["field_key"].as_str().unwrap() {
+                                "template" | "reporter" | "role_owners" | "field_expected" | "field_received" => serde_json::from_str(f["field_value"].as_str().unwrap()).unwrap(),
+                                _ => f["field_value"].clone(),
+                            }
                         };
                         json!({"key":f["field_key"],"value":value})
                     })
                     .collect::<Vec<_>>();
-                let roles=stored.iter().find(|f|f["field_key"]=="role_owners").and_then(|f|f["field_value"].as_array()).into_iter().flatten()
+                let role_value: Value = stored.iter().find(|f|f["field_key"]=="role_owners").map(|f| serde_json::from_str(f["field_value"].as_str().unwrap()).unwrap()).unwrap_or(json!([]));
+                let roles=role_value.as_array().into_iter().flatten()
                     .map(|r|json!({"key":r["role"],"members":r["owners"].as_array().unwrap().iter().map(|u|json!({"key":u})).collect::<Vec<_>>()})).collect::<Vec<_>>();
                 json!({"work_item_attribute":{"work_item_id":42,"work_item_name":if self.mode == "mismatch"{"其他标题"}else{"示例工作"},
                     "owned_project":{"key":"space"},"work_item_type":{"key":"custom-key"},"template":{"id":123},"role_members":roles,
@@ -277,6 +283,91 @@ impl Harness {
 impl Drop for Harness {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn transport_stringifies_typed_values_without_double_encoding_text() {
+    let cases = [
+        (json!(123), "123"),
+        (json!(0), "0"),
+        (json!(1893427200000_i64), "1893427200000"),
+        (json!(false), "false"),
+        (json!(["person"]), "[\"person\"]"),
+        (json!([{"role":"owner","owners":["person"]}]), "[{\"owners\":[\"person\"],\"role\":\"owner\"}]"),
+        (json!("[{\"token\":\"example\"}]"), "[{\"token\":\"example\"}]"),
+        (json!(" \n正文  \n"), " \n正文  \n"),
+    ];
+    let fields = transport_fields(cases.iter().map(|(value, _)| json!({"field_key":"example","field_value":value})).collect());
+    for ((_, expected), sent) in cases.iter().zip(fields) {
+        assert_eq!(sent["field_value"].as_str().unwrap(), *expected);
+    }
+}
+
+#[test]
+fn gateway_rejection_is_terminal_without_repeating_creation() {
+    let h = Harness::new("gateway-rejection");
+    let request = h.request();
+    let result = execute(&h.session, &request).unwrap();
+    assert_eq!(result.outcome, "not_submitted");
+    assert!(!result.can_verify);
+    assert_eq!(verify(&h.session, &request.request_id, None, None).unwrap().outcome, "not_submitted");
+    assert_eq!(execute(&h.session, &request).unwrap().outcome, "not_submitted");
+    assert_eq!(h.session.store.action_by_request(&request.request_id).unwrap().unwrap().status, "unknown");
+    acknowledge_recovery(&h.session, &request.request_id).unwrap();
+    let mut next = request.clone(); next.request_id = "request-two".into();
+    execute(&h.session, &next).unwrap();
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn rejected_history_does_not_bypass_current_creation_admission() {
+    for case in ["disabled", "source", "version"] {
+        let mut h = Harness::new("gateway-rejection");
+        let request = h.request();
+        execute(&h.session, &request).unwrap();
+        assert_eq!(pending_forms(&h.session).unwrap().len(), 1);
+        assert_eq!(pending_forms(&h.session).unwrap().len(), 1);
+        let mut next = request.clone(); next.request_id = "new-request".into();
+        match case {
+            "disabled" => h.session.store.set_source_type_preferences(&h.target().source_id, &BTreeMap::new()).unwrap(),
+            "source" => h.session.config.sources[0].enabled = false,
+            _ => next.version = "outdated".into(),
+        }
+        assert!(execute(&h.session, &next).is_err());
+        acknowledge_recovery(&h.session, &request.request_id).unwrap();
+        assert!(execute(&h.session, &next).is_err());
+        assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn historical_gateway_rejection_recovers_only_proven_uncreated_records() {
+    for via_form in [false, true] {
+        let h = Harness::new("unknown");
+        let request = h.request();
+        execute(&h.session, &request).unwrap();
+        let record = h.session.store.action_by_request(&request.request_id).unwrap().unwrap();
+        let mut saved: Value = serde_json::from_str(record.detail.as_deref().unwrap()).unwrap();
+        saved["diagnostic"] = json!("工具调用失败: 工具 create_workitem 返回错误（code=None）: error=MCPGatewayRequestMismatch,message=argument arguments.fields[1].field_value must be string, got number,retriable=false\nlogid: fixture-only");
+        h.session.store.save_creation_detail(&request.request_id, &saved.to_string()).unwrap();
+        if via_form {
+            let pending = pending_forms(&h.session).unwrap().pop().unwrap().pending.unwrap();
+            assert_eq!(pending.request.fields, request.fields);
+            assert_eq!(pending.result.outcome, "not_submitted");
+        }
+        for _ in 0..2 { assert_eq!(verify(&h.session, &request.request_id, None, None).unwrap().outcome, "not_submitted"); }
+        assert_eq!(execute(&h.session, &request).unwrap().outcome, "not_submitted");
+        assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
+        assert_eq!(h.session.store.action_by_request(&request.request_id).unwrap().unwrap().status, "unknown");
+        assert_eq!(pending_forms(&h.session).unwrap().len(), 1);
+        assert_eq!(pending_forms(&h.session).unwrap().len(), 1);
+        acknowledge_recovery(&h.session, &request.request_id).unwrap();
+        assert!(pending_forms(&h.session).unwrap().is_empty());
+        assert_eq!(h.session.store.action_by_request(&request.request_id).unwrap().unwrap().status, "failed");
+    }
+    for message in ["MCPGatewayRequestMismatch", "error=MCPGatewayRequestMismatch,message=argument arguments.fields[1].field_value must be string, got number,retriable=true", "error=MCPGatewayRequestMismatch,message=business failed,retriable=false"] {
+        assert!(!gateway_field_rejection(message));
     }
 }
 
@@ -425,21 +516,21 @@ fn generic_form_uses_real_keys_defaults_and_selectors() {
             .iter()
             .find(|f| f["field_key"] == "template")
             .unwrap()["field_value"],
-        123
+        "123"
     );
     assert_eq!(
         fields
             .iter()
             .find(|f| f["field_key"] == "reporter")
             .unwrap()["field_value"],
-        json!(["ou_person"])
+        json!("[\"ou_person\"]")
     );
     assert_eq!(
         fields
             .iter()
             .find(|f| f["field_key"] == "role_owners")
             .unwrap()["field_value"],
-        json!([{"role":"fix_owner","owners":["ou_person"]}])
+        json!("[{\"owners\":[\"ou_person\"],\"role\":\"fix_owner\"}]")
     );
     drop(fields);
     assert_eq!(execute(&h.session, &request).unwrap().outcome, "verified");

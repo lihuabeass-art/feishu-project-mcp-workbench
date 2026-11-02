@@ -2,6 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type { CachedItem, Source } from "./types";
 import { typePreference, type SourceTypePreferences } from "./preferences";
 
+export const acknowledgeCreationRecovery = (requestId: string): Promise<void> =>
+  invoke("acknowledge_creation_recovery", { requestId });
+
 export type CreationTarget = {
   source_id: string;
   project_key: string;

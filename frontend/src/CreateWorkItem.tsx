@@ -12,6 +12,7 @@ import { creationAttachments, uploadCreationAttachments } from "./creationAttach
 import { asError } from "./model";
 import {
   createWorkItem,
+  acknowledgeCreationRecovery,
   creationEmpty,
   creationTargetKey,
   getCreationForm,
@@ -39,6 +40,7 @@ import {
 } from "./CreationSettings";
 
 type Draft = {
+  recoveredRequestId?: string;
   values: Record<string, unknown>;
   labels: Record<string, string>;
   request?: CreationRequest;
@@ -189,7 +191,7 @@ export function CreateWorkItem({
       ? Promise.resolve(location.pending_form)
       : getCreationForm(location)
     )
-      .then((next) => {
+      .then(async (next) => {
         if (cancelled) return;
         let saved: Draft | null = null;
         try {
@@ -208,7 +210,7 @@ export function CreateWorkItem({
               : f.kind === "bool" && !f.required && f.initial == null ? null : localCreationInitial(f, localDefaults),
           ]),
         );
-        const restored: Draft = next.pending
+        let restored: Draft = next.pending
           ? {
               values: next.pending.request.fields,
               labels: saved?.labels || {},
@@ -216,6 +218,7 @@ export function CreateWorkItem({
               ...next.pending,
             }
           : {
+              recoveredRequestId: saved?.recoveredRequestId,
               values,
               labels: saved?.labels || {},
               ...(saved?.request
@@ -223,6 +226,18 @@ export function CreateWorkItem({
                 : {}),
               continueCreating: saved?.continueCreating,
             };
+        if (restored.result?.outcome === "not_submitted") {
+          const recoveredRequestId = restored.request!.request_id;
+          setError(restored.result.message);
+          restored = { values: saved?.recoveredRequestId === recoveredRequestId ? saved.values : restored.values, labels: saved?.recoveredRequestId === recoveredRequestId ? saved.labels : restored.labels, continueCreating: restored.continueCreating, recoveredRequestId };
+          try {
+            localStorage.setItem(draftKey(next), JSON.stringify(restored));
+            await acknowledgeCreationRecovery(recoveredRequestId);
+          } catch {
+            setError("草稿恢复尚未完成，本机记录或恢复确认未能保存。请保留此窗口，重新打开后可继续恢复。");
+          }
+        }
+        if (cancelled) return;
         setForm(next);
         setSelectedFields(loadCreationVisibility(next));
         setDefaults(localDefaults);
@@ -263,15 +278,17 @@ export function CreateWorkItem({
   ) {
     save(
       {
+        recoveredRequestId: draftRef.current.recoveredRequestId,
         values: { ...draftRef.current.values, [key]: value },
         labels: { ...draftRef.current.labels, ...labels },
       },
       true,
     );
   }
-  function restoreUnsubmitted(message: string) {
+  async function restoreUnsubmitted(message: string, requestId?: string) {
     const persisted = save(
       {
+        recoveredRequestId: requestId ?? draftRef.current.recoveredRequestId,
         values: draftRef.current.values,
         labels: draftRef.current.labels,
       },
@@ -283,6 +300,10 @@ export function CreateWorkItem({
         ? message
         : `${message} 本机草稿未能保存，当前填写仍保留在此窗口，请检查磁盘空间后重试。`,
     );
+    if (persisted && requestId) {
+      try { await acknowledgeCreationRecovery(requestId); }
+      catch { setError(`${message} 恢复确认未能保存，重新打开后可继续恢复。`); }
+    }
   }
   function updateDefault(field: CreationField, remove = false) {
     if (!form) return;
@@ -493,7 +514,7 @@ export function CreateWorkItem({
       setStage("result");
       const result = await createWorkItem(request);
       if (result.outcome === "not_submitted") {
-        restoreUnsubmitted(result.message);
+        await restoreUnsubmitted(result.message, request.request_id);
         return;
       }
       const completed = { ...pending, result };
@@ -509,7 +530,7 @@ export function CreateWorkItem({
         "before_write" in e &&
         e.before_write === true
       ) {
-        restoreUnsubmitted(asError(e).message);
+        await restoreUnsubmitted(asError(e).message);
       } else {
         setError(asError(e).message);
       }
@@ -531,7 +552,7 @@ export function CreateWorkItem({
         draft.request,
       );
       if (result.outcome === "not_submitted") {
-        restoreUnsubmitted(result.message);
+        await restoreUnsubmitted(result.message, draft.request.request_id);
         return;
       }
       const completed = { ...draft, result };

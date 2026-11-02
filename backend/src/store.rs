@@ -1349,6 +1349,15 @@ impl Store {
         Ok(())
     }
 
+    /// 仅由创建适配器确认网关拒绝后调用；保留台账并释放该目标的创建锁。
+    pub(crate) fn reject_creation(&self, request_id: &str, previous_status: &str, previous_detail: Option<&str>, detail: &str) -> Result<(), BackendError> {
+        let changed = self.conn.lock().expect("store mutex poisoned").execute(
+            "UPDATE workflow_action_run SET status='failed', detail=?3, finished_at=?4 WHERE request_id=?1 AND action_kind='create_workitem' AND verified=0 AND status=?5 AND status IN ('pending','unknown') AND detail IS ?2",
+            params![request_id, previous_detail, detail, crate::sync::now_ms(), previous_status])?;
+        if changed != 1 { return Err(BackendError::conflict("创建记录已变化，请重新读取结果")); }
+        Ok(())
+    }
+
     /// 远端写之前原子登记。相同请求或同一事项仍有 pending 写入时返回 false，
     /// 不允许不同 request_id 交错更新字段与推进节点（也覆盖共用数据库的进程）。
     pub fn begin_action(

@@ -492,6 +492,11 @@ async fn upload_creation_attachment(target: fstodo_backend::creation::Target, co
 }
 
 #[tauri::command]
+async fn acknowledge_creation_recovery(request_id: String) -> Result<(), UiError> {
+    blocking(move || fstodo_backend::creation::acknowledge_recovery(&open_session()?, &request_id)).await
+}
+
+#[tauri::command]
 async fn verify_work_item_creation(request_id: String, item_number: Option<String>, local_request: Option<fstodo_backend::creation::Request>) -> Result<fstodo_backend::creation::ResultView, UiError> {
     blocking(move || fstodo_backend::creation::verify(&open_session()?, &request_id, item_number.as_deref(),local_request.as_ref())).await
 }
@@ -575,6 +580,7 @@ fn main() {
             upload_creation_attachment,
             create_work_item,
             verify_work_item_creation,
+            acknowledge_creation_recovery,
             execute_workflow_action
         ])
         .run(tauri::generate_context!())

@@ -1298,6 +1298,76 @@ describe("通用创建表单", () => {
     expect(saved.values.reporter).toEqual(["b"]);
   });
 
+  it("网关明确拒绝的历史创建恢复为可编辑草稿，不要求不存在的编号", async () => {
+    const next = form();
+    next.pending = {
+      request: { target, version: "v1", request_id: "rejected-request", fields: { name: "保留标题" } },
+      result: { ...result("unknown"), outcome: "not_submitted", item_id: null, message: "飞书未接受本次创建参数，事项未创建。草稿已保留，请重新核对后创建。" },
+    };
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    expect((await screen.findByRole("textbox", { name: "标题" }) as HTMLInputElement).value).toBe("保留标题");
+    expect(screen.getByRole("alert").textContent).toContain("事项未创建");
+    expect(screen.queryByRole("button", { name: "重新核验结果" })).toBeNull();
+    expect(createWorkItem).not.toHaveBeenCalled();
+    expect(verifyCreation).not.toHaveBeenCalled();
+    const saved = JSON.parse(localStorage.getItem(`fstodo.creation.v1:account-a:${creationTargetKey(target)}`)!);
+    expect(saved.values.name).toBe("保留标题");
+    expect(saved.request).toBeUndefined();
+  });
+
+  it.each(["storage", "ack"])("拒绝记录恢复%s失败后重开保留恢复入口和已编辑草稿", async (failure) => {
+    const next = form();
+    next.pending = {
+      request: { target, version: "v1", request_id: "recover-again", fields: { name: "旧请求标题" } },
+      result: { ...result("unknown"), outcome: "not_submitted", item_id: null, message: "事项未创建，草稿已保留" },
+    };
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const original = Storage.prototype.setItem;
+    const storage = failure === "storage" ? vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key.startsWith("fstodo.creation.v1:")) throw new Error("full");
+      original.call(this, key, value);
+    }) : null;
+    if (failure === "ack") vi.mocked(invoke).mockRejectedValueOnce(new Error("ack failed"));
+    const rendered = render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "标题" });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("恢复"));
+    storage?.mockImplementation(original);
+    fireEvent.change(screen.getByRole("textbox", { name: "标题" }), { target: { value: "继续编辑标题" } });
+    rendered.unmount();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    expect((await screen.findByRole("textbox", { name: "标题" }) as HTMLInputElement).value).toBe("继续编辑标题");
+    expect(createWorkItem).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("acknowledge_creation_recovery", { requestId: "recover-again" });
+    storage?.mockRestore();
+  });
+
+  it("恢复确认失败后再次创建在写入前被拒绝，重开仍保留原恢复关联和新编辑", async () => {
+    const next = form();
+    next.pending = {
+      request: { target, version: "v1", request_id: "original-recovery", fields: { name: "旧请求标题", description: "说明", reporter: ["a"], template: "1", zero: 0 } },
+      result: { ...result("unknown"), outcome: "not_submitted", item_id: null, message: "事项未创建，草稿已保留" },
+    };
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("ack failed"));
+    vi.mocked(createWorkItem).mockRejectedValueOnce({ before_write: true, message: "仍有待恢复记录" });
+    const user = userEvent.setup();
+    const mounted = render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "标题" });
+    fireEvent.change(screen.getByRole("textbox", { name: "标题" }), { target: { value: "新编辑标题" } });
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    await user.click(screen.getByRole("button", { name: "确认创建" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("仍有待恢复记录"));
+    const saved = JSON.parse(localStorage.getItem(`fstodo.creation.v1:account-a:${creationTargetKey(target)}`)!);
+    expect(saved.recoveredRequestId).toBe("original-recovery");
+    expect(saved.values.name).toBe("新编辑标题");
+    expect(invoke).toHaveBeenCalledTimes(1);
+    mounted.unmount();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    expect((await screen.findByRole("textbox", { name: "标题" }) as HTMLInputElement).value).toBe("新编辑标题");
+    expect(invoke).toHaveBeenLastCalledWith("acknowledge_creation_recovery", { requestId: "original-recovery" });
+  });
+
   it("本机保存后尚未登记的请求经核验恢复草稿，不会自动再次创建", async () => {
     const next = form();
     next.pending = {

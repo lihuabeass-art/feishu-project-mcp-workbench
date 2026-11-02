@@ -103,8 +103,9 @@ pub fn pending_forms(session: &Session) -> Result<Vec<Form>, BackendError> {
         let request: Request = serde_json::from_value(saved["request"].clone())?;
         let id = serde_json::from_value(saved["item_id"].clone())?;
         let mut form: Form = serde_json::from_value(saved["form"].clone())?;
+        let rejected = is_rejected(&record, &saved);
         form.pending = Some(Pending {
-            result: result(&request, id, false),
+            result: if rejected { rejected_result(&request) } else { result(&request, id, false) },
             request,
         });
         forms.push(form);
@@ -894,6 +895,48 @@ fn not_submitted(request: &Request) -> ResultView {
         can_verify: false,
     }
 }
+// 飞书网关已观测的字段类型校验拒绝；不可将一般业务错误或连接错误视作未创建。
+fn gateway_field_rejection(message: &str) -> bool {
+    let Some(tail) = message.strip_prefix("error=MCPGatewayRequestMismatch,message=argument arguments.fields[") else { return false };
+    let Some((index, tail)) = tail.split_once("].field_value must be string, got ") else { return false };
+    !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit())
+        && ["number", "boolean", "object", "array", "null"].iter().any(|kind| {
+            tail.strip_prefix(kind).is_some_and(|rest| rest == ",retriable=false" || rest.strip_prefix(",retriable=false\nlogid: ").is_some_and(|id| !id.trim().is_empty() && !id.contains('\n')))
+        })
+}
+fn saved_gateway_rejection(saved: &Value) -> bool {
+    saved["diagnostic"].as_str().and_then(|s| s.strip_prefix("工具调用失败: 工具 create_workitem 返回错误（code=None）: "))
+        .is_some_and(gateway_field_rejection)
+}
+fn rejected_result(request: &Request) -> ResultView {
+    ResultView { message: "飞书未接受本次创建参数，事项未创建。草稿已保留，请重新核对后创建。".into(), ..not_submitted(request) }
+}
+fn is_rejected(record: &ActionRecord, saved: &Value) -> bool {
+    !record.verified && saved["item_id"].is_null()
+        && (saved["rejected_before_creation"] == true || saved_gateway_rejection(saved))
+}
+/// 只有界面确认编辑草稿已可靠保存后才释放创建锁；枚举和核验均不消费恢复记录。
+pub fn acknowledge_recovery(session: &Session, request_id: &str) -> Result<(), BackendError> {
+    let record = session.store.action_by_request(request_id)?.ok_or_else(|| BackendError::validation("未找到创建记录"))?;
+    let saved: Value = serde_json::from_str(record.detail.as_deref().unwrap_or("{}"))?;
+    let request: Request = serde_json::from_value(saved["request"].clone())?;
+    if record.action_kind != "create_workitem" || ledger_key(&request.target, &account(session)?) != record.item_id || (!is_rejected(&record, &saved) && saved["cancelled_before_write"] != true) {
+        return Err(BackendError::validation("该创建记录不能恢复为未创建"));
+    }
+    if record.status == "failed" { return Ok(()); }
+    let mut saved = saved.clone();
+    saved["rejected_before_creation"] = json!(true);
+    session.store.reject_creation(&record.request_id, &record.status, record.detail.as_deref(), &saved.to_string())?;
+    Ok(())
+}
+fn transport_fields(mut fields: Vec<Value>) -> Vec<Value> {
+    for field in &mut fields {
+        if !field["field_value"].is_string() {
+            field["field_value"] = Value::String(field["field_value"].to_string());
+        }
+    }
+    fields
+}
 pub fn execute(session: &Session, request: &Request) -> Result<ResultView, BackendError> {
     if request.request_id.trim().is_empty() || request.request_id.len() > 128 {
         return Err(BackendError::validation("创建请求标识无效"));
@@ -911,13 +954,14 @@ pub fn execute(session: &Session, request: &Request) -> Result<ResultView, Backe
         if saved["cancelled_before_write"] == true {
             return Ok(not_submitted(request));
         }
+        if is_rejected(&record, &saved) { return Ok(rejected_result(request)); }
         return Ok(result(
             request,
             serde_json::from_value(saved["item_id"].clone())?,
             record.verified,
         ));
     }
-    let form = discover(session, &request.target)?;
+    let form = discover_fresh(session, &request.target)?;
     if form.version != request.version {
         return Err(BackendError::conflict(
             "创建配置或当前账号已变化，请重新读取并核对草稿",
@@ -945,7 +989,13 @@ pub fn execute(session: &Session, request: &Request) -> Result<ResultView, Backe
             "此位置有待核对的创建记录，请重新读取表单后核对结果",
         ));
     }
-    let receipt=session.call_tool_any(TOOL_CREATE_WORKITEM,json!({"project_key":request.target.project_key,"work_item_type":request.target.type_key,"fields":fields}).as_object().unwrap(),true);
+    let receipt=session.call_tool_any(TOOL_CREATE_WORKITEM,json!({"project_key":request.target.project_key,"work_item_type":request.target.type_key,"fields":transport_fields(fields)}).as_object().unwrap(),true);
+    if matches!(&receipt, Err(BackendError::Tool { tool, code: None, message }) if tool == TOOL_CREATE_WORKITEM && gateway_field_rejection(message)) {
+        let diagnostic = receipt.as_ref().err().map(|e| e.safe_message(None));
+        let saved = json!({"request":request,"item_id":null,"form":form,"diagnostic":diagnostic,"rejected_before_creation":true});
+        session.store.finish_action(&request.request_id, "unknown", false, Some(&saved.to_string()), crate::sync::now_ms())?;
+        return Ok(rejected_result(request));
+    }
     let id = receipt
         .as_ref()
         .ok()
@@ -1051,6 +1101,7 @@ pub fn verify(
     if saved["cancelled_before_write"] == true {
         return Ok(not_submitted(&request));
     }
+    if is_rejected(&record, &saved) { return Ok(rejected_result(&request)); }
     let id: Option<WorkItemId> = serde_json::from_value(saved["item_id"].clone())?;
     if record.verified {
         return Ok(result(&request, id, true));
