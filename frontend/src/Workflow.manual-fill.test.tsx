@@ -86,23 +86,60 @@ it.each(["node", "state"] as const)("%s 页面动作点击后先读取最新规�
   expect(submit).not.toHaveBeenCalled();
 });
 
-it.each(["", "passed"])("可选或已满足的页面字段为「%s」时仍直接跳转，不要求本地填写草稿", async (conclusion) => {
+it.each(["", "passed"])("可选或已满足的只读字段为「%s」时进入本地核对，沿用云端且不写入字段", async (conclusion) => {
   const current = options();
   current.actions[0] = {
-    ...current.actions[0], disabled_reason: undefined, manual_fill_required: undefined,
+    ...current.actions[0], disabled_reason: undefined, manual_fill_required: undefined, requires_feishu: undefined,
     fields: [{ key: "conclusion", label: "负责人完成结论", kind: "select", required: false, read_only: true, initial_value: conclusion }],
   };
   vi.mocked(getWorkflowActions).mockResolvedValue(current);
-  const submit = vi.fn();
+  const submit = vi.fn().mockResolvedValue({ outcome: "unknown", verified: false });
   render(<Workflow item={item()} available busy={false} submit={submit} />);
   const button = await screen.findByRole("button", { name: current.actions[0].label });
-  expect(screen.getByText(pageExplanation)).toBeTruthy();
+  expect(screen.queryByText(pageExplanation)).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
   await userEvent.click(button);
-  await waitFor(() => expect(invoke).toHaveBeenCalledOnce());
-  expect(screen.queryByRole("button", { name: "提交" })).toBeNull();
+  expect(await screen.findByRole("button", { name: "提交" })).toBeTruthy();
+  expect(screen.queryByText(editorExplanation)).toBeNull();
   expect(localStorage.length).toBe(0);
+  await userEvent.click(screen.getByRole("button", { name: "提交" }));
+  const review = await screen.findByRole("region", { name: "提交前二次确认" });
+  expect(review.textContent).toContain("1 项沿用云端");
+  expect(review.textContent).toContain(conclusion || "未填写");
   expect(submit).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"));
+  await userEvent.click(screen.getByRole("button", { name: "确认完成节点" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0][0]).toMatchObject({ action_id: current.actions[0].id, fields: {} });
+  expect(invoke).not.toHaveBeenCalled();
+});
+
+it.each(["node", "state"] as const)("%s 的关联上车版本按云端名称核对，零差异提交不改写关联值", async (kind) => {
+  const remote = JSON.stringify({ id: 2, name: "云端发布版本" });
+  const current = options(kind);
+  current.actions[0] = {
+    ...current.actions[0], disabled_reason: undefined, manual_fill_required: undefined, requires_feishu: undefined,
+    fields: [{ key: "readonly-release", label: "上车版本", kind: "text", required: false,
+      read_only: true, scope: "work_item", initial_value: remote, options: [{ value: remote, label: "云端发布版本" }] }],
+  };
+  vi.mocked(getWorkflowActions).mockResolvedValue(current);
+  const submit = vi.fn().mockResolvedValue({ outcome: "unknown", verified: false });
+  render(<Workflow item={item("123", kind === "node" ? "story" : "issue")} available busy={false} submit={submit} />);
+  await userEvent.click(await screen.findByRole("button", { name: current.actions[0].label }));
+  expect(await screen.findByText("云端发布版本")).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: "上车版本" })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "提交" }));
+  const review = await screen.findByRole("region", { name: "提交前二次确认" });
+  expect(review.textContent).toContain("事项信息");
+  expect(review.textContent).toContain("上车版本");
+  expect(review.textContent).toContain("云端发布版本");
+  expect(review.textContent).toContain("1 项沿用云端");
+  expect(review.textContent).not.toContain(remote);
+  await userEvent.click(screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"));
+  await userEvent.click(screen.getByRole("button", { name: kind === "node" ? "确认完成节点" : `确认${current.actions[0].label}` }));
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0][0]).toMatchObject({ action_id: current.actions[0].id, fields: {} });
+  expect(invoke).not.toHaveBeenCalled();
 });
 
 it("缓存可本地执行但最新规则出现页面字段时，直接跳转而不进入过期表单", async () => {

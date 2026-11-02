@@ -46,11 +46,17 @@ pub(super) struct NodeForm {
     pub blocked: Vec<String>,
     page_required: BTreeMap<String, PageRequired>,
     manual_fill_required: bool,
-    page_fields: bool,
 }
 
 fn text(v: &Value) -> String {
     schema::scalar(v)
+}
+
+fn work_value<'a>(work: &'a Value, key: &str, fallback: &'a Value) -> &'a Value {
+    work["work_item_fields"].as_array()
+        .and_then(|rows| rows.iter().find(|row| row.get("key").or_else(|| row.get("field_key")).and_then(Value::as_str) == Some(key)))
+        .and_then(|row| row.get("value").or_else(|| row.get("field_value")))
+        .unwrap_or(fallback)
 }
 
 // 系统的负责人完成信息虽声明为复合字段，但不能据此套用普通复合字段写协议。
@@ -79,14 +85,6 @@ fn page_only_type<'a>(key: &str, config: &'a Value) -> Option<&'a str> {
     }
     config["field_type"].as_str().filter(|kind| matches!(*kind,
         "vote-boolean" | "vote-option" | "vote-option-multi"))
-}
-
-fn config_needs_page(config: &Value) -> bool {
-    if config["field_type"] == "multi_user_compound_field" {
-        return config["compound_field_info"].as_array()
-            .is_some_and(|children| children.iter().any(config_needs_page));
-    }
-    schema::unsupported_type(config)
 }
 
 fn select_value(value: &Value) -> String {
@@ -145,17 +143,12 @@ impl NodeForm {
 
     pub fn requires_manual_fill(&self) -> bool { self.manual_fill_required }
 
-    pub fn requires_feishu(&self) -> bool { self.page_fields || self.manual_fill_required }
+    /// 只有尚未满足且本地无法补填的必填项才要求转到飞书；只读云端值不阻断流程。
+    pub fn requires_feishu(&self) -> bool { self.manual_fill_required }
 
     fn block_manual_fill(&mut self, reason: String) {
         self.blocked.push(reason);
         self.manual_fill_required = true;
-    }
-
-    fn block_page_fill(&mut self, reason: String) {
-        self.blocked.push(reason);
-        self.manual_fill_required = true;
-        self.page_fields = true;
     }
 
     pub fn node_block_reason(&self, node_name: &str) -> Option<String> {
@@ -178,6 +171,7 @@ impl NodeForm {
         let mut input = self.inputs.iter().find(|input| {
             matches!(&input.route, Route::Node(key) if key == "node_progress")
                 && input.field.kind == FieldKind::Number
+                && input.field.settings.read_only != Some(true)
         })?.clone();
         input.field.required = true;
         Some(Self { inputs: vec![input], ..Self::default() })
@@ -189,6 +183,7 @@ impl NodeForm {
             matches!(&input.route, Route::Schedule { property, .. }
                 if matches!(property.as_str(), "estimate_start_date" | "estimate_end_date"))
                 && input.field.kind == FieldKind::Date
+                && input.field.settings.read_only != Some(true)
         }).cloned().map(|mut input| {
             input.field.required = true;
             input
@@ -265,16 +260,20 @@ impl NodeForm {
                 .get("class")
                 .and_then(Value::as_str)
                 .or_else(|| confirm.and_then(|r| r["class"].as_str()));
-            if !work_field || class.is_some_and(|c| c != "field") || config.is_none() {
+            if !work_field || class.is_some_and(|c| c != "field") {
                 if is_required { form.block_manual_fill(format!("{label}（无法识别可编辑字段）")); }
                 continue;
             }
-            let config = config.unwrap();
-            let current = schema::field_value(&work["work_item_fields"], &key);
+            let current = work_value(work, &key, &confirm.unwrap_or(required)["value"]);
+            let Some(config) = config else {
+                if is_required { form.block_manual_fill(format!("{label}（无法识别可编辑字段）")); }
+                form.add_page_basic(&json!({"field_key":key}), label, Route::WorkItem(key), current);
+                continue;
+            };
             if config["field_type"] == "multi_user_compound_field" {
-                form.add_compound(config, &current, true, &[], &[], &[], &required_fields, &BTreeMap::new(), None, work)?;
+                form.add_compound(config, current, true, &[], &[], &[], &required_fields, &BTreeMap::new(), None, work)?;
             } else {
-                form.add_basic(config, label, is_required, Route::WorkItem(key), &current);
+                form.add_basic(config, label, is_required, Route::WorkItem(key), current);
             }
         }
         Ok(form)
@@ -284,12 +283,10 @@ impl NodeForm {
         let (kind, options) = match schema::definition(config) {
             Ok(definition) => definition,
             Err(reason) => {
-                if schema::unsupported_type(config) {
-                    self.page_fields = true;
-                    if required { self.block_page_fill(format!("{label}（{reason}）")); }
-                } else if required {
+                if required {
                     self.block_manual_fill(format!("{label}（{reason}）"));
                 }
+                self.add_page_basic(config, label, route, current);
                 return;
             }
         };
@@ -309,8 +306,15 @@ impl NodeForm {
             let initial = if current.is_null() { String::new() }
                 else if current.is_object() || current.is_array() { current.to_string() }
                 else { text(current) };
-            self.add(label, FieldKind::Text, false, route, Some(initial), None, None, None);
-            self.inputs.last_mut().unwrap().remote_type = text(&config["field_type"]);
+            self.add(label, FieldKind::Text, false, route, Some(initial.clone()), None, None, None);
+            let input = self.inputs.last_mut().unwrap();
+            input.remote_type = text(&config["field_type"]);
+            // 关联事项按名称核对；原始身份和值仍留在快照中参与版本校验，不生成写协议。
+            if config["field_type"] == "workitem_related_select" {
+                if let Some(name) = current["name"].as_str().filter(|name| !name.trim().is_empty()) {
+                    input.field.options.push(FieldOption { value: initial, label: name.into() });
+                }
+            }
         }
         self.mark_page_only(previous);
     }
@@ -322,7 +326,6 @@ impl NodeForm {
         required: &BTreeMap<String, Value>, owner_labels: &BTreeMap<String, String>,
         node_owners: Option<&BTreeSet<String>>, work: &Value,
     ) -> Result<(), BackendError> {
-        self.page_fields |= config_needs_page(config);
         let key = text(&config["field_key"]);
         let label = text(&config["field_name"]).if_empty(&key);
         let mut path = parent_path.to_vec();
@@ -417,7 +420,7 @@ impl NodeForm {
                     work_item, path: next_steps.clone(), field: child_key,
                 };
                 if page_only_type("", child).is_some() {
-                    if needed { self.block_page_fill(format!("{child_label}（需在飞书项目页面填写）")); }
+                    if needed { self.block_manual_fill(format!("{child_label}（需在飞书项目页面填写）")); }
                     self.add_page_basic(child, caption, route, &value);
                 } else {
                     self.add_basic(child, caption, needed, route, &value);
@@ -474,7 +477,7 @@ impl NodeForm {
                     .if_empty(&config.map(|c| text(&c["field_name"])).unwrap_or_default())
                     .if_empty(page_only_node_field(&key).unwrap_or(&key));
                 let identity = serde_json::to_string(&json!({"scope":req["_scope"],"path":path})).unwrap();
-                if form.page_required.insert(identity, PageRequired { label: label.clone(), kind: kind.into() }).is_none() { form.block_page_fill(label); }
+                if form.page_required.insert(identity, PageRequired { label: label.clone(), kind: kind.into() }).is_none() { form.block_manual_fill(label); }
                 editable_required.remove(required_id);
                 continue;
             }
@@ -508,39 +511,39 @@ impl NodeForm {
             let wc = work_configs.iter().find(|f| f["field_key"] == key);
             let config = if work { wc } else { nc };
             let page_only = page_only_type(if work { "" } else { &key }, config.unwrap_or(&Value::Null)).is_some();
-            // 只算当前动作实际涉及的页面字段，不让全空间的可选工时配置扩大动作范围。
-            if page_only && items.iter().any(|item| item["field_key"] == key) {
-                form.page_fields = true;
-            }
-            let Some(config) = config else {
+            let missing_config = config.is_none();
+            if missing_config {
+                let label = text(&item["field_name"])
+                    .if_empty(page_only_node_field(&key).unwrap_or(&key));
                 if needed.is_some() && !page_only {
-                    form.block_manual_fill(
-                        text(&item["field_name"])
-                            .chars()
-                            .collect::<String>()
-                            .trim()
-                            .to_owned()
-                            .if_empty(&key),
-                    );
+                    form.block_manual_fill(label.trim().to_owned());
                 }
-                continue;
-            };
+                // 已知排期字段继续使用下方的节点／负责人真实来源；缺配置时只读。
+                if work || !matches!(key.as_str(), "schedule" | "point" | "actual_work_time") {
+                    let current = if work { work_value(work_item, &key, &item["value"]) } else { &item["value"] };
+                    let route = if work { Route::WorkItem(key.clone()) } else { Route::Node(key.clone()) };
+                    form.add_page_basic(&json!({"field_key":key}), label, route, current);
+                    continue;
+                }
+            }
+            let fallback = json!({"field_key":key});
+            let config = config.unwrap_or(&fallback);
             let label = text(&item["field_name"])
                 .if_empty(&text(&config["field_name"]))
                 .if_empty(&key);
             let kind = config["field_type"].as_str().unwrap_or("");
             if kind == "multi_user_compound_field" {
                 let current = if work {
-                    schema::field_value(&work_item["work_item_fields"], &key)
+                    work_value(work_item, &key, &item["value"])
                 } else {
-                    item["value"].clone()
+                    &item["value"]
                 };
                 let known_owners: BTreeSet<String> = node["assignees"]["owners"].as_array()
                     .into_iter().flatten().map(|o| text(&o["user_key"]))
                     .filter(|o| !o.is_empty()).collect();
                 let previous = form.inputs.len();
                 let display_required = BTreeMap::new();
-                form.add_compound(config, &current, work, &[], &[], &[],
+                form.add_compound(config, current, work, &[], &[], &[],
                     if page_only { &display_required } else { &editable_required }, &owner_labels,
                     (!work).then_some(&known_owners), work_item)?;
                 if page_only { form.mark_page_only(previous); }
@@ -658,15 +661,11 @@ impl NodeForm {
                         }
                     }
                 }
-                if page_only { form.mark_page_only(previous); }
+                if page_only || missing_config { form.mark_page_only(previous); }
                 continue;
             }
             let current = if work {
-                work_item["work_item_fields"]
-                    .as_array()
-                    .and_then(|rows| rows.iter().find(|f| f["key"] == key))
-                    .map(|f| &f["value"])
-                    .unwrap_or(&item["value"])
+                work_value(work_item, &key, &item["value"])
             } else {
                 &item["value"]
             };
@@ -677,6 +676,11 @@ impl NodeForm {
                 Route::Node(key)
             };
             let previous = form.inputs.len();
+            if progress && config["field_type"] != "number" {
+                if needed.is_some() { form.block_manual_fill("节点进度字段配置不是数字".into()); }
+                form.add_page_basic(config, label, route, current);
+                continue;
+            }
             if page_only {
                 form.add_page_basic(config, label, route, current);
             } else {
@@ -684,13 +688,6 @@ impl NodeForm {
             }
             if progress && form.inputs.len() > previous {
                 let field = &mut form.inputs.last_mut().unwrap().field;
-                if field.kind != FieldKind::Number {
-                    form.inputs.pop();
-                    let reason = "节点进度字段配置不是数字".into();
-                    if needed.is_some() { form.block_manual_fill(reason); }
-                    else { form.blocked.push(reason); }
-                    continue;
-                }
                 field.settings.initial_value = field.settings.initial_value.as_deref()
                     .and_then(|v| v.parse::<f64>().ok()).map(|n| (n * 100.0).to_string());
                 field.settings.unit = Some("percent".into());
@@ -703,7 +700,6 @@ impl NodeForm {
     }
 
     fn mark_page_only(&mut self, from: usize) {
-        self.page_fields |= self.inputs.len() > from;
         for input in &mut self.inputs[from..] {
             input.field.required = false;
             input.field.settings.read_only = Some(true);
@@ -1265,7 +1261,8 @@ mod tests {
             assert_eq!(form.blocked.len(), 1);
             assert!(form.requires_manual_fill());
             assert!(form.requires_feishu());
-            assert!(form.fields().is_empty());
+            assert_eq!(form.fields().len(), 1);
+            assert_eq!(form.fields()[0].settings.read_only, Some(true));
         }
         for required in [
             json!({"form_items":[{"key":"r","class":"role"}]}),
@@ -1864,7 +1861,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_progress_config_keeps_api_block_without_preventing_page_field_route() {
+    fn invalid_progress_config_requires_feishu_only_for_unfinished_required_values() {
         let node = json!({"form_items":[{"field_key":"node_progress","form_item_type":"node_field"},
             {"field_key":"actual_work_time","form_item_type":"node_field"}]});
         let configs = [json!({"field_key":"node_progress","field_type":"text"}),
@@ -1875,9 +1872,14 @@ mod tests {
             json!({"node_fields":[{"field_key":"node_progress","finished":false}]}),
         ] {
             let form = NodeForm::build(&node, &required, &configs, &[], &json!({})).unwrap();
-            assert_eq!(form.blocked, vec!["节点进度字段配置不是数字"]);
-            assert_eq!(form.requires_manual_fill(), required["node_fields"][0]["finished"] == false);
-            assert!(form.requires_feishu(), "字段配置错误保留API阻断，但不应阻止打开同一事项页面");
+            let unfinished = required["node_fields"][0]["finished"] == false;
+            assert_eq!(!form.blocked.is_empty(), unfinished);
+            if unfinished { assert_eq!(form.blocked, vec!["节点进度字段配置不是数字"]); }
+            assert_eq!(form.requires_manual_fill(), unfinished);
+            assert_eq!(form.requires_feishu(), unfinished,
+                "只有未完成必填项才要求去飞书补填，其他情况沿用云端只读值");
+            let progress = form.fields().into_iter().find(|field| field.label == "node_progress").unwrap();
+            assert_eq!(progress.settings.read_only, Some(true));
             assert!(form.progress_only().is_none());
         }
     }

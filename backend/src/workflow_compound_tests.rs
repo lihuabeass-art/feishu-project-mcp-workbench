@@ -366,7 +366,7 @@ fn page_only_fields_allow_zero_patch_transition_after_required_values_are_satisf
         let action = options.actions.iter().find(|action| action.id == "node:confirm:n1").unwrap();
         assert!(action.disabled_reason.is_none(), "{failure}: {:?}", action.disabled_reason);
         assert_eq!(action.manual_fill_required, None);
-        assert_eq!(action.requires_feishu, Some(true), "可选或已满足的页面字段仍直接在飞书处理");
+        assert_eq!(action.requires_feishu, None, "可选或已满足的只读字段保留本地流程入口");
         assert!(action.fields.iter().all(|field| field.settings.read_only == Some(true)));
         let request = WorkflowRequest {
             item_id: id.clone(), action_id: action.id.clone(), version: options.version,

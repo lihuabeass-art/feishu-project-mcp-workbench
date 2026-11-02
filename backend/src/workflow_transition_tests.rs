@@ -38,7 +38,8 @@ impl TodoSource for Arc<TransitionSource> {
             "get_workitem_brief" => json!({"work_item_attribute":{
                 "work_item_id":"1","owned_project":{"key":"transition-test"},
                 "work_item_type":{"key":"story"},"work_item_mod":self.mode
-            },"work_item_fields":[],"pagination":{"has_more":false}}),
+            },"work_item_fields":[{"key":"release","value":{"work_item_id":"2","name":"云端发布版本"}}],
+                "pagination":{"has_more":false}}),
             "get_node_detail" => {
                 let nodes = if written && self.readback == "missing" {
                     vec![]
@@ -46,7 +47,8 @@ impl TodoSource for Arc<TransitionSource> {
                     // 实测已完成节点仍有 node_key，但不再带 status。
                     vec![json!({"basic":{"node_key":"n1","name":"后端方案设计"}})]
                 } else {
-                    vec![json!({"basic":{"node_key":"n1","name":"后端方案设计","status":"doing"}})]
+                    vec![json!({"basic":{"node_key":"n1","name":"后端方案设计","status":"doing"},
+                        "form_items":[{"field_key":"release","field_name":"上车版本","form_item_type":"field"}]})]
                 };
                 json!({"list":nodes,"pagination":{"has_more":false}})
             }
@@ -58,12 +60,16 @@ impl TodoSource for Arc<TransitionSource> {
                         _ => json!("OTHER"),
                     }
                 } else { json!("OPEN") },
-                "transition":[{"id":"42","state_key":"DONE","name":"已完成"}]
+                "transition":[{"id":"42","state_key":"DONE","name":"已完成",
+                    "confirm_form":[{"key":"release","name":"上车版本","class":"field"}]}]
             }),
             "get_transition_required" => json!({}),
-            "list_node_field_config" | "list_workitem_field_config" => {
+            "list_node_field_config" => {
                 json!({"list":[],"pagination":{"has_more":false}})
             }
+            "list_workitem_field_config" => json!({"list":[
+                {"field_key":"release","field_name":"上车版本","field_type":"workitem_related_select"}
+            ],"pagination":{"has_more":false}}),
             "transition_node" | "transition_state" => {
                 assert_eq!(
                     tool,
@@ -196,6 +202,11 @@ fn transition_result_depends_on_remote_readback_instead_of_receipt_format() {
                     .iter()
                     .find(|a| a.disabled_reason.is_none())
                     .unwrap();
+                assert_eq!(action.requires_feishu, None, "{case}: 关联字段无需补填时保留本地流程入口");
+                assert_eq!(action.manual_fill_required, None, "{case}");
+                assert_eq!(action.fields.len(), 1, "{case}: 核对页须展示关联字段的云端值");
+                assert_eq!(action.fields[0].settings.read_only, Some(true), "{case}");
+                assert_eq!(action.fields[0].options[0].label, "云端发布版本", "{case}");
                 let request = WorkflowRequest {
                     item_id: id.clone(),
                     action_id: action.id.clone(),

@@ -141,7 +141,7 @@ fn system_acceptance_fields_require_feishu_page_even_with_generic_compound_metad
     let form = NodeForm::build(&node, &json!({}), &[config], &[], &json!({})).unwrap();
     assert!(form.blocked.is_empty());
     assert!(!form.requires_manual_fill());
-    assert!(form.requires_feishu(), "已满足的页面字段仍由飞书处理，但不能变成业务必填");
+    assert!(!form.requires_feishu(), "已满足的只读字段沿用云端，不要求到飞书完成流程");
     assert_eq!(form.fields().len(), 4);
     assert!(form.fields().iter().any(|field| field.settings.initial_value.as_deref() == Some("system_passed")));
     assert!(form.fields().iter().all(|field| field.settings.read_only == Some(true) && !field.required));
@@ -149,8 +149,11 @@ fn system_acceptance_fields_require_feishu_page_even_with_generic_compound_metad
     let attempted = BTreeMap::from([(form.fields()[0].key.clone(), "system_passed".into())]);
     assert!(form.plan(&attempted).is_err(), "只读云端快照不得进入写入计划");
     let old_snapshot = NodeForm::build(&node, &json!({}), &[], &[], &json!({})).unwrap();
-    assert!(old_snapshot.requires_feishu(), "已识别的系统页面字段不依赖本地控件配置才跳转");
+    assert!(!old_snapshot.requires_feishu(), "系统字段缺少本地控件配置时也不能凭字段存在阻断流程");
     assert!(!old_snapshot.requires_manual_fill());
+    assert_eq!(old_snapshot.fields().len(), 1, "缺少子字段配置时保留整个云端只读快照");
+    assert_eq!(old_snapshot.fields()[0].settings.read_only, Some(true));
+    assert_eq!(old_snapshot.fields()[0].settings.initial_value.as_deref(), node["form_items"][0]["value"].as_str());
 }
 
 #[test]
@@ -167,7 +170,7 @@ fn page_only_fields_block_only_unfinished_required_values_with_official_node_mes
             let form = NodeForm::build(&node, &required, &configs, &[], &json!({})).unwrap();
             assert!(form.node_block_reason("验收").is_none(), "非必填或已完成值不能拦截流转");
             assert!(!form.requires_manual_fill());
-            assert!(form.requires_feishu());
+            assert!(!form.requires_feishu(), "可选或已满足的只读字段不能要求跳转飞书");
             assert_eq!(form.fields().len(), 1);
             assert_eq!(form.fields()[0].settings.read_only, Some(true));
             assert_eq!(form.fields()[0].settings.initial_value.as_deref(), Some("0"));
@@ -214,7 +217,7 @@ fn nested_vote_snapshots_keep_cloud_content_and_distinct_required_field_identiti
         let form = NodeForm::build(&node, &required, &[config.clone()], &[], &json!({})).unwrap();
         assert!(form.node_block_reason("评审").is_none());
         assert!(!form.requires_manual_fill());
-        assert!(form.requires_feishu());
+        assert!(!form.requires_feishu());
         assert_eq!(find(&form, "a", "decision").settings.initial_value, Some(remote.to_string()));
     }
 }
@@ -228,20 +231,57 @@ fn unsupported_types_offer_manual_fill_only_for_unfinished_required_fields() {
         let node_required = finished.map(|done| json!({"node_fields":[{"field_key":"attachment","finished":done}]})).unwrap_or(json!({}));
         let state_required = finished.map(|done| json!({"form_items":[{"key":"attachment","class":"field","finished":done}]})).unwrap_or(json!({}));
         let forms = [
-            (NodeForm::build(&node, &node_required, &configs, &[], &json!({})).unwrap(), true),
-            (NodeForm::build_state(&transition, &state_required, &configs, &json!({})).unwrap(), true),
-            (NodeForm::build_state(&transition, &state_required, &[], &json!({})).unwrap(), finished == Some(false)),
+            NodeForm::build(&node, &node_required, &configs, &[], &json!({})).unwrap(),
+            NodeForm::build_state(&transition, &state_required, &configs, &json!({})).unwrap(),
+            NodeForm::build_state(&transition, &state_required, &[], &json!({})).unwrap(),
         ];
-        for (form, page_route) in forms {
+        for form in forms {
             assert_eq!(form.requires_manual_fill(), finished == Some(false));
             assert_eq!(!form.blocked.is_empty(), finished == Some(false));
-            assert_eq!(form.requires_feishu(), page_route, "必填缺配置也应去页面处理，可选字段须有已知配置才切换操作地点");
+            assert_eq!(form.requires_feishu(), finished == Some(false), "只有未完成且本地无法补填的必填项才转到飞书");
         }
     }
 }
 
 #[test]
-fn page_routing_uses_action_scope_and_configured_compound_children_even_without_cloud_owners() {
+fn related_release_fields_require_feishu_only_when_still_unfinished() {
+    let config = json!({"field_key":"release","field_name":"上车版本","field_type":"workitem_related_select"});
+    let node = json!({"form_items":[{"field_key":"release","field_name":"上车版本","form_item_type":"field"}]});
+    let transition = json!({"confirm_form":[{"key":"release","name":"上车版本","class":"field"}]});
+    for remote in [Value::Null, json!({"work_item_id":"2","name":"云端发布版本"})] {
+        let work = json!({"work_item_fields":[{"key":"release","value":remote}]});
+        for finished in [None, Some(true), Some(false)] {
+            let required = finished.map(|done| json!({"form_items":[
+                {"key":"release","class":"field","finished":done}
+            ]})).unwrap_or(json!({}));
+            for form in [
+                NodeForm::build(&node, &required, &[], &[config.clone()], &work).unwrap(),
+                NodeForm::build_state(&transition, &required, &[config.clone()], &work).unwrap(),
+            ] {
+                assert_eq!(form.requires_feishu(), finished == Some(false));
+                assert_eq!(form.requires_manual_fill(), finished == Some(false));
+                assert_eq!(!form.blocked.is_empty(), finished == Some(false));
+                let fields = form.fields();
+                assert_eq!(fields.len(), 1, "关联字段仍需完整核对云端值");
+                assert_eq!(fields[0].settings.read_only, Some(true));
+                assert!(!fields[0].required);
+                if remote.is_null() {
+                    assert_eq!(fields[0].settings.initial_value.as_deref(), Some(""));
+                } else {
+                    assert_eq!(serde_json::from_str::<Value>(fields[0].settings.initial_value.as_deref().unwrap()).unwrap(), remote);
+                    assert_eq!(fields[0].options[0].label, "云端发布版本");
+                }
+                assert!(form.plan(&BTreeMap::from([(fields[0].key.clone(), "3".into())])).is_err(),
+                    "即使伪造请求也不能写入只读关联字段");
+                assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty(),
+                    "沿用云端关联值不能发送字段更新");
+            }
+        }
+    }
+}
+
+#[test]
+fn optional_readonly_and_compound_fields_preserve_local_workflow_actions() {
     let configs = [
         json!({"field_key":"note","field_type":"text"}),
         json!({"field_key":"actual_work_time","field_type":"number"}),
@@ -252,7 +292,7 @@ fn page_routing_uses_action_scope_and_configured_compound_children_even_without_
     assert!(!form.requires_feishu(), "空间配置不等于当前动作字段");
     let with_work_time = json!({"form_items":node["form_items"],"schedule":{"actual_work_time":0}});
     let form = NodeForm::build(&with_work_time, &json!({}), &configs, &[], &json!({})).unwrap();
-    assert!(form.requires_feishu(), "实际涉及的只读零值同样去页面处理");
+    assert!(!form.requires_feishu(), "只读零值沿用云端，不要求跳转飞书");
     assert!(!form.requires_manual_fill());
     let state = NodeForm::build_state(&json!({"confirm_form":[{"class":"field","key":"note"}]}),
         &json!({}), &configs, &json!({})).unwrap();
@@ -262,7 +302,7 @@ fn page_routing_uses_action_scope_and_configured_compound_children_even_without_
     let state = NodeForm::build_state(&json!({"confirm_form":[{"class":"field","key":"review"}]}),
         &json!({}), &[config], &json!({})).unwrap();
     assert!(state.fields().is_empty());
-    assert!(state.requires_feishu(), "可选复合字段子项不能因尚无云端负责人输入而漏掉");
+    assert!(!state.requires_feishu(), "没有未完成必填项时，可选复合字段子项不改变操作地点");
     assert!(!state.requires_manual_fill());
 }
 
@@ -293,7 +333,103 @@ fn missing_required_metadata_opens_page_while_preserving_api_block() {
         assert!(form.requires_manual_fill());
         assert!(form.requires_feishu());
         assert_eq!(form.blocked.len(), 1);
-        assert!(form.fields().is_empty(), "缺配置不能据此生成不可靠的API填写控件");
+        assert_eq!(form.fields().len(), 1);
+        assert_eq!(form.fields()[0].settings.read_only, Some(true), "缺配置只保留快照，不生成API填写控件");
+    }
+}
+
+#[test]
+fn missing_metadata_keeps_readonly_cloud_values_for_node_and_state_review() {
+    for remote in [json!(0), json!(false), json!("云端内容"), json!({"id":2,"name":"云端事项"})] {
+        let node = json!({"form_items":[
+            {"field_key":"node-value","field_name":"节点内容","form_item_type":"node_field","value":remote},
+            {"field_key":"work-value","field_name":"事项内容","form_item_type":"field"}
+        ]});
+        let work = json!({"work_item_fields":[{"key":"work-value","value":remote}]});
+        let transition = json!({"confirm_form":[{"key":"work-value","name":"事项内容","class":"field"}]});
+        for finished in [None, Some(true), Some(false)] {
+            let work_required = finished.map(|done| json!({"form_items":[
+                {"key":"work-value","class":"field","finished":done}
+            ]})).unwrap_or(json!({}));
+            let mut node_required = work_required.clone();
+            if let Some(done) = finished {
+                node_required["node_fields"] = json!([{ "field_key":"node-value","finished":done }]);
+            }
+            for (form, count) in [
+                (NodeForm::build(&node, &node_required, &[], &[], &work).unwrap(), 2),
+                (NodeForm::build_state(&transition, &work_required, &[], &work).unwrap(), 1),
+            ] {
+                assert_eq!(form.requires_feishu(), finished == Some(false));
+                let fields = form.fields();
+                assert_eq!(fields.len(), count);
+                for field in fields {
+                    assert_eq!(field.settings.read_only, Some(true));
+                    let expected = remote.as_str().map(str::to_owned).unwrap_or_else(|| remote.to_string());
+                    assert_eq!(field.settings.initial_value.as_deref(), Some(expected.as_str()));
+                    assert!(form.plan(&BTreeMap::from([(field.key, "替换值".into())])).is_err());
+                }
+                assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn missing_metadata_preserves_form_values_without_overwriting_explicit_cloud_clears() {
+    let fallback = json!({"id":2,"name":"表单中的关联事项"});
+    let node = json!({"form_items":[{"field_key":"release","field_name":"上车版本",
+        "form_item_type":"field","value":fallback}]});
+    let transition = json!({"confirm_form":[{"key":"release","name":"上车版本","class":"field","value":fallback}]});
+    for work in [json!({}), json!({"work_item_fields":[{"key":"release","value":null}]})] {
+        let expected = if work.get("work_item_fields").is_some() { String::new() } else { fallback.to_string() };
+        for form in [
+            NodeForm::build(&node, &json!({}), &[], &[], &work).unwrap(),
+            NodeForm::build_state(&transition, &json!({}), &[], &work).unwrap(),
+        ] {
+            assert!(!form.requires_feishu());
+            let fields = form.fields();
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].settings.read_only, Some(true));
+            assert_eq!(fields[0].settings.initial_value.as_deref(), Some(expected.as_str()));
+            assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
+        }
+    }
+}
+
+#[test]
+fn missing_schedule_metadata_keeps_summary_or_personal_values_readonly() {
+    for personal in [false, true] {
+        let mut node = json!({"form_items":[
+            {"field_key":"actual_work_time","field_name":"实际工时","form_item_type":"node_field"},
+            {"field_key":"point","field_name":"估分","form_item_type":"node_field"},
+            {"field_key":"schedule","field_name":"排期","form_item_type":"node_field"}
+        ],"schedule":{"actual_work_time":99,"points":99,
+            "estimate_start_time":1704211200000i64,"estimate_finish_time":1704297600000i64}});
+        if personal {
+            node["assignees"] = json!({"owners":[{"user_key":"a","name":"甲"}]});
+            node["assignee_schedule_list"] = json!([{"assignee":{"user_key":"a"},"schedule_info":{
+                "actual_work_time":0,"points":3,"estimate_start_time":1704038400000i64,"estimate_finish_time":1704124800000i64
+            }}]);
+        }
+        let form = NodeForm::build(&node, &json!({}), &[], &[], &json!({})).unwrap();
+        assert!(!form.requires_feishu());
+        let fields = form.fields();
+        assert_eq!(fields.len(), 4);
+        for (label, expected) in [
+            ("实际工时", if personal { "0" } else { "99" }),
+            ("估分", if personal { "3" } else { "99" }),
+            ("排期 · 开始日期", if personal { "2024-01-01" } else { "2024-01-03" }),
+            ("排期 · 结束日期", if personal { "2024-01-02" } else { "2024-01-04" }),
+        ] {
+            let field = fields.iter().find(|field| field.label == label).unwrap();
+            assert_eq!(field.settings.initial_value.as_deref(), Some(expected));
+            assert_eq!(field.settings.owner.as_deref(), personal.then_some("甲"));
+            assert_eq!(field.settings.read_only, Some(true));
+            assert!(form.plan(&BTreeMap::from([(field.key.clone(), "替换值".into())])).is_err());
+        }
+        assert!(form.schedule_only().is_none(), "缺配置的只读日期不能生成独立同步动作");
+        assert!(form.progress_only().is_none());
+        assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
     }
 }
 

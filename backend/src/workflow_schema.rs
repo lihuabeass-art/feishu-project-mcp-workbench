@@ -15,11 +15,6 @@ fn basic_kind(kind: &str) -> Option<FieldKind> {
     })
 }
 
-pub(super) fn unsupported_type(config: &Value) -> bool {
-    config["field_type"].as_str().filter(|kind| !kind.trim().is_empty())
-        .is_some_and(|kind| basic_kind(kind).is_none())
-}
-
 pub(super) fn definition(config: &Value) -> Result<(FieldKind, Vec<FieldOption>), String> {
     let remote_type = config["field_type"].as_str().unwrap_or("");
     let kind = basic_kind(remote_type).ok_or_else(|| format!("暂不支持 {remote_type}"))?;

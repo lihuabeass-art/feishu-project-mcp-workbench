@@ -114,7 +114,7 @@ pub struct WorkflowAction {
     /// 未满足的流转必填项无法在本地补填，界面应提供当前事项的飞书填写入口。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manual_fill_required: Option<bool>,
-    /// 动作涉及须在页面处理的字段，点击时直接打开飞书，不进入本机草稿。
+    /// 动作仍缺少本地无法补填的必填项，点击时直接打开飞书，不进入本机草稿。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requires_feishu: Option<bool>,
     pub fields: Vec<WorkflowField>,
@@ -1840,6 +1840,21 @@ mod tests {
         ] {
             assert!(check_state_transition(&changed, &entry).is_err());
         }
+    }
+
+    #[test]
+    fn readonly_related_fields_are_versioned_by_remote_identity() {
+        let build = |id| editing::NodeForm::build_state(
+            &json!({"confirm_form":[{"key":"release","class":"field"}]}), &json!({}),
+            &[json!({"field_key":"release","field_type":"workitem_related_select"})],
+            &json!({"work_item_fields":[{"key":"release","value":{"id":id,"name":"同名发布版本"}}]}),
+        ).unwrap();
+        let mut base = state_entry();
+        base.form = build(2);
+        let mut changed = base.clone();
+        changed.form = build(3);
+        assert_ne!(fingerprint(&[base]), fingerprint(&[changed]),
+            "关联名称相同但事项身份不同，也必须使操作快照失效");
     }
 
     #[test]
