@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   filterItems,
+  nodeFilterValue,
   moveTypeKey,
   orderWorkItems,
   typeColor,
@@ -55,6 +56,107 @@ describe("工作清单排序", () => {
 });
 
 describe("节点和状态的动态筛选候选", () => {
+  const parallel = () => ({ ...item("并行需求", "前端代码合入 / 后端代码合入", "处理中"),
+    current_node_names: ["前端代码合入", "后端代码合入", "后端代码合入"] });
+
+  it("并行节点独立计数，多选取并集且同一事项只返回一次", () => {
+    const shared = parallel();
+    const data = [shared, rows[0], rows[2]];
+    const facets = workflowFacets(data, "", [], [], [], [], []);
+    expect(facets.node.options).toEqual([
+      { value: "后端代码合入", label: "后端代码合入", count: 2 },
+      { value: "后端方案设计", label: "后端方案设计", count: 1 },
+      { value: "前端代码合入", label: "前端代码合入", count: 1 },
+    ]);
+    expect(filterItems(data, "", [], [], [], ["前端代码合入"], [])).toEqual([shared]);
+    expect(filterItems(data, "", [], [], [], ["前端代码合入", "后端代码合入"], []))
+      .toEqual([shared, rows[0]]);
+    expect(filterItems(data, "并行", [], [], [], ["后端代码合入"], ["已解决"])).toEqual([]);
+    expect(filterItems(data, "并行", [], [], [], ["后端代码合入"], ["处理中"]))
+      .toEqual([shared]);
+  });
+
+  it("所有事项共享并行节点时仍提供独立节点候选", () => {
+    const facets = workflowFacets([parallel()], "", [], [], [], [], []);
+    expect(facets.node.visible).toBe(true);
+    expect(facets.node.options.map((option) => option.value)).toEqual(["后端代码合入", "前端代码合入"]);
+  });
+
+  it("旧组合条件继续匹配原组合及计数，且不作为新的节点候选", () => {
+    const shared = parallel();
+    const old = "前端代码合入 / 后端代码合入";
+    expect(filterItems([shared, rows[0]], "", [], [], [], [old], [])).toEqual([shared]);
+    expect(workflowFacets([shared, rows[0]], "", [], [], [], [old], []).node.options)
+      .toContainEqual({ value: old, label: `原条件：${old}`, count: 1 });
+    expect(workflowFacets([shared, rows[0]], "", [], [], [], [], []).node.options)
+      .not.toContainEqual(expect.objectContaining({ value: old }));
+  });
+
+  it("节点名称中的斜线保留原义，新独立名称与旧组合条件保持各自语义", () => {
+    const name = "前端代码合入 / 后端代码合入";
+    const literal = { ...item("单个节点", name, null), current_node_names: [name] };
+    const shared = parallel();
+    expect(filterItems([shared, literal], "", [], [], [], [nodeFilterValue(name)], [])).toEqual([literal]);
+    expect(filterItems([shared, literal], "", [], [], [], [name], [])).toEqual([shared, literal]);
+    const legacy = item("旧后端节点", "设计 / 评审", null);
+    expect(workflowFacets([legacy], "", [], [], [], [], []).node.options)
+      .toEqual([{ value: nodeFilterValue("设计 / 评审"), label: "设计 / 评审", count: 1 }]);
+    expect(filterItems([legacy], "", [], [], [], ["设计"], [])).toEqual([]);
+  });
+
+  it("旧组合不扩大到包含同名独立节点的其他并行组合，新独立条件仍匹配该节点", () => {
+    const shared = parallel();
+    const name = shared.flow.node_name!;
+    const literalWithReview = { ...item("斜线节点与评审并行", `${name} / 评审`, null), current_node_names: [name, "评审"] };
+    expect(filterItems([shared, literalWithReview], "", [], [], [], [name], [])).toEqual([shared]);
+    expect(filterItems([shared, literalWithReview], "", [], [], [], [nodeFilterValue(name)], []))
+      .toEqual([literalWithReview]);
+    const options = workflowFacets([shared, literalWithReview], "", [], [], [], [name], []).node.options;
+    expect(options).toContainEqual({ value: name, label: `原条件：${name}`, count: 1 });
+    expect(options).toContainEqual({ value: nodeFilterValue(name), label: name, count: 1 });
+  });
+
+  it("混合新旧缓存时旧摘要不能冒充真实单节点证据，组合条件不漏掉并行事项", () => {
+    const shared = parallel();
+    const old = item("旧缓存需求", shared.flow.node_name, "处理中");
+    const selection = [shared.flow.node_name!];
+    expect(filterItems([shared, old], "", [], [], [], selection, [])).toEqual([shared, old]);
+    expect(workflowFacets([shared, old], "", [], [], [], selection, []).node.options)
+      .toContainEqual({ value: selection[0], label: `原条件：${selection[0]}`, count: 2 });
+  });
+
+  it("范围之外的同名单节点不影响当前空间旧组合条件的匹配和计数", () => {
+    const shared = parallel();
+    const name = shared.flow.node_name!;
+    const other = { ...item("其他空间单节点", name, null), current_node_names: [name],
+      id: { ...shared.id, project_key: "space-b" } };
+    expect(filterItems([shared, other], "", [], ["space-a"], [], [name], [])).toEqual([shared]);
+    expect(workflowFacets([shared, other], "", [], ["space-a"], [], [name], []).node.options)
+      .toContainEqual({ value: name, label: `原条件：${name}`, count: 1 });
+  });
+
+  it("真实单节点与旧组合同名时，状态筛选不改变节点条件含义或候选计数", () => {
+    const shared = parallel();
+    const name = shared.flow.node_name!;
+    const literal = { ...item("单节点", name, "已解决"), current_node_names: [name] };
+    const data = [shared, literal];
+    expect(filterItems(data, "", [], [], [], [name], ["处理中"])).toEqual([shared]);
+    expect(workflowFacets(data, "", [], [], [], [name], ["处理中"]).state.options)
+      .toEqual([{ value: "处理中", label: "处理中", count: 1 }, { value: "已解决", label: "已解决", count: 1 }]);
+    expect(workflowFacets(data, "", [], [], [], [name], []).state.options)
+      .toContainEqual({ value: "处理中", label: "处理中", count: 1 });
+    expect(filterItems(data, "", [], [], [], [nodeFilterValue(name)], ["处理中"])).toEqual([]);
+  });
+
+  it("已确认空节点及状态流不使用旧摘要中的节点，旧版单节点仍兼容", () => {
+    const cleared = { ...parallel(), current_node_names: [] };
+    const state = { ...parallel(), flow: { ...rows[0].flow, kind: "state" as const } };
+    expect(workflowFacets([cleared, state, rows[0]], "", [], [], [], [], []).node.options)
+      .toEqual([{ value: "后端代码合入", label: "后端代码合入", count: 1 }]);
+    expect(filterItems([cleared, state, rows[0]], "", [], [], [], ["后端代码合入"], []))
+      .toEqual([rows[0]]);
+  });
+
   it("同一筛选内多值取并集，不同筛选取交集，空数组不限制", () => {
     const other = { ...item("其他空间缺陷", "测试", "处理中"),
       id: { project_key: "space-b", work_item_type_key: "issue", work_item_id: "4" },

@@ -1133,6 +1133,7 @@ function Workspace() {
       return { ...item, project_name: name || item.project_name,
         schedule: item.personal_schedules?.[sourceId] || item.schedule,
         flow: usePersonal ? personal : item.flow,
+        current_node_names: usePersonal ? (personal.node_name ? [personal.node_name] : []) : item.current_node_names,
         node_scope: usePersonal ? "personal" as const : undefined };
     });
   }, [data, sourceId]);

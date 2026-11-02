@@ -9,9 +9,41 @@ const matchesFilter = (value: string | null, selection: FilterSelection) => {
   const values = filterValues(selection);
   return !values.length || (value !== null && values.includes(value));
 };
+export const currentNodeNames = (item: CachedItem): string[] =>
+  item.flow.kind === "node" || item.flow.kind === "both"
+    ? [...new Set((item.current_node_names ?? (item.flow.node_name ? [item.flow.node_name] : []))
+      .filter((name) => name.trim()))] : [];
+
 export const nodeScopeLabel = (item: CachedItem) =>
   item.node_scope === "personal" ? "我的待办节点" : "事项当前节点";
 
+const nodeNamePrefix = "\u0000fstodo.node-name:";
+// 含展示分隔符的真实名称使用独立值，避免与旧方案保存的组合文案混淆。
+export const nodeFilterValue = (name: string) => name.includes(" / ") || name.startsWith(nodeNamePrefix)
+  ? nodeNamePrefix + JSON.stringify(name) : name;
+export function nodeFilterLabel(value: string): string {
+  if (value.startsWith(nodeNamePrefix)) {
+    try {
+      const name: unknown = JSON.parse(value.slice(nodeNamePrefix.length));
+      if (typeof name === "string") return name;
+    } catch { /* 未识别的旧值继续原样保留。 */ }
+  }
+  return value;
+}
+
+function nodeMatcher(selection: FilterSelection) {
+  const selected = filterValues(selection).map((value) => {
+    const name = nodeFilterLabel(value);
+    return { value, name, legacy: value === name && nodeFilterValue(value) !== value };
+  });
+  if (!selected.length) return () => true;
+  return (item: CachedItem) => {
+    const nodes = currentNodeNames(item);
+    // 未编码的旧组合保留原有精确展示值语义，不依赖其他候选或筛选条件改变含义。
+    return selected.some(({ value, name, legacy }) => legacy
+      ? nodes.length > 0 && item.flow.node_name === value : nodes.includes(name));
+  };
+}
 export const relatedProjectKey = (space: string | null, project: RelatedProject) =>
   // 关联字段属于事项类型；同一个项目可被多个类型的不同字段引用。
   JSON.stringify([space, project.id]);
@@ -172,7 +204,7 @@ export function filterItems(
 ) {
   const text = query.trim().toLocaleLowerCase();
   const selectedProjects = filterValues(relatedProject);
-  return items.filter(
+  const scoped = items.filter(
     (item) =>
       matchesFilter(item.id.work_item_type_key, type) &&
       matchesFilter(item.id.project_key, project) &&
@@ -180,34 +212,37 @@ export function filterItems(
         ? !item.related_projects?.length
         : item.related_projects?.some((p) => relatedProjectKey(item.id.project_key, p) === selectedProject))) &&
       matchesFilter(item.flow.kind, flowKind) &&
-      matchesFilter(item.flow.node_name, nodeName) &&
       matchesFilter(item.flow.start_state_key_name, stateName) &&
       (!text ||
         [item.name, item.id.work_item_id, item.project_name, ...(item.related_projects || []).map((p) => p.name)].some((v) =>
           v?.toLocaleLowerCase().includes(text),
         )),
   );
+  return scoped.filter(nodeMatcher(nodeName));
 }
 
 function valueFacet(
   items: CachedItem[],
-  getValue: (item: CachedItem) => string | null,
+  getValues: (item: CachedItem) => (string | null)[],
   selected: FilterSelection,
+  selectedCount?: (value: string) => number,
+  labelForValue: (value: string) => string = (value) => value,
 ) {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const value = getValue(item);
-    if (value?.trim()) counts.set(value, (counts.get(value) || 0) + 1);
+    for (const value of new Set(getValues(item))) {
+      if (value?.trim()) counts.set(value, (counts.get(value) || 0) + 1);
+    }
   }
   // An active filter must remain visible so the user can remove it, even at zero results.
   const selectedValues = filterValues(selected);
-  for (const value of selectedValues) if (!counts.has(value)) counts.set(value, 0);
+  for (const value of selectedValues) counts.set(value, selectedCount?.(value) ?? counts.get(value) ?? 0);
   const options = [...counts]
     .sort(([a], [b]) => a.localeCompare(b, "zh-CN"))
-    .map(([value, count]) => ({ value, label: value, count }));
+    .map(([value, count]) => ({ value, label: labelForValue(value), count }));
   return {
     options,
-    visible: selectedValues.length > 0 || options.some(({ count }) => count > 0 && count < items.length),
+    visible: selectedValues.length > 0 || options.length > 1 || options.some(({ count }) => count > 0 && count < items.length),
   };
 }
 
@@ -222,15 +257,19 @@ export function workflowFacets(
   relatedProject: FilterSelection = "",
 ) {
   // Apply the other filters, but exclude each facet's own selection to allow switching values.
+  const nodeItems = filterItems(items, query, type, project, flowKind, "", stateName, relatedProject);
   return {
     node: valueFacet(
-      filterItems(items, query, type, project, flowKind, "", stateName, relatedProject),
-      (item) => item.flow.node_name,
+      nodeItems,
+      (item) => currentNodeNames(item).map(nodeFilterValue),
       nodeName,
+      (value) => nodeItems.filter(nodeMatcher([value])).length,
+      (value) => value === nodeFilterLabel(value) && nodeFilterValue(value) !== value
+        ? `原条件：${value}` : nodeFilterLabel(value),
     ),
     state: valueFacet(
       filterItems(items, query, type, project, flowKind, nodeName, "", relatedProject),
-      (item) => item.flow.start_state_key_name,
+      (item) => [item.flow.start_state_key_name],
       stateName,
     ),
   };

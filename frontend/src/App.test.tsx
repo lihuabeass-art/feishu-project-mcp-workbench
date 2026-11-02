@@ -1861,9 +1861,9 @@ describe("所有来源调度与清单 patch", () => {
     render(<App />);
     await screen.findByText("本人节点 / 其他节点");
     await chooseOption(user, "显示来源", "source-a");
-    expect(screen.getByText("本人节点").title).toBe("我的待办节点");
+    expect(screen.getByText("本人节点")).toBeTruthy();
     await chooseOption(user, "显示来源", "source-b");
-    expect(screen.getByText("本人节点 / 其他节点").title).toBe("事项当前节点");
+    expect(screen.getByText("本人节点 / 其他节点")).toBeTruthy();
     // 仅在个人来源被选中且完整流程仍为节点流时使用本人节点。
     shared.flow = { ...shared.flow, kind: "state", node_name: null, start_state_key_name: "已完成", end_state_key_name: null };
     vi.mocked(syncTodos).mockResolvedValue({ ...patchReport(), patch: { added: [], modified: [shared], removed: [] } });

@@ -6,6 +6,8 @@ import { useState } from "react";
 import { emptyWorkFilters, type WorkFilters } from "./workFilters";
 import { readSchemeDocument, savedFilters, schemeAdjusted, schemeSummary, type FilterSchemeDocument } from "./filterSchemes";
 import { useFilterSchemes } from "./useFilterSchemes";
+import { filterItems, nodeFilterValue } from "./model";
+import type { CachedItem } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const combination: WorkFilters = { ...emptyWorkFilters, type: ["story", "issue"], space: ["space-a", "space-b"],
@@ -18,6 +20,24 @@ const seed = (): FilterSchemeDocument => ({ schemaVersion: 1, schemes: [
 afterEach(cleanup);
 
 describe("saved filter document compatibility", () => {
+  it("保存并恢复含斜线的独立节点条件，摘要展示原名称且不混入并行事项", () => {
+    const name = "前端 / 后端";
+    const filters = { ...emptyWorkFilters, nodeName: [nodeFilterValue(name)] };
+    const document = { schemaVersion: 1, defaultId: "node", schemes: [
+      { id: "node", name: "斜线节点", includeQuery: false, filters },
+    ] };
+    const restored = readSchemeDocument(JSON.parse(JSON.stringify(document)));
+    expect(restored.schemes[0].filters).toEqual(filters);
+    expect(schemeSummary(filters)).toBe(`节点：${name}`);
+    const base = { flow: { kind: "node", node_name: name, node_state_key: null, start_state_key_name: null, end_state_key_name: null },
+      id: { project_key: "space", work_item_type_key: "story", work_item_id: "1" }, name: "原名", project_name: "空间",
+      schedule: { start_raw: null, end_raw: null }, raw_json: "{}", identity_missing_flags: [],
+      first_seen_at_ms: 1, last_seen_at_ms: 1, seen_count: 1 } satisfies CachedItem;
+    const literal = { ...base, current_node_names: [name] };
+    const parallel = { ...base, id: { ...base.id, work_item_id: "2" }, current_node_names: ["前端", "后端"] };
+    expect(filterItems([literal, parallel], "", [], [], [], restored.schemes[0].filters.nodeName, []))
+      .toEqual([literal]);
+  });
   it.each([0, 1])("preserves identities, conditions, labels and default while clearing legacy keywords in v%s documents", (version) => {
     const old = version === 0 ? { version: 0, schemes: seed().schemes, defaultSchemeId: "b" } : { ...seed(), defaultId: "b" };
     const original = structuredClone(old);

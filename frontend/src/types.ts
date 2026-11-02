@@ -19,6 +19,8 @@ export interface CachedItem {
   // 旧版桌面后端不返回此字段。
   source_ids?: string[];
   personal_flows?: Record<string, CachedItem["flow"]>;
+  // 完整缓存详情的当前节点；null/缺失时兼容单个节点摘要，空数组表示已确认无节点。
+  current_node_names?: string[] | null;
   // 当前来源的展示投影；不参与持久化事项身份或筛选方案。
   node_scope?: "personal";
   personal_schedules?: Record<string, CachedItem["schedule"]>;

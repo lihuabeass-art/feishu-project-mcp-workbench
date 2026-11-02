@@ -1,4 +1,5 @@
 import { emptyWorkFilters, type WorkFilters } from "./workFilters";
+import { nodeFilterLabel } from "./model";
 
 export interface FilterScheme {
   id: string;
@@ -67,7 +68,7 @@ export function schemeSummary(filters: WorkFilters) {
   const labels = { space: "空间", type: "事项类型", project: "项目", flowKind: "流程", nodeName: "节点", stateName: "状态" };
   const parts = fields.filter((key) => filters[key].length).map((key) => {
     const names = key === "space" ? filters.spaceLabel : key === "type" ? filters.typeLabel : key === "project" ? filters.projectLabel : {};
-    return `${labels[key]}：${filters[key].map((value) => names[value] || value).join("、")}`;
+    return `${labels[key]}：${filters[key].map((value) => names[value] || (key === "nodeName" ? nodeFilterLabel(value) : value)).join("、")}`;
   });
   return parts.join("；") || "不限条件";
 }
