@@ -1,0 +1,9 @@
+{
+  "identifier": "sync",
+  "description": "允许主窗口监听并清理同步进度事件",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

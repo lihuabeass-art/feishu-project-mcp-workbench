@@ -6,6 +6,8 @@ mod display_mode;
 mod update_download;
 mod update_check;
 mod update_proxy;
+#[cfg(test)]
+mod sync_permissions_tests;
 
 use fstodo_backend::api::Session;
 use fstodo_backend::config::{Config, ConnectionSettings};
