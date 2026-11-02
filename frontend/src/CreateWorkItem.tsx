@@ -41,6 +41,7 @@ import {
 } from "./CreationSettings";
 
 type Draft = {
+  requiredFieldKeys?: string[];
   reviewFieldKeys?: string[];
   recoveredRequestId?: string;
   values: Record<string, unknown>;
@@ -52,6 +53,15 @@ type Draft = {
 const draftKey = (form: CreationForm) =>
   `fstodo.creation.v1:${form.context}:${creationTargetKey(form.target)}`;
 export const creationContinuousKey = "fstodo.creation-continuous.v1";
+function requiredCreationKeys(form: CreationForm, ...groups: (string[] | undefined)[]) {
+  return [...new Set(groups.flatMap((keys) => keys || []))].filter((key) => form.fields.some((field) => field.key === key));
+}
+function includeRequiredVisibility(form: CreationForm, keys: string[]) {
+  const selected = loadCreationVisibility(form);
+  const next = [...new Set([...selected, ...keys])];
+  if (keys.some((key) => !selected.includes(key))) localStorage.setItem(creationVisibilityKey(form), JSON.stringify(next));
+  return next;
+}
 
 function loadContinuousCreation(): boolean {
   try {
@@ -121,6 +131,15 @@ export function CreateWorkItem({
   const panel = useRef<HTMLElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const recoveryNotice = useRef<HTMLDivElement>(null);
+  const [recoveryFocus, setRecoveryFocus] = useState(0);
+  const handledRecoveryFocus = useRef(0);
+  useLayoutEffect(() => {
+    if (stage !== "edit" || recoveryFocus <= handledRecoveryFocus.current || !recoveryNotice.current || !content.current) return;
+    handledRecoveryFocus.current = recoveryFocus;
+    content.current.scrollTop += recoveryNotice.current.getBoundingClientRect().top - content.current.getBoundingClientRect().top - 12;
+    recoveryNotice.current.focus({ preventScroll: true });
+  }, [stage, recoveryFocus]);
   const backdropScrollRef = useScrollIsolation();
   const busyRef = useRef(false);
   const closeRef = useRef(close);
@@ -230,11 +249,13 @@ export function CreateWorkItem({
               labels: saved?.labels || {},
               continueCreating: saved?.continueCreating,
               reviewFieldKeys: saved?.reviewFieldKeys,
+              requiredFieldKeys: requiredCreationKeys(next, saved?.requiredFieldKeys, saved?.reviewFieldKeys),
               ...next.pending,
             }
           : {
               recoveredRequestId: saved?.recoveredRequestId,
               reviewFieldKeys: saved?.reviewFieldKeys,
+              requiredFieldKeys: requiredCreationKeys(next, saved?.requiredFieldKeys, saved?.reviewFieldKeys),
               values,
               labels: saved?.labels || {},
               ...(saved?.request
@@ -244,10 +265,11 @@ export function CreateWorkItem({
             };
         if (restored.result?.outcome === "not_submitted" && saved?.recoveredRequestId === restored.request?.request_id) {
           const recoveredRequestId = restored.request!.request_id;
-          setError(restored.result.message);
-          restored = { values: saved?.recoveredRequestId === recoveredRequestId ? saved.values : restored.values, labels: saved?.recoveredRequestId === recoveredRequestId ? saved.labels : restored.labels, reviewFieldKeys: restored.reviewFieldKeys, continueCreating: restored.continueCreating, recoveredRequestId };
+          setError(requiredCreationKeys(next, restored.result.rejected_field_keys).length ? "" : restored.result.message);
+          restored = { values: saved?.recoveredRequestId === recoveredRequestId ? saved.values : restored.values, labels: saved?.recoveredRequestId === recoveredRequestId ? saved.labels : restored.labels, requiredFieldKeys: restored.requiredFieldKeys, reviewFieldKeys: restored.reviewFieldKeys, continueCreating: restored.continueCreating, recoveredRequestId };
           try {
             localStorage.setItem(draftKey(next), JSON.stringify(restored));
+            includeRequiredVisibility(next, restored.requiredFieldKeys || []);
             await acknowledgeCreationRecovery(recoveredRequestId);
             setRecoveredRecords((ids) => [...ids, recoveredRequestId]);
             recordsChanged?.();
@@ -257,7 +279,8 @@ export function CreateWorkItem({
         }
         if (cancelled) return;
         setForm(next);
-        setSelectedFields(loadCreationVisibility(next));
+        try { setSelectedFields(includeRequiredVisibility(next, restored.requiredFieldKeys || [])); }
+        catch { setSelectedFields([...new Set([...loadCreationVisibility(next), ...(restored.requiredFieldKeys || [])])]); setError("字段显示偏好未能保存，草稿已保留，请检查本机存储后重试。"); }
         setDefaults(localDefaults);
         draftRef.current = restored;
         setDraft(restored);
@@ -357,6 +380,7 @@ export function CreateWorkItem({
       {
         ...(draftRef.current.request ? { request: draftRef.current.request, result: draftRef.current.result } : {}),
         reviewFieldKeys: draftRef.current.reviewFieldKeys,
+        requiredFieldKeys: draftRef.current.requiredFieldKeys,
         recoveredRequestId: draftRef.current.recoveredRequestId,
         values: { ...draftRef.current.values, [key]: value },
         labels: { ...draftRef.current.labels, ...labels },
@@ -364,23 +388,31 @@ export function CreateWorkItem({
       true,
     );
   }
-  async function restoreUnsubmitted(message: string, requestId?: string) {
+  async function restoreUnsubmitted(message: string, requestId?: string, focusNotice = false) {
+    const requiredFieldKeys = requiredCreationKeys(form!, draftRef.current.requiredFieldKeys, draftRef.current.reviewFieldKeys, draftRef.current.result?.rejected_field_keys);
+    const reviewFieldKeys = requiredCreationKeys(form!, draftRef.current.result?.outcome === "not_submitted" ? draftRef.current.result.rejected_field_keys : draftRef.current.reviewFieldKeys);
+    const explainedRejection = draftRef.current.result?.outcome === "not_submitted" && reviewFieldKeys.length > 0;
     const persisted = save(
       {
         recoveredRequestId: requestId ?? draftRef.current.recoveredRequestId,
-        reviewFieldKeys: [...new Set([...(draftRef.current.reviewFieldKeys || []), ...(draftRef.current.result?.rejected_field_keys || [])])].filter((key) => form?.fields.some((field) => field.key === key)),
+        requiredFieldKeys,
+        reviewFieldKeys,
         values: draftRef.current.values,
         labels: draftRef.current.labels,
       },
       true,
     );
+    let visibilitySaved = true;
+    try { setSelectedFields(includeRequiredVisibility(form!, requiredFieldKeys)); }
+    catch { visibilitySaved = false; setSelectedFields([...new Set([...selectedFields, ...requiredFieldKeys])]); }
     setStage("edit");
+    if (focusNotice && reviewFieldKeys.length) setRecoveryFocus((value) => value + 1);
     setError(
-      persisted
-        ? message
+      !visibilitySaved ? "字段显示偏好未能保存，当前填写和本次必填要求已保留。请检查本机存储后重新打开恢复。" : persisted
+        ? explainedRejection ? "" : message
         : `${message} 本机草稿未能保存，当前填写仍保留在此窗口，请检查磁盘空间后重试。`,
     );
-    if (persisted && requestId) {
+    if (persisted && visibilitySaved && requestId) {
       try { await acknowledgeCreationRecovery(requestId); setRecoveredRecords((ids) => [...ids, requestId]); recordsChanged?.(); }
       catch { setError(`${message} 恢复确认未能保存，重新打开后可继续恢复。`); }
     }
@@ -526,7 +558,7 @@ export function CreateWorkItem({
     }
     const missing = form.fields.find(
       (f) =>
-        f.required &&
+        (f.required || draft.requiredFieldKeys?.includes(f.key)) &&
         (creationEmpty(draft.values[f.key]) || f.kind === "unsupported"),
     );
     if (missing) {
@@ -652,7 +684,7 @@ export function CreateWorkItem({
   const locked = !!draft.request && !confirmed && !rejected;
   async function returnToDraft() {
     setPendingEntry(false);
-    if (rejected) await restoreUnsubmitted(draft.result!.message, draft.request?.request_id);
+    if (rejected) await restoreUnsubmitted(draft.result!.message, draft.request?.request_id, true);
     else setStage("edit");
   }
   const spaces = [
@@ -665,7 +697,7 @@ export function CreateWorkItem({
   ];
   const blocked =
     !location ||
-    form?.fields.some((f) => f.required && f.kind === "unsupported");
+    form?.fields.some((f) => (f.required || draft.requiredFieldKeys?.includes(f.key)) && f.kind === "unsupported");
   function control(f: CreationField) {
     const value = draft.values[f.key];
     if (!form) return null;
@@ -758,7 +790,15 @@ export function CreateWorkItem({
     );
   }
   const reviewFields = form?.fields.filter((field) => draft.reviewFieldKeys?.includes(field.key)) || [];
-  const displayedFields = form ? visibleCreationFields(form, [...selectedFields, ...reviewFields.map((field) => field.key)], draft.values) : [];
+  const requiredFieldKeys = form ? requiredCreationKeys(form, draft.requiredFieldKeys) : [];
+  function focusCreationField(key: string) {
+    const field = document.getElementById(`creation-field-${key}`);
+    field?.scrollIntoView?.({ block: "center" });
+    const primary = document.getElementById(`create-${key}`);
+    const control = primary || field?.querySelector<HTMLElement>('input:not([type="hidden"]), textarea, [contenteditable="true"], [role="combobox"]');
+    control?.focus({ preventScroll: true });
+  }
+  const displayedFields = form ? visibleCreationFields(form, [...selectedFields, ...requiredFieldKeys, ...reviewFields.map((field) => field.key)], draft.values).map((field) => requiredFieldKeys.includes(field.key) ? { ...field, required: true } : field) : [];
   const groups = [
     {
       title: "基本信息",
@@ -870,7 +910,7 @@ export function CreateWorkItem({
                 </p>
               )}
               {locked && <div className="creation-pending-note" role="status"><CircleAlert size={18} /><div><strong>这份草稿仍有待核验的提交</strong><p>当前仅供查看；为避免重复创建，确认上次结果前不能编辑或再次提交。</p></div><button className="secondary" onClick={() => setStage("result")}>核验创建结果</button></div>}
-              {!!reviewFields.length && <div className="creation-pending-note" role="note"><CircleAlert size={18} /><div><strong>本次需核对</strong><p>飞书校验提及以下字段，已保留原填写内容。请核对内容与人员选择后重新核对创建。</p><div className="creation-review-links">{reviewFields.map((field) => <button className="text-button" key={field.key} onClick={() => { const element = document.getElementById(`creation-field-${field.key}`); element?.scrollIntoView?.({ block: "center" }); element?.querySelector<HTMLElement>("input, textarea, button")?.focus(); }}>{field.label}</button>)}</div></div></div>}
+              {!!reviewFields.length && <div className="creation-required-notice" role="note" tabIndex={-1} ref={recoveryNotice} aria-label="已自动显示本次创建必填字段"><CircleAlert size={20} aria-hidden="true" /><div><strong>已自动显示本次创建必填字段</strong><p>飞书提交校验返回这些本次必填字段。原填写已保留，请核对后继续。</p><div className="creation-review-links">{reviewFields.map((field) => <button className="text-button" key={field.key} aria-label={field.label} onClick={() => focusCreationField(field.key)}>{field.label}<span className="creation-review-link-state">{creationEmpty(draft.values[field.key]) ? "尚未填写，请补充" : "已有内容，请核对"}</span></button>)}</div></div></div>}
               {!locked && <p className="hint">
                 标有 <span className="creation-required">*</span>{" "}
                 的字段为必填。填写会自动保存到本机，关闭窗口或重启后可继续。
@@ -878,6 +918,7 @@ export function CreateWorkItem({
               {locked ? <CreationReview form={form} groups={groups} values={draft.request!.fields} labels={draft.labels} /> : <fieldset className="creation-fields creation-draft-fields">
                 {form.fields.some((field) => !fixedCreationField(field)) && <CreationFieldTip />}
                 <CreationFieldVisibility key={`${form.context}:${creationTargetKey(form.target)}`} form={form}
+                  requiredKeys={requiredFieldKeys}
                   selected={selectedFields} values={draft.values} disabled={imageBusy}
                   onChange={(keys) => {
                     try {
@@ -911,7 +952,6 @@ export function CreateWorkItem({
                         <div className="creation-field" key={f.key} id={`creation-field-${f.key}`}>
                           <label htmlFor={`create-${f.key}`}>
                             {f.label}
-                            {reviewFields.some((field) => field.key === f.key) && <span className="creation-field-review-note">本次需核对</span>}
                             {f.required && (
                               <span
                                 className="creation-required"
@@ -923,6 +963,7 @@ export function CreateWorkItem({
                             )}
                           </label>
                           <div className="creation-field-value">
+                            {requiredFieldKeys.includes(f.key) && <p className="creation-field-required-status"><CircleAlert size={14} aria-hidden="true" /><strong>本次创建必填</strong>{reviewFields.some((field) => field.key === f.key) && <span>{creationEmpty(draft.values[f.key]) ? "尚未填写，请补充" : "已有内容，请核对"}</span>}</p>}
                             {control(f)}
                             {f.kind === "bool" && !f.required && !creationEmpty(draft.values[f.key]) && (
                               <button type="button" className="text-button" onClick={() => change(f.key, null)}>

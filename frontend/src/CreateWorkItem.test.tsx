@@ -167,6 +167,27 @@ async function fill(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("通用创建表单", () => {
+  it.each([{ tester: [] }, { tester: ["person-a"] }])("必填提示链接聚焦人员主控件和富文本正文，已有值=$tester", async ({ tester }) => {
+    const next = form();
+    next.fields.push({ key: "tester", label: "测试负责人", kind: "people", required: false, multiple: true, initial: [], options: [] });
+    const values = { name: "快捷定位", description: "已填写的正文", tester, reporter: ["a"], template: "1", zero: 0 };
+    next.pending = { request: { target, request_id: "focus-required", version: "v1", fields: values }, result: { ...result("unknown"), outcome: "not_submitted", item_id: null, rejected_field_keys: ["tester", "description"] } };
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "返回草稿" }));
+    const notice = screen.getByRole("note", { name: "已自动显示本次创建必填字段" });
+    await user.click(within(notice).getByRole("button", { name: "测试负责人" }));
+    const people = screen.getByRole("combobox", { name: "测试负责人" });
+    expect(document.activeElement).toBe(people);
+    expect(people.getAttribute("aria-expanded")).toBe("false");
+    await user.click(within(notice).getByRole("button", { name: "说明" }));
+    const description = screen.getByRole("textbox", { name: "说明" });
+    expect(document.activeElement).toBe(description);
+    expect(description.getAttribute("contenteditable")).toBe("true");
+    expect(JSON.parse(localStorage.getItem(`fstodo.creation.v1:account-a:${creationTargetKey(target)}`)!).values).toEqual(values);
+  });
+
   it.each(["create", "verify"])("%s等待结果时补齐的关联名称不会被旧操作快照覆盖", async (mode) => {
     const next = form();
     next.fields.push({ key: "parent", label: "所属需求", kind: "relation", required: false, multiple: false, initial: null, options: [] });
@@ -234,6 +255,7 @@ describe("通用创建表单", () => {
     const saved = JSON.parse(localStorage.getItem(key)!);
     expect(saved.values).toEqual({ ...values, name: "查询中编辑标题" });
     expect(saved.reviewFieldKeys).toEqual(["parent"]);
+    expect(saved.requiredFieldKeys).toEqual(["parent"]);
     expect(saved.recoveredRequestId).toBe("old");
     await user.click(screen.getByRole("button", { name: "核对内容" }));
     expect(within(document.querySelector(".creation-review")!).getByText("统一搜索体验")).toBeTruthy();
@@ -1419,6 +1441,112 @@ describe("通用创建表单", () => {
     expect(saved.values.reporter).toEqual(["b"]);
   });
 
+  it.each(["historical", "fresh"])("%s拒绝返回草稿定位本次必填提示，保留已选人员并持续校验", async (mode) => {
+    const next = form();
+    next.fields.push({ key: "tester", label: "测试负责人", kind: "people", required: false, multiple: true, initial: [], options: [] });
+    const values = { name: "保留已填写事项", description: "![](https://example.com/retained.png)", reporter: ["a"], template: "1", zero: 0, tester: ["person-a"] };
+    const rejected = { ...result("unknown"), outcome: "not_submitted" as const, item_id: null, message: "本次提交需要测试负责人", rejected_field_keys: ["tester", "removed"] };
+    const key = `fstodo.creation.v1:account-a:${creationTargetKey(target)}`;
+    if (mode === "historical") next.pending = { request: { target, version: "v1", request_id: "required-filled", fields: values }, result: rejected };
+    else { localStorage.setItem(key, JSON.stringify({ values, labels: { "tester:person-a": "测试同学" } })); vi.mocked(createWorkItem).mockResolvedValueOnce(rejected); }
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const user = userEvent.setup();
+    const props = { locations, close: vi.fn(), created: vi.fn() };
+    const mounted = render(<CreateWorkItem {...props} />);
+    if (mode === "fresh") { await user.click(await screen.findByRole("button", { name: "核对内容" })); await user.click(screen.getByRole("button", { name: "确认创建" })); }
+    await user.click(await screen.findByRole("button", { name: "返回草稿" }));
+    const notice = screen.getByRole("note", { name: "已自动显示本次创建必填字段" });
+    expect(document.activeElement).toBe(notice);
+    expect(screen.getByRole("combobox", { name: "测试负责人" }).getAttribute("aria-required")).toBe("true");
+    expect(JSON.parse(localStorage.getItem(key)!).values).toEqual(values);
+    expect(JSON.parse(localStorage.getItem(key)!).requiredFieldKeys).toEqual(["tester"]);
+    expect(screen.queryByRole("alert")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    await user.click(screen.getByRole("button", { name: "返回编辑" }));
+    expect(screen.queryByRole("note", { name: "已自动显示本次创建必填字段" })).toBeNull();
+    expect(document.activeElement).not.toBe(notice);
+    const personLabel = mode === "fresh" ? "测试同学" : "person-a";
+    await user.click(screen.getByRole("button", { name: `从测试负责人移除${personLabel}` }));
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    expect(screen.getByRole("alert").textContent).toContain("请填写「测试负责人」");
+    mounted.unmount();
+    render(<CreateWorkItem {...props} />);
+    const tester = await screen.findByRole("combobox", { name: "测试负责人" });
+    expect(tester.getAttribute("aria-required")).toBe("true");
+    expect(screen.queryByRole("note", { name: "已自动显示本次创建必填字段" })).toBeNull();
+  });
+
+  it("本次必填显示偏好保存失败保留草稿且不提前确认恢复", async () => {
+    const next = form();
+    next.fields.push({ key: "tester", label: "测试负责人", kind: "people", required: false, multiple: true, initial: [], options: [] });
+    next.pending = { request: { target, version: "v1", request_id: "required-visibility-save", fields: { name: "保留草稿", tester: ["a"] } }, result: { ...result("unknown"), outcome: "not_submitted", item_id: null, rejected_field_keys: ["tester"] } };
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const original = Storage.prototype.setItem;
+    const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === creationVisibilityKey(next)) throw new Error("quota");
+      original.call(this, key, value);
+    });
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "返回草稿" }));
+    expect(screen.getByRole("alert").textContent).toContain("字段显示偏好未能保存");
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "acknowledge_creation_recovery")).toBe(false);
+    expect(screen.getByRole("combobox", { name: "测试负责人" }).textContent).toContain("a");
+    expect(JSON.parse(localStorage.getItem(`fstodo.creation.v1:account-a:${creationTargetKey(target)}`)!).values.tester).toEqual(["a"]);
+    storage.mockRestore();
+  });
+
+  it("累计已确认必填但只核对最新拒绝字段，不影响其他类型", async () => {
+    const next = form();
+    next.fields.push({ key: "tester", label: "测试负责人", kind: "people", required: false, multiple: true, initial: [], options: [] });
+    const values = { name: "最新校验", description: "已有描述", reporter: ["a"], template: "1", tester: ["a"], zero: 0 };
+    const key = `fstodo.creation.v1:account-a:${creationTargetKey(target)}`;
+    localStorage.setItem(key, JSON.stringify({ values, labels: {}, requiredFieldKeys: ["description"], reviewFieldKeys: ["description"] }));
+    next.pending = { request: { target, request_id: "latest-rejected", version: "v1", fields: values }, result: { ...result("unknown"), outcome: "not_submitted", item_id: null, rejected_field_keys: ["tester"] } };
+    const other = { ...next, target: locations[1], pending: null };
+    vi.mocked(getCreationForm).mockImplementation(async (target) => target.type_key === "issue" ? other : next);
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "返回草稿" }));
+    const notice = screen.getByRole("note", { name: "已自动显示本次创建必填字段" });
+    expect(within(notice).getByRole("button", { name: "测试负责人" })).toBeTruthy();
+    expect(within(notice).queryByRole("button", { name: "说明" })).toBeNull();
+    const saved = JSON.parse(localStorage.getItem(key)!);
+    expect(saved.requiredFieldKeys).toEqual(["description", "tester"]);
+    expect(saved.reviewFieldKeys).toEqual(["tester"]);
+    expect(saved.values).toEqual(values);
+    vi.mocked(createWorkItem).mockRejectedValueOnce({ before_write: true, message: "本次没有创建权限" });
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    await user.click(screen.getByRole("button", { name: "确认创建" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("本次没有创建权限"));
+    await user.click(screen.getByRole("combobox", { name: "新建类型" }));
+    await user.click(screen.getByRole("option", { name: "缺陷跟踪" }));
+    await screen.findByRole("textbox", { name: "标题" });
+    expect(screen.queryByRole("combobox", { name: "测试负责人" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /显示字段 ·/ }));
+    await user.click(screen.getByRole("button", { name: "显示测试负责人" }));
+    expect(screen.getByRole("combobox", { name: "测试负责人" }).getAttribute("aria-required")).toBe("false");
+  });
+
+  it("连续创建的新草稿保留字段显示偏好但不继承上次提交的必填观察", async () => {
+    const next = form();
+    next.fields.push({ key: "tester", label: "测试负责人", kind: "people", required: false, multiple: true, initial: [], options: [] });
+    next.pending = { request: { target, request_id: "previous-required", version: "v1", fields: { name: "上一条", description: "已有内容", reporter: ["a"], template: "1", tester: ["a"], zero: 0 } }, result: { ...result("unknown"), outcome: "not_submitted", item_id: null, rejected_field_keys: ["tester"] } };
+    vi.mocked(getCreationForm).mockResolvedValueOnce(next).mockResolvedValue({ ...next, pending: null });
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "返回草稿" }));
+    await user.click(screen.getByRole("switch", { name: "连续创建" }));
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    await user.click(screen.getByRole("button", { name: "确认创建" }));
+    await screen.findByText("上一条工作事项已创建并核验，可以继续填写下一条。");
+    expect(screen.getByRole("combobox", { name: "测试负责人" }).getAttribute("aria-required")).toBe("false");
+    expect(screen.queryByText("本次创建必填")).toBeNull();
+    const saved = JSON.parse(localStorage.getItem(`fstodo.creation.v1:account-a:${creationTargetKey(target)}`)!);
+    expect(saved.requiredFieldKeys).toBeUndefined();
+    expect(saved.values.tester).toEqual([]);
+  });
+
   it("飞书校验提及的可选空角色恢复后显式展示，保留图片并跨重开提示直到重新核对", async () => {
     const next = form();
     next.fields.push({ key: "tester", label: "测试负责人", kind: "people", required: false, multiple: true, initial: [], options: [] });
@@ -1430,19 +1558,38 @@ describe("通用创建表单", () => {
     const mounted = render(<CreateWorkItem {...props} />);
     await user.click(await screen.findByRole("button", { name: "返回草稿" }));
     expect(screen.getByRole("button", { name: "测试负责人" })).toBeTruthy();
-    expect(screen.getByText(/飞书校验提及以下字段/)).toBeTruthy();
+    expect(screen.getByText("已自动显示本次创建必填字段")).toBeTruthy();
+    const notice = screen.getByRole("note", { name: "已自动显示本次创建必填字段" });
+    expect(within(notice).getByRole("button", { name: "说明" }).textContent).toContain("已有内容，请核对");
+    expect(within(notice).getByRole("button", { name: "测试负责人" }).textContent).toContain("尚未填写，请补充");
     const key = `fstodo.creation.v1:account-a:${creationTargetKey(target)}`;
     expect(JSON.parse(localStorage.getItem(key)!).values.description).toBe(image);
     expect(JSON.parse(localStorage.getItem(key)!).reviewFieldKeys).toEqual(["tester", "description"]);
+    expect(JSON.parse(localStorage.getItem(key)!).requiredFieldKeys).toEqual(["tester", "description"]);
+    expect(loadCreationVisibility(next)).toContain("tester");
+    await user.click(screen.getByRole("button", { name: /显示字段 ·/ }));
+    expect(screen.getByRole("button", { name: "隐藏测试负责人" })).toHaveProperty("disabled", true);
+    expect(screen.getByText("本次创建必填 · 已显示")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /显示字段 ·/ }));
     mounted.unmount();
     render(<CreateWorkItem {...props} />);
-    await screen.findByText(/飞书校验提及以下字段/);
+    await screen.findByText("已自动显示本次创建必填字段");
     expect(next.fields.find((field) => field.key === "tester")!.required).toBe(false);
     fireEvent.change(screen.getByRole("textbox", { name: "标题" }), { target: { value: "已核对标题" } });
     await user.click(screen.getByRole("button", { name: "核对内容" }));
+    expect(screen.getByRole("alert").textContent).toContain("请填写「测试负责人」");
+    expect(screen.queryByRole("heading", { name: "核对创建内容" })).toBeNull();
+    await user.click(screen.getByRole("combobox", { name: "测试负责人" }));
+    await user.click(await screen.findByRole("option", { name: "示例用户" }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
     await screen.findByRole("heading", { name: "核对创建内容" });
     expect(JSON.parse(localStorage.getItem(key)!).reviewFieldKeys).toBeUndefined();
-    expect(screen.queryByText(/飞书校验提及以下字段/)).toBeNull();
+    expect(screen.queryByText("已自动显示本次创建必填字段")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "返回编辑" }));
+    expect(screen.getByRole("combobox", { name: "测试负责人" }).getAttribute("aria-required")).toBe("true");
+    expect(screen.queryByText("已自动显示本次创建必填字段")).toBeNull();
+    expect(JSON.parse(localStorage.getItem(key)!).requiredFieldKeys).toEqual(["tester", "description"]);
     expect(createWorkItem).not.toHaveBeenCalled();
   });
 

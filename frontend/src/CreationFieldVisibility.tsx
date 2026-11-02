@@ -45,9 +45,10 @@ const fieldGroups = [
 const fieldGroup = (field: CreationField) =>
   field.kind === "people" || field.role_id ? "people" : field.kind === "relation" ? "relation" : "basic";
 
-export function CreationFieldVisibility({ form, selected, values, disabled, onChange }: {
+export function CreationFieldVisibility({ form, selected, values, disabled, onChange, requiredKeys = [] }: {
   form: CreationForm; selected: string[]; values: Record<string, unknown>;
   disabled: boolean; onChange: (keys: string[]) => void;
+  requiredKeys?: string[];
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -72,7 +73,7 @@ export function CreationFieldVisibility({ form, selected, values, disabled, onCh
   }, [open]);
   const optional = form.fields.filter((field) => !fixedCreationField(field));
   if (!optional.length) return null;
-  const visible = visibleCreationFields(form, selected, values);
+  const visible = visibleCreationFields(form, [...selected, ...requiredKeys], values);
   const matches = (field: CreationField) => (group === "all" || fieldGroup(field) === group) &&
     field.label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   const candidates = optional.filter(matches);
@@ -112,16 +113,17 @@ export function CreationFieldVisibility({ form, selected, values, disabled, onCh
         {candidates.map((field) => {
           const shown = visible.includes(field);
           const filled = !creationEmpty(values[field.key]);
-          const status = filled ? "已填写" : shown ? "已显示" : "点击添加";
+          const requiredHere = requiredKeys.includes(field.key);
+          const status = requiredHere ? "本次创建必填 · 已显示" : filled ? "已填写" : shown ? "已显示" : "点击添加";
           const Icon = fieldGroup(field) === "people" ? UsersRound : fieldGroup(field) === "relation" ? Link2 : SlidersHorizontal;
-          return <button type="button" key={field.key} className="creation-field-card"
+          return <button type="button" key={field.key} className={`creation-field-card${requiredHere ? " is-current-required" : ""}`}
             aria-label={`${shown ? "隐藏" : "显示"}${field.label}`} aria-pressed={shown}
-            disabled={disabled || filled} title={filled ? "已有内容，请先清空后隐藏" : undefined}
+            disabled={disabled || filled || requiredHere} title={requiredHere ? "本次创建必填，保留显示" : filled ? "已有内容，请先清空后隐藏" : undefined}
             onClick={() => onChange(shown ? selected.filter((key) => key !== field.key) : [...new Set([...selected, field.key])])}>
             <Icon size={16} className="creation-field-card-icon" aria-hidden="true" />
             <span className="creation-field-card-copy"><span>{field.label}</span><small>{status}</small></span>
             <span className="creation-field-card-state" aria-hidden="true">
-              {filled ? <LockKeyhole size={13} /> : shown ? <Check size={14} /> : <Plus size={14} />}
+              {filled || requiredHere ? <LockKeyhole size={13} /> : shown ? <Check size={14} /> : <Plus size={14} />}
             </span>
           </button>;
         })}
