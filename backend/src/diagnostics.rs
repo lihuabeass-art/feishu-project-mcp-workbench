@@ -1,4 +1,5 @@
-//! Bounded local performance logs. Only fixed labels, durations and result categories are accepted.
+//! Bounded local diagnostics. Performance events use fixed labels and result categories;
+//! catalog failures additionally retain a redacted, bounded backend error for diagnosis.
 use std::{
     fs,
     io::{self, BufRead, Read, Write},
@@ -99,15 +100,17 @@ fn maintain() -> io::Result<()> {
 
 fn prune(dir: &Path, now: SystemTime) -> io::Result<()> {
     // Touch only this logger's fixed filenames; leave unrelated files alone.
-    for index in 0..FILE_COUNT {
-        let path = dir.join(format!("performance-{index}.jsonl"));
-        if let Ok(meta) = fs::metadata(&path) {
-            if first_record_time(&path)
-                .or_else(|| meta.modified().ok())
-                .and_then(|at| now.duration_since(at).ok())
-                .is_some_and(|age| age >= RETENTION)
-            {
-                fs::remove_file(path)?;
+    for prefix in ["performance", "catalog"] {
+        for index in 0..FILE_COUNT {
+            let path = dir.join(format!("{prefix}-{index}.jsonl"));
+            if let Ok(meta) = fs::metadata(&path) {
+                if first_record_time(&path)
+                    .or_else(|| meta.modified().ok())
+                    .and_then(|at| now.duration_since(at).ok())
+                    .is_some_and(|age| age >= RETENTION)
+                {
+                    fs::remove_file(path)?;
+                }
             }
         }
     }
@@ -122,19 +125,19 @@ fn first_record_time(path: &Path) -> Option<SystemTime> {
     UNIX_EPOCH.checked_add(Duration::from_millis(data["at_ms"].as_u64()?))
 }
 
-fn append(dir: &Path, line: &[u8]) -> io::Result<()> {
+fn append(dir: &Path, prefix: &str, line: &[u8]) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     prune(dir, SystemTime::now())?;
-    let active = dir.join("performance-0.jsonl");
+    let active = dir.join(format!("{prefix}-0.jsonl"));
     if fs::metadata(&active).map_or(0, |m| m.len()) + line.len() as u64 > FILE_BYTES {
-        let oldest = dir.join(format!("performance-{}.jsonl", FILE_COUNT - 1));
+        let oldest = dir.join(format!("{prefix}-{}.jsonl", FILE_COUNT - 1));
         if oldest.exists() {
             fs::remove_file(oldest)?;
         }
         for index in (0..FILE_COUNT - 1).rev() {
-            let source = dir.join(format!("performance-{index}.jsonl"));
+            let source = dir.join(format!("{prefix}-{index}.jsonl"));
             if source.exists() {
-                fs::rename(source, dir.join(format!("performance-{}.jsonl", index + 1)))?;
+                fs::rename(source, dir.join(format!("{prefix}-{}.jsonl", index + 1)))?;
             }
         }
     }
@@ -151,15 +154,28 @@ pub(crate) fn record(
     outcome: &'static str,
     reused: bool,
 ) {
+    write_event("performance", &event(operation, started, outcome, reused));
+}
+
+pub(crate) fn record_catalog_failure(error: &crate::BackendError, secret: Option<&str>) {
+    write_event("catalog", &catalog_failure_event(error, secret));
+}
+
+fn catalog_failure_event(error: &crate::BackendError, secret: Option<&str>) -> serde_json::Value {
+    let mut value = event("workspace_catalog", Instant::now(), error.kind().as_str(), false);
+    value["error_message"] = error.safe_message(secret).chars().take(4096).collect::<String>().into();
+    value
+}
+
+fn write_event(prefix: &'static str, value: &serde_json::Value) {
     init();
-    let value = event(operation, started, outcome, reused);
-    let Ok(mut line) = serde_json::to_vec(&value) else {
+    let Ok(mut line) = serde_json::to_vec(value) else {
         return;
     };
     line.push(b'\n');
     let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(dir) = directory() {
-        let _ = append(&dir, &line);
+        let _ = append(&dir, prefix, &line);
     }
 }
 
@@ -179,6 +195,21 @@ fn event(operation: &'static str, started: Instant, outcome: &'static str, reuse
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_failure_diagnostics_preserve_context_but_redact_tokens_and_bound_text() {
+        let error = crate::BackendError::Tool {
+            tool: "search_by_mql".into(), code: None,
+            message: format!("RPCError: search timeout; token=fixture-token; log_id: example-log {}", "x".repeat(5000)),
+        };
+        let value = catalog_failure_event(&error, Some("fixture-token"));
+        assert_eq!(value["operation"], "workspace_catalog");
+        assert_eq!(value["outcome"], "tool");
+        let message = value["error_message"].as_str().unwrap();
+        assert!(message.contains("search_by_mql") && message.contains("example-log"));
+        assert!(message.contains("***") && !message.contains("fixture-token"));
+        assert_eq!(message.chars().count(), 4096);
+    }
 
     #[tokio::test]
     async fn detached_attempts_keep_workflow_counts_and_request_identity() {
@@ -210,20 +241,22 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("keep.txt"), "keep").unwrap();
         let line = vec![b'x'; FILE_BYTES as usize];
-        for _ in 0..FILE_COUNT + 3 {
-            append(&dir, &line).unwrap();
+        for prefix in ["performance", "catalog"] {
+            for _ in 0..FILE_COUNT + 3 {
+                append(&dir, prefix, &line).unwrap();
+            }
         }
         let logs: Vec<_> = fs::read_dir(&dir)
             .unwrap()
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
             .collect();
-        assert_eq!(logs.len(), FILE_COUNT);
+        assert_eq!(logs.len(), FILE_COUNT * 2);
         assert_eq!(
             logs.iter()
                 .map(|e| e.metadata().unwrap().len())
                 .sum::<u64>(),
-            FILE_BYTES * FILE_COUNT as u64
+            FILE_BYTES * FILE_COUNT as u64 * 2
         );
         prune(&dir, SystemTime::now() + RETENTION + Duration::from_secs(1)).unwrap();
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);

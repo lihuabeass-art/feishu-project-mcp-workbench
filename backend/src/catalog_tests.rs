@@ -101,6 +101,7 @@ async fn alias_and_canonical_inputs_merge_new_options_for_all_types() {
     ]);
     let result=refresh_catalog(&fake,inputs,Vec::new(),3,None).await.unwrap();
     assert!(result.warnings.is_empty());
+    assert!(result.warning_kinds.is_empty());
     assert_eq!(result.spaces.len(),1);
     let projects=&result.spaces[0].projects;
     assert_eq!(projects.len(),6);
@@ -149,9 +150,51 @@ async fn alias_only_cached_options_survive_failed_refresh_during_canonical_merge
         types:BTreeSet::from(["story".into()]), ..Default::default() })]);
     let result=refresh_catalog(&fake,inputs,cached,3,None).await.unwrap();
     assert_eq!(result.warnings.len(),if space_read_ok { 1 } else { 2 });
+    assert_eq!(result.warning_kinds,vec!["parse"; result.warnings.len()]);
     assert_eq!(result.spaces.len(),1);
     assert_eq!(result.spaces[0].project_key,"p");
     assert_eq!(result.spaces[0].projects.len(),2);
     }
     }
+}
+
+#[tokio::test]
+async fn catalog_failures_expose_stable_kinds_and_redacted_diagnostics_without_losing_cache() {
+    struct FailingCatalog;
+    #[async_trait]
+    impl TodoSource for FailingCatalog {
+        async fn describe(&self) -> Result<ConnectionInfo, BackendError> { unreachable!() }
+        async fn close(&mut self) {}
+        async fn call_tool(&self, tool: &str, _: &serde_json::Map<String, Value>) -> Result<ToolResultPayload, BackendError> {
+            match tool {
+                "search_project_info" => Err(BackendError::Auth {
+                    endpoint: "https://service.example.invalid/mcp".into(), challenge: None,
+                    detail: "fixture-token rejected".into(),
+                }),
+                "list_workitem_field_config" => Ok(ToolResultPayload::from_json(fields())),
+                "search_by_mql" => Ok(ToolResultPayload {
+                    is_error: true, structured: None,
+                    text_blocks: vec!["RPCError: search timeout; token=fixture-token; log_id: example-log".into()],
+                }),
+                _ => panic!("目录不应发出其他请求：{tool}"),
+            }
+        }
+    }
+    let cached = vec![SpaceCatalog {
+        project_key: "p".into(), name: Some("正式空间".into()), simple_name: None,
+        projects: vec![ProjectOption { type_key: "story".into(), project: RelatedProject {
+            field_key: "custom-project".into(), id: "1".into(), name: "历史项目".into(),
+        } }],
+    }];
+    let expected = serde_json::to_value(&cached).unwrap();
+    let inputs = std::collections::BTreeMap::from([("p".into(), CatalogInput {
+        types: BTreeSet::from(["story".into()]), ..Default::default()
+    })]);
+    let result = refresh_catalog(&FailingCatalog, inputs, cached, 3, Some("fixture-token")).await.unwrap();
+    assert_eq!(result.warning_kinds, ["auth", "tool"]);
+    assert_eq!(result.warnings.len(), 2);
+    assert!(result.warnings[1].contains("search_by_mql"));
+    assert!(result.warnings[1].contains("example-log"));
+    assert!(result.warnings.iter().all(|warning| !warning.contains("fixture-token") && warning.contains("***")));
+    assert_eq!(serde_json::to_value(&result.spaces).unwrap(), expected);
 }

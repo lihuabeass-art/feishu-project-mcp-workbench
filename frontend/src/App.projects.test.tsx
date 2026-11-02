@@ -94,12 +94,14 @@ it.each([false, true])("目录刷新失败时保留筛选，通过统一入口�
   const data = snapshot();
   data.capabilities!.incremental_sync = incremental;
   vi.mocked(loadSnapshot).mockResolvedValue({ ...data, workspace_catalog: catalog });
-  vi.mocked(refreshWorkspaceCatalog).mockRejectedValueOnce({ message: "暂时不可读" })
+  vi.mocked(refreshWorkspaceCatalog).mockRejectedValueOnce({ kind: "connection", message: "RPCError: timeout; https://service.example.invalid; log_id: example-log" })
     .mockResolvedValue({ spaces: catalog, warnings: [] });
   vi.mocked(syncTodos).mockResolvedValue(report(incremental));
   const user = userEvent.setup();
   render(<App />);
   expect(await screen.findByText(/空间与项目目录未刷新/)).toBeTruthy();
+  expect(screen.getByText(/空间与项目目录未刷新/).textContent).toContain("暂时无法连接服务");
+  expect(document.body.textContent).not.toMatch(/RPCError|service\.example|log_id|example-log/);
   await choose(user, "所属项目", "医生平台");
   expect(screen.queryByRole("button", { name: "刷新空间与项目" })).toBeNull();
   await user.click(screen.getByRole("button", { name: "立即刷新" }));
@@ -107,6 +109,31 @@ it.each([false, true])("目录刷新失败时保留筛选，通过统一入口�
   expect(refreshWorkspaceCatalog).toHaveBeenCalledTimes(2);
   expect(syncTodos).toHaveBeenCalledOnce();
   expect(screen.getByRole("combobox", { name: "所属项目" }).textContent).toBe("医生平台");
+});
+
+it.each([
+  ["tool", "服务暂时无法完成读取，请稍后重试"],
+  ["auth", "连接凭证已失效，请在连接设置中更新 Token"],
+  ["permission", "没有读取权限，请检查账号在原软件中的访问权限"],
+  [undefined, "暂时无法获取最新信息，请稍后重试"],
+])("目录部分失败只显示分类提示并保留筛选（类别：%s）", async (kind, message) => {
+  vi.mocked(loadSnapshot).mockResolvedValue({ ...snapshot(), workspace_catalog: catalog });
+  const directory = deferred<CatalogRefresh>();
+  vi.mocked(refreshWorkspaceCatalog).mockReturnValue(directory.promise);
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByText("需求0");
+  await choose(user, "所属项目", "医生平台");
+  const diagnostic = "空间 sample-space 的项目选项未刷新：RPCError search_by_mql https://search.example.invalid; log_id: example-log";
+  await act(async () => directory.resolve({ spaces: catalog, warnings: [diagnostic, diagnostic],
+    ...(kind ? { warning_kinds: [kind, kind] } : {}),
+  }));
+  const hint = screen.getByText(/空间与项目目录未刷新/);
+  expect(hint.textContent).toBe(`空间与项目目录未刷新，已保留现有内容：${message}。`);
+  expect(document.body.textContent).not.toMatch(/sample-space|RPCError|search_by_mql|search\.example|log_id|example-log/);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("combobox", { name: "所属项目" }).textContent).toBe("医生平台");
+  expect(within(screen.getByRole("region", { name: "工作清单" })).getByText("需求1")).toBeTruthy();
 });
 
 it.each([false, true])("目录自动读取未完成时立即刷新复用请求，连续点击不重复同步（增量：%s）", async (incremental) => {

@@ -524,10 +524,13 @@ function Workspace() {
     void task.promise.then((result) => {
       if (cancelled || request !== catalogRequest.current) return;
       setData((current) => current ? { ...current, workspace_catalog: result.spaces } : current);
-      setCatalogWarning(result.warnings.join("；"));
+      const kinds = result.warning_kinds?.length ? result.warning_kinds : result.warnings.length ? ["unknown"] : [];
+      setCatalogWarning(kinds.length
+        ? `空间与项目目录未刷新，已保留现有内容：${[...new Set(kinds.map(readFailureMessage))].join("；")}。`
+        : "");
     }).catch((error) => {
       if (!cancelled && request === catalogRequest.current)
-        setCatalogWarning(`空间与项目目录未刷新，保留上次缓存：${asError(error).message}`);
+        setCatalogWarning(`空间与项目目录未刷新，已保留现有内容：${readFailureMessage(asError(error).kind)}。`);
     }).finally(() => {
       if (catalogInFlight.current === task) catalogInFlight.current = null;
     });

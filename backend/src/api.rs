@@ -199,30 +199,38 @@ impl Session {
 
     /// 只读取空间及关联项目目录；目录故障保留上次成功缓存，并独立报告。
     pub fn refresh_workspace_catalog(&self) -> Result<crate::catalog::CatalogRefresh, BackendError> {
-        let generation = self.store.begin_workspace_catalog_refresh()?;
-        let credential = self.credential()?;
-        let client = self.client(&credential);
-        let mut inputs = self.store.catalog_inputs()?;
-        for source in &self.config.sources {
-            match &source.kind {
-                SourceKind::WorkItemType { project_key: Some(key), type_key } => {
-                    inputs.entry(key.clone()).or_default().types.extend(type_key.iter().cloned());
-                },
-                SourceKind::View { project_key: Some(key), .. } => { inputs.entry(key.clone()).or_default(); },
-                _ => {},
+        let mut credential = None;
+        let result = (|| {
+            let generation = self.store.begin_workspace_catalog_refresh()?;
+            credential = Some(self.credential()?);
+            let credential = credential.as_ref().expect("已取得连接凭证");
+            let client = self.client(credential);
+            let mut inputs = self.store.catalog_inputs()?;
+            for source in &self.config.sources {
+                match &source.kind {
+                    SourceKind::WorkItemType { project_key: Some(key), type_key } => {
+                        inputs.entry(key.clone()).or_default().types.extend(type_key.iter().cloned());
+                    },
+                    SourceKind::View { project_key: Some(key), .. } => { inputs.entry(key.clone()).or_default(); },
+                    _ => {},
+                }
+                for kind in self.store.source_types(&source.id)? {
+                    let input = inputs.entry(kind.project_key).or_default();
+                    input.names.insert(kind.project_name);
+                    input.types.insert(kind.type_key);
+                }
             }
-            for kind in self.store.source_types(&source.id)? {
-                let input = inputs.entry(kind.project_key).or_default();
-                input.names.insert(kind.project_name);
-                input.types.insert(kind.type_key);
+            let result = runtime()?.block_on(crate::catalog::refresh_catalog(&client, inputs,
+                self.store.workspace_catalog()?, self.config.max_pages, Some(credential.token().expose())))?;
+            if !self.store.save_workspace_catalog(generation, &result.spaces)? {
+                return Err(BackendError::conflict("空间与项目目录读取已过期，请重新刷新"));
             }
+            Ok(result)
+        })();
+        if let Err(error) = &result {
+            crate::diagnostics::record_catalog_failure(error, credential.as_ref().map(|value| value.token().expose()));
         }
-        let result = runtime()?.block_on(crate::catalog::refresh_catalog(&client, inputs,
-            self.store.workspace_catalog()?, self.config.max_pages, Some(credential.token().expose())))?;
-        if !self.store.save_workspace_catalog(generation, &result.spaces)? {
-            return Err(BackendError::conflict("空间与项目目录读取已过期，请重新刷新"));
-        }
-        Ok(result)
+        result
     }
 
     /// 录入人工在测试事项上采集的五类变更证据；本接口不修改飞书事项。

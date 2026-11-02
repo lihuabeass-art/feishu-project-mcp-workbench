@@ -13,6 +13,7 @@ export interface SpaceCatalog {
 export interface CatalogRefresh {
   spaces: SpaceCatalog[];
   warnings: string[];
+  warning_kinds?: string[];
 }
 export interface CachedItem {
   // 旧版桌面后端不返回此字段。

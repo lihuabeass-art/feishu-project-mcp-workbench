@@ -37,13 +37,16 @@ pub struct CatalogInput {
 #[derive(Debug, Serialize)]
 pub struct CatalogRefresh {
     pub spaces: Vec<SpaceCatalog>,
+    /// 脱敏技术详情供诊断使用，界面使用 warning_kinds 生成提示。
     pub warnings: Vec<String>,
+    pub warning_kinds: Vec<String>,
 }
 
 pub async fn refresh_catalog(client: &dyn TodoSource, inputs: std::collections::BTreeMap<String, CatalogInput>,
     mut spaces: Vec<SpaceCatalog>, max_pages: u32, token: Option<&str>) -> Result<CatalogRefresh, BackendError>
 {
     let mut warnings = Vec::new();
+    let mut warning_kinds = Vec::new();
     for (key, input) in inputs {
         let previous = spaces.iter().find(|s| s.project_key == key)
             .or_else(|| spaces.iter().find(|s| s.simple_name.as_ref() == Some(&key))).cloned();
@@ -61,6 +64,8 @@ pub async fn refresh_catalog(client: &dyn TodoSource, inputs: std::collections::
                 space
             },
             Err(e) => {
+                crate::diagnostics::record_catalog_failure(&e, token);
+                warning_kinds.push(e.kind().as_str().to_owned());
                 warnings.push(format!("空间 {key} 名称未刷新：{}", e.safe_message(token)));
                 spaces.iter().find(|s| s.simple_name.as_ref() == Some(&key)).cloned().or(previous)
                     .unwrap_or(SpaceCatalog { project_key:key.clone(), name:None, simple_name:None, projects:Vec::new() })
@@ -79,7 +84,11 @@ pub async fn refresh_catalog(client: &dyn TodoSource, inputs: std::collections::
         for kind in input.types {
             match project_options(client, &space.project_key, &kind, max_pages).await {
                 Ok(options) => { space.projects.retain(|p| p.type_key != kind); space.projects.extend(options); },
-                Err(e) => warnings.push(format!("空间 {key} 的项目选项未刷新：{}", e.safe_message(token))),
+                Err(e) => {
+                    crate::diagnostics::record_catalog_failure(&e, token);
+                    warning_kinds.push(e.kind().as_str().to_owned());
+                    warnings.push(format!("空间 {key} 的项目选项未刷新：{}", e.safe_message(token)));
+                },
             }
         }
         spaces.retain(|s| s.project_key != space.project_key && s.project_key != key
@@ -87,7 +96,7 @@ pub async fn refresh_catalog(client: &dyn TodoSource, inputs: std::collections::
         spaces.push(space);
     }
     spaces.sort_by(|a,b| a.project_key.cmp(&b.project_key));
-    Ok(CatalogRefresh { spaces, warnings })
+    Ok(CatalogRefresh { spaces, warnings, warning_kinds })
 }
 
 // 两种名称均来自实际详情；其他关联字段（如所属需求、所属模块）不属于项目。
