@@ -392,7 +392,7 @@ describe("工作台交互", () => {
     await user.keyboard("{Escape}");
     await user.type(screen.getByRole("textbox", { name: "搜索工作" }), "设计");
     expect(screen.getByText("没有匹配的工作")).toBeTruthy();
-    expect(screen.getByRole("combobox", { name: "节点" }).textContent).toContain("后端代码合入（0）");
+    expect(screen.getByRole("combobox", { name: "节点" }).title).toContain("后端代码合入（0）");
     await chooseOption(user, "节点", "全部节点");
     expect(screen.getByText("设计任务")).toBeTruthy();
     expect(screen.queryByRole("combobox", { name: "节点" })).toBeNull();
@@ -1473,8 +1473,8 @@ describe("自动同步与提示时序", () => {
     expect(screen.getByText("2 条结果")).toBeTruthy();
     expect((screen.getByRole("textbox", { name: "搜索工作" }) as HTMLInputElement).value).toBe("目标");
     expect(screen.getByRole("combobox", { name: "空间" }).textContent).toContain("空间甲");
-    expect(screen.getByRole("combobox", { name: "节点" }).textContent).toContain("研发");
-    expect(screen.getByRole("combobox", { name: "当前状态" }).textContent).toContain("待处理");
+    expect(screen.getByRole("combobox", { name: "节点" }).title).toContain("研发");
+    expect(screen.getByRole("combobox", { name: "当前状态" }).title).toContain("待处理");
   });
 
   it("两分钟自动同步静默，手动成功悬浮5秒后消失", async () => {

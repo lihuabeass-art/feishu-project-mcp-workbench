@@ -390,7 +390,8 @@ describe("清单模式", () => {
     expect(within(chips).getAllByRole("button")).toHaveLength(5);
     expect(screen.getByRole("tab", { name: /^缺陷\s*2$/ }).getAttribute("aria-selected")).toBe("true");
     await user.click(screen.getByRole("button", { name: "切换到完整模式" }));
-    expect(screen.getByRole("combobox", { name: "空间" }).textContent).toContain("等 2 项");
+    expect(screen.getByRole("combobox", { name: "空间" }).title).toContain("空间甲");
+    expect(screen.getByRole("combobox", { name: "空间" }).title).toContain("空间乙");
     expect(screen.getByRole("combobox", { name: "所属项目" }).textContent).toBe("项目甲");
     expect(screen.getByRole("combobox", { name: "流程类型" }).textContent).toBe("状态流");
     await user.click(screen.getByRole("button", { name: "切换到清单模式" }));

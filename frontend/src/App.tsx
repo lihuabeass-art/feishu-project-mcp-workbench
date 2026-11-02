@@ -81,9 +81,10 @@ import { ThemeControl } from "./ThemeControl";
 import { CompactWorkspace } from "./CompactWorkspace";
 import { WorkTypeTabs } from "./WorkTypeTabs";
 import { FilterSchemeMenu } from "./FilterSchemeMenu";
+import { WorkFilterToolbar } from "./WorkFilterToolbar";
 import { useFilterSchemes } from "./useFilterSchemes";
 import {
-  changeWorkFilter, emptyWorkFilters, filterWorkItems,
+  emptyWorkFilters, filterWorkItems,
   workFilterCount, workFilterOptions,
 } from "./workFilters";
 import { useDisplayMode } from "./displayMode";
@@ -291,8 +292,7 @@ function Workspace() {
   const [fallbackPolicy] = useState(freshPolicy);
   const [sourceId, setSourceId] = useState("");
   const [filters, setFilters] = useState(emptyWorkFilters);
-  const { query, type, space: project,
-    project: relatedProject, flowKind, nodeName, stateName } = filters;
+  const { query, type, space: project } = filters;
   const setQuery = (query: string) => setFilters((current) => ({ ...current, query }));
   const setType = (type: string[]) => setFilters((current) => ({ ...current, type }));
   const [pendingType, setPendingType] = useState<string | null>(null);
@@ -1215,7 +1215,6 @@ function Workspace() {
   });
   const catalog = data?.workspace_catalog || [];
   const facets = workFilterOptions(items, catalog, filters);
-  const { spaces: spaceOptions, projects: relatedProjectOptions, flowKinds } = facets;
   const source = sourceId === "*" && data?.capabilities?.source_queries ? {id:"*",kind:"all_sources",enabled:true,executable:data.sources.some(s=>s.executable),reason:null,action:null,todo_scope:null} : data?.sources.find((s) => s.id === sourceId);
   const changeType = (nextType: string) => {
     if (view !== "work") {
@@ -1600,84 +1599,9 @@ function Workspace() {
                     {canCreate && <button className="secondary create-work-button" disabled={creationDisabled}
                       onClick={openCreation}><Plus size={15} />新建工作事项</button>}</div>
                   </div>
-                  <div className="filterbar">
-                    <FilterSchemeMenu controller={filterSchemes} onNotice={(text) => setNotice({ tone: "success", text })} />
-                    {spaceOptions.length > 0 && <label>
-                      <span className="sr-only">空间</span>
-                      <Select
-                        ariaLabel="空间"
-                        multiple
-                        className="compact"
-                        value={project}
-                        onChange={(key) => {
-                          setFilters((current) => changeWorkFilter(current, "space", key, spaceOptions));
-                        }}
-                        options={[
-                          { value: "", label: "全部空间" },
-                          ...spaceOptions,
-                        ]}
-                      />
-                    </label>}
-                    {(relatedProjectOptions.length > 0 || relatedProject.length > 0) && <label>
-                      <span className="sr-only">所属项目</span>
-                      <Select multiple ariaLabel="所属项目" className="compact" value={relatedProject}
-                        onChange={(key) => {
-                          setFilters((current) => changeWorkFilter(current, "project", key, relatedProjectOptions));
-                        }} options={[{ value: "", label: "全部项目" }, ...relatedProjectOptions]} />
-                    </label>}
-                    {flowKinds.length > 0 && <label>
-                      <span className="sr-only">流程类型</span>
-                      <Select
-                        ariaLabel="流程类型"
-                        multiple
-                        className="compact"
-                        value={flowKind}
-                        onChange={(flowKind) => setFilters((current) => changeWorkFilter(current, "flowKind", flowKind, flowKinds))}
-                        options={[
-                          { value: "", label: "全部流程类型" },
-                          ...flowKinds,
-                        ]}
-                      />
-                    </label>}
-                    {facets.node.visible && (
-                      <label title={nodeFilterHint}>
-                        <span className="sr-only">节点</span>
-                        <Select
-                          ariaLabel="节点"
-                          multiple
-                          className="compact"
-                          value={nodeName}
-                          onChange={(nodeName) => setFilters((current) => ({ ...current, nodeName }))}
-                          options={[
-                            { value: "", label: "全部节点" },
-                            ...facets.node.options,
-                          ]}
-                        />
-                      </label>
-                    )}
-                    {facets.state.visible && (
-                      <label>
-                        <span className="sr-only">当前状态</span>
-                        <Select
-                          ariaLabel="当前状态"
-                          multiple
-                          className="compact"
-                          value={stateName}
-                          onChange={(stateName) => setFilters((current) => ({ ...current, stateName }))}
-                          options={[
-                            { value: "", label: "全部状态" },
-                            ...facets.state.options,
-                          ]}
-                        />
-                      </label>
-                    )}
-                    {hasFilters && (
-                      <button className="text-button" onClick={clearFilters}>
-                        清除筛选
-                      </button>
-                    )}
-                    <span className="result-count">{filtered.length} 条结果</span>
-                  </div>
+                  <WorkFilterToolbar filters={filters} options={facets} resultCount={filtered.length}
+                    nodeFilterHint={nodeFilterHint} onChange={(next) => { setPendingType(null); setFilters(next); }}
+                    schemeMenu={<FilterSchemeMenu controller={filterSchemes} onNotice={(text) => setNotice({ tone: "success", text })} />} />
                   {catalogWarning && <p className="hint" role="status">{catalogWarning}</p>}
                 </div>
                 {loading && !data ? (

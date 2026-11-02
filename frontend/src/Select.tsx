@@ -27,6 +27,7 @@ type SelectProps = {
   className?: string;
   menuClassName?: string;
   renderOption?: (option: SelectOption) => ReactNode;
+  triggerLabel?: ReactNode;
   adjacent?: ReactNode;
 } & (
   | { multiple?: false; value: string; onChange: (value: string) => void }
@@ -251,7 +252,7 @@ export function Select(props: SelectProps) {
         <span
           className={!selected || selected.disabled ? "placeholder" : undefined}
         >
-          {selectionLabel}
+          {props.triggerLabel ?? selectionLabel}
         </span>
         <ChevronDown className="select-chevron" size={16} aria-hidden="true" />
       </button>
