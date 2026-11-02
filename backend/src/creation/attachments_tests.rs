@@ -52,7 +52,7 @@ impl TodoSource for Arc<Fake> {
                 assert_eq!(args["field_key"], "custom_attachment");
                 assert_eq!(args["work_item_type"], "custom-type");
                 json!({"upload_url":"https://project.feishu.cn/goapi/v5/platform/file/stream/mcp/upload/15/:part_number",
-                    "sign":"fixture-sign","sign_expire_time":crate::sync::now_ms()+60000,"is_multipart":false})
+                    "sign":"fixture-sign","sign_expire_time":0,"is_multipart":false})
             }
             "create_workitem" => {
                 self.creates.fetch_add(1, Ordering::SeqCst);

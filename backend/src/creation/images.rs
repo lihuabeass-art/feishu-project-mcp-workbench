@@ -290,8 +290,10 @@ pub(super) fn ticket_for(value: &Value, now_ms: i64, resource_type: u8) -> Resul
         16 => UPLOAD_PATH,
         _ => return Err(BackendError::validation("上传资源类型无效")),
     };
-    let failure =
-        || BackendError::validation("未取得可用的文件上传授权，请稍后重试；本机文件和草稿已保留");
+    let failure = || BackendError::validation("文件上传授权不完整，请稍后重试");
+    if value["is_multipart"] == true {
+        return Err(BackendError::validation("暂不支持分片文件上传，请缩小文件后重试"));
+    }
     if value["is_multipart"] != false {
         return Err(failure());
     }
@@ -308,19 +310,27 @@ pub(super) fn ticket_for(value: &Value, now_ms: i64, resource_type: u8) -> Resul
         || url.fragment().is_some()
         || url.path() != upload_path
     {
-        return Err(failure());
+        return Err(BackendError::validation("文件上传地址不合法，请稍后重试"));
     }
-    let expire = value["sign_expire_time"]
-        .as_i64()
-        .filter(|v| *v > 0)
-        .ok_or_else(failure)?;
-    let expire_ms = if expire < 1_000_000_000_000 {
-        expire.checked_mul(1000).ok_or_else(failure)?
-    } else {
-        expire
-    };
-    if expire_ms <= now_ms {
-        return Err(failure());
+    // 每个文件上传前即时获取授权；0、缺失和 null 均未声明截止时间。
+    // 有明确截止时间时，仍校验 Unix 秒 / 毫秒，绝不复用或持久化票据。
+    match value.get("sign_expire_time") {
+        None | Some(Value::Null) => {}
+        Some(value) => {
+            let expire = value.as_i64().filter(|v| *v >= 0).ok_or_else(|| {
+                BackendError::validation("文件上传授权有效期无效，请稍后重试")
+            })?;
+            if expire > 0 {
+                let expire_ms = if expire < 1_000_000_000_000 {
+                    expire.checked_mul(1000).ok_or_else(failure)?
+                } else {
+                    expire
+                };
+                if expire_ms <= now_ms {
+                    return Err(BackendError::validation("文件上传授权已过期，请重试上传"));
+                }
+            }
+        }
     }
     let raw_sign = value["sign"]
         .as_str()

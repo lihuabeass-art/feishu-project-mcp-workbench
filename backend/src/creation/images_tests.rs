@@ -74,7 +74,7 @@ impl TodoSource for Arc<Fake> {
 
 fn signature() -> Value {
     json!({"upload_url":format!("https://project.feishu.cn{UPLOAD_PATH}"),"is_multipart":false,
-        "sign_expire_time":crate::sync::now_ms()+60_000,"sign":SIGN})
+        "sign_expire_time":0,"sign":SIGN})
 }
 
 struct Harness {
@@ -750,6 +750,14 @@ fn uncertain_first_upload_never_triggers_queued_post_without_new_explicit_retry(
 fn signed_destination_and_expiration_are_strictly_validated() {
     let now = crate::sync::now_ms();
     assert!(ticket(&signature(), now).is_ok());
+    let mut absent = signature();
+    absent.as_object_mut().unwrap().remove("sign_expire_time");
+    assert!(ticket(&absent, now).is_ok());
+    absent["sign_expire_time"] = Value::Null;
+    assert!(ticket(&absent, now).is_ok());
+    let mut milliseconds = signature();
+    milliseconds["sign_expire_time"] = json!(now + 60_000);
+    assert!(ticket(&milliseconds, now).is_ok());
     let mut seconds = signature();
     seconds["sign_expire_time"] = json!(now / 1000 + 60);
     assert!(ticket(&seconds, now).is_ok());
@@ -788,11 +796,37 @@ fn signed_destination_and_expiration_are_strictly_validated() {
         ),
         ("is_multipart", json!(true)),
         ("sign_expire_time", json!(now - 1)),
+        ("sign_expire_time", json!(now / 1000 - 1)),
+        ("sign_expire_time", json!(-1)),
+        ("sign_expire_time", json!("0")),
+        ("sign_expire_time", json!(1.5)),
+        ("sign_expire_time", json!(false)),
+        ("sign", json!("")),
         ("sign", json!("bad\r\nheader")),
     ] {
         let mut value = signature();
         value[key] = replacement;
         assert!(ticket(&value, now).is_err());
+    }
+}
+
+#[test]
+fn authorization_rejections_explain_reason_without_exposing_ticket_or_duplicate_retention() {
+    let now = crate::sync::now_ms();
+    for (key, replacement, reason) in [
+        ("is_multipart", json!(true), "分片"),
+        ("upload_url", json!("https://example.test/private-sign"), "地址不合法"),
+        ("sign_expire_time", json!(now - 1), "已过期"),
+        ("sign_expire_time", json!(-1), "有效期无效"),
+        ("sign", json!(""), "授权不完整"),
+    ] {
+        let mut value = signature();
+        value[key] = replacement;
+        let message = ticket(&value, now).err().unwrap().safe_message(None);
+        assert!(message.contains(reason));
+        for secret in [SIGN, "example.test", "sign_expire_time", "草稿已保留"] {
+            assert!(!message.contains(secret));
+        }
     }
 }
 
