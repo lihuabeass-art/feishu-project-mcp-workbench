@@ -26,6 +26,7 @@ use crate::model::domain::{FlowInfo, FlowKind, Schedule, WorkItem, WorkItemId};
 use crate::paths;
 
 mod type_preferences;
+mod filter_schemes;
 pub use type_preferences::{SourceTypePreferences, TypePreference, TypePreferences};
 mod creation_images;
 pub(crate) use creation_images::{CreationImage, CreationImageKey, UploadedCreationImageKey};
@@ -388,6 +389,7 @@ impl Store {
         tx.execute_batch(SCHEMA_V5)?;
         tx.execute_batch(SCHEMA_V6)?;
         tx.execute_batch(type_preferences::SCHEMA)?;
+        tx.execute_batch(filter_schemes::SCHEMA)?;
         tx.execute_batch(creation_images::SCHEMA)?;
         ensure_column(&tx, "creation_image", "uploaded_token", "TEXT")?;
         if version < 6 {

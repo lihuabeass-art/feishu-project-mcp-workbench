@@ -112,6 +112,7 @@ export interface Snapshot {
     source_type_preferences?: boolean;
     workspace_catalog?: boolean;
     creation?: boolean;
+    filter_schemes?: boolean;
   };
   items: CachedItem[];
   total: number;

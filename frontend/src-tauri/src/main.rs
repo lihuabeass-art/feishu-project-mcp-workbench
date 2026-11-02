@@ -127,6 +127,7 @@ struct Capabilities {
     progressive_sync: bool,
     workspace_catalog: bool,
     creation: bool,
+    filter_schemes: bool,
 }
 
 #[derive(Serialize)]
@@ -216,6 +217,7 @@ async fn load_snapshot() -> Result<Snapshot, UiError> {
                 progressive_sync: true,
                 workspace_catalog: true,
                 creation: true,
+                filter_schemes: true,
             },
             // 缓存是累积集合，不能把默认 200 条截断误报成全部。
             items: session.query_cached_items(&ItemFilter {
@@ -376,6 +378,16 @@ async fn save_source_type_preferences(
 #[tauri::command]
 async fn check_connection() -> Result<ConnectionInfo, UiError> {
     blocking(|| open_session()?.check_connection()).await
+}
+
+#[tauri::command]
+async fn load_filter_schemes() -> Result<fstodo_backend::filter_schemes::FilterSchemePreferences, UiError> {
+    blocking(|| fstodo_backend::filter_schemes::load(&open_session()?)).await
+}
+
+#[tauri::command]
+async fn save_filter_schemes(account: String, document: serde_json::Value) -> Result<(), UiError> {
+    blocking(move || fstodo_backend::filter_schemes::save(&open_session()?, &account, &document)).await
 }
 
 #[tauri::command]
@@ -548,6 +560,8 @@ fn main() {
             save_type_order,
             initialize_source_type_preferences,
             save_source_type_preferences,
+            load_filter_schemes,
+            save_filter_schemes,
             get_workflow_actions,
             get_pending_creations,
             get_creation_form,

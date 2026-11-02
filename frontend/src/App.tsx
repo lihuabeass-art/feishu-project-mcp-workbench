@@ -78,6 +78,8 @@ import { SettingsSaveStatus, type SaveFeedback } from "./SettingsSaveStatus";
 import { ThemeProvider } from "./ThemeProvider";
 import { ThemeControl } from "./ThemeControl";
 import { CompactWorkspace } from "./CompactWorkspace";
+import { FilterSchemeMenu } from "./FilterSchemeMenu";
+import { useFilterSchemes } from "./useFilterSchemes";
 import {
   changeWorkFilter, emptyWorkFilters, filterWorkItems,
   workFilterCount, workFilterOptions,
@@ -352,6 +354,13 @@ function Workspace() {
   const typeNamesRevision = useRef(0);
   const typeOrderRevision = useRef(0);
   const [credentialRevision, setCredentialRevision] = useState(0);
+  const filterSchemes = useFilterSchemes({
+    enabled: desktop && !!data?.capabilities?.filter_schemes && !!data.credential_ready,
+    context: JSON.stringify([credentialRevision, data?.settings?.endpoint, data?.db_path]),
+    active: view === "work" || compact,
+    filters,
+    apply: (next) => { setPendingType(null); setFilters(next); },
+  });
   const receiveTypeNames = useCallback((sourceId: string, types: Parameters<typeof applySourceTypeNames>[2], context: Snapshot) => {
     ++typeNamesRevision.current;
     setData((current) => {
@@ -1221,6 +1230,7 @@ function Workspace() {
   const changeSource = (id: string) => {
     setSourceId(id);
     resetWorkFilters();
+    filterSchemes.detach();
     setSelectedKey(null);
   };
   const syncDisabled =
@@ -1328,6 +1338,7 @@ function Workspace() {
       <CompactWorkspace
         items={compactItems}
         filters={filters}
+        schemeMenu={<FilterSchemeMenu controller={filterSchemes} />}
         onFiltersChange={(next) => { setPendingType(null); setFilters(next); }}
         filterOptions={facets}
         loading={loading}
@@ -1602,10 +1613,7 @@ function Workspace() {
                       onClick={openCreation}><Plus size={15} />新建工作事项</button>}</div>
                   </div>
                   <div className="filterbar">
-                    <span>
-                      <SlidersHorizontal size={14} />
-                      筛选
-                    </span>
+                    <FilterSchemeMenu controller={filterSchemes} />
                     {spaceOptions.length > 0 && <label>
                       <span className="sr-only">空间</span>
                       <Select

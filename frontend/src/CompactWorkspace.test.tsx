@@ -69,6 +69,24 @@ function snapshot(): Snapshot {
   };
 }
 
+it("saved multiple-type scope has a combination tab, and clicking the first type narrows it explicitly", async () => {
+  const user = userEvent.setup();
+  const items = [item("1", "需求甲"), item("2", "缺陷乙", "issue")];
+  const filters = { ...emptyWorkFilters, type: ["story", "issue"] };
+  const change = vi.fn();
+  render(<CompactWorkspace items={items} filters={filters} onFiltersChange={change}
+    filterOptions={workFilterOptions(items, [], filters)} loading={false} emptyText="暂无工作"
+    typeName={(entry) => entry.id.work_item_type_key || ""}
+    typeOptions={[{ key: "story", label: "需求", count: 1 }, { key: "issue", label: "缺陷", count: 1 }]}
+    selectedKey={null} select={() => {}} detail={null} alerts={null} lastSync={null}
+    refresh={{ run() {}, disabled: false, syncing: false }} pinned={false} pin={() => {}} expand={() => {}}
+    windowControls={false} windowAction={() => {}} modeBusy={false} />);
+  expect(screen.getByRole("tab", { name: /已选 2 类：需求、缺陷/ }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("tab", { name: /^需求 1$/ }).getAttribute("aria-selected")).toBe("false");
+  await user.click(screen.getByRole("tab", { name: /^需求 1$/ }));
+  expect(change).toHaveBeenCalledWith(expect.objectContaining({ type: ["story"] }));
+});
+
 async function enterListMode(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText("需求甲");
   await user.click(screen.getByRole("button", { name: "切换到清单模式" }));

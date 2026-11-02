@@ -90,6 +90,7 @@ export function CompactWorkspace({
   create,
   recoverCreation,
   creationDisabled = false,
+  schemeMenu,
 }: {
   items: CachedItem[];
   filters: WorkFilters;
@@ -114,6 +115,7 @@ export function CompactWorkspace({
   create?: () => void;
   recoverCreation?: () => void;
   creationDisabled?: boolean;
+  schemeMenu?: ReactNode;
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filtersId = useId();
@@ -131,7 +133,13 @@ export function CompactWorkspace({
   const cancelHover = () => window.clearTimeout(hoverTimer.current);
   const extraCount = [filters.flowKind, filters.nodeName, filters.stateName].filter((values) => values.length > 0).length;
   const filterCount = workFilterCount({ ...filters, type: [] });
-  const selectedType = filters.type[0] || "";
+  // A saved combination can contain multiple types; represent that whole scope in navigation.
+  const selectedType = filters.type.length > 1 ? "\u0000saved-type-combination" : filters.type[0] || "";
+  const navigationTypeOptions = filters.type.length > 1 ? [{
+    key: selectedType,
+    label: `已选 ${filters.type.length} 类：${filters.type.map((key) => typeOptions.find((option) => option.key === key)?.label || filters.typeLabel[key] || key).join("、")}`,
+    count: items.filter((item) => filters.type.includes(item.id.work_item_type_key || "")).length,
+  }, ...typeOptions] : typeOptions;
   const { spaces, projects, flowKinds } = facets;
   const visibleItems = filterWorkItems(items, filters);
 
@@ -276,7 +284,7 @@ export function CompactWorkspace({
             }
           }}
         >
-          <CompactTypeTabs options={typeOptions} selected={selectedType} total={items.length}
+          <CompactTypeTabs options={navigationTypeOptions} selected={selectedType} total={items.length}
             panelId={typePanelId} onChange={changeType} />
           <div className="list-mode-filterbar">
             {create && <button className="secondary" aria-label="新建工作事项" disabled={creationDisabled} onClick={create}>新建</button>}
@@ -304,6 +312,7 @@ export function CompactWorkspace({
             </button>)}
           </div>}
           {filtersOpen && <section id={filtersId} className="list-mode-filter-panel" aria-label="清单筛选条件">
+            {schemeMenu}
             <label>
               <span>搜索</span>
               <input className="list-mode-filter-search" aria-label="清单搜索工作" value={filters.query}

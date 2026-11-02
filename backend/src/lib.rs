@@ -33,6 +33,7 @@ pub mod source_query;
 pub mod config;
 pub mod credentials;
 pub mod creation;
+pub mod filter_schemes;
 pub mod error;
 pub mod mcp;
 pub mod model;
