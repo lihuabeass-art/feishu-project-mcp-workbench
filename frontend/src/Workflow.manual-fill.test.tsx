@@ -101,6 +101,8 @@ it.each(["", "passed"])("可选或已满足的只读字段为「%s」时进入�
   await userEvent.click(button);
   expect(await screen.findByRole("button", { name: "提交" })).toBeTruthy();
   expect(screen.queryByText(editorExplanation)).toBeNull();
+  expect(screen.getByRole("link", { name: "在飞书中修改" })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "去飞书填写" })).toBeNull();
   expect(localStorage.length).toBe(0);
   await userEvent.click(screen.getByRole("button", { name: "提交" }));
   const review = await screen.findByRole("region", { name: "提交前二次确认" });
@@ -308,14 +310,22 @@ it("返回飞书后一次只读检查失败仍保留清单、旧pending提示与
 
 it("已打开编辑器仅新增页面处理标记时提供准确说明和唯一飞书链接", async () => {
   let current = localOptions();
+  current.actions[0].fields[0].scope = "work_item";
   vi.mocked(getWorkflowActions).mockImplementation(async () => current);
   const submit = vi.fn();
   render(<Workflow item={item()} available busy={false} submit={submit} />);
   await userEvent.click(await screen.findByRole("button", { name: current.actions[0].label }));
   expect(screen.queryByRole("link")).toBeNull();
+  await userEvent.type(screen.getByRole("textbox", { name: "设计文档" }), "本机修改");
   current = { ...current, version: "v2", actions: [{ ...current.actions[0], requires_feishu: true }] };
   fireEvent.focus(window);
   await screen.findByText(editorExplanation);
+  expect((screen.getByRole("textbox", { name: "设计文档" }) as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "提交" }) as HTMLButtonElement).disabled).toBe(true);
+  const restore = screen.getByRole("button", { name: "将设计文档恢复为原值" });
+  expect((restore as HTMLButtonElement).disabled).toBe(true);
+  await userEvent.click(restore);
+  expect(readDraft(draftKey(itemKey(item()), current.actions[0].id))?.fields.doc).toBe("云端设计稿本机修改");
   expect(screen.queryByText(pageExplanation)).toBeNull();
   const links = screen.getAllByRole("link", { name: "去飞书填写" });
   expect(links).toHaveLength(1);
@@ -420,7 +430,7 @@ it("普通编辑器可见检查与飞书返回焦点共用在途读取，不重�
   vi.mocked(getWorkflowActions).mockResolvedValue(initial);
   render(<Workflow item={item()} available busy={false} submit={vi.fn()} />);
   await userEvent.click(await screen.findByRole("button", { name: initial.actions[0].label }));
-  await userEvent.click(await screen.findByRole("link", { name: "去飞书填写" }));
+  await userEvent.click(await screen.findByRole("link", { name: "在飞书中修改" }));
   let resolveRead!: (value: WorkflowOptions) => void;
   vi.mocked(getWorkflowActions).mockImplementationOnce(() => new Promise((resolve) => { resolveRead = resolve; }));
   const calls = vi.mocked(getWorkflowActions).mock.calls.length;

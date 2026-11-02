@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 fn basic_kind(kind: &str) -> Option<FieldKind> {
     Some(match kind {
         "text" | "link" => FieldKind::Text,
-        "multi-pure-text" | "multi-text" => FieldKind::Textarea,
+        "multi-pure-text" => FieldKind::Textarea,
         "number" => FieldKind::Number,
         "date" => FieldKind::Date,
         "select" | "radio" | "bool" => FieldKind::Select,
@@ -17,6 +17,9 @@ fn basic_kind(kind: &str) -> Option<FieldKind> {
 
 pub(super) fn definition(config: &Value) -> Result<(FieldKind, Vec<FieldOption>), String> {
     let remote_type = config["field_type"].as_str().unwrap_or("");
+    if remote_type == "multi-text" {
+        return Err("富文本需在飞书项目页面填写".into());
+    }
     let kind = basic_kind(remote_type).ok_or_else(|| format!("暂不支持 {remote_type}"))?;
     if config["field_type"] == "bool" {
         return Ok((

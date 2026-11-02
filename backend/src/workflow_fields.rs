@@ -306,9 +306,21 @@ impl NodeForm {
             let initial = if current.is_null() { String::new() }
                 else if current.is_object() || current.is_array() { current.to_string() }
                 else { text(current) };
-            self.add(label, FieldKind::Text, false, route, Some(initial.clone()), None, None, None);
+            let rich_text = config["field_type"] == "multi-text";
+            self.add(label, if rich_text { FieldKind::Textarea } else { FieldKind::Text }, false, route, Some(initial.clone()), None, None, None);
             let input = self.inputs.last_mut().unwrap();
             input.remote_type = text(&config["field_type"]);
+            if rich_text {
+                let image_field_key = match &input.route {
+                    Route::WorkItem(key) => Some(key.clone()),
+                    Route::Compound { work_item: true, path, .. } => path.first().map(|step| step.field_key.clone()),
+                    _ => None,
+                };
+                input.field.settings.rich_text = Some(super::RichTextSettings {
+                    image_field_key,
+                    structured_value: (current.is_object() || current.is_array()).then(|| current.clone()),
+                });
+            }
             // 关联事项按名称核对；原始身份和值仍留在快照中参与版本校验，不生成写协议。
             if config["field_type"] == "workitem_related_select" {
                 if let Some(name) = current["name"].as_str().filter(|name| !name.trim().is_empty()) {
@@ -703,7 +715,7 @@ impl NodeForm {
         for input in &mut self.inputs[from..] {
             input.field.required = false;
             input.field.settings.read_only = Some(true);
-            input.field.settings.hint = Some("仅支持在飞书项目页面填写，当前显示云端值".into());
+            input.field.settings.hint = Some("云端只读值；如需修改，请在飞书项目中操作".into());
             // 使用独立身份保留旧版可编辑草稿；旧填写继续作为“本次不提交”内容展示。
             input.field.key = serde_json::to_string(&json!({"ReadOnly":&input.route})).unwrap();
         }
@@ -1218,7 +1230,7 @@ mod tests {
             &json!({"confirm_form":[]}),
             &json!({"form_items":[{"key":"note"},{"key":"count"},{"key":"due"},{"key":"done","finished":true}]}),
             &[
-                json!({"field_key":"note","field_name":"说明","field_type":"multi-text"}),
+                json!({"field_key":"note","field_name":"说明","field_type":"multi-pure-text"}),
                 json!({"field_key":"count","field_type":"number"}),
                 json!({"field_key":"due","field_type":"date"}),
             ], &json!({}),

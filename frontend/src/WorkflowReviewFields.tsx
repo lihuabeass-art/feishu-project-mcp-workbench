@@ -1,7 +1,8 @@
 import { useId } from "react";
 import { ArrowRight } from "lucide-react";
 import { displayFieldValue } from "./WorkflowConflict";
-import type { WorkflowAction, WorkflowRequest } from "./types";
+import { WorkflowCloudValue } from "./WorkflowCloudValue";
+import type { CachedItem, WorkflowAction, WorkflowRequest } from "./types";
 
 type Field = WorkflowAction["fields"][number];
 const sectionOrder = ["node", "assignee", "work_item", "other"];
@@ -10,10 +11,12 @@ export function WorkflowReviewFields({
   action,
   changes,
   remote,
+  itemId,
 }: {
   action: WorkflowAction;
   changes: WorkflowRequest["fields"];
   remote: Record<string, string>;
+  itemId: CachedItem["id"];
 }) {
   const id = useId();
   const groups = new Map<string, WorkflowAction["fields"]>();
@@ -100,11 +103,7 @@ export function WorkflowReviewFields({
                 </div>
               </div>
             ) : (
-              <span
-                className={`workflow-review-value${value.trim() ? "" : " workflow-review-empty"}`}
-              >
-                {shown}
-              </span>
+              <WorkflowCloudValue field={field} value={value} itemId={itemId} />
             )}
           </div>
           <small

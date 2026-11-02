@@ -9,6 +9,7 @@ import { PercentageInput } from "./PercentageInput";
 import { SteppedNumberInput } from "./SteppedNumberInput";
 import { displayFieldValue, WorkflowConflict } from "./WorkflowConflict";
 import { WorkflowReviewFields } from "./WorkflowReviewFields";
+import { WorkflowCloudValue } from "./WorkflowCloudValue";
 import { layoutFields, ownerCell } from "./workflowLayout";
 import { loadWorkflowSkipConfirmation, useWorkflowSkipConfirmation } from "./workflowPreferences";
 import {
@@ -502,7 +503,7 @@ export function Workflow({
     }
   }
   function change(key: string, value: string) {
-    if (!action || !options) return;
+    if (!action || !options || action.requires_feishu) return;
     const next = { ...fields, [key]: value };
     editor.current.fields = next;
     setFields(next);
@@ -528,6 +529,7 @@ export function Workflow({
       !action ||
       !options ||
       action.disabled_reason ||
+      action.requires_feishu ||
       busy ||
       flight.current ||
       blocked
@@ -590,7 +592,7 @@ export function Workflow({
         if (skipReview && cleared) setError(`${merged.field_labels[cleared]}的云端原值已清空，请核对当前填写后再次提交。`);
         return;
       }
-      if (nextAction.disabled_reason) return;
+      if (nextAction.disabled_reason || nextAction.requires_feishu) return;
       const missing = nextAction.fields.find(
         (field) => field.required && !merged.fields[field.key]?.trim(),
       );
@@ -636,6 +638,7 @@ export function Workflow({
     if (
       !review ||
       !action ||
+      action.requires_feishu ||
       busy ||
       flight.current ||
       blocked ||
@@ -861,6 +864,7 @@ export function Workflow({
       !options ||
       locked ||
       blocked ||
+      action.requires_feishu ||
       !retainedTargets.get(source)?.some((field) => field.key === target)
     )
       return;
@@ -932,7 +936,7 @@ export function Workflow({
           <button
             type="button"
             className="text-button"
-            disabled={locked || blocked}
+            disabled={locked || blocked || !!action?.requires_feishu}
             onClick={() => restoreRetained(key, field.key)}
           >
             将此前草稿填入{field.label}
@@ -960,7 +964,7 @@ export function Workflow({
         {!review && (retainedTargets.get(key)?.length ?? 0) > 1 && (
           <Select
             ariaLabel={`将${fieldLabels[key] || "原表单字段"}草稿填入`}
-            disabled={locked || blocked}
+            disabled={locked || blocked || !!action?.requires_feishu}
             value=""
             onChange={(target) => restoreRetained(key, target)}
             options={[
@@ -1092,7 +1096,7 @@ export function Workflow({
         remote={remote}
         value={local}
         conflict={conflict}
-        disabled={locked || blocked}
+        disabled={locked || blocked || !!action?.requires_feishu}
         caption={caption}
         onRestore={() => change(field.key, remote)}
       />
@@ -1101,12 +1105,10 @@ export function Workflow({
   function control(field: Field, inTable = false) {
     if (field.read_only)
       return (
-        <span className="workflow-review-value">
-          {displayFieldValue(field, remoteOf(field)) || "未填写"}
-        </span>
+        <WorkflowCloudValue field={field} value={remoteOf(field)} itemId={item.id} />
       );
     const value = fields[field.key] || "";
-    const disabled = locked || blocked;
+    const disabled = locked || blocked || !!action?.requires_feishu;
     const placeholder = placeholderOf(field, inTable);
     const update = (next: string) => change(field.key, next);
     if (field.kind === "select")
@@ -1182,33 +1184,34 @@ export function Workflow({
       />
     );
   }
-  function feishuLinkFor(candidate: Pick<WorkflowAction, "id">, verify = false) {
+  function feishuLinkFor(candidate: Pick<WorkflowAction, "id">, mode: "fill" | "edit" | "verify" = "fill") {
     if (optionsIdentity.current !== identity) return null;
+    const verify = mode === "verify";
+    const label = verify ? "去飞书核对" : mode === "edit" ? "在飞书中修改" : "去飞书填写";
     const epoch = manualFillEpoch.current;
     const href = validItemUrl(options?.item_url);
     return (
       <div className="workflow-manual-fill" key={`${identity}:${candidate.id}:${href ?? ""}:${verify}`}>
         {href ? (
-          <ExternalLink href={href} title={`在飞书项目中${verify ? "核对" : "填写"}「${item.name || item.id.work_item_id}」`}
+          <ExternalLink href={href} title={`在飞书项目中${verify ? "核对" : mode === "edit" ? "修改只读字段" : "填写"}「${item.name || item.id.work_item_id}」`}
             onOpen={() => {
               if (identityRef.current === identity && manualFillEpoch.current === epoch)
                 manualFillReturn.current = identity;
             }}>
-            {verify ? "去飞书核对" : "去飞书填写"}<ArrowUpRight size={13} aria-hidden="true" />
+            {label}<ArrowUpRight size={13} aria-hidden="true" />
           </ExternalLink>
         ) : (
-          <p className="hint">未取得当前事项的有效飞书地址，请在飞书项目中搜索该事项{verify ? "后核对" : "，填写并完成流程"}。</p>
+          <p className="hint">未取得当前事项的有效飞书地址，请在飞书项目中搜索该事项{verify ? "后核对" : mode === "edit" ? "后修改只读字段" : "，填写并完成流程"}。</p>
         )}
       </div>
     );
   }
   function manualFillFor(candidate: WorkflowAction, includeReadOnly = false) {
-    if (
-      !candidate.requires_feishu &&
-      !(candidate.disabled_reason && candidate.manual_fill_required) &&
-      !(includeReadOnly && candidate.fields.some((field) => field.read_only))
-    ) return null;
-    return feishuLinkFor(candidate);
+    if (candidate.requires_feishu || (candidate.disabled_reason && candidate.manual_fill_required))
+      return feishuLinkFor(candidate);
+    if (includeReadOnly && candidate.fields.some((field) => field.read_only))
+      return feishuLinkFor(candidate, "edit");
+    return null;
   }
   function pendingDraftFor(candidate: Pick<WorkflowAction, "id">) {
     try {
@@ -1260,7 +1263,7 @@ export function Workflow({
             ).map(([id, label]) => (
               <div className="workflow-recovery" key={id}>
                 <p className="workflow-error">「{label}」上次提交结果待核实，草稿和提交标记已保留。请在飞书项目中核对。</p>
-                {feishuLinkFor({ id }, true)}
+                {feishuLinkFor({ id }, "verify")}
               </div>
             ))}
           {!loading && !action && (
@@ -1512,6 +1515,7 @@ export function Workflow({
                         </p>
                       </div>
                       <WorkflowReviewFields
+                        itemId={item.id}
                         action={action}
                         changes={review.fields}
                         remote={baseFields}
@@ -1538,7 +1542,7 @@ export function Workflow({
                           ? "这份草稿上次提交的结果尚待核实，已阻止重复提交。请在飞书项目中核对当前状态；需要补充的字段和流程操作可直接在飞书完成。"
                           : "这份草稿上次提交的结果尚待核实，已阻止重复提交。重新读取云端后，可保留草稿并核对当前值，再继续操作。"}
                       </p>
-                      {feishuLinkFor(action, true)}
+                      {feishuLinkFor(action, "verify")}
                       <button
                         type="button"
                         className="secondary"
@@ -1578,6 +1582,7 @@ export function Workflow({
                             locked ||
                             blocked ||
                             !!action.disabled_reason ||
+                            !!action.requires_feishu ||
                             action.fields.some(
                               (f) => f.required && !fields[f.key]?.trim(),
                             )
@@ -1635,7 +1640,7 @@ export function Workflow({
                         <button
                           type="button"
                           className="primary"
-                          disabled={locked || !acknowledged || blocked}
+                          disabled={locked || !acknowledged || blocked || !!action.requires_feishu}
                           onClick={() => void confirm()}
                         >
                           {pending ? "正在提交…" : confirmLabel}

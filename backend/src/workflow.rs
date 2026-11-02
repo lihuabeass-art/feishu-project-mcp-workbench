@@ -48,11 +48,23 @@ pub enum FieldKind {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+pub struct RichTextSettings {
+    /// 图片只能通过已核对归属的事项字段读取；节点富文本不推测事项字段。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_field_key: Option<String>,
+    /// 保留对象／数组的真实形状，避免前端将序列化快照误当作 Markdown 文本。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_value: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct FieldSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_value: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_only: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rich_text: Option<RichTextSettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

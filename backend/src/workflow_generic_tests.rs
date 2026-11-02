@@ -105,6 +105,80 @@ fn node_and_state_share_basic_types_remote_options_and_valid_zero_values() {
 }
 
 #[test]
+fn rich_text_is_readonly_in_both_flows_and_only_unfinished_requirements_require_feishu() {
+    let configs = [json!({"field_key":"description","field_name":"说明","field_type":"multi-text"})];
+    let node = json!({"form_items":[{"field_key":"description","form_item_type":"field"}]});
+    let transition = json!({"confirm_form":[{"key":"description","class":"field"}]});
+    for remote in ["", "已有文字", "说明\n\n![](https://project.feishu.cn/example.png)<!-- image:{\"width\":408} -->"] {
+        for finished in [None, Some(true), Some(false)] {
+            let required = finished.map(|done| json!({"form_items":[
+                {"key":"description","class":"field","finished":done}
+            ]})).unwrap_or(json!({}));
+            let work = json!({"work_item_fields":[{"key":"description","value":remote}]});
+            for form in [
+                NodeForm::build(&node, &required, &[], &configs, &work).unwrap(),
+                NodeForm::build_state(&transition, &required, &configs, &work).unwrap(),
+            ] {
+                assert_eq!(form.requires_feishu(), finished == Some(false));
+                assert_eq!(form.requires_manual_fill(), finished == Some(false));
+                assert_eq!(!form.blocked.is_empty(), finished == Some(false));
+                let field = &form.fields()[0];
+                assert_eq!(field.settings.read_only, Some(true));
+                assert!(!field.required);
+                assert_eq!(field.settings.initial_value.as_deref(), Some(remote));
+                assert_eq!(field.settings.rich_text.as_ref().unwrap().image_field_key.as_deref(), Some("description"));
+                assert_ne!(field.key, serde_json::to_string(&Route::WorkItem("description".into())).unwrap(),
+                    "只读身份不能自动恢复旧可编辑草稿");
+                assert!(form.plan(&BTreeMap::from([(field.key.clone(), "替换图片内容".into())])).is_err());
+                assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn rich_text_structured_values_keep_their_original_shape_for_readonly_preview() {
+    let content = json!([
+        {"type":"paragraph","content":[{"type":"text","text":"图文说明"}]},
+        {"type":"image","attrs":{"src":"https://project.feishu.cn/example.png"}}
+    ]);
+    for value in [json!({"type":"doc","content":content}), content] {
+        let form = NodeForm::build_state(&json!({"confirm_form":[{"key":"description","class":"field"}]}),
+            &json!({}), &[json!({"field_key":"description","field_type":"multi-text"})],
+            &json!({"work_item_fields":[{"key":"description","value":value}]})).unwrap();
+        let field = &form.fields()[0];
+        assert!(!form.requires_feishu());
+        assert_eq!(field.settings.read_only, Some(true));
+        assert_eq!(field.settings.initial_value, Some(value.to_string()));
+        assert_eq!(field.settings.rich_text.as_ref().unwrap().structured_value.as_ref(), Some(&value));
+        assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
+    }
+}
+
+#[test]
+fn rich_text_preview_uses_its_work_item_root_and_never_guesses_node_image_ownership() {
+    let config = compound("review", vec![json!({"field_key":"note","field_type":"multi-text"})]);
+    let value = json!({"a":[{"field_key":"note","field_value":"![](https://project.feishu.cn/example.png)"}]});
+    let work = json!({"work_item_fields":[{"key":"review","value":value}]});
+    for work_item in [false, true] {
+        let form = if work_item {
+            NodeForm::build_state(&json!({"confirm_form":[{"key":"review","class":"field"}]}),
+                &json!({}), &[config.clone()], &work).unwrap()
+        } else {
+            NodeForm::build(&node(value.clone()), &json!({}), &[config.clone()], &[], &json!({})).unwrap()
+        };
+        assert!(!form.requires_feishu());
+        let field = find(&form, "a", "note");
+        assert_eq!(field.settings.read_only, Some(true));
+        assert_eq!(field.settings.rich_text.as_ref().unwrap().image_field_key.as_deref(), work_item.then_some("review"));
+        assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
+    }
+    let form = NodeForm::build(&json!({"form_items":[{"field_key":"note","form_item_type":"node_field","value":"云端图文"}]}),
+        &json!({}), &[json!({"field_key":"note","field_type":"multi-text"})], &[], &json!({})).unwrap();
+    assert!(form.fields()[0].settings.rich_text.as_ref().unwrap().image_field_key.is_none());
+}
+
+#[test]
 fn system_acceptance_fields_require_feishu_page_even_with_generic_compound_metadata() {
     let config = compound(
         "owners_finished_info",

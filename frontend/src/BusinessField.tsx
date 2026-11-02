@@ -13,7 +13,7 @@ import type { CachedItem } from "./types";
 
 interface ImageContext {
   itemId: CachedItem["id"];
-  fieldKey: string;
+  fieldKey?: string;
 }
 const Images = createContext<ImageContext | null>(null);
 
@@ -63,7 +63,7 @@ function FieldImage({ url, alt = "" }: { url: string; alt?: string }) {
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    if (!context || !visible || !downloadable) return;
+    if (!context?.fieldKey || !visible || !downloadable) return;
     let active = true;
     setSrc("");
     setError("");
@@ -113,7 +113,9 @@ function FieldImage({ url, alt = "" }: { url: string; alt?: string }) {
         </button>
       ) : (
         <div className="field-image-placeholder" role="status">
-          {visible ? "正在加载图片…" : "图片待加载"}
+          {!context?.fieldKey
+            ? "请在飞书中查看图片"
+            : visible ? "正在加载图片…" : "图片待加载"}
         </div>
       )}
       {alt && <div className="field-image-caption">{alt}</div>}
