@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Check, LoaderCircle, X } from "lucide-react";
+import { ArrowLeft, Check, CircleAlert, FileText, LoaderCircle, X } from "lucide-react";
 import { Select } from "./Select";
 import { useScrollIsolation } from "./useScrollIsolation";
 import { CreationLookup } from "./CreationLookup";
@@ -16,6 +16,7 @@ import {
   creationEmpty,
   creationTargetKey,
   getCreationForm,
+  resolveCreationRelationLabels,
   verifyCreation,
   type CreationField,
   type CreationForm,
@@ -40,6 +41,7 @@ import {
 } from "./CreationSettings";
 
 type Draft = {
+  reviewFieldKeys?: string[];
   recoveredRequestId?: string;
   values: Record<string, unknown>;
   labels: Record<string, string>;
@@ -60,18 +62,24 @@ function loadContinuousCreation(): boolean {
 }
 
 export function CreateWorkItem({
-  locations,
+  locations: providedLocations,
   initialType,
   initialSpace,
+  entryIntent = "recovery",
+  recordsChanged,
   close,
   created,
 }: {
   locations: CreationLocation[];
   initialType?: string;
   initialSpace?: string;
+  entryIntent?: "create" | "recovery";
+  recordsChanged?: () => void;
   close: () => void;
   created: () => Promise<void>;
 }) {
+  const [recoveryEntries] = useState(providedLocations);
+  const locations = entryIntent === "recovery" && recoveryEntries.some((entry) => entry.pending_form?.pending) ? recoveryEntries : providedLocations;
   const [locationKey, setLocationKey] = useState(() =>
     creationTargetKey(
       locations.find(
@@ -94,6 +102,11 @@ export function CreateWorkItem({
   const imageBusy = Object.values(imageBusyFields).some(Boolean);
   const imageBusyRef = useRef<Record<string, boolean>>({});
   const [stage, setStage] = useState<"edit" | "review" | "result">("edit");
+  const [pendingEntry, setPendingEntry] = useState(false);
+  const hasMultipleRecords = entryIntent === "recovery" && locations.filter((entry) => entry.pending_form?.pending).length > 1;
+  const [recordsOverview, setRecordsOverview] = useState(hasMultipleRecords);
+  const [recoveredRecords, setRecoveredRecords] = useState<string[]>([]);
+  const recoveryLocations = locations.filter((entry) => entry.pending_form?.pending && !recoveredRecords.includes(entry.pending_form.pending.request.request_id));
   const [busy, setBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
   const [loading, setLoading] = useState(true);
@@ -177,6 +190,7 @@ export function CreateWorkItem({
     let cancelled = false;
     setLoading(true);
     setError("");
+    setItemNumber("");
     setForm(null);
     setDefaults({});
     setNextFailed(false);
@@ -187,7 +201,7 @@ export function CreateWorkItem({
       setLoading(false);
       return;
     }
-    (location.pending_form
+    (location.pending_form && !recoveredRecords.includes(location.pending_form.pending?.request.request_id || "")
       ? Promise.resolve(location.pending_form)
       : getCreationForm(location)
     )
@@ -215,10 +229,12 @@ export function CreateWorkItem({
               values: next.pending.request.fields,
               labels: saved?.labels || {},
               continueCreating: saved?.continueCreating,
+              reviewFieldKeys: saved?.reviewFieldKeys,
               ...next.pending,
             }
           : {
               recoveredRequestId: saved?.recoveredRequestId,
+              reviewFieldKeys: saved?.reviewFieldKeys,
               values,
               labels: saved?.labels || {},
               ...(saved?.request
@@ -226,13 +242,15 @@ export function CreateWorkItem({
                 : {}),
               continueCreating: saved?.continueCreating,
             };
-        if (restored.result?.outcome === "not_submitted") {
+        if (restored.result?.outcome === "not_submitted" && saved?.recoveredRequestId === restored.request?.request_id) {
           const recoveredRequestId = restored.request!.request_id;
           setError(restored.result.message);
-          restored = { values: saved?.recoveredRequestId === recoveredRequestId ? saved.values : restored.values, labels: saved?.recoveredRequestId === recoveredRequestId ? saved.labels : restored.labels, continueCreating: restored.continueCreating, recoveredRequestId };
+          restored = { values: saved?.recoveredRequestId === recoveredRequestId ? saved.values : restored.values, labels: saved?.recoveredRequestId === recoveredRequestId ? saved.labels : restored.labels, reviewFieldKeys: restored.reviewFieldKeys, continueCreating: restored.continueCreating, recoveredRequestId };
           try {
             localStorage.setItem(draftKey(next), JSON.stringify(restored));
             await acknowledgeCreationRecovery(recoveredRequestId);
+            setRecoveredRecords((ids) => [...ids, recoveredRequestId]);
+            recordsChanged?.();
           } catch {
             setError("草稿恢复尚未完成，本机记录或恢复确认未能保存。请保留此窗口，重新打开后可继续恢复。");
           }
@@ -243,6 +261,7 @@ export function CreateWorkItem({
         setDefaults(localDefaults);
         draftRef.current = restored;
         setDraft(restored);
+        setPendingEntry(entryIntent === "create" && !!restored.request && restored.result?.outcome !== "not_submitted");
         setStage(restored.request ? "result" : "edit");
       })
       .catch((e) => {
@@ -271,13 +290,73 @@ export function CreateWorkItem({
       return false;
     }
   }
+  const formIdentity = form && creationTargetKey(form.target) === locationKey
+    ? JSON.stringify([form.context, form.target.source_id, form.target.project_key, form.target.type_key, form.version])
+    : "";
+  const currentForm = useRef(form);
+  currentForm.current = form;
+  const activeFormIdentity = useRef(formIdentity);
+  activeFormIdentity.current = formIdentity;
+  const selectedRelationIds = (value: unknown) =>
+    (Array.isArray(value) ? value : creationEmpty(value) ? [] : [value]).map(String);
+  const usableRelationLabel = (label: string | undefined, id: string) => !!label?.trim() && label.trim() !== id;
+  const unresolvedRelations = form?.fields.filter((field) => field.kind === "relation").map((field) => ({
+    fieldKey: field.key,
+    ids: selectedRelationIds(draft.values[field.key]).filter((id) =>
+      !usableRelationLabel(draft.labels[`${field.key}:${id}`], id)),
+  })).filter((field) => field.ids.length) || [];
+  const unresolvedRelationKey = JSON.stringify(unresolvedRelations);
+  useEffect(() => {
+    if (!form || !formIdentity || !unresolvedRelations.length) return;
+    let cancelled = false;
+    const identity = formIdentity;
+    const requested = unresolvedRelations;
+    Promise.allSettled(requested.map(async (entry) => {
+      const field = form.fields.find((field) => field.key === entry.fieldKey)!;
+      const staticOptions = field.options.filter((option) => entry.ids.includes(option.value) && usableRelationLabel(option.label, option.value));
+      const ids = entry.ids.filter((id) => !staticOptions.some((option) => option.value === id));
+      const found = ids.length ? await resolveCreationRelationLabels(form.target, entry.fieldKey, ids) : { options: [], warning: null };
+      return { ...entry, found: { ...found, options: [...staticOptions, ...found.options] } };
+    })).then((results) => {
+      if (cancelled || activeFormIdentity.current !== identity) return;
+      const latest = draftRef.current;
+      const labels = { ...latest.labels };
+      let changed = false;
+      for (const result of results) {
+        if (result.status !== "fulfilled") continue;
+        const { fieldKey, ids, found } = result.value;
+        const field = currentForm.current?.fields.find((entry) => entry.key === fieldKey && entry.kind === "relation");
+        if (!field) continue;
+        const selected = selectedRelationIds(latest.values[fieldKey]);
+        for (const option of found.options) {
+          const key = `${fieldKey}:${option.value}`;
+          if (!ids.includes(option.value) || !selected.includes(option.value) ||
+              !usableRelationLabel(option.label, option.value) ||
+              usableRelationLabel(labels[key], option.value)) continue;
+          labels[key] = option.label;
+          changed = true;
+        }
+      }
+      if (changed) save({ ...latest, labels }, true);
+    });
+    return () => { cancelled = true; };
+  }, [formIdentity, unresolvedRelationKey]);
+  function withLatestRequestLabels(next: Draft, identity: string): Draft {
+    const latest = draftRef.current;
+    if (activeFormIdentity.current !== identity || !next.request ||
+        latest.request?.request_id !== next.request.request_id) return next;
+    return { ...next, labels: { ...next.labels, ...latest.labels } };
+  }
   function change(
     key: string,
     value: unknown,
     labels: Record<string, string> = {},
   ) {
+    if (draftRef.current.request && draftRef.current.result?.outcome !== "not_submitted") return;
     save(
       {
+        ...(draftRef.current.request ? { request: draftRef.current.request, result: draftRef.current.result } : {}),
+        reviewFieldKeys: draftRef.current.reviewFieldKeys,
         recoveredRequestId: draftRef.current.recoveredRequestId,
         values: { ...draftRef.current.values, [key]: value },
         labels: { ...draftRef.current.labels, ...labels },
@@ -289,6 +368,7 @@ export function CreateWorkItem({
     const persisted = save(
       {
         recoveredRequestId: requestId ?? draftRef.current.recoveredRequestId,
+        reviewFieldKeys: [...new Set([...(draftRef.current.reviewFieldKeys || []), ...(draftRef.current.result?.rejected_field_keys || [])])].filter((key) => form?.fields.some((field) => field.key === key)),
         values: draftRef.current.values,
         labels: draftRef.current.labels,
       },
@@ -301,7 +381,7 @@ export function CreateWorkItem({
         : `${message} 本机草稿未能保存，当前填写仍保留在此窗口，请检查磁盘空间后重试。`,
     );
     if (persisted && requestId) {
-      try { await acknowledgeCreationRecovery(requestId); }
+      try { await acknowledgeCreationRecovery(requestId); setRecoveredRecords((ids) => [...ids, requestId]); recordsChanged?.(); }
       catch { setError(`${message} 恢复确认未能保存，重新打开后可继续恢复。`); }
     }
   }
@@ -393,6 +473,10 @@ export function CreateWorkItem({
     }
   }
   async function afterVerified(completed: Draft, completedForm: CreationForm) {
+    if (completed.request) {
+      setRecoveredRecords((ids) => [...new Set([...ids, completed.request!.request_id])]);
+      recordsChanged?.();
+    }
     let refreshWarning = "";
     try {
       await created();
@@ -454,6 +538,10 @@ export function CreateWorkItem({
       return;
     }
     setError("");
+    if (draft.reviewFieldKeys?.length) {
+      setSelectedFields([...new Set([...selectedFields, ...draft.reviewFieldKeys])]);
+      if (!save({ ...draftRef.current, reviewFieldKeys: undefined })) return;
+    }
     setStage("review");
   }
   async function submit() {
@@ -513,11 +601,7 @@ export function CreateWorkItem({
       setUploadProgress("");
       setStage("result");
       const result = await createWorkItem(request);
-      if (result.outcome === "not_submitted") {
-        await restoreUnsubmitted(result.message, request.request_id);
-        return;
-      }
-      const completed = { ...pending, result };
+      const completed = withLatestRequestLabels({ ...pending, result }, formIdentity);
       save(completed, true);
       if (result.outcome === "verified") {
         await afterVerified(completed, form);
@@ -551,11 +635,7 @@ export function CreateWorkItem({
         itemNumber,
         draft.request,
       );
-      if (result.outcome === "not_submitted") {
-        await restoreUnsubmitted(result.message, draft.request.request_id);
-        return;
-      }
-      const completed = { ...draft, result };
+      const completed = withLatestRequestLabels({ ...draft, result }, formIdentity);
       save(completed, true);
       if (result.outcome === "verified") {
         if (form) await afterVerified(completed, form);
@@ -568,6 +648,13 @@ export function CreateWorkItem({
     }
   }
   const confirmed = draft.result?.outcome === "verified";
+  const rejected = draft.result?.outcome === "not_submitted";
+  const locked = !!draft.request && !confirmed && !rejected;
+  async function returnToDraft() {
+    setPendingEntry(false);
+    if (rejected) await restoreUnsubmitted(draft.result!.message, draft.request?.request_id);
+    else setStage("edit");
+  }
   const spaces = [
     ...new Map(
       locations.map((l) => [
@@ -670,7 +757,8 @@ export function CreateWorkItem({
       />
     );
   }
-  const displayedFields = form ? visibleCreationFields(form, selectedFields, draft.values) : [];
+  const reviewFields = form?.fields.filter((field) => draft.reviewFieldKeys?.includes(field.key)) || [];
+  const displayedFields = form ? visibleCreationFields(form, [...selectedFields, ...reviewFields.map((field) => field.key)], draft.values) : [];
   const groups = [
     {
       title: "基本信息",
@@ -701,22 +789,23 @@ export function CreateWorkItem({
         <header className="creation-header">
           <div>
             <h2 id="creation-title" ref={heading} tabIndex={-1}>
-              {stage === "review"
+              {recordsOverview ? "创建记录" : stage === "edit" && locked ? "查看已提交草稿" : stage === "review"
                 ? "核对创建内容"
                 : stage === "result"
                   ? confirmed
                     ? "已创建"
                     : busy
                       ? "正在处理"
-                      : "核对创建结果"
+                      : rejected ? "创建未成功" : pendingEntry ? "新建工作事项" : "核对创建结果"
                   : `新建${location?.name || "工作事项"}`}
             </h2>
             <p className="hint">
-              {stage === "edit"
+              {recordsOverview ? "逐条查看提交结果，草稿会保留在本机" : stage === "edit" && locked ? "上次提交内容已保留，请先核验创建结果" : stage === "edit"
                 ? "填写内容后核对并创建"
                 : `${location?.space || ""} / ${location?.name || "工作事项"}`}
             </p>
           </div>
+          {!recordsOverview && hasMultipleRecords && <button className="secondary" disabled={busy || imageBusy} onClick={() => setRecordsOverview(true)}>全部记录（{recoveryLocations.length}）</button>}
           <button
             className="icon-button"
             aria-label="关闭新建"
@@ -727,6 +816,11 @@ export function CreateWorkItem({
           </button>
         </header>
         <div className="creation-content" ref={content}>
+          {recordsOverview ? <div className="creation-records"><p className="hint">共 {recoveryLocations.length} 条需要处理的创建记录。选择一条查看提交内容与结果。</p>{recoveryLocations.map((entry) => {
+            const pending = entry.pending_form!.pending!;
+            const failed = pending.result.outcome === "not_submitted";
+            return <article className="creation-record-card" key={pending.request.request_id}><span className="creation-record-state">{failed ? "创建未成功" : "结果待核验"}</span><h3>{String(pending.request.fields.name || "未填写标题")}</h3><p>{entry.space} · {entry.name}</p><button className="secondary" onClick={() => { setLocationKey(creationTargetKey(entry)); setRecordsOverview(false); setStage("result"); }}>{failed ? "查看失败并恢复草稿" : "查看并核验结果"}</button></article>;
+          })}{!recoveryLocations.length && <p>没有待处理的创建记录。</p>}</div> : <>
           {stage === "edit" && (
             <div className="creation-location">
               <div>
@@ -775,11 +869,13 @@ export function CreateWorkItem({
                   {previousCreated}
                 </p>
               )}
-              <p className="hint">
+              {locked && <div className="creation-pending-note" role="status"><CircleAlert size={18} /><div><strong>这份草稿仍有待核验的提交</strong><p>当前仅供查看；为避免重复创建，确认上次结果前不能编辑或再次提交。</p></div><button className="secondary" onClick={() => setStage("result")}>核验创建结果</button></div>}
+              {!!reviewFields.length && <div className="creation-pending-note" role="note"><CircleAlert size={18} /><div><strong>本次需核对</strong><p>飞书校验提及以下字段，已保留原填写内容。请核对内容与人员选择后重新核对创建。</p><div className="creation-review-links">{reviewFields.map((field) => <button className="text-button" key={field.key} onClick={() => { const element = document.getElementById(`creation-field-${field.key}`); element?.scrollIntoView?.({ block: "center" }); element?.querySelector<HTMLElement>("input, textarea, button")?.focus(); }}>{field.label}</button>)}</div></div></div>}
+              {!locked && <p className="hint">
                 标有 <span className="creation-required">*</span>{" "}
                 的字段为必填。填写会自动保存到本机，关闭窗口或重启后可继续。
-              </p>
-              <div className="creation-fields">
+              </p>}
+              {locked ? <CreationReview form={form} groups={groups} values={draft.request!.fields} labels={draft.labels} /> : <fieldset className="creation-fields creation-draft-fields">
                 {form.fields.some((field) => !fixedCreationField(field)) && <CreationFieldTip />}
                 <CreationFieldVisibility key={`${form.context}:${creationTargetKey(form.target)}`} form={form}
                   selected={selectedFields} values={draft.values} disabled={imageBusy}
@@ -812,9 +908,10 @@ export function CreateWorkItem({
                           </p>
                         )}
                       {g.fields.map((f) => (
-                        <div className="creation-field" key={f.key}>
+                        <div className="creation-field" key={f.key} id={`creation-field-${f.key}`}>
                           <label htmlFor={`create-${f.key}`}>
                             {f.label}
+                            {reviewFields.some((field) => field.key === f.key) && <span className="creation-field-review-note">本次需核对</span>}
                             {f.required && (
                               <span
                                 className="creation-required"
@@ -845,7 +942,7 @@ export function CreateWorkItem({
                       ))}
                     </section>
                   ))}
-              </div>
+              </fieldset>}
             </>
           ) : form && stage === "review" ? (
             <>
@@ -875,13 +972,16 @@ export function CreateWorkItem({
                 className={`creation-result ${confirmed ? "creation-success" : ""}`}
                 role="status"
               >
-                {confirmed && <Check size={30} />}
-                <p>
+                <div className="creation-result-heading">
+                  <span className="creation-result-icon">{busy ? <LoaderCircle size={23} className="spin" /> : confirmed ? <Check size={23} /> : <CircleAlert size={23} />}</span>
+                  <div><h3>{busy ? "正在确认创建结果" : confirmed ? "工作事项已创建" : rejected ? "飞书未接受本次创建" : pendingEntry ? "此位置有一条待核验创建" : "创建结果尚未确认"}</h3><p>
                   {busy && !confirmed
                     ? "正在提交并从飞书回读核对，请稍候…"
+                    : pendingEntry ? "请先处理上次提交。可以返回查看草稿，或核验它是否已在飞书创建，避免重复提交。"
                     : draft.result?.message ||
                       "提交结果尚未确认，草稿已保留。请先在飞书核对，避免重复创建。"}
-                </p>
+                </p></div></div>
+                <div className="creation-result-summary"><FileText size={18} /><div><span>本次草稿 · {location?.name || "工作事项"}</span><strong>{String(draft.values.name || "未填写标题")}</strong><small>{location?.space}</small></div></div>
                 {preparingNext && (
                   <p className="hint" role="status">
                     正在准备下一条创建表单…
@@ -890,24 +990,25 @@ export function CreateWorkItem({
                 {draft.result?.item_id && (
                   <strong>事项编号 {draft.result.item_id.work_item_id}</strong>
                 )}
-                {!confirmed && !busy && (
+                {!confirmed && !rejected && !busy && (
                   <>
                     <p className="hint">
                       这里只会读取和核对结果，不会再次创建。
                     </p>
-                    {!draft.result?.item_id && (
-                      <label>
-                        在飞书中找到的事项编号
+                    {!draft.result?.item_id && !pendingEntry && (
+                      <details className="creation-manual-verify"><summary>已在飞书找到新事项？使用编号定位</summary><p className="hint" id="creation-number-help">仅在飞书确认出现了本次新建事项后使用。编号来自该事项的详情页，例如 123456；不是本机提交记录编号。不知道编号时可先返回草稿查看内容。</p><label>
+                        飞书事项编号（可选）
                         <input
                           aria-label="核验事项编号"
+                          aria-describedby="creation-number-help"
                           inputMode="numeric"
                           value={itemNumber}
                           onChange={(e) => setItemNumber(e.target.value)}
                         />
-                      </label>
+                      </label></details>
                     )}
-                    <button className="secondary" onClick={() => void verify()}>
-                      重新核验结果
+                    <button className="primary" onClick={() => { if (pendingEntry) setPendingEntry(false); else void verify(); }}>
+                      {pendingEntry ? "去核验上次创建" : "重新核验结果"}
                     </button>
                   </>
                 )}
@@ -933,8 +1034,9 @@ export function CreateWorkItem({
               重新读取表单
             </button>
           )}
+          </>}
         </div>
-        <footer className="creation-footer">
+        {!recordsOverview && <footer className="creation-footer">
           <span className="hint">
             {stage === "edit"
               ? "草稿仅保存在本机"
@@ -964,9 +1066,9 @@ export function CreateWorkItem({
             <button
               className="primary"
               disabled={loading || !!blocked || !form || imageBusy}
-              onClick={review}
+              onClick={() => locked ? setStage("result") : review()}
             >
-              核对内容
+              {locked ? "核验创建结果" : "核对内容"}
             </button>
           )}
           {stage === "review" && (
@@ -1017,7 +1119,8 @@ export function CreateWorkItem({
               </button>
             </>
           )}
-        </footer>
+          {stage === "result" && !confirmed && !busy && <button className={rejected ? "primary" : "secondary"} onClick={() => void returnToDraft()}><ArrowLeft size={14} />返回草稿</button>}
+        </footer>}
       </section>
     </div>,
     document.body,

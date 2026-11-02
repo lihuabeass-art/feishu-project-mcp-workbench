@@ -62,7 +62,7 @@ import type { AppError, CachedItem, ConnectionSettings as Settings, Snapshot, Wo
 import { Workflow } from "./Workflow";
 import { SourceTypes } from "./SourceTypes";
 import { CreateWorkItem } from "./CreateWorkItem";
-import { creationLocations, creationTargetKey, getPendingCreations, type CreationForm, type CreationLocation } from "./creation";
+import { creationLocations, getPendingCreations, type CreationForm, type CreationLocation } from "./creation";
 import { WorkSources } from "./WorkSources";
 import { sourceName, sourceProjects } from "./sourcePresets";
 import { WorkItemDetails } from "./WorkItemDetails";
@@ -1071,7 +1071,6 @@ function Workspace() {
     const entry = source?.type_scope?.types.find((t) => t.project_key === form.target.project_key && t.type_key === form.target.type_key);
     return { ...form.target, space: entry?.project_name || form.target.project_key, name: entry?.type_name || form.target.type_key, pending_form: form };
   });
-  const creationLocationsWithPending = creationTargets.map((target) => pendingLocations.find((l) => creationTargetKey(l) === creationTargetKey(target)) || target);
   useEffect(() => {
     if (!desktop || !data?.capabilities?.creation) return;
     let cancelled = false;
@@ -1842,7 +1841,9 @@ function Workspace() {
     </div>
     <AppUpdateDialog updater={updater} />
     {creationOpen && desktop && data?.capabilities?.creation && <CreateWorkItem key={`${creationContext}:${creationRecovery}`}
-      locations={creationRecovery ? pendingLocations : creationLocationsWithPending} initialType={!creationRecovery && type.length === 1 ? type[0] : undefined}
+      entryIntent={creationRecovery ? "recovery" : "create"}
+      recordsChanged={() => { void getPendingCreations().then((forms) => setCreationRecords({ context: creationContext, forms, failed: false })).catch(() => setCreationRecords((current) => ({ ...current, failed: true }))); }}
+      locations={creationRecovery ? pendingLocations : creationTargets} initialType={!creationRecovery && type.length === 1 ? type[0] : undefined}
       initialSpace={!creationRecovery && project.length === 1 ? project[0] : undefined} close={closeCreation} created={reload} />}
     </>
   );

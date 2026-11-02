@@ -42,6 +42,7 @@ export type CreationResult = {
   request_id: string;
   item_id: CachedItem["id"] | null;
   can_verify: boolean;
+  rejected_field_keys?: string[];
 };
 export type CreationForm = {
   target: CreationTarget;
@@ -101,6 +102,8 @@ export const getCreationForm = (target: CreationTarget) =>
   invoke<CreationForm>("get_creation_form", { target });
 export const getPendingCreations = () =>
   invoke<CreationForm[]>("get_pending_creations");
+export const resolveCreationRelationLabels = (target: CreationTarget, fieldKey: string, ids: string[]) =>
+  invoke<CreationLookupResult>("resolve_creation_relation_labels", { target, fieldKey, ids });
 export const lookupCreationField = (
   target: CreationTarget,
   fieldKey: string,

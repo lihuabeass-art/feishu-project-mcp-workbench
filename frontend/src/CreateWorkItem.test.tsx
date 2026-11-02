@@ -23,6 +23,7 @@ import {
   createWorkItem,
   getCreationForm,
   lookupCreationField,
+  resolveCreationRelationLabels,
   verifyCreation,
   type CreationForm,
   type CreationLocation,
@@ -35,6 +36,7 @@ vi.mock("./creation", async (original) => ({
   getCreationForm: vi.fn(),
   createWorkItem: vi.fn(),
   lookupCreationField: vi.fn(),
+  resolveCreationRelationLabels: vi.fn(),
   verifyCreation: vi.fn(),
 }));
 const locations: CreationLocation[] = [
@@ -143,6 +145,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(invoke).mockReset();
   vi.mocked(getCreationForm).mockResolvedValue(form());
+  vi.mocked(resolveCreationRelationLabels).mockReset().mockResolvedValue({ options: [], warning: null });
   vi.mocked(lookupCreationField).mockResolvedValue({
     options: [{ value: "person-a", label: "示例用户" }],
     warning: null,
@@ -164,6 +167,124 @@ async function fill(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("通用创建表单", () => {
+  it.each(["create", "verify"])("%s等待结果时补齐的关联名称不会被旧操作快照覆盖", async (mode) => {
+    const next = form();
+    next.fields.push({ key: "parent", label: "所属需求", kind: "relation", required: false, multiple: false, initial: null, options: [] });
+    const values = { name: "交错提交", description: "说明", reporter: ["a"], template: "1", parent: "987", zero: 0 };
+    const request = { target, version: "v1", request_id: "pending-label-interleave", fields: values };
+    const outcome = { ...result("unknown"), item_id: null };
+    if (mode === "verify") next.pending = { request, result: outcome };
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const key = `fstodo.creation.v1:account-a:${creationTargetKey(target)}`;
+    if (mode === "create") localStorage.setItem(key, JSON.stringify({ values, labels: {} }));
+    let resolveLabel!: (value: { options: { value: string; label: string }[]; warning: null }) => void;
+    let resolveOperation!: (value: CreationResult) => void;
+    vi.mocked(resolveCreationRelationLabels).mockReturnValueOnce(new Promise((resolve) => { resolveLabel = resolve; }));
+    const operation = new Promise<CreationResult>((resolve) => { resolveOperation = resolve; });
+    if (mode === "create") vi.mocked(createWorkItem).mockReturnValueOnce(operation);
+    else vi.mocked(verifyCreation).mockReturnValueOnce(operation);
+    const user = userEvent.setup();
+    const props = { locations, close: vi.fn(), created: vi.fn() };
+    const mounted = render(<CreateWorkItem {...props} />);
+    if (mode === "create") {
+      await user.click(await screen.findByRole("button", { name: "核对内容" }));
+      await user.click(screen.getByRole("button", { name: "确认创建" }));
+      await waitFor(() => expect(createWorkItem).toHaveBeenCalledOnce());
+    } else {
+      await user.click(await screen.findByRole("button", { name: "重新核验结果" }));
+      await waitFor(() => expect(verifyCreation).toHaveBeenCalledOnce());
+    }
+    const originalRequest = JSON.parse(localStorage.getItem(key) || "null")?.request || request;
+    await act(async () => resolveLabel({ options: [{ value: "987", label: "交错读取仍保留的需求名称" }], warning: null }));
+    expect(JSON.parse(localStorage.getItem(key)!).labels["parent:987"]).toBe("交错读取仍保留的需求名称");
+    await act(async () => resolveOperation(outcome));
+    const completed = JSON.parse(localStorage.getItem(key)!);
+    expect(completed.labels["parent:987"]).toBe("交错读取仍保留的需求名称");
+    expect(completed.request).toEqual(originalRequest);
+    expect(completed.result).toEqual(outcome);
+    mounted.unmount();
+    vi.mocked(resolveCreationRelationLabels).mockRejectedValue(new Error("后续读取失败"));
+    render(<CreateWorkItem {...props} />);
+    await user.click(await screen.findByRole("button", { name: "返回草稿" }));
+    expect(await screen.findByText("交错读取仍保留的需求名称")).toBeTruthy();
+    expect(resolveCreationRelationLabels).toHaveBeenCalledOnce();
+    expect(createWorkItem).toHaveBeenCalledTimes(mode === "create" ? 1 : 0);
+    expect(verifyCreation).toHaveBeenCalledTimes(mode === "verify" ? 1 : 0);
+  });
+
+  it("恢复仅ID关联后补名，保留查询期间编辑，核对与重开共用持久名称", async () => {
+    const next = form();
+    next.fields.push({ key: "parent", label: "所属需求", kind: "relation", required: false, multiple: false, initial: null, options: [] });
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const key = `fstodo.creation.v1:account-a:${creationTargetKey(target)}`;
+    const values = { name: "原草稿", description: "说明", reporter: ["a"], template: "1", parent: "123", zero: 0 };
+    localStorage.setItem(key, JSON.stringify({ values, labels: { "parent:123": "123" }, reviewFieldKeys: ["parent"], recoveredRequestId: "old" }));
+    let complete!: (value: { options: { value: string; label: string }[]; warning: null }) => void;
+    vi.mocked(resolveCreationRelationLabels).mockReturnValue(new Promise((resolve) => { complete = resolve; }));
+    const user = userEvent.setup();
+    const props = { locations, close: vi.fn(), created: vi.fn() };
+    const mounted = render(<CreateWorkItem {...props} />);
+    fireEvent.change(await screen.findByRole("textbox", { name: "标题" }), { target: { value: "查询中编辑标题" } });
+    await act(async () => complete({ options: [{ value: "123", label: "统一搜索体验" }], warning: null }));
+    expect(await screen.findByText("统一搜索体验")).toBeTruthy();
+    expect(resolveCreationRelationLabels).toHaveBeenCalledWith(target, "parent", ["123"]);
+    await user.click(screen.getByRole("combobox", { name: "所属需求" }));
+    await user.keyboard("{Escape}");
+    expect(screen.getByText("统一搜索体验")).toBeTruthy();
+    const saved = JSON.parse(localStorage.getItem(key)!);
+    expect(saved.values).toEqual({ ...values, name: "查询中编辑标题" });
+    expect(saved.reviewFieldKeys).toEqual(["parent"]);
+    expect(saved.recoveredRequestId).toBe("old");
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    expect(within(document.querySelector(".creation-review")!).getByText("统一搜索体验")).toBeTruthy();
+    mounted.unmount();
+    render(<CreateWorkItem {...props} />);
+    expect(await screen.findByText("统一搜索体验")).toBeTruthy();
+    expect(resolveCreationRelationLabels).toHaveBeenCalledTimes(1);
+    expect(createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it("未知提交只读稿独立补关联名称，不改变原请求或重发", async () => {
+    const next = form();
+    next.fields.push({ key: "parent", label: "所属需求", kind: "relation", required: false, multiple: false, initial: null, options: [] });
+    const request = { target, version: "v1", request_id: "unknown-label", fields: { name: "提交草稿", parent: "456" } };
+    const outcome = { ...result("unknown"), item_id: null };
+    next.pending = { request, result: outcome };
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    vi.mocked(resolveCreationRelationLabels).mockResolvedValue({ options: [{ value: "456", label: "工作台需求" }], warning: null });
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "返回草稿" }));
+    expect(await screen.findByText("工作台需求")).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "所属需求" })).toBeNull();
+    const saved = JSON.parse(localStorage.getItem(`fstodo.creation.v1:account-a:${creationTargetKey(target)}`)!);
+    expect(saved.request).toEqual(request);
+    expect(saved.result).toEqual(outcome);
+    expect(saved.values).toEqual(request.fields);
+    expect(createWorkItem).not.toHaveBeenCalled();
+    expect(verifyCreation).not.toHaveBeenCalled();
+  });
+
+  it("关联补名迟到及失败不污染其他位置，不清空选择或提示对象不存在", async () => {
+    const first = form();
+    first.fields.push({ key: "parent", label: "所属需求", kind: "relation", required: false, multiple: false, initial: "789", options: [] });
+    const second = { ...first, target: locations[1], context: "account-b" };
+    vi.mocked(getCreationForm).mockImplementation(async (target) => target.type_key === "issue" ? second : first);
+    let complete!: (value: { options: { value: string; label: string }[]; warning: null }) => void;
+    vi.mocked(resolveCreationRelationLabels).mockReturnValueOnce(new Promise((resolve) => { complete = resolve; })).mockRejectedValueOnce(new Error("读取暂时失败"));
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await screen.findByRole("combobox", { name: "所属需求" });
+    await user.click(screen.getByRole("combobox", { name: "新建类型" }));
+    await user.click(screen.getByRole("option", { name: "缺陷跟踪" }));
+    await waitFor(() => expect(resolveCreationRelationLabels).toHaveBeenCalledTimes(2));
+    await act(async () => complete({ options: [{ value: "789", label: "旧账号名称" }], warning: null }));
+    expect(screen.queryByText("旧账号名称")).toBeNull();
+    expect(screen.getByRole("combobox", { name: "所属需求" }).textContent).toContain("789");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(createWorkItem).not.toHaveBeenCalled();
+  });
+
   it("没有可选字段时不消费小贴士，之后进入有入口的类型才提示", async () => {
     vi.mocked(getCreationForm).mockResolvedValue({ ...form(), fields: form().fields.filter((field) => field.key !== "zero") });
     const mounted = render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
@@ -1298,6 +1419,108 @@ describe("通用创建表单", () => {
     expect(saved.values.reporter).toEqual(["b"]);
   });
 
+  it("飞书校验提及的可选空角色恢复后显式展示，保留图片并跨重开提示直到重新核对", async () => {
+    const next = form();
+    next.fields.push({ key: "tester", label: "测试负责人", kind: "people", required: false, multiple: true, initial: [], options: [] });
+    const image = "![](https://example.com/retained.png)";
+    next.pending = { request: { target, version: "v1", request_id: "rejected-fields", fields: { name: "原标题", description: image, reporter: ["a"], template: "1", zero: 0 } }, result: { ...result("unknown"), outcome: "not_submitted", item_id: null, message: "请核对测试负责人", rejected_field_keys: ["tester", "description", "removed"] } };
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const user = userEvent.setup();
+    const props = { locations, close: vi.fn(), created: vi.fn() };
+    const mounted = render(<CreateWorkItem {...props} />);
+    await user.click(await screen.findByRole("button", { name: "返回草稿" }));
+    expect(screen.getByRole("button", { name: "测试负责人" })).toBeTruthy();
+    expect(screen.getByText(/飞书校验提及以下字段/)).toBeTruthy();
+    const key = `fstodo.creation.v1:account-a:${creationTargetKey(target)}`;
+    expect(JSON.parse(localStorage.getItem(key)!).values.description).toBe(image);
+    expect(JSON.parse(localStorage.getItem(key)!).reviewFieldKeys).toEqual(["tester", "description"]);
+    mounted.unmount();
+    render(<CreateWorkItem {...props} />);
+    await screen.findByText(/飞书校验提及以下字段/);
+    expect(next.fields.find((field) => field.key === "tester")!.required).toBe(false);
+    fireEvent.change(screen.getByRole("textbox", { name: "标题" }), { target: { value: "已核对标题" } });
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    await screen.findByRole("heading", { name: "核对创建内容" });
+    expect(JSON.parse(localStorage.getItem(key)!).reviewFieldKeys).toBeUndefined();
+    expect(screen.queryByText(/飞书校验提及以下字段/)).toBeNull();
+    expect(createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it("两条恢复记录总览均可打开，失败恢复后移除记录且保留编辑草稿", async () => {
+    const first = form();
+    first.pending = { request: { target, version: "v1", request_id: "record-one", fields: { name: "待核验需求" } }, result: { ...result("unknown"), item_id: null } };
+    const second = form();
+    second.target = { ...target, type_key: "issue" };
+    second.pending = { request: { target: second.target, version: "v1", request_id: "record-two", fields: { name: "失败缺陷" } }, result: { ...result("unknown"), outcome: "not_submitted", message: "测试负责人未通过校验", item_id: null } };
+    const recordsChanged = vi.fn();
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={[{ ...locations[0], pending_form: first }, { ...locations[0], ...second.target, name: "缺陷", pending_form: second }]} entryIntent="recovery" recordsChanged={recordsChanged} close={vi.fn()} created={vi.fn()} />);
+    expect(await screen.findByText("待核验需求")).toBeTruthy();
+    expect(screen.getByText("失败缺陷")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "查看失败并恢复草稿" }));
+    await screen.findByText("测试负责人未通过校验");
+    await user.click(screen.getByRole("button", { name: "返回草稿" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "标题" }), { target: { value: "修改后缺陷" } });
+    expect(recordsChanged).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "全部记录（1）" }));
+    expect(screen.queryByText("失败缺陷")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "查看并核验结果" }));
+    await screen.findByText("待核验需求");
+    expect(screen.getByRole("button", { name: "重新核验结果" })).toBeTruthy();
+    vi.mocked(verifyCreation).mockResolvedValue(result("verified"));
+    await user.click(screen.getByRole("button", { name: "重新核验结果" }));
+    await screen.findByRole("heading", { name: "已创建" });
+    expect(recordsChanged).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("button", { name: "全部记录（0）" }));
+    expect(screen.getByText("没有待处理的创建记录。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "查看并核验结果" })).toBeNull();
+    expect(createWorkItem).not.toHaveBeenCalled();
+    const key = `fstodo.creation.v1:account-a:${creationTargetKey(second.target)}`;
+    expect(JSON.parse(localStorage.getItem(key)!).values.name).toBe("修改后缺陷");
+  });
+
+  it("切换恢复记录不把上一条手动编号带到下一条", async () => {
+    const forms = [form(), { ...form(), target: { ...target, type_key: "issue" } }];
+    forms.forEach((entry, index) => { entry.pending = { request: { target: entry.target, request_id: `number-${index}`, version: "v1", fields: { name: `编号隔离${index}` } }, result: { ...result("unknown"), item_id: null } }; });
+    const user = userEvent.setup();
+    render(<CreateWorkItem entryIntent="recovery" locations={forms.map((entry) => ({ ...locations[0], ...entry.target, pending_form: entry }))} close={vi.fn()} created={vi.fn()} />);
+    await user.click((await screen.findAllByRole("button", { name: "查看并核验结果" }))[0]);
+    await user.click(screen.getByText("已在飞书找到新事项？使用编号定位"));
+    await user.type(screen.getByRole("textbox", { name: "核验事项编号" }), "111");
+    await user.click(screen.getByRole("button", { name: "全部记录（2）" }));
+    await user.click(screen.getAllByRole("button", { name: "查看并核验结果" })[1]);
+    await screen.findByText("编号隔离1");
+    await user.click(screen.getByText("已在飞书找到新事项？使用编号定位"));
+    expect(screen.getByRole("textbox", { name: "核验事项编号" })).toHaveProperty("value", "");
+    await user.click(screen.getByRole("button", { name: "重新核验结果" }));
+    expect(verifyCreation).toHaveBeenCalledWith("number-1", "", expect.objectContaining({ request_id: "number-1" }));
+  });
+
+  it("新建入口发现未确认提交先说明原因，返回草稿只读且重开仍不能重复创建", async () => {
+    const next = form();
+    next.pending = { request: { target, version: "v1", request_id: "pending-create", fields: { name: "上次提交标题" } }, result: { ...result("unknown"), item_id: null } };
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const user = userEvent.setup();
+    const props = { locations, entryIntent: "create" as const, close: vi.fn(), created: vi.fn() };
+    const mounted = render(<CreateWorkItem {...props} />);
+    expect(await screen.findByText("此位置有一条待核验创建")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "核验事项编号" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "返回草稿" }));
+    expect(screen.getByRole("heading", { name: "查看已提交草稿" })).toBeTruthy();
+    expect(screen.getByText("上次提交标题")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "标题" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "报告人" })).toBeNull();
+    expect(document.querySelector('[contenteditable="true"]')).toBeNull();
+    expect(screen.queryByRole("button", { name: "确认创建" })).toBeNull();
+    await user.click(screen.getAllByRole("button", { name: "核验创建结果" })[0]);
+    await user.click(screen.getByText("已在飞书找到新事项？使用编号定位"));
+    expect(screen.getByText(/编号来自该事项的详情页/)).toBeTruthy();
+    mounted.unmount();
+    render(<CreateWorkItem {...props} />);
+    await screen.findByText("此位置有一条待核验创建");
+    expect(createWorkItem).not.toHaveBeenCalled();
+  });
+
   it("网关明确拒绝的历史创建恢复为可编辑草稿，不要求不存在的编号", async () => {
     const next = form();
     next.pending = {
@@ -1306,6 +1529,10 @@ describe("通用创建表单", () => {
     };
     vi.mocked(getCreationForm).mockResolvedValue(next);
     render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await screen.findByRole("heading", { name: "创建未成功" });
+    expect(screen.getByText(/飞书未接受本次创建参数/)).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "核验事项编号" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "返回草稿" }));
     expect((await screen.findByRole("textbox", { name: "标题" }) as HTMLInputElement).value).toBe("保留标题");
     expect(screen.getByRole("alert").textContent).toContain("事项未创建");
     expect(screen.queryByRole("button", { name: "重新核验结果" })).toBeNull();
@@ -1330,8 +1557,9 @@ describe("通用创建表单", () => {
     }) : null;
     if (failure === "ack") vi.mocked(invoke).mockRejectedValueOnce(new Error("ack failed"));
     const rendered = render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "返回草稿" }));
     await screen.findByRole("textbox", { name: "标题" });
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("恢复"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(failure === "storage" ? "草稿未能保存" : "恢复"));
     storage?.mockImplementation(original);
     fireEvent.change(screen.getByRole("textbox", { name: "标题" }), { target: { value: "继续编辑标题" } });
     rendered.unmount();
@@ -1353,6 +1581,7 @@ describe("通用创建表单", () => {
     vi.mocked(createWorkItem).mockRejectedValueOnce({ before_write: true, message: "仍有待恢复记录" });
     const user = userEvent.setup();
     const mounted = render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "返回草稿" }));
     await screen.findByRole("textbox", { name: "标题" });
     fireEvent.change(screen.getByRole("textbox", { name: "标题" }), { target: { value: "新编辑标题" } });
     await user.click(screen.getByRole("button", { name: "核对内容" }));
@@ -1397,6 +1626,7 @@ describe("通用创建表单", () => {
     await user.click(
       await screen.findByRole("button", { name: "重新核验结果" }),
     );
+    await user.click(await screen.findByRole("button", { name: "返回草稿" }));
     expect(
       (
         (await screen.findByRole("textbox", {
@@ -1698,6 +1928,7 @@ describe("连续创建", () => {
       await fill(user);
       await user.click(screen.getByRole("button", { name: "核对内容" }));
       await user.click(screen.getByRole("button", { name: "确认创建" }));
+      if (mode === "not_submitted") await user.click(await screen.findByRole("button", { name: "返回草稿" }));
       await screen.findByRole("textbox", { name: "标题" });
       expect(screen.getByRole("alert").textContent).toContain("未提交");
       expect(screen.getByRole("alert").textContent).toContain(

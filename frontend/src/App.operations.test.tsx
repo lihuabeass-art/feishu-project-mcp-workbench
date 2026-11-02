@@ -9,14 +9,17 @@ import type { CreationForm } from "./creation";
 import type { ConnectionInfo, Snapshot, WorkflowResult } from "./types";
 
 const updater = vi.hoisted(() => ({ prepareInstall: async (): Promise<() => void> => () => {} }));
+const creationEntry = vi.hoisted(() => vi.fn());
 vi.mock("./useAppUpdater", () => ({ useAppUpdater: (options: typeof updater) => {
   updater.prepareInstall = options.prepareInstall;
   return {};
 } }));
 vi.mock("./AppUpdater", () => ({ AppUpdateDialog: () => null, AppUpdateSettings: () => null }));
 // This suite verifies the workspace's operation boundaries, independently of form submission.
-vi.mock("./CreateWorkItem", () => ({ CreateWorkItem: ({ close }: { close: () => void }) =>
-  <div role="dialog" aria-label="新建窗口"><button onClick={close}>关闭新建窗口</button></div> }));
+vi.mock("./CreateWorkItem", () => ({ CreateWorkItem: (props: { close: () => void }) => {
+  creationEntry(props);
+  return <div role="dialog" aria-label="新建窗口"><button onClick={props.close}>关闭新建窗口</button></div>;
+} }));
 vi.mock("./api", () => ({
   desktop: true,
   loadSnapshot: vi.fn(), syncTodos: vi.fn(), checkConnection: vi.fn(),
@@ -290,6 +293,16 @@ it("创建记录缓存为空且读取失败时，完整与清单模式都保留�
   expect(button(/核验创建记录/).disabled).toBe(false);
   click("切换到清单模式");
   expect(button("核验创建记录").disabled).toBe(false);
+});
+
+it("新建入口与核验记录入口分别传递新建位置和恢复表单", async () => {
+  await ready();
+  click("新建工作事项");
+  expect(creationEntry.mock.lastCall?.[0]).toEqual(expect.objectContaining({ entryIntent: "create", locations: [expect.not.objectContaining({ pending_form: expect.anything() })] }));
+  click("关闭新建窗口");
+  click(/核验创建记录/);
+  await screen.findByRole("dialog", { name: "新建窗口" });
+  expect(creationEntry.mock.lastCall?.[0]).toEqual(expect.objectContaining({ entryIntent: "recovery", locations: [expect.objectContaining({ pending_form: pending })] }));
 });
 
 it("安装准备持锁期间两种布局的新建与核验一致禁用，失败后只释放安装锁", async () => {
