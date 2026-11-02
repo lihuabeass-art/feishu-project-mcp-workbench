@@ -1338,7 +1338,7 @@ function Workspace() {
       <CompactWorkspace
         items={compactItems}
         filters={filters}
-        schemeMenu={<FilterSchemeMenu controller={filterSchemes} />}
+        schemeMenu={<FilterSchemeMenu controller={filterSchemes} onNotice={(text) => setNotice({ tone: "success", text })} />}
         onFiltersChange={(next) => { setPendingType(null); setFilters(next); }}
         filterOptions={facets}
         loading={loading}
@@ -1613,7 +1613,7 @@ function Workspace() {
                       onClick={openCreation}><Plus size={15} />新建工作事项</button>}</div>
                   </div>
                   <div className="filterbar">
-                    <FilterSchemeMenu controller={filterSchemes} />
+                    <FilterSchemeMenu controller={filterSchemes} onNotice={(text) => setNotice({ tone: "success", text })} />
                     {spaceOptions.length > 0 && <label>
                       <span className="sr-only">空间</span>
                       <Select

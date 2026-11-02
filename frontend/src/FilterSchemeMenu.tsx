@@ -1,21 +1,21 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Bookmark, Check, ChevronDown } from "lucide-react";
+import { Bookmark, Check, ChevronDown, CircleAlert } from "lucide-react";
 import { schemeSummary } from "./filterSchemes";
 import type { FilterSchemesController } from "./useFilterSchemes";
 import { useScrollIsolation } from "./useScrollIsolation";
 import "./FilterSchemeMenu.css";
 
-export function FilterSchemeMenu({ controller: c }: { controller: FilterSchemesController }) {
+export function FilterSchemeMenu({ controller: c, onNotice }: { controller: FilterSchemesController; onNotice: (message: string) => void }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<{ kind: "save" | "rename" | "delete"; id?: string } | null>(null);
   const [name, setName] = useState("");
   const [makeDefault, setMakeDefault] = useState(false);
-  const [message, setMessage] = useState("");
   const trigger = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDivElement>(null);
   const title = useId();
+  const feedbackId = useId();
   const defaultLabel = useId(), defaultHelp = useId();
   const openingDialog = useRef(false);
   const menuIsolation = useScrollIsolation();
@@ -43,10 +43,11 @@ export function FilterSchemeMenu({ controller: c }: { controller: FilterSchemesC
     setMakeDefault(false); setForm({ kind, id }); setOpen(false);
   };
   const duplicate = c.document.schemes.some((scheme) => scheme.id !== form?.id && scheme.name.trim() === name.trim());
+  const feedback = c.error ? (c.available ? c.error : "筛选方案暂不可用，展开后可重试。") : "";
   return <div className="filter-scheme-control">
     <Menu.Root open={open} onOpenChange={setOpen}>
-      <Menu.Trigger asChild><button ref={trigger} className="filter-scheme-trigger" aria-label="筛选方案" title={c.current ? `筛选方案：${c.current.name}` : "选择、保存和管理一组筛选条件"}>
-        <Bookmark className="filter-scheme-icon" size={15} aria-hidden="true" /><span>{c.current?.name || "筛选方案"}</span>{c.adjusted && <small>已调整</small>}<ChevronDown size={12} aria-hidden="true" />
+      <Menu.Trigger asChild><button ref={trigger} className="filter-scheme-trigger" aria-label="筛选方案" aria-describedby={feedback ? feedbackId : undefined} title={feedback || (c.current ? `筛选方案：${c.current.name}` : "选择、保存和管理一组筛选条件")}>
+        {c.error ? <CircleAlert className="filter-scheme-icon-error" size={15} aria-hidden="true" /> : <Bookmark className="filter-scheme-icon" size={15} aria-hidden="true" />}<span>{c.current?.name || "筛选方案"}</span>{c.adjusted && <small>已调整</small>}<ChevronDown size={12} aria-hidden="true" />
       </button></Menu.Trigger>
       <Menu.Portal><Menu.Content ref={menuIsolation} className="filter-scheme-menu scroll-isolation-boundary" sideOffset={6} align="start" collisionPadding={10}
         onCloseAutoFocus={(event) => { if (openingDialog.current) { event.preventDefault(); openingDialog.current = false; dialog.current?.querySelector<HTMLElement>("input, button")?.focus(); } }}>
@@ -60,7 +61,7 @@ export function FilterSchemeMenu({ controller: c }: { controller: FilterSchemesC
             <Menu.SubTrigger className="filter-scheme-manage" disabled={c.busy} aria-label={`管理方案 ${scheme.name}`}>管理</Menu.SubTrigger>
           </div>
           <Menu.Portal><Menu.SubContent ref={menuIsolation} className="filter-scheme-menu filter-scheme-actions scroll-isolation-boundary" collisionPadding={10}>
-            <Menu.Item className="filter-scheme-item" onSelect={() => { void c.setDefault(c.document.defaultId === scheme.id ? null : scheme.id).then((saved) => { if (saved) setMessage("默认设置已保存，下次进入我的工作时生效"); }); }}>{c.document.defaultId === scheme.id ? "取消默认" : "设为默认"}</Menu.Item>
+            <Menu.Item className="filter-scheme-item" onSelect={() => { void c.setDefault(c.document.defaultId === scheme.id ? null : scheme.id).then((saved) => { if (saved) onNotice("默认设置已保存，下次进入我的工作时生效"); }); }}>{c.document.defaultId === scheme.id ? "取消默认" : "设为默认"}</Menu.Item>
             <Menu.Item className="filter-scheme-item" onSelect={() => begin("rename", scheme.id)}>重命名</Menu.Item>
             <Menu.Item className="filter-scheme-item" onSelect={() => begin("delete", scheme.id)}>删除方案</Menu.Item>
           </Menu.SubContent></Menu.Portal>
@@ -77,7 +78,7 @@ export function FilterSchemeMenu({ controller: c }: { controller: FilterSchemesC
         {c.error && <><p className="filter-scheme-hint filter-scheme-error" role="alert">{c.error}</p><Menu.Item className="filter-scheme-item" onSelect={c.retry}>重新读取方案</Menu.Item></>}
       </Menu.Content></Menu.Portal>
     </Menu.Root>
-    {(c.error || message) && <span className="filter-scheme-feedback" role="status">{c.error && !c.available ? "筛选方案暂不可用，展开后可重试。" : c.error || message}</span>}
+    {feedback && <span id={feedbackId} className="sr-only" role="status">{feedback}</span>}
     {form && createPortal(<div className="filter-scheme-backdrop scroll-isolation-boundary" ref={modalIsolation}>
       <div className="filter-scheme-dialog" ref={dialog} role="dialog" aria-modal="true" aria-labelledby={title}>
         <form onSubmit={async (event) => {

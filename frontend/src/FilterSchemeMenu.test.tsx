@@ -9,8 +9,10 @@ import { useFilterSchemes } from "./useFilterSchemes";
 import { emptyWorkFilters } from "./workFilters";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+const onNotice = vi.fn();
 afterEach(cleanup);
 beforeEach(() => {
+  onNotice.mockReset();
   vi.mocked(invoke).mockReset().mockImplementation(async (command) => {
     if (command === "load_filter_schemes") return { account: "user-a", document: {
       schemaVersion: 1, schemes: [{ id: "a", name: "方案甲", includeQuery: false, filters: emptyWorkFilters }], defaultId: null,
@@ -25,7 +27,7 @@ beforeEach(() => {
 function Harness() {
   const [filters, setFilters] = useState(emptyWorkFilters);
   const controller = useFilterSchemes({ enabled: true, context: "stable", active: true, filters, apply: setFilters });
-  return <><FilterSchemeMenu controller={controller} /><span>{controller.available ? "ready" : "loading"}</span></>;
+  return <><FilterSchemeMenu controller={controller} onNotice={onNotice} /><span>{controller.available ? "ready" : "loading"}</span></>;
 }
 async function open() {
   const user = userEvent.setup();
@@ -41,6 +43,8 @@ it("load failure shows a local recovery message instead of an empty list or an a
   render(<Harness />);
   const feedback = await screen.findByRole("status");
   expect(feedback.textContent).toBe("筛选方案暂不可用，展开后可重试。");
+  expect(screen.getByRole("button", { name: "筛选方案" }).getAttribute("aria-describedby")).toBe(feedback.id);
+  expect(screen.getByRole("button", { name: "筛选方案" }).title).toBe(feedback.textContent);
   await user.click(screen.getByRole("button", { name: "筛选方案" }));
   expect(screen.getByRole("alert").textContent).toContain("当前临时条件已保留");
   expect(screen.getByRole("alert").textContent).toContain("本地数据暂时无法读取，请重试");
@@ -97,5 +101,6 @@ it.each(["重命名", "删除方案", "设为默认"])("%s failure retains saved
   } else if (action === "删除方案") await user.click(screen.getByRole("button", { name: "确认删除" }));
   await waitFor(() => expect(screen.getAllByText(/本地方案暂时无法保存/).length).toBeGreaterThan(0));
   expect(screen.queryByText(/默认设置已保存/)).toBeNull();
+  expect(onNotice).not.toHaveBeenCalled();
   if (action !== "设为默认") expect(screen.getByRole("dialog")).toBeTruthy();
 });
