@@ -19,6 +19,8 @@ export interface CachedItem {
   // 旧版桌面后端不返回此字段。
   source_ids?: string[];
   personal_flows?: Record<string, CachedItem["flow"]>;
+  // 当前来源的展示投影；不参与持久化事项身份或筛选方案。
+  node_scope?: "personal";
   personal_schedules?: Record<string, CachedItem["schedule"]>;
   id: {
     project_key: string | null;

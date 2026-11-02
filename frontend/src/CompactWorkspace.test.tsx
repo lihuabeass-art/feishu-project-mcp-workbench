@@ -146,7 +146,7 @@ describe("清单模式", () => {
     expect(screen.queryByRole("navigation", { name: "主要导航" })).toBeNull();
     expect(screen.getByRole("heading", { name: "我的工作2" })).toBeTruthy();
     expect(within(list).getAllByRole("button").map((row) => row.textContent)).toEqual([
-      "需求需求甲节点 · 研发中",
+      "需求需求甲研发中",
       "缺陷缺陷乙状态 · 待处理",
     ]);
     expect(screen.queryByRole("button", { name: "关闭" })).toBeNull();
@@ -281,10 +281,10 @@ describe("清单模式", () => {
     if (field === "流程类型") {
       await user.click(screen.getByText("更多条件"));
       await chooseFilter(user, "清单流程类型", "节点流");
-      await chooseFilter(user, "清单当前节点", "研发中（2）");
-      expect(screen.getByRole("button", { name: "取消当前节点：研发中（2）" })).toBeTruthy();
+      await chooseFilter(user, "清单节点", "研发中（2）");
+      expect(screen.getByRole("button", { name: "取消节点：研发中（2）" })).toBeTruthy();
       await user.click(screen.getByRole("button", { name: "取消流程类型：节点流" }));
-      expect(screen.queryByRole("button", { name: /取消当前节点/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /取消节点/ })).toBeNull();
     } else {
       await chooseFilter(user, "清单空间", "空间甲");
       await chooseFilter(user, "清单所属项目", "项目甲");

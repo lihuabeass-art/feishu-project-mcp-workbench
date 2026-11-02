@@ -9,6 +9,9 @@ const matchesFilter = (value: string | null, selection: FilterSelection) => {
   const values = filterValues(selection);
   return !values.length || (value !== null && values.includes(value));
 };
+export const nodeScopeLabel = (item: CachedItem) =>
+  item.node_scope === "personal" ? "我的待办节点" : "事项当前节点";
+
 export const relatedProjectKey = (space: string | null, project: RelatedProject) =>
   // 关联字段属于事项类型；同一个项目可被多个类型的不同字段引用。
   JSON.stringify([space, project.id]);

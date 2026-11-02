@@ -14,7 +14,7 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { itemKey, localTime, typeColorStyle } from "./model";
+import { itemKey, localTime, nodeScopeLabel, typeColorStyle } from "./model";
 import { CompactTypeTabs, compactTypeTabId, type CompactTypeOption } from "./CompactTypeTabs";
 import { Select } from "./Select";
 import {
@@ -44,9 +44,9 @@ function FlowLine({ item }: { item: CachedItem }) {
   return (
     <span className="list-mode-flow">
       {(f.kind === "node" || f.kind === "both") && (
-        <span>
+        <span title={nodeScopeLabel(item)}>
           <i className="status-dot" />
-          节点 · {f.node_name || "名称未提供"}
+          {f.node_name || "名称未提供"}
         </span>
       )}
       {(f.kind === "state" || f.kind === "both") && (
@@ -91,6 +91,7 @@ export function CompactWorkspace({
   recoverCreation,
   creationDisabled = false,
   schemeMenu,
+  nodeFilterHint = "当前节点",
 }: {
   items: CachedItem[];
   filters: WorkFilters;
@@ -116,6 +117,7 @@ export function CompactWorkspace({
   recoverCreation?: () => void;
   creationDisabled?: boolean;
   schemeMenu?: ReactNode;
+  nodeFilterHint?: string;
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filtersId = useId();
@@ -161,16 +163,17 @@ export function CompactWorkspace({
   }
 
   const activeFilters = [
-    ...(filters.query.trim() ? [{ id: "query", label: `搜索：${filters.query}`,
+    ...(filters.query.trim() ? [{ id: "query", label: `搜索：${filters.query}`, hint: undefined,
       remove: () => changeFilters({ ...filters, query: "" }) }] : []),
     ...([
       { key: "space", label: "空间", options: spaces },
       { key: "project", label: "所属项目", options: projects },
       { key: "flowKind", label: "流程类型", options: flowKinds },
-      { key: "nodeName", label: "当前节点", options: facets.node.options },
+      { key: "nodeName", label: "节点", options: facets.node.options },
       { key: "stateName", label: "当前状态", options: facets.state.options },
     ] as const).flatMap(({ key, label, options }) => filters[key].map((value) => ({
       id: `${key}:${value}`, label: `${label}：${options.find((option) => option.value === value)?.label || value}`,
+      hint: key === "nodeName" ? nodeFilterHint : undefined,
       remove: () => {
         const values = filters[key].filter((entry) => entry !== value);
         changeFilters(key === "nodeName" || key === "stateName"
@@ -307,7 +310,7 @@ export function CompactWorkspace({
           </div>
           {activeFilters.length > 0 && <div className="list-mode-filter-chips" role="group" aria-label="当前筛选条件">
             {activeFilters.map((filter) => <button key={filter.id} className="list-mode-filter-chip"
-              aria-label={`取消${filter.label}`} onClick={filter.remove}>
+              aria-label={`取消${filter.label}`} title={filter.hint} onClick={filter.remove}>
               <span>{filter.label}</span><X size={11} aria-hidden="true" />
             </button>)}
           </div>}
@@ -340,9 +343,9 @@ export function CompactWorkspace({
                     onChange={(flowKind) => changeFilters(changeWorkFilter(filters, "flowKind", flowKind, flowKinds))}
                     options={[{ value: "", label: "全部流程类型" }, ...flowKinds]} />
                 </label>}
-                {facets.node.visible && <label>
-                  <span>当前节点</span>
-                  <Select multiple ariaLabel="清单当前节点" className="compact" value={filters.nodeName}
+                {facets.node.visible && <label title={nodeFilterHint}>
+                  <span>节点</span>
+                  <Select multiple ariaLabel="清单节点" className="compact" value={filters.nodeName}
                     onChange={(nodeName) => changeFilters({ ...filters, nodeName })}
                     options={[{ value: "", label: "全部节点" }, ...facets.node.options]} />
                 </label>}

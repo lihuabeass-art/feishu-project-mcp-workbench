@@ -382,20 +382,20 @@ describe("工作台交互", () => {
     render(<App />);
     await screen.findByText("合入任务");
     await chooseOption(user, "空间", "空间甲");
-    await user.click(screen.getByRole("combobox", { name: "当前节点" }));
+    await user.click(screen.getByRole("combobox", { name: "节点" }));
     expect(screen.queryByRole("option", { name: "其他节点（1）" })).toBeNull();
     await user.click(screen.getByRole("option", { name: "后端代码合入（1）" }));
     await user.keyboard("{Escape}");
     expect(screen.queryByText("设计任务")).toBeNull();
-    await user.click(screen.getByRole("combobox", { name: "当前节点" }));
+    await user.click(screen.getByRole("combobox", { name: "节点" }));
     expect(screen.getByRole("option", { name: "后端方案设计（1）" })).toBeTruthy();
     await user.keyboard("{Escape}");
     await user.type(screen.getByRole("textbox", { name: "搜索工作" }), "设计");
     expect(screen.getByText("没有匹配的工作")).toBeTruthy();
-    expect(screen.getByRole("combobox", { name: "当前节点" }).textContent).toContain("后端代码合入（0）");
-    await chooseOption(user, "当前节点", "全部节点");
+    expect(screen.getByRole("combobox", { name: "节点" }).textContent).toContain("后端代码合入（0）");
+    await chooseOption(user, "节点", "全部节点");
     expect(screen.getByText("设计任务")).toBeTruthy();
-    expect(screen.queryByRole("combobox", { name: "当前节点" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "节点" })).toBeNull();
   });
 
   it("手动立即刷新并移除已离开当前范围的事项", async () => {
@@ -793,7 +793,7 @@ describe("工作台交互", () => {
     await user.click(await screen.findByRole("button", { name: /缺陷乙/ }));
     const detail = screen.getByRole("complementary", { name: "事项详情" });
     expect(detail.textContent).toContain("space-b");
-    expect(detail.textContent).toContain("节点 · 研发");
+    expect(within(detail).getByText("研发")).toBeTruthy();
     expect(detail.textContent).toContain("状态 · 待处理");
     expect(detail.textContent).toContain("修复中");
     await user.click(screen.getByRole("button", { name: "关闭详情" }));
@@ -1442,7 +1442,7 @@ describe("自动同步与提示时序", () => {
     await act(async () => { fireEvent.click(screen.getAllByRole("button", { name: /^需求\s*4$/ })[1]); });
     await choose("空间", "空间甲");
     await choose("流程类型", "节点与状态");
-    await choose("当前节点", "研发（3）");
+    await choose("节点", "研发（3）");
     await choose("当前状态", "待处理（2）");
     await act(async () => { fireEvent.change(screen.getByRole("textbox", { name: "搜索工作" }), { target: { value: "旧" } }); });
     expect(screen.getByText("旧目标待转事项")).toBeTruthy();
@@ -1473,7 +1473,7 @@ describe("自动同步与提示时序", () => {
     expect(screen.getByText("2 条结果")).toBeTruthy();
     expect((screen.getByRole("textbox", { name: "搜索工作" }) as HTMLInputElement).value).toBe("目标");
     expect(screen.getByRole("combobox", { name: "空间" }).textContent).toContain("空间甲");
-    expect(screen.getByRole("combobox", { name: "当前节点" }).textContent).toContain("研发");
+    expect(screen.getByRole("combobox", { name: "节点" }).textContent).toContain("研发");
     expect(screen.getByRole("combobox", { name: "当前状态" }).textContent).toContain("待处理");
   });
 
@@ -1859,11 +1859,11 @@ describe("所有来源调度与清单 patch", () => {
     shared.personal_flows = { "source-a": { ...shared.flow, node_name: "本人节点" } };
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText("节点 · 本人节点 / 其他节点");
+    await screen.findByText("本人节点 / 其他节点");
     await chooseOption(user, "显示来源", "source-a");
-    expect(screen.getByText("节点 · 本人节点")).toBeTruthy();
+    expect(screen.getByText("本人节点").title).toBe("我的待办节点");
     await chooseOption(user, "显示来源", "source-b");
-    expect(screen.getByText("节点 · 本人节点 / 其他节点")).toBeTruthy();
+    expect(screen.getByText("本人节点 / 其他节点").title).toBe("事项当前节点");
     // 仅在个人来源被选中且完整流程仍为节点流时使用本人节点。
     shared.flow = { ...shared.flow, kind: "state", node_name: null, start_state_key_name: "已完成", end_state_key_name: null };
     vi.mocked(syncTodos).mockResolvedValue({ ...patchReport(), patch: { added: [], modified: [shared], removed: [] } });

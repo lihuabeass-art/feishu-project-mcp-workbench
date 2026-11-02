@@ -49,6 +49,7 @@ import {
   flowLabel,
   itemKey,
   localTime,
+  nodeScopeLabel,
   stopLabel,
   typeLabel,
   orderTypeKeys,
@@ -121,9 +122,9 @@ function Flow({ item }: { item: CachedItem }) {
   return (
     <div className="flow-lines">
       {(f.kind === "node" || f.kind === "both") && (
-        <span>
+        <span title={nodeScopeLabel(item)}>
           <i className="status-dot" />
-          节点 · {f.node_name || "名称未提供"}
+          {f.node_name || "名称未提供"}
           {f.node_state_key && <small>{f.node_state_key}</small>}
         </span>
       )}
@@ -1126,10 +1127,12 @@ function Workspace() {
         : item.source_ids.includes(sourceId);
     }).map((item) => {
       const personal = item.personal_flows?.[sourceId];
+      const usePersonal = personal?.kind === "node" && item.flow.kind === "node";
       const name = item.id.project_key ? sourceProjectNames.get(item.id.project_key) : null;
       return { ...item, project_name: name || item.project_name,
         schedule: item.personal_schedules?.[sourceId] || item.schedule,
-        flow: personal?.kind === "node" && item.flow.kind === "node" ? personal : item.flow };
+        flow: usePersonal ? personal : item.flow,
+        node_scope: usePersonal ? "personal" as const : undefined };
     });
   }, [data, sourceId]);
   const emptySourceFailure = !allItems.length
@@ -1179,6 +1182,9 @@ function Workspace() {
     () => orderWorkItems(filterWorkItems(items, filters)),
     [items, filters],
   );
+  const nodeLabels = new Set(items.filter((item) => item.flow.kind === "node" || item.flow.kind === "both")
+    .map(nodeScopeLabel));
+  const nodeFilterHint = nodeLabels.size === 1 ? [...nodeLabels][0] : "当前节点";
   // 两种布局共用条件，清单组件接收完整范围以显示筛选前后的数量。
   const compactItems = useMemo(() => orderWorkItems(items), [items]);
   const selected = filtered.find((i) => itemKey(i) === selectedKey);
@@ -1341,6 +1347,7 @@ function Workspace() {
         schemeMenu={<FilterSchemeMenu controller={filterSchemes} onNotice={(text) => setNotice({ tone: "success", text })} />}
         onFiltersChange={(next) => { setPendingType(null); setFilters(next); }}
         filterOptions={facets}
+        nodeFilterHint={nodeFilterHint}
         loading={loading}
         emptyText={
           allItems.length && !items.length
@@ -1652,10 +1659,10 @@ function Workspace() {
                       />
                     </label>}
                     {facets.node.visible && (
-                      <label>
-                        <span className="sr-only">当前节点</span>
+                      <label title={nodeFilterHint}>
+                        <span className="sr-only">节点</span>
                         <Select
-                          ariaLabel="当前节点"
+                          ariaLabel="节点"
                           multiple
                           className="compact"
                           value={nodeName}
