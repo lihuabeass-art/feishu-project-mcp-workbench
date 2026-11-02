@@ -5,6 +5,7 @@ import { Select } from "./Select";
 import { useScrollIsolation } from "./useScrollIsolation";
 import { CreationLookup } from "./CreationLookup";
 import { CreationSelect } from "./CreationSelect";
+import { CreationFieldTip, CreationFieldVisibility, creationVisibilityKey, fixedCreationField, loadCreationVisibility, visibleCreationFields } from "./CreationFieldVisibility";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { asError } from "./model";
 import {
@@ -84,6 +85,7 @@ export function CreateWorkItem({
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const [defaults, setDefaults] = useState<LocalCreationDefaults>({});
+  const [selectedFields, setSelectedFields] = useState<string[]>([]);
   const [imageBusyFields, setImageBusyFields] = useState<
     Record<string, boolean>
   >({});
@@ -196,7 +198,7 @@ export function CreateWorkItem({
             f.key,
             saved?.values && Object.hasOwn(saved.values, f.key)
               ? saved.values[f.key]
-              : localCreationInitial(f, localDefaults, prefill),
+              : f.kind === "bool" && !f.required && f.initial == null ? null : localCreationInitial(f, localDefaults, prefill),
           ]),
         );
         const restored: Draft = next.pending
@@ -215,6 +217,7 @@ export function CreateWorkItem({
               continueCreating: saved?.continueCreating,
             };
         setForm(next);
+        setSelectedFields(loadCreationVisibility(next));
         setDefaults(localDefaults);
         draftRef.current = restored;
         setDraft(restored);
@@ -333,7 +336,7 @@ export function CreateWorkItem({
               ? field.multiple
                 ? []
                 : ""
-              : localCreationInitial(field, localDefaults, prefill),
+              : field.kind === "bool" && !field.required && field.initial == null ? null : localCreationInitial(field, localDefaults, prefill),
           ]),
         ),
         labels: {},
@@ -343,6 +346,7 @@ export function CreateWorkItem({
       draftRef.current = nextDraft;
       setDraft(nextDraft);
       setForm(next);
+      setSelectedFields(loadCreationVisibility(next));
       setDefaults(localDefaults);
       setItemNumber("");
       setImageBusyFields({});
@@ -448,7 +452,7 @@ export function CreateWorkItem({
         return;
       }
       const fields = Object.fromEntries(
-        form.fields
+        visibleCreationFields(form, selectedFields, values)
           .filter((f) => f.kind !== "unsupported")
           .map((f) => [f.key, values[f.key]]),
       );
@@ -574,7 +578,7 @@ export function CreateWorkItem({
             onChange={(e) => change(f.key, e.target.checked)}
           />
           <span className="type-switch-track" aria-hidden="true" />
-          {value === true ? "开启" : "关闭"}
+          {creationEmpty(value) ? "未填写" : value === true ? "开启" : "关闭"}
         </label>
       );
     if (f.kind === "unsupported")
@@ -617,21 +621,22 @@ export function CreateWorkItem({
       />
     );
   }
+  const displayedFields = form ? visibleCreationFields(form, selectedFields, draft.values) : [];
   const groups = [
     {
       title: "基本信息",
       fields:
-        form?.fields.filter(
+        displayedFields.filter(
           (f) => f.kind !== "people" && f.kind !== "relation",
         ) || [],
     },
     {
       title: "关联信息",
-      fields: form?.fields.filter((f) => f.kind === "relation") || [],
+      fields: displayedFields.filter((f) => f.kind === "relation"),
     },
     {
       title: "人员信息",
-      fields: form?.fields.filter((f) => f.kind === "people") || [],
+      fields: displayedFields.filter((f) => f.kind === "people"),
     },
   ];
   return createPortal(
@@ -726,6 +731,16 @@ export function CreateWorkItem({
                 的字段为必填。填写会自动保存到本机，关闭窗口或重启后可继续。
               </p>
               <div className="creation-fields">
+                {form.fields.some((field) => !fixedCreationField(field)) && <CreationFieldTip />}
+                <CreationFieldVisibility key={`${form.context}:${creationTargetKey(form.target)}`} form={form}
+                  selected={selectedFields} values={draft.values} disabled={imageBusy}
+                  onChange={(keys) => {
+                    try {
+                      localStorage.setItem(creationVisibilityKey(form), JSON.stringify(keys));
+                      setSelectedFields(keys);
+                      setError("");
+                    } catch { setError("字段显示偏好未能保存，请重试。"); }
+                  }} />
                 {groups
                   .filter((g) => g.fields.length)
                   .map((g) => (
@@ -757,6 +772,11 @@ export function CreateWorkItem({
                           </label>
                           <div className="creation-field-value">
                             {control(f)}
+                            {f.kind === "bool" && !f.required && !creationEmpty(draft.values[f.key]) && (
+                              <button type="button" className="text-button" onClick={() => change(f.key, null)}>
+                                清空{f.label}
+                              </button>
+                            )}
                             {f.kind === "select" &&
                               defaults[f.key] &&
                               !validLocalCreationDefault(
@@ -786,7 +806,7 @@ export function CreateWorkItem({
                 </p>
               )}
               <dl className="creation-review">
-                {form.fields.map((f) => (
+                {displayedFields.map((f) => (
                   <div key={f.key}>
                     <dt>
                       {f.label}

@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { CreateWorkItem, creationContinuousKey } from "./CreateWorkItem";
+import { creationFieldTipSeenKey, creationVisibilityKey, loadCreationVisibility } from "./CreationFieldVisibility";
 import {
   creationPrefillKey,
   saveLocalCreationDefaults,
@@ -164,7 +165,144 @@ async function fill(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("通用创建表单", () => {
-  it("展示并核对截图中的九个需求反馈字段，核对过程不创建事项", async () => {
+  it("没有可选字段时不消费小贴士，之后进入有入口的类型才提示", async () => {
+    vi.mocked(getCreationForm).mockResolvedValue({ ...form(), fields: form().fields.filter((field) => field.key !== "zero") });
+    const mounted = render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "标题" });
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(localStorage.getItem(creationFieldTipSeenKey)).toBeNull();
+    mounted.unmount();
+    vi.mocked(getCreationForm).mockResolvedValue(form());
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    expect(await screen.findByRole("note")).toBeTruthy();
+    expect(localStorage.getItem(creationFieldTipSeenKey)).toBe("true");
+  });
+
+  it("可选布尔的未填写、主动关闭和清空与核对请求保持一致，连续创建保留选用", async () => {
+    const next = form();
+    next.fields.push({ key: "flag", label: "可选开关", kind: "bool", required: false, multiple: false, initial: null, options: [] });
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await fill(user);
+    await user.click(screen.getByRole("button", { name: /显示字段/ }));
+    await user.click(screen.getByRole("combobox", { name: "添加字段" }));
+    await user.click(screen.getByRole("option", { name: "可选开关" }));
+    const toggle = screen.getByRole("switch", { name: "可选开关" });
+    expect(toggle.parentElement?.textContent).toContain("未填写");
+    await user.click(toggle);
+    expect(toggle.parentElement?.textContent).toContain("开启");
+    await user.click(toggle);
+    expect(toggle.parentElement?.textContent).toContain("关闭");
+    await user.click(screen.getByRole("button", { name: "清空可选开关" }));
+    expect(toggle.parentElement?.textContent).toContain("未填写");
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    expect(within(document.querySelector(".creation-review")!).getAllByText("未填写").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: /返回/ }));
+    await user.click(screen.getByRole("switch", { name: "可选开关" }));
+    await user.click(screen.getByRole("switch", { name: "可选开关" }));
+    await user.click(screen.getByRole("checkbox", { name: "连续创建" }));
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    expect(within(document.querySelector(".creation-review")!).getByText("关闭")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "确认创建" }));
+    await screen.findByText(/上一条工作事项已创建/);
+    expect(vi.mocked(createWorkItem).mock.calls[0][0].fields.flag).toBe(false);
+    expect(vi.mocked(createWorkItem).mock.calls[0][0].fields.zero).toBe(0);
+    expect(screen.getByRole("switch", { name: "可选开关" }).parentElement?.textContent).toContain("未填写");
+    expect(getCreationForm).toHaveBeenCalledTimes(2);
+  });
+
+  it("字段选择保存失败保持原选择并反馈", async () => {
+    const next = form();
+    next.fields.push({ key: "extra", label: "可选补充", kind: "text", required: false, multiple: false, initial: null, options: [] });
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "标题" });
+    const original = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === creationVisibilityKey(next)) throw new Error("disk full");
+      original.call(this, key, value);
+    });
+    await user.click(screen.getByRole("button", { name: /显示字段/ }));
+    await user.click(screen.getByRole("combobox", { name: "添加字段" }));
+    await user.click(screen.getByRole("option", { name: "可选补充" }));
+    expect(screen.getByText("字段显示偏好未能保存，请重试。")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "可选补充" })).toBeNull();
+    expect(loadCreationVisibility(next)).toEqual([]);
+  });
+  it("字段小贴士首次进入显示，关闭再开与版本和类型变化均不重复", async () => {
+    const user = userEvent.setup();
+    const mounted = render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "标题" });
+    expect(await screen.findByRole("note")).toHaveProperty("textContent", expect.stringContaining("缺少需要填写的字段"));
+    expect(localStorage.getItem(creationFieldTipSeenKey)).toBe("true");
+    await user.click(screen.getByRole("button", { name: "关闭字段小贴士" }));
+    expect(screen.queryByRole("note")).toBeNull();
+    mounted.unmount();
+    vi.mocked(getCreationForm).mockResolvedValue({ ...form(), version: "new-version", target: locations[1] });
+    render(<CreateWorkItem locations={locations} initialType="issue" close={vi.fn()} created={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "标题" });
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(creationFieldTipSeenKey).toBe("fstodo.creation-field-tip-seen");
+  });
+  it("显示选择跨配置版本与来源恢复，账号空间类型隔离且忽略已删除字段", async () => {
+    const next = form();
+    next.fields.push({ key: "optional", label: "补充信息", kind: "text", required: false, multiple: false, initial: null, options: [] });
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const user = userEvent.setup();
+    const mounted = render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "标题" });
+    await user.click(screen.getByRole("button", { name: /显示字段/ }));
+    await user.click(screen.getByRole("combobox", { name: "添加字段" }));
+    await user.click(screen.getByRole("option", { name: "补充信息" }));
+    expect(screen.getByRole("textbox", { name: "补充信息" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "隐藏补充信息" }));
+    expect(screen.queryByRole("textbox", { name: "补充信息" })).toBeNull();
+    await user.click(screen.getByRole("combobox", { name: "添加字段" }));
+    await user.click(screen.getByRole("option", { name: "补充信息" }));
+    mounted.unmount();
+    // form.version 是远端配置指纹；存储键同样不包含应用版本，升级继续读取。
+    const updated = { ...next, version: "new-config", target: { ...target, source_id: "another-source" } };
+    expect(loadCreationVisibility(updated)).toEqual(["optional"]);
+    expect(loadCreationVisibility({ ...updated, context: "another-account" })).toEqual([]);
+    expect(loadCreationVisibility({ ...updated, target: { ...target, project_key: "another-space" } })).toEqual([]);
+    expect(loadCreationVisibility({ ...updated, target: { ...target, type_key: "another-type" } })).toEqual([]);
+    expect(loadCreationVisibility({ ...updated, fields: form().fields })).toEqual([]);
+    vi.mocked(getCreationForm).mockResolvedValue(updated);
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    expect(await screen.findByRole("textbox", { name: "补充信息" })).toBeTruthy();
+    expect(creationVisibilityKey(updated)).toBe(creationVisibilityKey(next));
+  });
+
+  it("未启用的空布尔和文本不核对也不写入，草稿false和零值自动可见", async () => {
+    const next = form();
+    next.fields.push(
+      { key: "flag", label: "可选开关", kind: "bool", required: false, multiple: false, initial: null, options: [] },
+      { key: "empty", label: "空补充", kind: "text", required: false, multiple: false, initial: null, options: [] },
+      { key: "saved", label: "已存开关", kind: "bool", required: false, multiple: false, initial: null, options: [] },
+    );
+    localStorage.setItem(`fstodo.creation.v1:${next.context}:${creationTargetKey(next.target)}`, JSON.stringify({ values: { saved: false }, labels: {} }));
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await fill(user);
+    expect(screen.queryByRole("switch", { name: "可选开关" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "已存开关" })).toHaveProperty("checked", false);
+    expect(screen.getByLabelText("估算")).toHaveProperty("value", "0");
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    const review = document.querySelector<HTMLElement>(".creation-review")!;
+    expect(within(review).queryByText("可选开关")).toBeNull();
+    expect(within(review).getByText("已存开关")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "确认创建" }));
+    await waitFor(() => expect(createWorkItem).toHaveBeenCalledTimes(1));
+    const fields = vi.mocked(createWorkItem).mock.calls[0][0].fields;
+    expect(fields).not.toHaveProperty("flag");
+    expect(fields).not.toHaveProperty("empty");
+    expect(fields.saved).toBe(false);
+    expect(fields.zero).toBe(0);
+  });
+  it("默认收起空可选字段，搜索添加后核对业务字段，核对过程不创建事项", async () => {
     const next = form();
     next.fields.find((field) => field.key === "name")!.label = "需求名称";
     next.fields.find((field) => field.key === "description")!.label = "需求说明";
@@ -188,6 +326,13 @@ describe("通用创建表单", () => {
     render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
     await user.type(await screen.findByRole("textbox", { name: "需求名称" }), "示例需求");
     await user.type(screen.getByRole("textbox", { name: "需求说明" }), "完整需求说明");
+    expect(screen.queryByRole("textbox", { name: "反馈说明" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /显示字段/ }));
+    for (const label of ["反馈说明", "期望时间", "需求分类", "需求来源"]) {
+      await user.type(screen.getByRole("textbox", { name: "搜索可选字段" }), label);
+      await user.click(screen.getByRole("combobox", { name: "添加字段" }));
+      await user.click(screen.getByRole("option", { name: label }));
+    }
     expect(screen.getByRole("combobox", { name: "需求流程" })).toBeTruthy();
     for (const [name, choice] of [["所属项目", "示例项目"], ["产品经理", "示例用户"]]) {
       await user.click(screen.getByRole("combobox", { name }));
@@ -1598,4 +1743,22 @@ it("新建位置按真实复合 Key 去重，名称和清单显示不会改变�
     ["a", "one", "custom"],
     ["a", "two", "custom"],
   ]);
+});
+
+it("小贴士标记保存失败不影响填写且当前会话不重复", async () => {
+  const original = Storage.prototype.setItem;
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+    if (key === creationFieldTipSeenKey) throw new Error("disk full");
+    original.call(this, key, value);
+  });
+  const user = userEvent.setup();
+  const mounted = render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+  await screen.findByRole("note");
+  await user.type(screen.getByRole("textbox", { name: "标题" }), "继续填写");
+  expect(screen.getByRole("textbox", { name: "标题" })).toHaveProperty("value", "继续填写");
+  expect(localStorage.getItem(creationFieldTipSeenKey)).toBeNull();
+  mounted.unmount();
+  render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+  await screen.findByRole("textbox", { name: "标题" });
+  expect(screen.queryByRole("note")).toBeNull();
 });
