@@ -257,7 +257,7 @@ fn field(meta: &Value, config: &Value) -> Field {
     let kind = match remote {
         "text" | "_name" | "link" | "multi-pure-text" => "text",
         "multi-text" | "multi_text" => "textarea",
-        "select" | "radio" | "_work_item_template" | "work_item_template" | "multi-select" => {
+        "select" | "radio" | "_business" | "_work_item_template" | "work_item_template" | "multi-select" => {
             "select"
         }
         "user" | "multi-user" | "multi_user" => "people",
@@ -379,12 +379,26 @@ fn discover_fresh(session: &Session, target: &Target) -> Result<Form, BackendErr
         &target.type_key,
         true,
     ))?;
+    // 必填元数据不是完整表单；可选业务字段必须从完整字段配置补齐。
     let mut metas = required.clone();
-    for key in ["name", "description", "template"] {
+    for config in &configs {
+        let key = text(&config["field_key"]);
+        // 以下稳定系统 Key 由飞书维护，不属于创建时填写的业务字段。
+        if matches!(key.as_str(),
+            "start_time" | "owner" | "owned_project" | "work_item_id"
+                | "current_status_operator" | "work_item_type_key" | "updated_by"
+                | "updated_at" | "auto_number" | "is_frozen" | "template_version"
+                | "finish_time" | "finish_status" | "abort_reason" | "abort_detail"
+                | "work_item_status"
+        ) {
+            continue;
+        }
         if !metas.iter().any(|m| m["field_key"] == key) {
-            if let Some(config) = configs.iter().find(|c| c["field_key"] == key) {
-                metas.push(json!({"field_key":key,"field_name":config["field_name"],"is_required":if key == "description"{0}else{1}}));
+            let mut meta = config.clone();
+            if key == "name" {
+                meta["is_required"] = json!(1);
             }
+            metas.push(meta);
         }
     }
     if !metas.iter().any(|m| m["field_key"] == "template") {

@@ -27,7 +27,7 @@ impl TodoSource for Arc<Fake> {
         tool: &str,
         args: &Map<String, Value>,
     ) -> Result<ToolResultPayload, BackendError> {
-        let configs = json!([
+        let mut configs = json!([
             {"field_key":"name","field_name":"标题","field_type":"text"},
             {"field_key":"template","field_name":"流程","field_type":"_work_item_template","option":[
                 {"option_id":123,"option_name":"通用模板"},{"option_id":456,"option_name":"已停用","disabled":true}]},
@@ -36,6 +36,28 @@ impl TodoSource for Arc<Fake> {
             {"field_key":"reporter","field_name":"报告人","field_type":"multi-user"},
             {"field_key":"related","field_name":"所属项目","field_type":"workitem_related_select","related_work_item_info":[{"project_key":"space","work_item_type":"project"}]}
         ]);
+        if self.mode.starts_with("optional-fields") {
+            configs.as_array_mut().unwrap().extend([
+                json!({"field_key":"field_feedback","field_name":"反馈说明","field_type":"text"}),
+                json!({"field_key":"field_expected","field_name":"期望时间","field_type":"date"}),
+                json!({"field_key":"field_category","field_name":"需求分类","field_type":"select","option":[{"option_id":"category_feature","option_name":"新增功能"}]}),
+                json!({"field_key":"field_source","field_name":"需求来源","field_type":"select","option":[{"option_id":"source_customer","option_name":"客户反馈"}]}),
+                json!({"field_key":"field_received","field_name":"需求接收","field_type":"bool"}),
+                json!({"field_key":"business","field_name":"业务线","field_type":"_business","option":[{"option_id":"business_app","option_name":"应用平台"}]}),
+                json!({"field_key":"watchers","field_name":"关注人","field_type":"multi-user"}),
+                json!({"field_key":"field_future","field_name":"未来业务字段","field_type":"future_type"}),
+            ]);
+            for (key, kind) in [
+                ("start_time", "date"), ("owner", "user"), ("owned_project", "owned_project"),
+                ("work_item_id", "number"), ("current_status_operator", "multi-user"),
+                ("work_item_type_key", "select"), ("updated_by", "user"), ("updated_at", "date"),
+                ("auto_number", "number"), ("is_frozen", "bool"), ("template_version", "number"),
+                ("finish_time", "date"), ("finish_status", "bool"), ("abort_reason", "select"),
+                ("abort_detail", "text"), ("work_item_status", "_work_item_status"),
+            ] {
+                configs.as_array_mut().unwrap().push(json!({"field_key":key,"field_name":key,"field_type":kind}));
+            }
+        }
         let mut value = match tool {
             "get_workitem_field_meta" => json!({"FieldConfList":[
                 {"field_key":"name","field_name":"标题","is_required":1},
@@ -46,7 +68,16 @@ impl TodoSource for Arc<Fake> {
                 {"field_key":"reporter","field_name":"报告人","is_required":1},
                 {"field_key":"related","field_name":"所属项目","is_required":1}
             ]}),
-            "list_workitem_field_config" => json!({"list":configs,"pagination":{"has_more":false}}),
+            "list_workitem_field_config" => {
+                let fields = configs.as_array().unwrap();
+                if self.mode.starts_with("optional-fields") {
+                    let page = args["page_num"].as_u64().unwrap();
+                    let split = 8;
+                    json!({"list":if page == 1 { &fields[..split] } else { &fields[split..] },"pagination":{"has_more":page == 1}})
+                } else {
+                    json!({"list":configs,"pagination":{"has_more":false}})
+                }
+            },
             "list_workitem_role_config" => json!({"list":[
                 {"role_id":"fix_owner","role_name":"修复负责人","is_required":true,"is_member_multi":true},
                 {"role_id":"quality_owner","role_name":"质量负责人"}
@@ -111,6 +142,17 @@ impl TodoSource for Arc<Fake> {
             }
             _ => panic!("unexpected {tool}"),
         };
+        if self.mode.starts_with("optional-fields") && tool == "get_workitem_field_meta" {
+            value["FieldConfList"].as_array_mut().unwrap().push(json!({
+                "field_key":"field_expected", "field_name":"期望时间", "field_type_key":"date",
+                "is_required":0, "default_value":{"default_appear":1,"value":base64::engine::general_purpose::STANDARD.encode(r#"{"value":1893427200000}"#)}
+            }));
+            if self.mode.ends_with("required") {
+                value["FieldConfList"].as_array_mut().unwrap().push(json!({
+                    "field_key":"field_future", "field_name":"未来业务字段", "field_type_key":"future_type", "is_required":1
+                }));
+            }
+        }
         if self.mode.starts_with("reporter-prefill") {
             if matches!(tool, "get_workitem_field_meta" | "list_workitem_field_config") {
                 let list = if tool == "get_workitem_field_meta" { "FieldConfList" } else { "list" };
@@ -258,6 +300,70 @@ fn reporter_prefill_matches_system_identity_and_current_token_user_only() {
         assert_eq!(other.fields.iter().find(|field| field.key == key).unwrap().options[0].value, "ou_other_token_user");
         assert_eq!(h.fake.writes.load(Ordering::SeqCst), 0);
     }
+}
+
+#[test]
+fn optional_business_fields_are_discovered_across_pages_without_writing() {
+    let h = Harness::new("optional-fields");
+    let form = discover(&h.session, &h.target()).unwrap();
+    for (key, label, kind) in [
+        ("field_feedback", "反馈说明", "text"),
+        ("field_expected", "期望时间", "date"),
+        ("field_category", "需求分类", "select"),
+        ("field_source", "需求来源", "select"),
+        ("field_received", "需求接收", "bool"),
+        ("business", "业务线", "select"),
+        ("watchers", "关注人", "people"),
+        ("field_future", "未来业务字段", "unsupported"),
+    ] {
+        let field = form.fields.iter().find(|field| field.key == key).unwrap();
+        assert_eq!(field.label, label);
+        assert_eq!(field.kind, kind);
+        assert!(!field.required);
+        assert_eq!(form.fields.iter().filter(|field| field.key == key).count(), 1);
+    }
+    assert_eq!(form.fields.len(), 16); // 6 个原字段、8 个可选业务字段、2 个角色。
+    assert_eq!(form.fields.iter().find(|field| field.key == "field_expected").unwrap().initial, json!("2030-01-01"));
+    assert_eq!(form.fields.iter().find(|field| field.key == "field_category").unwrap().options[0].value, "category_feature");
+    assert!(form.fields.iter().find(|field| field.key == "watchers").unwrap().multiple);
+
+    // 空白可选字段与只读系统字段均不进入提交计划；0/false 等有效值继续保留。
+    let mut request = h.request();
+    let original = plan(&form, &request).unwrap();
+    assert_eq!(original.len(), 7);
+    request.fields.extend([
+        ("field_feedback".into(), json!("来自已有需求的反馈")),
+        ("field_expected".into(), json!("2030-01-01")),
+        ("field_category".into(), json!("category_feature")),
+        ("field_source".into(), json!("source_customer")),
+        ("field_received".into(), json!(false)),
+        ("business".into(), json!("business_app")),
+    ]);
+    let fields = plan(&form, &request).unwrap();
+    for (key, expected) in [
+        ("field_feedback", json!("来自已有需求的反馈")),
+        ("field_expected", json!(1893427200000_i64)),
+        ("field_category", json!("category_feature")),
+        ("field_source", json!("source_customer")),
+        ("field_received", json!(false)),
+        ("business", json!("business_app")),
+    ] {
+        assert_eq!(fields.iter().find(|field| field["field_key"] == key).unwrap()["field_value"], expected);
+    }
+    request.fields.insert("updated_at".into(), json!("2030-01-01"));
+    assert!(plan(&form, &request).is_err());
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn unsupported_required_business_fields_still_block_submission() {
+    let h = Harness::new("optional-fields-required");
+    let form = discover(&h.session, &h.target()).unwrap();
+    let field = form.fields.iter().find(|field| field.key == "field_future").unwrap();
+    assert!(field.required);
+    assert_eq!(field.kind, "unsupported");
+    assert!(plan(&form, &h.request()).is_err());
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 0);
 }
 
 #[test]

@@ -164,6 +164,50 @@ async function fill(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("通用创建表单", () => {
+  it("展示并核对截图中的九个需求反馈字段，核对过程不创建事项", async () => {
+    const next = form();
+    next.fields.find((field) => field.key === "name")!.label = "需求名称";
+    next.fields.find((field) => field.key === "description")!.label = "需求说明";
+    next.fields.find((field) => field.key === "template")!.label = "需求流程";
+    next.fields.find((field) => field.key === "reporter")!.label = "产品经理";
+    next.fields.push(
+      { key: "field_project", label: "所属项目", kind: "relation", required: true, multiple: false, initial: null, options: [] },
+      { key: "field_feedback", label: "反馈说明", kind: "text", required: false, multiple: false, initial: null, options: [] },
+      { key: "field_expected", label: "期望时间", kind: "date", required: false, multiple: false, initial: null, options: [] },
+      { key: "field_category", label: "需求分类", kind: "select", required: false, multiple: false, initial: null, options: [{ value: "feature", label: "新增功能" }] },
+      { key: "field_source", label: "需求来源", kind: "select", required: false, multiple: false, initial: null, options: [{ value: "customer", label: "客户反馈" }] },
+    );
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    vi.mocked(lookupCreationField).mockImplementation(async (_, key) => ({
+      options: key === "field_project"
+        ? [{ value: "project-a", label: "示例项目" }]
+        : [{ value: "person-a", label: "示例用户" }],
+      warning: null,
+    }));
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await user.type(await screen.findByRole("textbox", { name: "需求名称" }), "示例需求");
+    await user.type(screen.getByRole("textbox", { name: "需求说明" }), "完整需求说明");
+    expect(screen.getByRole("combobox", { name: "需求流程" })).toBeTruthy();
+    for (const [name, choice] of [["所属项目", "示例项目"], ["产品经理", "示例用户"]]) {
+      await user.click(screen.getByRole("combobox", { name }));
+      await user.click(await screen.findByRole("option", { name: choice }));
+      await user.keyboard("{Escape}");
+    }
+    await user.type(screen.getByRole("textbox", { name: "反馈说明" }), "已有需求的反馈说明");
+    fireEvent.change(screen.getByLabelText("期望时间"), { target: { value: "2030-01-01" } });
+    for (const [name, choice] of [["需求分类", "新增功能"], ["需求来源", "客户反馈"]]) {
+      await user.click(screen.getByRole("combobox", { name }));
+      await user.click(screen.getByRole("option", { name: choice }));
+    }
+    await user.click(screen.getByRole("button", { name: "核对内容" }));
+    const review = document.querySelector<HTMLElement>(".creation-review")!;
+    for (const value of ["需求名称", "需求说明", "所属项目", "需求流程", "需求分类", "需求来源", "产品经理", "反馈说明", "期望时间", "已有需求的反馈说明", "2030-01-01", "新增功能", "客户反馈", "示例项目", "示例用户"])
+      expect(within(review).getByText(value)).toBeTruthy();
+    expect(createWorkItem).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("表单空白、头尾、遮罩和滚动边界不带动背景，内部仍可正常滚动", async () => {
     const user = userEvent.setup();
     const backgroundWheel = vi.fn();
