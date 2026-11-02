@@ -4,6 +4,8 @@ import {
   editorMarkdown,
   editorOffsetBefore,
   editorSelection,
+  moveEditorCaret,
+  normalizeEditorCaret,
   renderEditorMarkdown,
   setEditorSelection,
 } from "./markdownEditor";
@@ -93,4 +95,93 @@ it("外部选区不会被错误当作正文选区", () => {
     outside = root("其他区域");
   setEditorSelection(outside, 1);
   expect(editorSelection(control)).toBeNull();
+});
+
+it("纯图片及相邻图片两侧都有文字落点，所有边界可恢复且占位符不进入正文", () => {
+  const control = root(local + local);
+  for (const at of [0, local.length, local.length * 2]) {
+    setEditorSelection(control, at);
+    const selection = document.getSelection()!;
+    expect(selection.anchorNode?.nodeType).toBe(Node.TEXT_NODE);
+    expect(
+      selection.anchorNode?.parentElement?.hasAttribute("data-editor-caret"),
+    ).toBe(true);
+    expect(editorSelection(control)).toEqual({ start: at, end: at });
+  }
+  expect(editorMarkdown(control)).toBe(local + local);
+  expect(
+    editorOffsetBefore(
+      control,
+      control.querySelectorAll("[data-creation-markdown]")[1],
+    ),
+  ).toBe(local.length);
+});
+
+it("浏览器在图片外边界落下的光标被归位到文字，不抢走图片选区或其他输入框选区", () => {
+  const control = root(local);
+  const range = document.createRange();
+  range.setStartAfter(control.querySelector("[data-creation-markdown]")!);
+  range.collapse(true);
+  document.getSelection()!.removeAllRanges();
+  document.getSelection()!.addRange(range);
+  normalizeEditorCaret(control);
+  expect(document.getSelection()!.anchorNode?.nodeType).toBe(Node.TEXT_NODE);
+  expect(editorSelection(control)).toEqual({
+    start: local.length,
+    end: local.length,
+  });
+  setEditorSelection(control, 0, local.length);
+  normalizeEditorCaret(control);
+  expect(editorSelection(control)).toEqual({ start: 0, end: local.length });
+  const outside = root("另一个输入框");
+  setEditorSelection(outside, 2);
+  normalizeEditorCaret(control);
+  expect(editorSelection(outside)).toEqual({ start: 2, end: 2 });
+});
+
+it("方向键整张跨越图片并保留反向扩展选区，离开图片时按完整字形移动", () => {
+  const value = `👨‍👩‍👧‍👦${local}e\u0301`;
+  const control = root(value);
+  const start = value.indexOf("!["),
+    end = start + local.length;
+  setEditorSelection(control, start);
+  expect(moveEditorCaret(control, 1, false)).toBe(true);
+  expect(editorSelection(control)).toEqual({ start: end, end });
+  expect(moveEditorCaret(control, -1, true)).toBe(true);
+  expect(editorSelection(control)).toEqual({ start, end });
+  expect(moveEditorCaret(control, 1, true)).toBe(true);
+  expect(editorSelection(control)).toEqual({ start: end, end });
+  expect(moveEditorCaret(control, 1, false)).toBe(true);
+  expect(editorSelection(control)).toEqual({
+    start: value.length,
+    end: value.length,
+  });
+  setEditorSelection(control, start);
+  expect(moveEditorCaret(control, -1, false)).toBe(true);
+  expect(editorSelection(control)).toEqual({ start: 0, end: 0 });
+});
+
+it("落点中的新输入和用户原有的零宽字符都保留，只有编辑器占位符被排除", () => {
+  const control = root(`原有\u200b文字${local}`);
+  const stop = control.querySelectorAll("[data-editor-caret]")[1];
+  stop.firstChild!.textContent += "新输入";
+  expect(editorMarkdown(control)).toBe(`原有\u200b文字${local}新输入`);
+  setEditorSelection(control, editorMarkdown(control).length);
+  expect(editorSelection(control)?.start).toBe(editorMarkdown(control).length);
+});
+
+it("图片旁已有文字时优先使用真实文本落点，普通文字选区不做归位", () => {
+  const control = root(`${local}后文`);
+  setEditorSelection(control, local.length);
+  expect(document.getSelection()!.anchorNode?.textContent).toBe("后文");
+  const plain = document.createElement("div");
+  document.body.append(plain);
+  plain.append(document.createTextNode("前"), document.createTextNode("后"));
+  const range = document.createRange();
+  range.setStart(plain.lastChild!, 0);
+  range.collapse(true);
+  document.getSelection()!.removeAllRanges();
+  document.getSelection()!.addRange(range);
+  normalizeEditorCaret(plain);
+  expect(document.getSelection()!.anchorNode).toBe(plain.lastChild);
 });

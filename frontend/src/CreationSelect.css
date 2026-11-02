@@ -18,9 +18,9 @@
   height: 100%;
   min-height: 38px;
   padding: 7px 10px 7px 12px;
-  border-color: transparent;
+  border-color: var(--line);
   border-radius: 6px;
-  background: var(--surface-soft);
+  background: var(--input-bg);
   box-shadow: none;
 }
 

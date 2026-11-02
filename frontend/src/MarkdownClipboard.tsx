@@ -29,6 +29,10 @@ import {
   editorMarkdown,
   editorOffsetBefore,
   editorSelection,
+  adjacentEditorOffset,
+  atEditorImageBoundary,
+  moveEditorCaret,
+  normalizeEditorCaret,
   renderEditorMarkdown,
   setEditorSelection,
   type EditorSelection,
@@ -146,6 +150,17 @@ export function MarkdownClipboard({
       busyCallback.current?.(false);
     };
   }, [scopeKey]);
+
+  useEffect(() => {
+    const root = editor.current;
+    if (!root) return;
+    const normalize = () => {
+      if (!disabled && !composing.current) normalizeEditorCaret(root);
+    };
+    root.ownerDocument.addEventListener("selectionchange", normalize);
+    return () =>
+      root.ownerDocument.removeEventListener("selectionchange", normalize);
+  }, [disabled]);
 
   function imageNode(part: CreationImagePart, index: number): HTMLElement {
     const doc = editor.current!.ownerDocument;
@@ -335,6 +350,21 @@ export function MarkdownClipboard({
     )
       return;
     if ((event.target as HTMLElement).closest("button")) return;
+    if (
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      ["ArrowLeft", "ArrowRight"].includes(event.key) &&
+      editor.current &&
+      moveEditorCaret(
+        editor.current,
+        event.key === "ArrowLeft" ? -1 : 1,
+        event.shiftKey,
+      )
+    ) {
+      event.preventDefault();
+      return;
+    }
     const modifier = (event.ctrlKey || event.metaKey) && !event.altKey;
     if (modifier && ["z", "y"].includes(event.key.toLowerCase())) {
       event.preventDefault();
@@ -357,16 +387,30 @@ export function MarkdownClipboard({
       replaceText("", selected);
       return;
     }
-    const part = splitCreationMarkdown(selected.value).find(
-      (part) =>
-        part.kind === "image" &&
-        (event.key === "Backspace"
-          ? part.end === selected.start
-          : part.start === selected.start),
-    );
-    if (part) {
+    if (atEditorImageBoundary(selected.value, selected.start)) {
+      const next = adjacentEditorOffset(
+        selected.value,
+        selected.start,
+        event.key === "Backspace" ? -1 : 1,
+      );
+      if (next === selected.start) {
+        event.preventDefault();
+        return;
+      }
+      const deletingImage = splitCreationMarkdown(selected.value).some(
+        (part) =>
+          part.kind === "image" &&
+          (event.key === "Backspace"
+            ? part.end === selected.start
+            : part.start === selected.start),
+      );
+      if ((event.ctrlKey || event.metaKey || event.altKey) && !deletingImage)
+        return;
       event.preventDefault();
-      replaceText("", { start: part.start, end: part.end });
+      replaceText("", {
+        start: Math.min(next, selected.start),
+        end: Math.max(next, selected.start),
+      });
     }
   }
   async function paste(event: ClipboardEvent<HTMLDivElement>) {
@@ -487,10 +531,15 @@ export function MarkdownClipboard({
           releaseCompositionWaiters(true);
         }}
         onMouseUp={() => {
+          if (!composing.current && editor.current)
+            normalizeEditorCaret(editor.current);
           history.current.present = snapshot();
         }}
         onKeyUp={() => {
-          if (!composing.current) history.current.present = snapshot();
+          if (!composing.current) {
+            if (editor.current) normalizeEditorCaret(editor.current);
+            history.current.present = snapshot();
+          }
         }}
         onCopy={(event) => {
           const selected = snapshot();

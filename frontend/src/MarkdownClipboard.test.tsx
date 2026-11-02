@@ -15,7 +15,11 @@ import {
   MarkdownClipboard,
   type MarkdownClipboardProps,
 } from "./MarkdownClipboard";
-import { editorMarkdown, setEditorSelection } from "./markdownEditor";
+import {
+  editorMarkdown,
+  editorSelection,
+  setEditorSelection,
+} from "./markdownEditor";
 import {
   getCreationImage,
   getUploadedCreationImage,
@@ -566,6 +570,93 @@ describe("Markdown 图片编辑", () => {
     pasteText(control, "新行");
     expect(editorMarkdown(control)).toBe("前\n新行后");
   });
+
+  it("纯图片旁左右移动无需重复按键，图片前后输入与换行不带入落点占位符", async () => {
+    render(<Harness initial={imageMarkdown} />);
+    await screen.findByAltText("截图 1");
+    const control = screen.getByRole("textbox");
+    select(control, imageMarkdown.length);
+    expect(document.getSelection()!.anchorNode?.nodeType).toBe(Node.TEXT_NODE);
+    fireEvent.keyDown(control, { key: "ArrowLeft" });
+    expect(editorSelection(control)).toEqual({ start: 0, end: 0 });
+    pasteText(control, "前");
+    fireEvent.keyDown(control, { key: "ArrowRight" });
+    expect(editorSelection(control)?.start).toBe(1 + imageMarkdown.length);
+    pasteText(control, "后");
+    fireEvent.keyDown(control, { key: "Enter" });
+    pasteText(control, "下一行");
+    expect(editorMarkdown(control)).toBe(`前${imageMarkdown}后\n下一行`);
+    expect(editorMarkdown(control)).not.toContain("\u200b");
+    fireEvent.keyDown(control, { key: "z", ctrlKey: true });
+    expect(editorMarkdown(control)).toBe(`前${imageMarkdown}后\n`);
+    fireEvent.keyDown(control, { key: "z", ctrlKey: true, shiftKey: true });
+    expect(editorMarkdown(control)).toBe(`前${imageMarkdown}后\n下一行`);
+  });
+
+  it("图片边界的删除按真实字形执行，空边界不删除占位符并且仍可撤销", async () => {
+    const family = "👨‍👩‍👧‍👦";
+    render(<Harness initial={`${family}${imageMarkdown}e\u0301`} />);
+    await screen.findByAltText("截图 1");
+    const control = screen.getByRole("textbox");
+    select(control, family.length);
+    fireEvent.keyDown(control, { key: "Backspace" });
+    expect(editorMarkdown(control)).toBe(`${imageMarkdown}e\u0301`);
+    select(control, imageMarkdown.length);
+    fireEvent.keyDown(control, { key: "Delete" });
+    expect(editorMarkdown(control)).toBe(imageMarkdown);
+    fireEvent.keyDown(control, { key: "Delete" });
+    expect(editorMarkdown(control)).toBe(imageMarkdown);
+    expect(document.getSelection()!.anchorNode?.textContent).toBe("\u200b");
+    fireEvent.keyDown(control, { key: "z", ctrlKey: true });
+    expect(editorMarkdown(control)).toBe(`${imageMarkdown}e\u0301`);
+  });
+
+  it.each(["ctrlKey", "metaKey", "altKey"])(
+    "图片边界向外的 %s 删除保留浏览器按词或按行语义，向内仍整张删除",
+    async (modifier) => {
+      render(<Harness initial={`hello world${imageMarkdown}next word`} />);
+      await screen.findByAltText("截图 1");
+      const control = screen.getByRole("textbox");
+      select(control, "hello world".length);
+      const before = createEvent.keyDown(control, {
+        key: "Backspace",
+        [modifier]: true,
+      });
+      fireEvent(control, before);
+      expect(before.defaultPrevented).toBe(false);
+      select(control, "hello world".length + imageMarkdown.length);
+      const after = createEvent.keyDown(control, {
+        key: "Delete",
+        [modifier]: true,
+      });
+      fireEvent(control, after);
+      expect(after.defaultPrevented).toBe(false);
+      fireEvent.keyDown(control, { key: "Backspace", [modifier]: true });
+      expect(editorMarkdown(control)).toBe("hello worldnext word");
+    },
+  );
+
+  it.each(["ctrlKey", "metaKey", "altKey"])(
+    "纯图片外侧空边界的 %s 删除不会删掉光标落点或制造空行",
+    async (modifier) => {
+      const changed = vi.fn();
+      render(<Harness initial={imageMarkdown} changed={changed} />);
+      await screen.findByAltText("截图 1");
+      const control = screen.getByRole("textbox");
+      for (const [at, key] of [
+        [0, "Backspace"],
+        [imageMarkdown.length, "Delete"],
+      ] as const) {
+        select(control, at);
+        const event = createEvent.keyDown(control, { key, [modifier]: true });
+        fireEvent(control, event);
+        expect(event.defaultPrevented).toBe(true);
+        expect(document.getSelection()!.anchorNode?.textContent).toBe("\u200b");
+      }
+      expect(editorMarkdown(control)).toBe(imageMarkdown);
+      expect(changed).not.toHaveBeenCalled();
+    },
+  );
 
   it("复制剪切保留Markdown与图片token，剪切后可撤销恢复", async () => {
     const markdown = `前![截图](${remoteUrl})<!--${fileToken}-->后`;

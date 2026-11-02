@@ -111,8 +111,8 @@
   min-height: 38px;
   padding: 9px 12px;
   border-radius: 6px;
-  background: var(--surface-soft);
-  border-color: transparent;
+  background: var(--input-bg);
+  border-color: var(--line);
   font-size: 12px;
 }
 .creation-panel input:not([type="checkbox"]),
@@ -120,10 +120,10 @@
   width: 100%;
   min-width: 0;
   padding: 10px 12px;
-  border: 1px solid transparent;
+  border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--text);
-  background: var(--surface-soft);
+  background: var(--input-bg);
   font: inherit;
   font-size: 12px;
 }
@@ -280,16 +280,16 @@
   width: 100%;
   min-height: 38px;
   padding: 7px 34px 7px 11px;
-  border: 1px solid transparent;
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--surface-soft);
+  background: var(--input-bg);
   color: var(--text);
   text-align: left;
   font-size: 12px;
 }
 .creation-picker:hover,
 .creation-picker[aria-expanded="true"] {
-  border-color: var(--line);
+  border-color: var(--border-strong);
 }
 .creation-picker {
   cursor: pointer;
@@ -336,7 +336,7 @@
   max-width: 100%;
   padding: 2px 6px 2px 3px;
   border-radius: 4px;
-  background: var(--surface-solid);
+  background: var(--surface-soft);
   overflow-wrap: anywhere;
 }
 .creation-relation-chip {
@@ -386,24 +386,45 @@
 .creation-lookup-search {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   flex-shrink: 0;
-  padding: 7px 8px;
+  min-height: 34px;
+  padding: 0 10px;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 6px;
+  background: var(--input-bg);
   color: var(--muted);
 }
 .creation-lookup-search:focus-within {
   border-color: var(--focus);
+  background: var(--surface-solid);
 }
-.creation-lookup-search input {
-  width: 100%;
+.creation-lookup-search > svg {
+  flex-shrink: 0;
+}
+/* 弹层挂在 body；在组件内清除全局输入框及焦点样式，边框统一由外层承载。 */
+.creation-lookup-menu .creation-lookup-search > input,
+.creation-lookup-menu .creation-lookup-search > input:focus,
+.creation-lookup-menu .creation-lookup-search > input:focus-visible {
+  flex: 1 1 0%;
+  width: 0;
   min-width: 0;
+  height: 32px;
+  margin: 0;
+  padding: 0;
   border: 0;
+  border-radius: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
+  box-shadow: none;
   font: inherit;
+  line-height: 20px;
+  appearance: none;
+  transition: none;
+}
+.creation-lookup-search > input::placeholder {
+  color: var(--muted);
 }
 .creation-lookup-menu [role="listbox"] {
   overflow: auto;
