@@ -78,8 +78,7 @@ async function ready(mode: "full" | "compact" = "full") {
   await act(async () => {});
   screen.getByRole("button", { name: "新建工作事项" });
 }
-function enableWorkflow(result: "unknown" | "verified") {
-  const data = snapshot();
+function enableWorkflow(result: "unknown" | "verified", data = snapshot()) {
   data.capabilities!.workflow = true;
   data.items = [{ id: { project_key: "space", work_item_type_key: "story", work_item_id: "1" },
     name: "待处理需求", project_name: "空间", flow: { kind: "node", node_name: "研发", node_state_key: null,
@@ -112,6 +111,117 @@ beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (command) => command === "get_pending_creations" ? [pending] : undefined);
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+it("流程核验成功后刷新全部可执行启用来源，详情回读新状态且不被普通同步文案覆盖", async () => {
+  const data = snapshot();
+  data.sources.push({ ...data.sources[0], id: "b" }, { ...data.sources[0], id: "disabled", enabled: false }, { ...data.sources[0], id: "unavailable", executable: false });
+  const message = enableWorkflow("verified", data);
+  vi.mocked(syncTodos).mockImplementationOnce(async () => {
+    vi.mocked(loadSnapshot).mockResolvedValue({ ...data, items: [{ ...data.items[0], name: "推进后的最新需求" }] });
+    return report;
+  });
+  await ready();
+  await submitWorkflow();
+  await waitFor(() => expect(screen.getByRole("complementary", { name: "事项详情" }).textContent).toContain("推进后的最新需求"));
+  expect(syncTodos).toHaveBeenCalledWith("*", false, ["a", "b"]);
+  expect(screen.getByText(message)).toBeTruthy();
+  expect(screen.queryByText("检查完成，数据无变化。")).toBeNull();
+  expect(executeWorkflowAction).toHaveBeenCalledOnce();
+});
+
+it.each(["unknown", "failed", "unverified"])("流程%s不触发成功后来源刷新", async (outcome) => {
+  enableWorkflow("unknown");
+  const message = "本次流程尚未核验成功";
+  vi.mocked(executeWorkflowAction).mockResolvedValue({ outcome: outcome === "unverified" ? "verified" : outcome as "unknown" | "failed", verified: false, message, request_id: "r", action_id: "confirm", resynced: false });
+  await ready();
+  await submitWorkflow();
+  await screen.findByText(message);
+  expect(syncTodos).not.toHaveBeenCalled();
+});
+
+it("新建成功回调应用真实来源补丁，不把仅属其他来源的新事项插入当前来源", async () => {
+  const data = snapshot();
+  data.capabilities!.source_queries = true;
+  data.capabilities!.incremental_sync = true;
+  data.sources[0].display_name = "来源甲";
+  data.sources.push({ ...data.sources[0], id: "b", display_name: "来源乙" });
+  vi.mocked(loadSnapshot).mockResolvedValue(data);
+  const added: Snapshot["items"][number] = { id: { project_key: "space", work_item_type_key: "story", work_item_id: "new" }, source_ids: ["b"], name: "仅来源乙的新事项", project_name: "空间", flow: { kind: "none", node_name: null, node_state_key: null, start_state_key_name: null, end_state_key_name: null }, schedule: { start_raw: null, end_raw: null }, raw_json: "{}", identity_missing_flags: [], first_seen_at_ms: 1, last_seen_at_ms: 1, seen_count: 1 };
+  vi.mocked(syncTodos).mockResolvedValue({ ...report, patch: { added: [added], modified: [], removed: [] }, total: 1 });
+  await ready();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("combobox", { name: "显示来源" }));
+  await user.click(screen.getByRole("option", { name: "来源甲" }));
+  selectStory("full");
+  click("新建工作事项");
+  await act(async () => { await creationEntry.mock.lastCall![0].created(); });
+  expect(syncTodos).toHaveBeenCalledWith("*", false, ["a", "b"]);
+  click("关闭新建窗口");
+  expect(screen.queryByText("仅来源乙的新事项")).toBeNull();
+  await user.click(screen.getByRole("combobox", { name: "显示来源" }));
+  await user.click(screen.getByRole("option", { name: "来源乙" }));
+  expect(await screen.findByText("仅来源乙的新事项")).toBeTruthy();
+});
+
+it("写后刷新等待旧同步后新读，合并未开始请求且期间的新写入必须再读下一轮", async () => {
+  await ready();
+  const before = deferred<typeof report>();
+  const first = deferred<typeof report>();
+  const later = deferred<typeof report>();
+  vi.mocked(syncTodos).mockReturnValueOnce(before.promise).mockReturnValueOnce(first.promise).mockReturnValueOnce(later.promise);
+  click("立即刷新");
+  click("新建工作事项");
+  const created = creationEntry.mock.lastCall![0].created as () => Promise<void>;
+  let firstDone = false, laterDone = false;
+  const one = created().then(() => { firstDone = true; });
+  const joined = created();
+  await act(async () => {});
+  expect(syncTodos).toHaveBeenCalledOnce();
+  await act(async () => before.resolve(report));
+  await waitFor(() => expect(syncTodos).toHaveBeenCalledTimes(2));
+  const two = created().then(() => { laterDone = true; });
+  await act(async () => {});
+  expect(syncTodos).toHaveBeenCalledTimes(2);
+  expect(firstDone).toBe(false);
+  await act(async () => first.resolve(report));
+  await waitFor(() => expect(syncTodos).toHaveBeenCalledTimes(3));
+  expect(firstDone).toBe(true);
+  expect(laterDone).toBe(false);
+  await act(async () => { later.resolve(report); await Promise.all([one, joined, two]); });
+  expect(laterDone).toBe(true);
+  expect(syncTodos).toHaveBeenNthCalledWith(2, "*", false, ["a"]);
+  expect(syncTodos).toHaveBeenNthCalledWith(3, "*", false, ["a"]);
+  expect(executeWorkflowAction).not.toHaveBeenCalled();
+});
+
+it.each(["remote", "partial", "cache"])("成功后的%s刷新失败保留流程成功事实且不重发写入", async (failure) => {
+  const message = enableWorkflow("verified");
+  await ready();
+  if (failure === "remote") vi.mocked(syncTodos).mockRejectedValueOnce({ kind: "tool", message: "RPCError: internal log_id: secret" });
+  if (failure === "partial") vi.mocked(syncTodos).mockResolvedValueOnce({ ...report, complete: false });
+  if (failure === "cache") vi.mocked(loadSnapshot).mockRejectedValueOnce({ kind: "storage", message: "本机暂不可读" });
+  await submitWorkflow();
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("清单刷新未完成"));
+  expect(screen.getByRole("alert").textContent).toContain(message);
+  expect(screen.getByRole("alert").textContent).not.toMatch(/RPCError|secret/);
+  expect(executeWorkflowAction).toHaveBeenCalledOnce();
+  expect(syncTodos).toHaveBeenCalledOnce();
+});
+
+it("无启用可执行来源时成功回调只回读本机缓存", async () => {
+  await ready();
+  click("新建工作事项");
+  const data = snapshot();
+  data.sources[0].enabled = false;
+  vi.mocked(loadSnapshot).mockResolvedValue(data);
+  // 配置回读让现有窗口采用无可执行来源状态，仍保留已取得的成功回调。
+  const created = creationEntry.mock.lastCall![0].created as () => Promise<void>;
+  await act(async () => { await created(); });
+  // 此次回调发起时旧来源仍启用；下次回调采用已回读的禁用配置。
+  vi.mocked(syncTodos).mockClear();
+  await act(async () => { await creationEntry.mock.lastCall![0].created(); });
+  expect(syncTodos).not.toHaveBeenCalled();
+});
 
 it.each([ ["full", false], ["compact", false], ["full", true], ["compact", true] ] as const)(
   "%s 布局%s自动同步期间仍可打开新建与核验，不发送创建请求", async (mode, automatic) => {

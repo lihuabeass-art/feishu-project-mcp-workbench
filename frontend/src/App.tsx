@@ -376,6 +376,9 @@ function Workspace() {
   const searchRef = useRef<HTMLInputElement>(null);
   const autoRunRef = useRef<() => void>(() => {});
   const activeSyncIds = useRef<string[]>([]);
+  const postWriteWaiters = useRef<Array<{ resolve: () => void; reject: (error: unknown) => void }>>([]);
+  const postWriteRunning = useRef(false);
+  const drainPostWrite = useRef<() => void>(() => {});
   useEffect(() => {
     if (syncProgressAbort.current && data && activeSyncConfiguration.current !== syncConfiguration(data))
       syncProgressAbort.current.abort();
@@ -745,12 +748,12 @@ function Workspace() {
     }
   }
 
-  async function run(action: "sync" | "check", automatic = false, requestedIds?: string[]) {
+  async function run(action: "sync" | "check", automatic = false, requestedIds?: string[], afterWrite = false) {
     const ids = requestedIds || (incremental
       ? sourceId === "*" ? enabledIds : enabledIds.filter((id) => id === sourceId)
       : [sourceId]);
     if (action === "sync" && incremental && syncRef.current) {
-      if (!automatic) {
+      if (!automatic && !afterWrite) {
         refreshCatalogAfterSync.current = true;
         registerManualSync(ids);
         ids.filter((id) => manualSync.current!.remaining.has(id) && !activeSyncIds.current.includes(id))
@@ -762,7 +765,7 @@ function Workspace() {
     if (workspaceActionBlocked(action, currentActivity()) || !desktop) return;
     if (action === "sync" && !automatic) {
       refreshCatalogAfterSync.current = true;
-      registerManualSync(ids);
+      if (!afterWrite) registerManualSync(ids);
     }
     if (action === "sync") {
       syncRef.current = true;
@@ -773,7 +776,7 @@ function Workspace() {
       setCheckBusy(true);
     }
     const workflowInFlightAtStart = workflowRef.current;
-    if (!automatic && !workflowInFlightAtStart &&
+    if (!automatic && !afterWrite && !workflowInFlightAtStart &&
         (!manualSync.current || (!manualSync.current.workflowInFlight && manualSync.current.workflowAttempt === workflowAttempt.current))) {
       setError(null);
       setNotice(null);
@@ -813,7 +816,7 @@ function Workspace() {
     };
     try {
       if (action === "sync") {
-        const report = incremental
+        const report = afterWrite ? await syncTodos("*", false, ids) : incremental
           ? data?.capabilities?.progressive_sync && !workflowInFlightAtStart
             ? await syncTodos("*", automatic, ids, { receive: applyPatch, signal: progressAbort.signal })
             : await syncTodos("*", automatic, ids)
@@ -932,6 +935,7 @@ function Workspace() {
         syncRef.current = false;
         activeSyncIds.current = [];
         setSyncBusy(false);
+        queueMicrotask(() => drainPostWrite.current());
         if (pendingManual.current.size) {
           const pending = [...pendingManual.current];
           pendingManual.current.clear();
@@ -941,8 +945,30 @@ function Workspace() {
         checkRef.current = false;
         setCheckBusy(false);
       }
+      if (afterWrite && (failure || cacheReadFailure || [...outcomes.values()].some(Boolean))) {
+        throw new Error("清单刷新未完成，已保留现有内容，可稍后刷新。");
+      }
     }
   }
+  function refreshAfterWrite(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      postWriteWaiters.current.push({ resolve, reject });
+      queueMicrotask(() => drainPostWrite.current());
+    });
+  }
+  drainPostWrite.current = () => {
+    if (syncRef.current || postWriteRunning.current || !postWriteWaiters.current.length) return;
+    const waiters = postWriteWaiters.current.splice(0);
+    const ids = [...new Set(enabledIds)];
+    postWriteRunning.current = true;
+    void (ids.length ? run("sync", false, ids, true) : reload()).then(
+      () => waiters.forEach((waiter) => waiter.resolve()),
+      () => waiters.forEach((waiter) => waiter.reject(new Error("清单刷新未完成，已保留现有内容，可稍后刷新。"))),
+    ).finally(() => {
+      postWriteRunning.current = false;
+      queueMicrotask(() => drainPostWrite.current());
+    });
+  };
   autoRunRef.current = () => {
     const due = enabledIds.filter((id) => {
       const p = policies[id] || fallbackPolicy;
@@ -973,11 +999,14 @@ function Workspace() {
         setError({ kind: "unknown_result", message: result.message });
       }
       try {
-        await reload();
+        if (result.outcome === "verified" && result.verified) await refreshAfterWrite();
+        else await reload();
       } catch (e) {
         // 列表没刷新是另一件事：追加说明，不替换上面那句结论，也不谎称列表是新的。
         const refresh = asError(e);
-        const note = `（本地列表未能刷新：${refresh.message}）`;
+        const note = result.outcome === "verified" && result.verified
+          ? "（清单刷新未完成，已保留现有内容，可稍后刷新。）"
+          : `（本地列表未能刷新：${refresh.message}）`;
         setNotice(null);
         if (result.outcome === "verified") {
           setError({ kind: refresh.kind, message: `${result.message}${note}` });
@@ -1844,7 +1873,7 @@ function Workspace() {
       entryIntent={creationRecovery ? "recovery" : "create"}
       recordsChanged={() => { void getPendingCreations().then((forms) => setCreationRecords({ context: creationContext, forms, failed: false })).catch(() => setCreationRecords((current) => ({ ...current, failed: true }))); }}
       locations={creationRecovery ? pendingLocations : creationTargets} initialType={!creationRecovery && type.length === 1 ? type[0] : undefined}
-      initialSpace={!creationRecovery && project.length === 1 ? project[0] : undefined} close={closeCreation} created={reload} />}
+      initialSpace={!creationRecovery && project.length === 1 ? project[0] : undefined} close={closeCreation} created={refreshAfterWrite} />}
     </>
   );
 }

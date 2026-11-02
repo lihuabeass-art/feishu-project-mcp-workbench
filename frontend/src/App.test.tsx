@@ -150,6 +150,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   localStorage.clear();
   vi.mocked(loadSnapshot).mockResolvedValue(snapshot());
+  vi.mocked(syncTodos).mockResolvedValue(successfulReport);
 });
 afterEach(() => {
   cleanup();
@@ -1187,36 +1188,38 @@ describe("同步与流程独立执行", () => {
 
     if (workflowFinishesFirst) {
       await act(async () => workflow.resolve(workflowResult));
-      expect(screen.getByRole("status").textContent).toBe("节点推进已核验");
+      expect(screen.getByText("节点推进已核验").closest('[role="status"]')).toBeTruthy();
       expect((screen.getByRole("button", { name: "正在同步" }) as HTMLButtonElement).disabled).toBe(true);
       await act(async () => sync.resolve(successfulReport));
-      expect(screen.getByRole("status").textContent).toBe("节点推进已核验");
+      expect(screen.getByText("节点推进已核验").closest('[role="status"]')).toBeTruthy();
     } else {
       await act(async () => sync.resolve(successfulReport));
       expect((screen.getByRole("button", { name: "立即刷新" }) as HTMLButtonElement).disabled).toBe(false);
       expect((screen.getByRole("button", { name: "正在提交…" }) as HTMLButtonElement).disabled).toBe(true);
       expect(screen.queryByText(/同步完成，新增/)).toBeNull();
       await act(async () => workflow.resolve(workflowResult));
-      expect(screen.getByRole("status").textContent).toBe("节点推进已核验");
+      expect(screen.getByText("节点推进已核验").closest('[role="status"]')).toBeTruthy();
     }
-    await user.click(screen.getByRole("button", { name: "立即刷新" }));
     await waitFor(() => expect(syncTodos).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole("button", { name: "立即刷新" }));
+    await waitFor(() => expect(syncTodos).toHaveBeenCalledTimes(3));
     expect(executeWorkflowAction).toHaveBeenCalledOnce();
   });
 
   it("并行同步失败不会清除流程核验成功的提示", async () => {
     setup();
     const sync = deferred<typeof successfulReport>();
-    vi.mocked(syncTodos).mockReturnValue(sync.promise);
+    vi.mocked(syncTodos).mockReturnValueOnce(sync.promise).mockResolvedValue(successfulReport);
     vi.mocked(executeWorkflowAction).mockResolvedValue(workflowResult);
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "立即刷新" }));
     await submit(user);
-    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("节点推进已核验"));
+    await waitFor(() => expect(screen.getByText("节点推进已核验").closest('[role="status"]')).toBeTruthy());
     await act(async () => sync.reject({ kind: "connection", message: "同步网络失败" }));
-    expect(screen.getByRole("status").textContent).toBe("节点推进已核验");
-    expect(screen.getByText("暂时无法连接服务，请稍后重试。")).toBeTruthy();
+    expect(screen.getByText("节点推进已核验").closest('[role="status"]')).toBeTruthy();
+    expect(syncTodos).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("暂时无法连接服务，请稍后重试。")).toBeNull();
   });
 
   it.each(["order", "discovery"] as const)("并行的 %s 失败保留流程结果不确定的反馈", async (action) => {
@@ -1260,8 +1263,14 @@ describe("同步与流程独立执行", () => {
     await submit(user);
     const conclusion = () => screen.getByText(message).closest('[role]')?.textContent;
     await waitFor(() => expect(conclusion()).toContain(message));
-    await user.click(screen.getByRole("button", { name: "立即刷新" }));
-    await waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(3));
+    if (outcome === "verified") {
+      expect(screen.getByRole("button", { name: "正在同步" })).toHaveProperty("disabled", true);
+      fireEvent.click(screen.getByRole("button", { name: "正在同步" }));
+      expect(loadSnapshot).toHaveBeenCalledTimes(2);
+    } else {
+      await user.click(screen.getByRole("button", { name: "立即刷新" }));
+      await waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(3));
+    }
     expect(conclusion()).toContain(message);
     expect(screen.queryByText(/同步完成，新增/)).toBeNull();
     await act(async () => cache.resolve(data));
@@ -1288,7 +1297,7 @@ describe("同步与流程独立执行", () => {
     expect((screen.getByRole("button", { name: "正在提交…" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByText(/同步完成，新增/)).toBeNull();
     await act(async () => workflow.resolve(workflowResult));
-    expect(screen.getByRole("status").textContent).toBe("节点推进已核验");
+    expect(screen.getByText("节点推进已核验").closest('[role="status"]')).toBeTruthy();
   });
 
   it("同步与动作读取尚未结束时，打开事项仍独立显示完整详情", async () => {

@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { CompactWorkspace } from "./CompactWorkspace";
 import { emptyWorkFilters, workFilterOptions } from "./workFilters";
-import { executeWorkflowAction, getWorkflowActions, loadSnapshot } from "./api";
+import { executeWorkflowAction, getWorkflowActions, loadSnapshot, syncTodos } from "./api";
 import type { CachedItem, Snapshot, WorkflowResult } from "./types";
 
 vi.mock("./api", () => ({
@@ -660,6 +660,10 @@ describe("清单模式", () => {
     async ({ outcome, message, refreshFails }) => {
       const data = { ...snapshot(), capabilities: { workflow: true } };
       vi.mocked(loadSnapshot).mockResolvedValue(data);
+      vi.mocked(syncTodos).mockResolvedValue({
+        status: "success", complete: true, items_upserted: 0,
+        items_inserted: 0, items_updated: 0, items_rejected: 0, stop_reason: "total_reached",
+      });
       vi.mocked(getWorkflowActions).mockResolvedValue({
         version: "v1",
         actions: [{ id: "confirm", label: "完成研发节点", kind: "node", fields: [] }],
@@ -678,7 +682,7 @@ describe("清单模式", () => {
       if (refreshFails) vi.mocked(loadSnapshot).mockRejectedValueOnce({ kind: "store", message: "缓存被占用" });
       await user.click(screen.getByRole("button", { name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/ }));
 
-      const feedback = await screen.findByText(refreshFails ? `${message}（本地列表未能刷新：缓存被占用）` : message);
+      const feedback = await screen.findByText(refreshFails ? `${message}（清单刷新未完成，已保留现有内容，可稍后刷新。）` : message);
       const alerts = feedback.closest(".list-mode-alerts")!;
       const detail = screen.getByRole("complementary", { name: "事项详情" });
       // 悬浮提示独立于详情覆盖区域，避免相同 z-index 再次遮挡。
@@ -688,6 +692,8 @@ describe("清单模式", () => {
         .toBe(outcome === "verified" && !refreshFails ? "status" : "alert");
       expect(executeWorkflowAction).toHaveBeenCalledOnce();
       expect(loadSnapshot).toHaveBeenCalledTimes(2);
+      if (outcome === "verified") expect(syncTodos).toHaveBeenCalledWith("*", false, ["source-a"]);
+      else expect(syncTodos).not.toHaveBeenCalled();
 
       await user.click(screen.getByRole("button", { name: "返回清单" }));
       expect(alerts.contains(feedback)).toBe(true);
