@@ -930,6 +930,7 @@ mod incremental_api_tests {
         let b=store.begin_run("work_item_type",None,RunTrigger::Manual,Some("related"),1).unwrap();
         store.upsert_items(a,&[personal.clone()],1).unwrap();
         let before=store.query_items(&ItemFilter::default()).unwrap();
+        assert_eq!(before[0].current_node_names, Some(vec!["全部节点一".into(), "全部节点二".into()]));
         for order in [[a,b],[b,a]] {
             for run in order {
                 let item=if run==a { &personal } else { &related };
@@ -938,12 +939,14 @@ mod incremental_api_tests {
             let after=store.query_items(&ItemFilter::default()).unwrap();
             // 第一次关联来源登记归属会进入 patch，之后只核对最终流程摘要。
             assert_eq!(after[0].item.flow,before[0].item.flow);
+            assert_eq!(after[0].current_node_names,before[0].current_node_names);
         }
         let before=store.query_items(&ItemFilter::default()).unwrap();
         store.upsert_items(b,&[related.clone()],3).unwrap();
         store.upsert_items(a,&[personal.clone()],3).unwrap();
         let after=store.query_items(&ItemFilter::default()).unwrap();
         assert_eq!(cache_patch(&before,&after).unwrap()["modified"],serde_json::json!([]));
+        assert_eq!(cache_patch(&before,&after).unwrap()["updated_count"],0);
         personal.flow.node_name=Some("本人新节点".into());
         store.upsert_items(a,&[personal.clone()],4).unwrap();
         store.upsert_items(b,&[related.clone()],4).unwrap();

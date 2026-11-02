@@ -179,6 +179,8 @@ pub struct CachedItem {
     pub source_ids: Vec<String>,
     /// 各个人来源的本人节点；全局流程仍来自同一份完整详情。
     pub personal_flows: std::collections::BTreeMap<String, FlowInfo>,
+    /// 完整缓存详情中的当前节点名称；None 表示旧记录尚无结构化节点，空数组表示已确认无节点。
+    pub current_node_names: Option<Vec<String>>,
     /// 待办接口的节点排期按来源保留，不能覆盖事项自身排期。
     pub personal_schedules: std::collections::BTreeMap<String, Schedule>,
     /// 飞书完整详情中的业务时间；不使用本地同步时间补齐。
@@ -315,7 +317,13 @@ const SELECT_COLUMNS: &str = "project_key, work_item_type_key, work_item_id, ide
         AND d.type_key=work_item.work_item_type_key AND d.item_id=work_item.work_item_id), \
      (SELECT json_group_object(source_id,json(personal_schedule_json)) FROM work_item_source s \
       WHERE s.project_key=work_item.project_key AND s.work_item_type_key=work_item.work_item_type_key \
-        AND s.work_item_id=work_item.work_item_id AND personal_schedule_json IS NOT NULL)";
+        AND s.work_item_id=work_item.work_item_id AND personal_schedule_json IS NOT NULL), \
+     (SELECT json_extract(snapshot_json, '$.data.work_item_current_node') FROM item_detail d \
+      WHERE d.project_key=work_item.project_key AND d.type_key=work_item.work_item_type_key \
+        AND d.item_id=work_item.work_item_id), \
+     (SELECT json_extract(snapshot_json, '$.data.work_item_attribute.work_item_mod') FROM item_detail d \
+      WHERE d.project_key=work_item.project_key AND d.type_key=work_item.work_item_type_key \
+        AND d.item_id=work_item.work_item_id)";
 
 #[derive(Debug, Default)]
 pub struct DetailCacheState {
@@ -1014,10 +1022,6 @@ impl Store {
             sql.push_str(" AND work_item_type_key = ?");
             args.push(t.clone());
         }
-        if let Some(f) = filter.flow {
-            sql.push_str(" AND flow_kind = ?");
-            args.push(f.as_str().to_string());
-        }
         if let Some(text) = &filter.text {
             // 大小写不敏感用 SQLite 的 LIKE（ASCII 不敏感）；中文本身无大小写，不受影响。
             // 用户输入里的 LIKE 元字符必须转义，否则 `--text "100%"` 会退化成通配匹配。
@@ -1026,15 +1030,24 @@ impl Store {
             args.push(format!("%{escaped}%"));
         }
         sql.push_str(" ORDER BY last_seen_at_ms DESC, project_key, work_item_type_key, work_item_id");
-        sql.push_str(" LIMIT ? OFFSET ?");
-        args.push((filter.limit.unwrap_or(200)).to_string());
-        args.push((filter.offset.unwrap_or(0)).to_string());
+        // 流程类型在旧摘要与新详情合并后判定，分页须在同一次筛选之后进行。
+        if filter.flow.is_none() {
+            sql.push_str(" LIMIT ? OFFSET ?");
+            args.push((filter.limit.unwrap_or(200)).to_string());
+            args.push((filter.offset.unwrap_or(0)).to_string());
+        }
 
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), map_cached_item)?;
         let mut out = Vec::new();
         for row in rows {
-            out.push(row?);
+            let item = row?;
+            if filter.flow.is_none_or(|kind| item.item.flow.kind == kind) { out.push(item); }
+        }
+        if filter.flow.is_some() {
+            let offset = filter.offset.unwrap_or(0).max(0) as usize;
+            let limit = filter.limit.unwrap_or(200);
+            return Ok(out.into_iter().skip(offset).take(if limit < 0 { usize::MAX } else { limit as usize }).collect());
         }
         Ok(out)
     }
@@ -1581,8 +1594,19 @@ fn detail_activity(detail: &crate::detail::ItemDetail) -> (Option<i64>, Option<i
 
 fn map_cached_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedItem> {
     let flags: String = row.get(3)?;
+    let current_nodes = row.get::<_, Option<String>>(25)?.map(|raw| {
+        serde_json::from_str::<Vec<serde_json::Value>>(&raw).map_err(|error|
+            rusqlite::Error::FromSqlConversionFailure(25, rusqlite::types::Type::Text, Box::new(error)))
+    }).transpose()?;
+    let current_node_names = current_nodes.as_ref().map(|nodes| {
+        let mut names: Vec<String> = nodes.iter().filter_map(|node| node["name"].as_str())
+            .filter(|name| !name.trim().is_empty()).map(str::to_owned).collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    });
     let flow_kind = FlowKind::parse(&row.get::<_, String>(6)?).unwrap_or(FlowKind::None);
-    let item = WorkItem {
+    let mut item = WorkItem {
         id: WorkItemId {
             project_key: none_if_empty(row.get::<_, Option<String>>(0)?),
             work_item_type_key: none_if_empty(row.get::<_, Option<String>>(1)?),
@@ -1602,8 +1626,28 @@ fn map_cached_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedItem> {
         schedule: Schedule { start_raw: row.get(11)?, end_raw: row.get(12)? },
         raw_json: row.get(13)?,
     };
+    // 旧摘要可能早于详情刷新；展示与筛选共同使用最新缓存节点，不改写来源专属的本人节点。
+    let detail_is_node = row.get::<_, Option<String>>(26)?.as_deref() == Some("节点流");
+    if item.flow.kind != FlowKind::State || detail_is_node {
+        if let (Some(nodes), Some(names)) = (&current_nodes, &current_node_names) {
+            item.flow.node_name = (!names.is_empty()).then(|| names.join(" / "));
+            item.flow.node_state_key = nodes.first().filter(|_| nodes.len() == 1)
+                .and_then(|node| node["id"].as_str()).filter(|key| !key.trim().is_empty()).map(str::to_owned);
+            if detail_is_node {
+                item.flow.start_state_key_name = None;
+                item.flow.end_state_key_name = None;
+            }
+            let has_node = item.flow.node_name.is_some() || item.flow.node_state_key.is_some();
+            let has_state = item.flow.start_state_key_name.is_some() || item.flow.end_state_key_name.is_some();
+            item.flow.kind = match (has_node, has_state) {
+                (true, true) => FlowKind::Both, (true, false) => FlowKind::Node,
+                (false, true) => FlowKind::State, (false, false) => FlowKind::None,
+            };
+        }
+    }
     Ok(CachedItem {
         item,
+        current_node_names,
         personal_flows: serde_json::from_str(&row.get::<_,String>(22)?).map_err(|error|
             rusqlite::Error::FromSqlConversionFailure(22,rusqlite::types::Type::Text,Box::new(error)))?,
         personal_schedules: serde_json::from_str(&row.get::<_,String>(24)?).map_err(|error|

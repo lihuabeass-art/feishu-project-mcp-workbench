@@ -160,6 +160,7 @@ pub fn summary(detail: &ItemDetail, source_record: Value) -> Value {
         .into_iter()
         .flatten()
         .filter_map(|n| n["name"].as_str())
+        .filter(|name| !name.trim().is_empty())
         .collect();
     node_names.sort_unstable();
     node_names.dedup();
