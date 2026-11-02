@@ -78,6 +78,12 @@
   --option-blue-active: #d7eaf7;
   --option-yellow: #fbf5df;
   --option-yellow-active: #f4e8bc;
+  --option-count-green: #2c614c;
+  --option-count-purple: #5e3c8e;
+  --option-count-coral: #8d3d30;
+  --option-count-blue: #245b7b;
+  --option-count-yellow: #6c5419;
+  --option-count-selected: #245747;
 }
 
 :root[data-theme="dark"] {
@@ -131,6 +137,12 @@
   --option-blue-active: var(--surface-hover);
   --option-yellow: var(--surface-solid);
   --option-yellow-active: var(--surface-hover);
+  --option-count-green: #afe0c7;
+  --option-count-purple: #d0bef3;
+  --option-count-coral: #f4beb0;
+  --option-count-blue: #afd7f0;
+  --option-count-yellow: #e8d398;
+  --option-count-selected: #a6dcc6;
 }
 
 :root[data-theme="dark"] .type-link,

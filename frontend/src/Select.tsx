@@ -15,8 +15,13 @@ import { useScrollIsolation } from "./useScrollIsolation";
 export type SelectOption = {
   value: string;
   label: string;
+  count?: number;
   disabled?: boolean;
 };
+
+export function selectOptionLabel(option: SelectOption | undefined) {
+  return option && (option.count === undefined ? option.label : `${option.label}（${option.count}）`);
+}
 
 type SelectProps = {
   options: SelectOption[];
@@ -67,11 +72,11 @@ export function Select(props: SelectProps) {
   const selectedIndex = options.findIndex(isSelected);
   const selected = options[selectedIndex];
   const selectedLabels = Array.isArray(value)
-    ? value.map((entry) => options.find((option) => option.value === entry)?.label || entry)
+    ? value.map((entry) => selectOptionLabel(options.find((option) => option.value === entry)) || entry)
     : [];
   const selectionLabel = selectedLabels.length > 1
     ? `${selectedLabels[0]} 等 ${selectedLabels.length} 项`
-    : selectedLabels[0] || selected?.label || "请选择";
+    : selectedLabels[0] || selectOptionLabel(selected) || "请选择";
   const selectionKey = JSON.stringify(value);
 
   const firstEnabled = () => options.findIndex((option) => !option.disabled);
@@ -98,7 +103,7 @@ export function Select(props: SelectProps) {
     const placeAbove =
       spaceBelow < Math.min(estimatedHeight, 180) && spaceAbove > spaceBelow;
     const width = Math.min(
-      Math.max(rect.width, 180),
+      Math.max(rect.width, options.some((option) => option.count !== undefined) ? 240 : 180),
       window.innerWidth - viewportPadding * 2,
     );
     const left = Math.min(
@@ -273,17 +278,21 @@ export function Select(props: SelectProps) {
               <div
                 id={`${listboxId}-option-${index}`}
                 key={option.value}
-                className={`select-option ${index === activeIndex ? "active" : ""} ${isSelected(option) ? "selected" : ""}`.trim()}
+                className={`select-option ${option.count !== undefined ? "has-count" : ""} ${index === activeIndex ? "active" : ""} ${isSelected(option) ? "selected" : ""}`.trim()}
                 role="option"
+                aria-label={option.count !== undefined ? selectOptionLabel(option) : undefined}
                 aria-selected={isSelected(option)}
                 aria-disabled={option.disabled || undefined}
                 onMouseEnter={() => !option.disabled && setActiveIndex(index)}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => choose(index)}
               >
-                <span>{props.renderOption ? props.renderOption(option) : option.label}</span>
+                <span className="select-option-label">{props.renderOption ? props.renderOption(option) : option.label}</span>
+                {option.count !== undefined && (
+                  <span className="select-option-count" aria-hidden="true">{option.count}</span>
+                )}
                 {isSelected(option) && !option.disabled && (
-                  <Check size={15} strokeWidth={2.5} aria-hidden="true" />
+                  <Check className="select-option-check" size={15} strokeWidth={2.5} aria-hidden="true" />
                 )}
               </div>
             ))}

@@ -180,6 +180,7 @@ svg {
 .select-option {
   --option-bg: var(--option-green);
   --option-active: var(--option-green-active);
+  --option-count-ink: var(--option-count-green);
   min-height: 36px;
   display: flex;
   align-items: center;
@@ -200,18 +201,22 @@ svg {
 .select-option:nth-child(5n + 2) {
   --option-bg: var(--option-purple);
   --option-active: var(--option-purple-active);
+  --option-count-ink: var(--option-count-purple);
 }
 .select-option:nth-child(5n + 3) {
   --option-bg: var(--option-coral);
   --option-active: var(--option-coral-active);
+  --option-count-ink: var(--option-count-coral);
 }
 .select-option:nth-child(5n + 4) {
   --option-bg: var(--option-blue);
   --option-active: var(--option-blue-active);
+  --option-count-ink: var(--option-count-blue);
 }
 .select-option:nth-child(5n) {
   --option-bg: var(--option-yellow);
   --option-active: var(--option-yellow-active);
+  --option-count-ink: var(--option-count-yellow);
 }
 .select-option.active,
 .select-option:hover:not([aria-disabled="true"]) {
@@ -220,6 +225,7 @@ svg {
   transform: translateY(-1px);
 }
 .select-option.selected {
+  --option-count-ink: var(--option-count-selected);
   color: var(--green);
   font-weight: 600;
   box-shadow: inset 0 0 0 1px rgba(56, 129, 104, 0.3);
@@ -229,6 +235,36 @@ svg {
   background: var(--surface-soft);
   cursor: default;
   opacity: 0.68;
+}
+.select-option.has-count {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content 15px;
+  column-gap: 8px;
+}
+.select-option.has-count .select-option-label {
+  min-width: 0;
+}
+.select-option-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--option-count-ink) 12%, transparent);
+  color: var(--option-count-ink);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+.select-option.selected .select-option-count {
+  background: color-mix(in srgb, var(--option-count-ink) 14%, transparent);
+}
+.select-option.has-count .select-option-check {
+  grid-column: 3;
 }
 .select-control.compact .select-trigger {
   min-height: 30px;

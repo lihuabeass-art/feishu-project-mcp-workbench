@@ -204,7 +204,7 @@ function valueFacet(
   for (const value of selectedValues) if (!counts.has(value)) counts.set(value, 0);
   const options = [...counts]
     .sort(([a], [b]) => a.localeCompare(b, "zh-CN"))
-    .map(([value, count]) => ({ value, label: `${value}（${count}）`, count }));
+    .map(([value, count]) => ({ value, label: value, count }));
   return {
     options,
     visible: selectedValues.length > 0 || options.some(({ count }) => count > 0 && count < items.length),

@@ -13,8 +13,8 @@ const options: WorkFilterOptions = {
   spaces: [{ value: "space", label: "研发空间" }],
   projects: [{ value: "project", label: "应用平台" }],
   flowKinds: [{ value: "both", label: "节点与状态流" }],
-  node: { visible: true, options: [{ value: longNode, label: `${longNode}（1）`, count: 1 }, { value: "测试", label: "测试（1）", count: 1 }] },
-  state: { visible: true, options: [{ value: "处理中", label: "处理中（1）", count: 1 }] },
+  node: { visible: true, options: [{ value: longNode, label: `${longNode}`, count: 1 }, { value: "测试", label: "测试", count: 1 }] },
+  state: { visible: true, options: [{ value: "处理中", label: "处理中", count: 1 }] },
 };
 let width = 1000;
 const observers = new Set<ResizeObserverMock>();

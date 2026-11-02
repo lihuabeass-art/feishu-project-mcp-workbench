@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { itemKey, localTime, nodeScopeLabel, typeColorStyle } from "./model";
 import { CompactTypeTabs, compactTypeTabId, type CompactTypeOption } from "./CompactTypeTabs";
-import { Select } from "./Select";
+import { Select, selectOptionLabel } from "./Select";
 import {
   changeWorkFilter, emptyWorkFilters, filterWorkItems,
   workFilterCount, type WorkFilters, type WorkFilterOptions,
@@ -172,7 +172,7 @@ export function CompactWorkspace({
       { key: "nodeName", label: "节点", options: facets.node.options },
       { key: "stateName", label: "当前状态", options: facets.state.options },
     ] as const).flatMap(({ key, label, options }) => filters[key].map((value) => ({
-      id: `${key}:${value}`, label: `${label}：${options.find((option) => option.value === value)?.label || value}`,
+      id: `${key}:${value}`, label: `${label}：${selectOptionLabel(options.find((option) => option.value === value)) || value}`,
       hint: key === "nodeName" ? nodeFilterHint : undefined,
       remove: () => {
         const values = filters[key].filter((entry) => entry !== value);

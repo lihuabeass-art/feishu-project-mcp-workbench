@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { SlidersHorizontal, X } from "lucide-react";
-import { Select } from "./Select";
+import { Select, selectOptionLabel } from "./Select";
 import { changeWorkFilter, emptyWorkFilters, workFilterCount, type WorkFilterOptions, type WorkFilters } from "./workFilters";
 import { useScrollIsolation } from "./useScrollIsolation";
 import "./WorkFilterToolbar.css";
@@ -98,7 +98,7 @@ export function WorkFilterToolbar({ filters, options, onChange, resultCount, sch
       return filters[key].map((value) => ({
         id: `${key}:${value}`,
         hint: key === "nodeName" ? nodeFilterHint : undefined,
-        label: `${field.label}：${field.options.find((option) => option.value === value)?.label ||
+        label: `${field.label}：${selectOptionLabel(field.options.find((option) => option.value === value)) ||
           (key === "space" ? filters.spaceLabel[value] : key === "project" ? filters.projectLabel[value] : null) || value}`,
         remove: () => {
           focusAfterChange.current = key;

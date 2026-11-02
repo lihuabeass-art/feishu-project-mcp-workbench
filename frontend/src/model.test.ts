@@ -69,10 +69,10 @@ describe("节点和状态的动态筛选候选", () => {
 
   it("多选保留每个零结果条件，也保留同一筛选中的候选与准确计数", () => {
     const result = workflowFacets(rows, "", [], [], [], ["后端代码合入", "不存在的节点"], ["已解决", "不存在的状态"]);
-    expect(result.node.options).toContainEqual({ value: "后端代码合入", label: "后端代码合入（1）", count: 1 });
-    expect(result.node.options).toContainEqual({ value: "不存在的节点", label: "不存在的节点（0）", count: 0 });
-    expect(result.state.options).toContainEqual({ value: "不存在的状态", label: "不存在的状态（0）", count: 0 });
-    expect(result.state.options).toContainEqual({ value: "处理中", label: "处理中（1）", count: 1 });
+    expect(result.node.options).toContainEqual({ value: "后端代码合入", label: "后端代码合入", count: 1 });
+    expect(result.node.options).toContainEqual({ value: "不存在的节点", label: "不存在的节点", count: 0 });
+    expect(result.state.options).toContainEqual({ value: "不存在的状态", label: "不存在的状态", count: 0 });
+    expect(result.state.options).toContainEqual({ value: "处理中", label: "处理中", count: 1 });
   });
 
   it("按搜索、空间、事项类型和流程类型缩小候选，移除没有匹配事项的节点", () => {
@@ -94,10 +94,10 @@ describe("节点和状态的动态筛选候选", () => {
   it("选中某节点后保留同一筛选中的其他可选节点及准确数量", () => {
     const result = workflowFacets(rows, "", "", "", "", "后端代码合入", "");
     expect(result.node.options).toContainEqual({
-      value: "后端方案设计", label: "后端方案设计（1）", count: 1,
+      value: "后端方案设计", label: "后端方案设计", count: 1,
     });
     expect(result.node.options).toContainEqual({
-      value: "后端代码合入", label: "后端代码合入（2）", count: 2,
+      value: "后端代码合入", label: "后端代码合入", count: 2,
     });
     expect(filterItems(rows, "", "", "", "", "后端代码合入", "")).toHaveLength(2);
   });
@@ -133,11 +133,11 @@ describe("节点和状态的动态筛选候选", () => {
     const result = workflowFacets(rows, "设计", "", "", "", "后端代码合入", "已解决");
     expect(result.node.visible).toBe(true);
     expect(result.node.options).toContainEqual({
-      value: "后端代码合入", label: "后端代码合入（0）", count: 0,
+      value: "后端代码合入", label: "后端代码合入", count: 0,
     });
     expect(result.state.visible).toBe(true);
     expect(result.state.options).toContainEqual({
-      value: "已解决", label: "已解决（0）", count: 0,
+      value: "已解决", label: "已解决", count: 0,
     });
     expect(filterItems(rows, "设计", "", "", "", "后端代码合入", "已解决")).toEqual([]);
   });
