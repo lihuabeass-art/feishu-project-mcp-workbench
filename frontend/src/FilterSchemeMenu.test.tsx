@@ -34,6 +34,29 @@ async function open() {
   await user.click(screen.getByRole("button", { name: "筛选方案" }));
   return user;
 }
+
+it("load failure shows a local recovery message instead of an empty list or an account prompt, and retry restores schemes", async () => {
+  vi.mocked(invoke).mockRejectedValueOnce({ kind: "store", message: "no such table: filter_scheme_preferences" });
+  const user = userEvent.setup();
+  render(<Harness />);
+  const feedback = await screen.findByRole("status");
+  expect(feedback.textContent).toBe("筛选方案暂不可用，展开后可重试。");
+  await user.click(screen.getByRole("button", { name: "筛选方案" }));
+  expect(screen.getByRole("alert").textContent).toContain("当前临时条件已保留");
+  expect(screen.getByRole("alert").textContent).toContain("本地数据暂时无法读取，请重试");
+  expect(screen.queryByText("尚无已保存方案")).toBeNull();
+  expect(screen.queryByText("确认飞书账号后可保存个人方案。")).toBeNull();
+  expect(document.body.textContent).not.toContain("no such table");
+  const save = screen.getByRole("menuitem", { name: "保存当前条件为新方案" });
+  expect(save.getAttribute("data-disabled")).not.toBeNull();
+  await user.click(screen.getByRole("menuitem", { name: "重新读取方案" }));
+  await screen.findByText("ready");
+  expect(screen.queryByRole("status")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "筛选方案" }));
+  expect(screen.getByRole("menuitem", { name: /^方案甲/ })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "保存当前条件为新方案" }).getAttribute("data-disabled")).toBeNull();
+});
+
 it("failed save keeps name and switch choices, keyboard Escape returns focus and wheel does not escape portal", async () => {
   const user = await open();
   const menu = screen.getByRole("menu");

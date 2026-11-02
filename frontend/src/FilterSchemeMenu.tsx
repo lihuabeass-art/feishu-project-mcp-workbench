@@ -66,7 +66,7 @@ export function FilterSchemeMenu({ controller: c }: { controller: FilterSchemesC
             <Menu.Item className="filter-scheme-item" onSelect={() => begin("delete", scheme.id)}>删除方案</Menu.Item>
           </Menu.SubContent></Menu.Portal>
         </Menu.Sub>)}
-        {!c.document.schemes.length && <p className="filter-scheme-hint">{c.busy ? "正在确认账号与读取方案…" : "尚无已保存方案"}</p>}
+        {!c.document.schemes.length && !c.error && <p className="filter-scheme-hint">{c.busy ? "正在确认账号与读取方案…" : "尚无已保存方案"}</p>}
         {c.adjusted && <>
           <Menu.Separator className="filter-scheme-separator" />
           <Menu.Item className="filter-scheme-item" onSelect={() => c.apply(c.current!.id)}>恢复原方案</Menu.Item>
@@ -74,11 +74,11 @@ export function FilterSchemeMenu({ controller: c }: { controller: FilterSchemesC
         </>}
         <Menu.Separator className="filter-scheme-separator" />
         <Menu.Item className="filter-scheme-item" disabled={!c.available || c.busy} onSelect={() => begin("save")}>{c.adjusted ? "另存为新方案" : "保存当前条件为新方案"}</Menu.Item>
-        {!c.available && <p className="filter-scheme-hint">确认飞书账号后可保存个人方案。</p>}
-        {c.error && <><p className="filter-scheme-hint" role="alert">{c.error}</p><Menu.Item className="filter-scheme-item" onSelect={c.retry}>重新读取方案</Menu.Item></>}
+        {!c.available && !c.busy && !c.error && <p className="filter-scheme-hint">确认飞书账号后可保存个人方案。</p>}
+        {c.error && <><p className="filter-scheme-hint filter-scheme-error" role="alert">{c.error}</p><Menu.Item className="filter-scheme-item" onSelect={c.retry}>重新读取方案</Menu.Item></>}
       </Menu.Content></Menu.Portal>
     </Menu.Root>
-    {(c.error || message) && <span className="filter-scheme-feedback" role="status">{c.error || message}</span>}
+    {(c.error || message) && <span className="filter-scheme-feedback" role="status">{c.error && !c.available ? "筛选方案暂不可用，展开后可重试。" : c.error || message}</span>}
     {form && createPortal(<div className="filter-scheme-backdrop scroll-isolation-boundary" ref={modalIsolation}>
       <div className="filter-scheme-dialog" ref={dialog} role="dialog" aria-modal="true" aria-labelledby={title}>
         <form onSubmit={async (event) => {
