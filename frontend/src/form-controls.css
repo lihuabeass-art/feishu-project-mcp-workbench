@@ -48,6 +48,18 @@ textarea:focus-visible,
   box-shadow: var(--control-shadow);
 }
 
+/* 筛选下拉展开时只强调细边框，键盘焦点保留贴边的轻量轮廓。 */
+.select-control.compact.open > .select-trigger {
+  border-color: var(--control-hover-border);
+  outline: none;
+}
+
+.select-control.compact > .select-trigger:focus-visible {
+  border-color: var(--focus);
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}
+
 /* 复合搜索框的边界由外层承载，内部输入框保持透明且不重复描边。 */
 .search input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]),
 .search input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"]):focus-visible {
