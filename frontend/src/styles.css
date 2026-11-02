@@ -1355,21 +1355,28 @@ input {
   font-size: 11px;
 }
 .primary {
-  background: var(--primary);
-  color: var(--on-primary);
-  border: 1px solid var(--primary);
-  box-shadow: 0 3px 8px #396f5010;
+  background: var(--button-primary-bg);
+  color: var(--button-primary-text);
+  border: 1px solid var(--button-primary-border);
+  box-shadow: var(--button-primary-shadow);
 }
 .primary:hover:not(:disabled) {
-  background: var(--primary-hover);
+  background: var(--button-primary-hover-bg);
+  border-color: var(--button-primary-hover-border);
+  box-shadow: var(--button-primary-hover-shadow);
+  filter: none;
 }
 .secondary {
-  background: var(--glass);
-  border: 1px solid var(--line);
-  color: var(--text-secondary);
+  background: var(--button-secondary-bg);
+  border: 1px solid var(--button-secondary-border);
+  color: var(--button-secondary-text);
+  box-shadow: var(--button-secondary-shadow);
 }
 .secondary:hover:not(:disabled) {
-  background: var(--surface-solid);
+  background: var(--button-secondary-hover-bg);
+  border-color: var(--button-secondary-hover-border);
+  box-shadow: var(--button-secondary-hover-shadow);
+  filter: none;
 }
 .work-panel,
 .settings-panel,

@@ -27,6 +27,28 @@
   --primary: #347c6c;
   --primary-hover: #286657;
   --on-primary: #fff;
+  --button-primary-bg:
+    linear-gradient(160deg, #ffffffb8, transparent 58%),
+    linear-gradient(115deg, #c8e9e5, #d8d2f1 48%, #edcddd);
+  --button-primary-hover-bg:
+    linear-gradient(160deg, #ffffffc7, transparent 58%),
+    linear-gradient(115deg, #bce5df, #cfc5ef 48%, #eac2d9);
+  --button-primary-text: #34435c;
+  --button-primary-border: #b3bbd4;
+  --button-primary-hover-border: #939fbe;
+  --button-primary-shadow: inset 0 1px 0 #ffffffde, 0 4px 12px #7979a921;
+  --button-primary-hover-shadow: inset 0 1px 0 #fff, 0 5px 16px #7979a930;
+  --button-secondary-bg:
+    linear-gradient(120deg, #dff5f12e, #e6e0fb40 55%, #f8e3ee38),
+    var(--glass-hover);
+  --button-secondary-hover-bg:
+    linear-gradient(120deg, #dcf2ed80, #e6def58c 55%, #f4deeb80),
+    var(--surface-solid);
+  --button-secondary-text: var(--heading);
+  --button-secondary-border: #cbd0e2;
+  --button-secondary-hover-border: var(--border-strong);
+  --button-secondary-shadow: inset 0 1px 0 #ffffffcf, 0 2px 6px var(--pearl-shadow);
+  --button-secondary-hover-shadow: inset 0 1px 0 #fff, 0 3px 10px var(--pearl-shadow);
   --switch-off: #959eaf;
   --pearl-cyan: #9ce9ed70;
   --pearl-violet: #c1b1f566;
@@ -72,6 +94,26 @@
   --primary: #91d6be;
   --primary-hover: #aae5d0;
   --on-primary: #162d29;
+  --button-primary-bg:
+    linear-gradient(160deg, #dceaff24, transparent 58%),
+    linear-gradient(115deg, #34555a, #514b70 48%, #65485e);
+  --button-primary-hover-bg:
+    linear-gradient(160deg, #dceaff30, transparent 58%),
+    linear-gradient(115deg, #3e6568, #605884 48%, #785570);
+  --button-primary-text: #f0f3ff;
+  --button-primary-border: #7d89ab;
+  --button-primary-hover-border: #a3b2d5;
+  --button-primary-shadow: inset 0 1px 0 #c5d3f53b, 0 4px 14px #070b1c40;
+  --button-primary-hover-shadow: inset 0 1px 0 #d6e4ff57, 0 5px 18px #070b1c59;
+  --button-secondary-bg:
+    linear-gradient(120deg, #66afae12, #b2a0e81c 55%, #d394b917),
+    var(--surface-solid);
+  --button-secondary-hover-bg:
+    linear-gradient(120deg, #66afae24, #b2a0e82e 55%, #d394b924),
+    var(--surface-hover);
+  --button-secondary-border: #56617f;
+  --button-secondary-shadow: inset 0 1px 0 #b4c5ee24, 0 2px 6px var(--pearl-shadow);
+  --button-secondary-hover-shadow: inset 0 1px 0 #b4c5ee38, 0 3px 10px var(--pearl-shadow);
   --switch-off: #626e88;
   --pearl-cyan: #62c8d026;
   --pearl-violet: #9c84e833;
@@ -193,7 +235,7 @@
 }
 
 :root[data-appearance="pearl"]
-  :is(.select-trigger, .theme-trigger, .secondary) {
+  :is(.select-trigger, .theme-trigger) {
   box-shadow: 0 2px 6px var(--pearl-shadow);
 }
 
@@ -215,8 +257,19 @@
   }
 }
 
-:root[data-appearance="pearl"] .primary {
-  box-shadow: 0 5px 14px var(--pearl-shadow);
+:root[data-appearance="pearl"] :is(.primary, .secondary) {
+  border-radius: 10px;
+}
+
+:root[data-appearance="pearl"] .icon-button:hover:not(:disabled) {
+  background: var(--button-secondary-hover-bg);
+  box-shadow: inset 0 1px 0 var(--pearl-reflection);
+  filter: none;
+}
+
+:root[data-appearance="pearl"] .creation-field-visibility {
+  border-color: var(--pearl-edge);
+  box-shadow: 0 4px 16px var(--pearl-shadow);
 }
 
 :root[data-appearance="pearl"] .work-item.selected::before {
