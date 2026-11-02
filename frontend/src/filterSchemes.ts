@@ -3,6 +3,7 @@ import { emptyWorkFilters, type WorkFilters } from "./workFilters";
 export interface FilterScheme {
   id: string;
   name: string;
+  // 保留旧版文档字段；读取和保存统一为 false，搜索仅作为临时条件。
   includeQuery: boolean;
   filters: WorkFilters;
 }
@@ -47,8 +48,8 @@ export function readSchemeDocument(value: unknown): FilterSchemeDocument {
     if (typeof scheme.id !== "string" || !scheme.id || ids.has(scheme.id) || typeof scheme.name !== "string" || !scheme.name.trim() || typeof scheme.includeQuery !== "boolean")
       throw new Error("筛选方案身份或名称无法读取，原数据已保留");
     ids.add(scheme.id);
-    return { id: scheme.id, name: scheme.name, includeQuery: scheme.includeQuery,
-      filters: savedFilters(parseFilters(scheme.filters), scheme.includeQuery) };
+    return { id: scheme.id, name: scheme.name, includeQuery: false,
+      filters: savedFilters(parseFilters(scheme.filters)) };
   });
   const defaultId = entry.schemaVersion === 1 ? entry.defaultId : entry.defaultSchemeId;
   if (defaultId != null && (typeof defaultId !== "string" || !ids.has(defaultId)))
@@ -56,12 +57,11 @@ export function readSchemeDocument(value: unknown): FilterSchemeDocument {
   return { schemaVersion: 1, schemes, defaultId: defaultId as string | null ?? null };
 }
 
-export function savedFilters(filters: WorkFilters, includeQuery: boolean): WorkFilters {
-  return structuredClone({ ...filters, query: includeQuery ? filters.query : "" });
+export function savedFilters(filters: WorkFilters): WorkFilters {
+  return structuredClone({ ...filters, query: "" });
 }
 export function schemeAdjusted(filters: WorkFilters, scheme: FilterScheme): boolean {
-  return fields.some((key) => JSON.stringify([...new Set(filters[key])].sort()) !== JSON.stringify([...new Set(scheme.filters[key])].sort()))
-    || (scheme.includeQuery && filters.query !== scheme.filters.query);
+  return fields.some((key) => JSON.stringify([...new Set(filters[key])].sort()) !== JSON.stringify([...new Set(scheme.filters[key])].sort()));
 }
 export function schemeSummary(filters: WorkFilters) {
   const labels = { space: "空间", type: "事项类型", project: "项目", flowKind: "流程", nodeName: "节点", stateName: "状态" };
@@ -69,6 +69,5 @@ export function schemeSummary(filters: WorkFilters) {
     const names = key === "space" ? filters.spaceLabel : key === "type" ? filters.typeLabel : key === "project" ? filters.projectLabel : {};
     return `${labels[key]}：${filters[key].map((value) => names[value] || value).join("、")}`;
   });
-  if (filters.query) parts.push(`搜索：${filters.query}`);
   return parts.join("；") || "不限条件";
 }

@@ -57,7 +57,7 @@ it("load failure shows a local recovery message instead of an empty list or an a
   expect(screen.getByRole("menuitem", { name: "保存当前条件为新方案" }).getAttribute("data-disabled")).toBeNull();
 });
 
-it("failed save keeps name and switch choices, keyboard Escape returns focus and wheel does not escape portal", async () => {
+it("failed save keeps name and default choice without a keyword decision, keyboard Escape returns focus and wheel does not escape portal", async () => {
   const user = await open();
   const menu = screen.getByRole("menu");
   const wheel = new WheelEvent("wheel", { deltaY: 100, bubbles: true, cancelable: true });
@@ -67,13 +67,14 @@ it("failed save keeps name and switch choices, keyboard Escape returns focus and
   await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "方案名称" })));
   expect(screen.getByRole("switch", { name: "设为默认" }).parentElement?.tagName).toBe("SPAN");
   expect(screen.getByRole("switch", { name: "设为默认" }).getAttribute("aria-describedby")).toBeTruthy();
+  expect(screen.getByText("默认方案只能有一个，开启后将替换原默认方案；下次进入我的工作时自动应用。").id).toBe(screen.getByRole("switch", { name: "设为默认" }).getAttribute("aria-describedby"));
+  expect(screen.getAllByRole("switch")).toHaveLength(1);
+  expect(screen.queryByText("同时保存搜索关键词")).toBeNull();
   await user.type(screen.getByRole("textbox", { name: "方案名称" }), "新方案");
-  await user.click(screen.getByRole("switch", { name: /同时保存搜索关键词/ }));
   await user.click(screen.getByRole("switch", { name: /设为默认/ }));
   await user.click(screen.getByRole("button", { name: /^保存$/ }));
   await waitFor(() => expect(screen.getByRole("dialog").textContent).toContain("本地方案暂时无法保存"));
   expect((screen.getByRole("textbox", { name: "方案名称" }) as HTMLInputElement).value).toBe("新方案");
-  expect((screen.getByRole("switch", { name: /同时保存搜索关键词/ }) as HTMLInputElement).checked).toBe(true);
   expect((screen.getByRole("switch", { name: /设为默认/ }) as HTMLInputElement).checked).toBe(true);
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog")).toBeNull();

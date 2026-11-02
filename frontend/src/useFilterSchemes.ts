@@ -19,10 +19,11 @@ export function useFilterSchemes({ enabled, context, active, filters, apply }: {
   const activeRef = useRef(active); activeRef.current = active;
   const pendingEntry = useRef(true);
   const lastAccount = useRef<string | null>(null);
+  const latestView = useRef({ filters, currentId }); latestView.current = { filters, currentId };
   const current = document.schemes.find((scheme) => scheme.id === currentId);
   const applyDocumentDefault = (next: FilterSchemeDocument) => {
     const scheme = next.schemes.find((scheme) => scheme.id === next.defaultId);
-    applyRef.current(scheme ? structuredClone(scheme.filters) : structuredClone(emptyWorkFilters));
+    applyRef.current(scheme ? savedFilters(scheme.filters) : structuredClone(emptyWorkFilters));
     setCurrentId(scheme?.id ?? null);
   };
   useEffect(() => {
@@ -79,19 +80,23 @@ export function useFilterSchemes({ enabled, context, active, filters, apply }: {
     retry: () => setRetry((value) => value + 1),
     apply(id: string | null) {
       const scheme = document.schemes.find((entry) => entry.id === id);
-      apply(scheme ? structuredClone(scheme.filters) : structuredClone(emptyWorkFilters)); setCurrentId(scheme?.id ?? null);
+      apply(scheme ? savedFilters(scheme.filters) : structuredClone(emptyWorkFilters)); setCurrentId(scheme?.id ?? null);
     },
     detach: () => setCurrentId(null),
-    save(name: string, includeQuery: boolean, makeDefault: boolean) {
-      const scheme = { id: crypto.randomUUID(), name: name.trim(), includeQuery, filters: savedFilters(filters, includeQuery) };
+    save(name: string, makeDefault: boolean) {
+      const scheme = { id: crypto.randomUUID(), name: name.trim(), includeQuery: false, filters: savedFilters(filters) };
       return persist({ ...document, schemes: [...document.schemes, scheme], defaultId: makeDefault ? scheme.id : document.defaultId }, () => {
-        setCurrentId(scheme.id); apply(structuredClone(scheme.filters));
+        setCurrentId(scheme.id); apply(savedFilters(scheme.filters));
       });
     },
     update() {
       if (!current) return;
-      const updated = { ...current, filters: savedFilters(filters, current.includeQuery) };
-      return persist({ ...document, schemes: document.schemes.map((scheme) => scheme.id === current.id ? updated : scheme) });
+      const updated = { ...current, includeQuery: false, filters: savedFilters(filters) };
+      return persist({ ...document, schemes: document.schemes.map((scheme) => scheme.id === current.id ? updated : scheme) }, () => {
+        // 写入等待期间的新选择应继续生效，不能被旧请求捕获的条件覆盖。
+        if (latestView.current.filters === filters && latestView.current.currentId === current.id)
+          apply(savedFilters(updated.filters));
+      });
     },
     rename(id: string, name: string) { return persist({ ...document, schemes: document.schemes.map((scheme) => scheme.id === id ? { ...scheme, name: name.trim() } : scheme) }); },
     remove(id: string) { return persist({ ...document, schemes: document.schemes.filter((scheme) => scheme.id !== id), defaultId: document.defaultId === id ? null : document.defaultId }, () => { if (currentId === id) setCurrentId(null); }); },
