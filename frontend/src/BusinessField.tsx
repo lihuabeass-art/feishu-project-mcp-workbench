@@ -2,10 +2,10 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { ImagePreview } from "./ImagePreview";
 import { ExternalLink } from "./ExternalLink";
 import { MetadataLink } from "./MetadataLink";
-import Markdown, { type Components } from "react-markdown";
+import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
-import rehypeSanitize from "rehype-sanitize";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { loadFieldImage } from "./api";
 import { asError, itemKey } from "./model";
 import { readable } from "./detailFields";
@@ -14,8 +14,11 @@ import type { CachedItem } from "./types";
 interface ImageContext {
   itemId: CachedItem["id"];
   fieldKey?: string;
+  loadImage?: (url: string) => Promise<string>;
 }
 const Images = createContext<ImageContext | null>(null);
+const localImage = (url: unknown): url is string => typeof url === "string" && /^fstodo-image:[a-f0-9]{64}$/.test(url);
+const draftImageSchema = { ...defaultSchema, protocols: { ...defaultSchema.protocols, src: [...(defaultSchema.protocols?.src || []), "fstodo-image"] } };
 
 function httpUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -38,7 +41,7 @@ function imageUrl(value: string) {
 
 function FieldImage({ url, alt = "" }: { url: string; alt?: string }) {
   const context = useContext(Images);
-  const downloadable = httpUrl(url) && new URL(url).protocol === "https:";
+  const downloadable = (httpUrl(url) && new URL(url).protocol === "https:") || (!!context?.loadImage && localImage(url));
   const holder = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [src, setSrc] = useState("");
@@ -67,7 +70,7 @@ function FieldImage({ url, alt = "" }: { url: string; alt?: string }) {
     let active = true;
     setSrc("");
     setError("");
-    void loadFieldImage(context.itemId, context.fieldKey, url, attempt > 0)
+    void (context.loadImage ? context.loadImage(url) : loadFieldImage(context.itemId, context.fieldKey, url, attempt > 0))
       .then((data) => {
         if (active) setSrc(data);
       })
@@ -130,7 +133,7 @@ function FieldImage({ url, alt = "" }: { url: string; alt?: string }) {
 const markdownComponents: Components = {
   p: ({ children }) => <div className="field-paragraph">{children}</div>,
   img: ({ src, alt }) =>
-    httpUrl(src) ? (
+    httpUrl(src) || localImage(src) ? (
       <FieldImage key={src} url={src} alt={alt} />
     ) : (
       <span className="muted">图片地址不可用</span>
@@ -144,11 +147,13 @@ const markdownComponents: Components = {
 };
 
 function FieldMarkdown({ text }: { text: string }) {
+  const context = useContext(Images);
   return (
     <div className="field-markdown">
       <Markdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeRaw, rehypeSanitize]}
+        rehypePlugins={[rehypeRaw, [rehypeSanitize, context?.loadImage ? draftImageSchema : defaultSchema]]}
+        urlTransform={(url, key, node) => context?.loadImage && key === "src" && node.tagName === "img" && localImage(url) ? url : defaultUrlTransform(url)}
         components={markdownComponents}
       >
         {text}
@@ -261,16 +266,17 @@ export function BusinessField({
   value,
   itemId,
   fieldKey,
+  loadImage,
 }: ImageContext & { value: unknown }) {
   // 复合身份/字段改变时整个媒体子树重建，避免旧图和预览串到其他事项。
   const identity = `${itemKey({ id: itemId } as CachedItem)}:${fieldKey}`;
-  const context = useRef<ImageContext>({ itemId, fieldKey });
+  const context = useRef<ImageContext>({ itemId, fieldKey, loadImage });
   if (
     itemKey({ id: context.current.itemId } as CachedItem) !==
       itemKey({ id: itemId } as CachedItem) ||
-    context.current.fieldKey !== fieldKey
+    context.current.fieldKey !== fieldKey || context.current.loadImage !== loadImage
   )
-    context.current = { itemId, fieldKey };
+    context.current = { itemId, fieldKey, loadImage };
   return (
     <Images.Provider value={context.current}>
       <div key={identity} className="business-field-content">

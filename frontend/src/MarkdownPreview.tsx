@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { asError } from "./model";
+import { loadFieldImage } from "./api";
 import {
   getCreationImage,
   getUploadedCreationImage,
@@ -29,9 +30,10 @@ export const creationImageScopeKey = (scope: CreationImageScope) =>
     scope.target.project_key,
     scope.target.type_key,
     scope.fieldKey,
+    scope.workflow?.imageFieldKey,
   ]);
 
-/** 图片预览只读本机缓存，不上传或更改正文中的 Markdown。 */
+/** 优先读取本机图片；流程中的云端图仅使用已确认的真实事项字段，不上传或修改正文。 */
 export function useCreationImagePreviews(
   parts: CreationMarkdownPart[],
   scope: CreationImageScope,
@@ -65,7 +67,7 @@ export function useCreationImagePreviews(
     const isCurrent = () =>
       active.current === identity && revision.current === current;
     const imageId = localCreationImageId(part.url);
-    if (!imageId && !part.fileToken) {
+    if ((!imageId && !part.fileToken && !scope.workflow) || (scope.workflow && !scope.workflow.imageFieldKey)) {
       setState((previous) => ({
         scope: identity,
         images: {
@@ -85,7 +87,9 @@ export function useCreationImagePreviews(
     try {
       const preview = imageId
         ? await getCreationImage(scope, imageId)
-        : await getUploadedCreationImage(scope, part.url, part.fileToken!);
+        : scope.workflow
+          ? await getUploadedCreationImage(scope, part.url, part.fileToken || "").catch(async () => ({ data_url: await loadFieldImage(scope.workflow!.itemId, scope.workflow!.imageFieldKey!, part.url) }))
+          : await getUploadedCreationImage(scope, part.url, part.fileToken!);
       if (!isCurrent()) return;
       if (
         !/^data:image\/(?:png|jpeg|webp);base64,[a-zA-Z0-9+/=]+$/.test(
@@ -154,7 +158,7 @@ export function MarkdownPreview({
                 {alt}
                 <small>
                   {image?.external
-                    ? "外部图片，创建后可在飞书查看"
+                    ? scope.workflow ? "请在飞书中查看图片" : "外部图片，创建后可在飞书查看"
                     : image?.error
                       ? "图片暂未显示，正文和草稿已保留"
                       : "正在读取本机图片…"}

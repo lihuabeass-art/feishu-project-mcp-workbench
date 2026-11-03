@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { CreationForm, CreationTarget } from "./creation";
+import type { CachedItem } from "./types";
 
 export const maxCreationImageBytes = 8 * 1024 * 1024;
 export const creationImageMimeTypes = new Set([
@@ -11,6 +12,7 @@ export type CreationImageScope = {
   target: CreationTarget;
   context: string;
   fieldKey: string;
+  workflow?: { itemId: CachedItem["id"]; actionId: string; fieldKey: string; imageFieldKey?: string };
 };
 export type SavedCreationImage = { image_id: string; markdown_url: string };
 export type CreationImagePreview = {
@@ -58,8 +60,9 @@ export const getUploadedCreationImage = (
 export const uploadCreationImage = (
   scope: CreationImageScope,
   imageId: string,
-) =>
-  invoke<UploadedCreationImage>("upload_creation_image", { ...scope, imageId });
+) => scope.workflow
+  ? invoke<UploadedCreationImage>("upload_workflow_image", { itemId: scope.workflow.itemId, actionId: scope.workflow.actionId, fieldKey: scope.workflow.fieldKey, context: scope.context, imageId })
+  : invoke<UploadedCreationImage>("upload_creation_image", { ...scope, imageId });
 
 export const isLocalCreationImageUrl = (url: string) =>
   /^fstodo-image:[a-f0-9]{64}$/.test(url);

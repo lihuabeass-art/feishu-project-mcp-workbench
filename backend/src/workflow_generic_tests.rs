@@ -105,7 +105,7 @@ fn node_and_state_share_basic_types_remote_options_and_valid_zero_values() {
 }
 
 #[test]
-fn rich_text_is_readonly_in_both_flows_and_only_unfinished_requirements_require_feishu() {
+fn rich_text_is_editable_in_both_flows_and_preserves_remote_content_and_draft_identity() {
     let configs = [json!({"field_key":"description","field_name":"说明","field_type":"multi-text"})];
     let node = json!({"form_items":[{"field_key":"description","form_item_type":"field"}]});
     let transition = json!({"confirm_form":[{"key":"description","class":"field"}]});
@@ -119,18 +119,23 @@ fn rich_text_is_readonly_in_both_flows_and_only_unfinished_requirements_require_
                 NodeForm::build(&node, &required, &[], &configs, &work).unwrap(),
                 NodeForm::build_state(&transition, &required, &configs, &work).unwrap(),
             ] {
-                assert_eq!(form.requires_feishu(), finished == Some(false));
-                assert_eq!(form.requires_manual_fill(), finished == Some(false));
-                assert_eq!(!form.blocked.is_empty(), finished == Some(false));
+                assert!(!form.requires_feishu());
+                assert!(!form.requires_manual_fill());
+                assert!(form.blocked.is_empty());
                 let field = &form.fields()[0];
-                assert_eq!(field.settings.read_only, Some(true));
-                assert!(!field.required);
+                assert_ne!(field.settings.read_only, Some(true));
+                assert_eq!(field.required, finished == Some(false));
+                assert_eq!(field.settings.editor.as_ref().unwrap().kind, "textarea");
                 assert_eq!(field.settings.initial_value.as_deref(), Some(remote));
                 assert_eq!(field.settings.rich_text.as_ref().unwrap().image_field_key.as_deref(), Some("description"));
-                assert_ne!(field.key, serde_json::to_string(&Route::WorkItem("description".into())).unwrap(),
-                    "只读身份不能自动恢复旧可编辑草稿");
-                assert!(form.plan(&BTreeMap::from([(field.key.clone(), "替换图片内容".into())])).is_err());
-                assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
+                assert_eq!(field.key, serde_json::to_string(&Route::WorkItem("description".into())).unwrap());
+                let updated = format!("{remote}\n新增内容");
+                let values = BTreeMap::from([(field.key.clone(), updated.clone())]);
+                let plan = form.plan(&values).unwrap();
+                assert_eq!(plan.work_fields[0]["field_value"], updated);
+                assert!(form.verify(&node, Some(&json!({"work_item_fields":[{"key":"description","value":updated}]})), &values).is_ok());
+                if remote.is_empty() && finished == Some(false) { assert!(form.plan(&BTreeMap::new()).is_err()); }
+                else { assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty()); }
             }
         }
     }
@@ -169,7 +174,7 @@ fn rich_text_preview_uses_its_work_item_root_and_never_guesses_node_image_owners
         };
         assert!(!form.requires_feishu());
         let field = find(&form, "a", "note");
-        assert_eq!(field.settings.read_only, Some(true));
+        assert_ne!(field.settings.read_only, Some(true));
         assert_eq!(field.settings.rich_text.as_ref().unwrap().image_field_key.as_deref(), work_item.then_some("review"));
         assert!(form.plan(&BTreeMap::new()).unwrap().calls("p", "1", "n").is_empty());
     }
@@ -233,12 +238,11 @@ fn system_acceptance_fields_require_feishu_page_even_with_generic_compound_metad
 #[test]
 fn page_only_fields_block_only_unfinished_required_values_with_official_node_message() {
     for (key, kind, label) in [
-        ("actual_work_time", "number", "实际工时"),
         ("vote", "vote-boolean", "是否同意"),
         ("vote", "vote-option", "评审投票"),
         ("vote", "vote-option-multi", "多选投票"),
     ] {
-        let node = json!({"form_items":[{"field_key":key,"field_name":label,"form_item_type":"node_field","value":0}],"schedule":{"actual_work_time":0}});
+        let node = json!({"form_items":[{"field_key":key,"field_name":label,"form_item_type":"node_field","value":0}]});
         let configs = vec![json!({"field_key":key,"field_name":label,"field_type":kind})];
         for required in [json!({}), json!({"node_fields":[{"field_key":key,"finished":true}]})] {
             let form = NodeForm::build(&node, &required, &configs, &[], &json!({})).unwrap();
@@ -254,9 +258,8 @@ fn page_only_fields_block_only_unfinished_required_values_with_official_node_mes
         let form = NodeForm::build(&node, &required, &configs, &[], &json!({})).unwrap();
         assert!(form.requires_manual_fill());
         assert!(form.requires_feishu());
-        let expected_kind = if key == "actual_work_time" { key } else { kind };
         assert_eq!(form.node_block_reason("验收").unwrap(), format!(
-            "节点流转失败。当前节点【验收】设置了必须填写【{label}】（类型：{expected_kind}）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。"
+            "节点流转失败。当前节点【验收】设置了必须填写【{label}】（类型：{kind}）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。"
         ));
     }
 }
@@ -366,7 +369,7 @@ fn optional_readonly_and_compound_fields_preserve_local_workflow_actions() {
     assert!(!form.requires_feishu(), "空间配置不等于当前动作字段");
     let with_work_time = json!({"form_items":node["form_items"],"schedule":{"actual_work_time":0}});
     let form = NodeForm::build(&with_work_time, &json!({}), &configs, &[], &json!({})).unwrap();
-    assert!(!form.requires_feishu(), "只读零值沿用云端，不要求跳转飞书");
+    assert!(!form.requires_feishu(), "工时零值可沿用云端，不要求跳转飞书");
     assert!(!form.requires_manual_fill());
     let state = NodeForm::build_state(&json!({"confirm_form":[{"class":"field","key":"note"}]}),
         &json!({}), &configs, &json!({})).unwrap();

@@ -53,6 +53,7 @@ export function changedFields(
     action.fields
       .filter((field) => {
         if (field.read_only) return false;
+        if (field.editor?.kind === "textarea") return !!fields[field.key]?.trim() && fields[field.key] !== base[field.key];
         const value = fields[field.key]?.trim() ?? "";
         // 空的可选项沿用“不修改”的约定，不能借此清空云端字段。
         return value !== "" && value !== (base[field.key]?.trim() ?? "");

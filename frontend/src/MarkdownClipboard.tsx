@@ -51,6 +51,8 @@ export type MarkdownClipboardProps = {
   fieldKey: string;
   disabled?: boolean;
   onBusyChange?: (busy: boolean) => void;
+  workflow?: CreationImageScope["workflow"];
+  allowImages?: boolean;
 };
 type Snapshot = EditorSelection & { value: string };
 
@@ -65,13 +67,15 @@ export function MarkdownClipboard({
   fieldKey,
   disabled,
   onBusyChange,
+  workflow,
+  allowImages = true,
 }: MarkdownClipboardProps) {
   const editor = useRef<HTMLDivElement>(null);
   const change = useRef(onChange);
   change.current = onChange;
   const busyCallback = useRef(onBusyChange);
   busyCallback.current = onBusyChange;
-  const scope: CreationImageScope = { target, context, fieldKey };
+  const scope: CreationImageScope = { target, context, fieldKey, workflow };
   const scopeKey = creationImageScopeKey(scope);
   const activeKey = useRef(scopeKey);
   activeKey.current = scopeKey;
@@ -238,7 +242,7 @@ export function MarkdownClipboard({
       } else
         placeholder(
           image?.external
-            ? "外部图片，创建后可在飞书查看"
+            ? workflow ? "请在飞书中查看图片" : "外部图片，创建后可在飞书查看"
             : image?.error
               ? "图片暂未显示，正文和草稿已保留"
               : "正在读取本机图片…",
@@ -427,6 +431,7 @@ export function MarkdownClipboard({
       replaceText(event.clipboardData.getData?.("text/plain") || "");
       return;
     }
+    if (!allowImages) { setError("此节点字段暂无法确认图片归属，请在飞书中修改图片。"); return; }
     if (files.some((file) => !creationImageMimeTypes.has(file.type))) {
       setError("截图仅支持 PNG、JPEG 和 WebP 图片。");
       return;
@@ -487,8 +492,8 @@ export function MarkdownClipboard({
         aria-multiline="true"
         aria-disabled={disabled || undefined}
         aria-describedby={`${id}-paste-hint`}
-        aria-placeholder="待填，支持 Markdown，可直接粘贴截图"
-        data-placeholder="待填，支持 Markdown，可直接粘贴截图"
+        aria-placeholder={allowImages ? "待填，支持 Markdown，可直接粘贴截图" : "待填，支持 Markdown"}
+        data-placeholder={allowImages ? "待填，支持 Markdown，可直接粘贴截图" : "待填，支持 Markdown"}
         contentEditable={!disabled}
         suppressContentEditableWarning
         tabIndex={disabled ? -1 : 0}
@@ -586,7 +591,7 @@ export function MarkdownClipboard({
         }}
       />
       <p id={`${id}-paste-hint`} className="hint markdown-clipboard-hint">
-        支持 Markdown 和直接粘贴截图，图片随草稿保存在本机。
+        {allowImages ? "支持 Markdown 和直接粘贴截图，图片随草稿保存在本机。" : "支持 Markdown；此字段的图片请在飞书中查看或修改。"}
       </p>
       {status.scope === scopeKey && status.saving > 0 && (
         <p className="hint markdown-clipboard-status" role="status">

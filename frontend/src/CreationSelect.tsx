@@ -14,7 +14,7 @@ export type CreationSelectProps = {
   value: unknown;
   onChange: (value: string | string[]) => void;
   savedDefault?: LocalCreationDefaults[string];
-  onToggleDefault: () => void;
+  onToggleDefault?: () => void;
   disabled?: boolean;
 };
 
@@ -124,7 +124,7 @@ export function CreationSelect({
           待填
         </span>
       )}
-      <button
+      {onToggleDefault && <button
         type="button"
         className={`creation-select-star${currentDefault ? " is-default" : ""}`}
         aria-label={
@@ -152,7 +152,7 @@ export function CreationSelect({
           fill={currentDefault ? "currentColor" : "none"}
           aria-hidden="true"
         />
-      </button>
+      </button>}
     </span>
   );
   const shared = {

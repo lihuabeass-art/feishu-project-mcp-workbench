@@ -35,6 +35,8 @@ use crate::sync::now_ms;
 mod editing;
 #[path = "workflow_links.rs"]
 mod links;
+#[path = "workflow_editor.rs"]
+pub mod editor;
 
 /// 界面上一个可填字段的控件类型。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -65,6 +67,9 @@ pub struct FieldSettings {
     pub read_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rich_text: Option<RichTextSettings>,
+    /// 复用新建表单的选择与图文控件；字段身份仍由流程路由管理。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor: Option<crate::creation::Field>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -327,6 +332,19 @@ pub fn fresh_actions(session: &Session, id: &WorkItemId) -> Result<WorkflowOptio
     discover_with_freshness(session, id, true).map(|d| d.options())
 }
 
+pub fn lookup_field(session: &Session, id: &WorkItemId, action_id: &str, field_key: &str, query: &str) -> Result<crate::creation::LookupResult, BackendError> {
+    let options = actions(session, id)?;
+    let field = options.actions.iter().find(|a| a.id == action_id && a.disabled_reason.is_none())
+        .and_then(|a| a.fields.iter().find(|f| f.key == field_key && f.settings.read_only != Some(true)))
+        .and_then(|f| f.settings.editor.as_ref())
+        .ok_or_else(|| BackendError::validation("当前动作或字段已变化，请重新读取云端"))?;
+    let project = id.project_key.as_deref().ok_or_else(|| BackendError::validation("缺少事项空间"))?;
+    let context = crate::creation::account(session)?;
+    let mut result = crate::creation::lookup_field(session, project, &context, field, query)?;
+    if field.kind == "relation" { result.options.retain(|o| o.value != id.work_item_id); }
+    Ok(result)
+}
+
 /// 「这条流程通路不存在」的判据：服务端把它当业务错误拒绝了（`Tool`）。
 ///
 /// 实测：对 story 调 `get_transitable_states` 返回
@@ -475,11 +493,16 @@ async fn node_entries(session: &Session, id: &WorkItemId, detail: &crate::detail
     let read_required = || stream::iter(active_keys.iter().map(|key| async {
         Ok::<_, BackendError>((key.clone(), required_value_async(session, &project_key, &type_key, &work_item_id, key).await?))
     })).buffer_unordered(crate::mcp::scheduler::MAX_PENDING_READS).try_collect::<BTreeMap<_, _>>();
-    let (required_nodes, configs) = if active_keys.is_empty() {
+    let (required_nodes, mut configs) = if active_keys.is_empty() {
         (BTreeMap::new(), (Vec::new(), Vec::new()))
     } else {
         tokio::try_join!(read_required(), editing::field_configs(session, &project_key, &type_key, fresh))?
     };
+    let role_forms: Vec<Value> = nodes.iter().filter(|n| node_status_of(n) == "doing")
+        .flat_map(|n| n["form_items"].as_array().into_iter().flatten()).chain(
+            required_nodes.values().flat_map(|r| r["form_items"].as_array().into_iter().flatten()))
+        .cloned().collect();
+    editing::append_role_configs(session, &project_key, &type_key, fresh, &role_forms, &mut configs.1).await?;
     for node in nodes {
         let node_key = node_key_of(&node);
         if node_key.is_empty() {
@@ -664,7 +687,7 @@ async fn state_entries(
                 .as_array()
                 .is_some_and(|rows| rows.iter().any(|r| r["finished"] != true))
         }) || transition["confirm_form"].as_array().is_some_and(|rows|
-            rows.iter().any(|row| row["class"] == "field"));
+            rows.iter().any(|row| matches!(row["class"].as_str(), Some("field" | "role"))));
         let form = if !needs_form {
             editing::NodeForm::default()
         } else {
@@ -676,7 +699,11 @@ async fn state_entries(
                     })?,
                 ),
             };
-            editing::NodeForm::build_state(transition, required, configs, &detail.data)?
+            let mut configs = configs.clone();
+            let role_forms: Vec<Value> = transition["confirm_form"].as_array().into_iter().flatten()
+                .chain(required["form_items"].as_array().into_iter().flatten()).cloned().collect();
+            editing::append_role_configs(session, &project_key, &type_key, fresh, &role_forms, &mut configs).await?;
+            editing::NodeForm::build_state(transition, required, &configs, &detail.data)?
         };
         let (transition_id, transition_id_text) = normalize_transition_id(&id_value);
         let mut args = write_args(&project_key, &work_item_id);
@@ -971,10 +998,11 @@ fn check_updated_fields(
     let mut checked_node = None;
     let labels = match &entry.expect {
         Expectation::StateIs { .. } => {
-            entry.form.verify(
+            entry.form.verify_with_images(
                 &Value::Null,
                 work.as_ref().map(|d| &d.data),
                 &values,
+                |field, image| editor::image_matches(session, &request.item_id, field, image),
             )?;
             BTreeMap::new()
         }
@@ -991,7 +1019,8 @@ fn check_updated_fields(
             }
             entry
                 .form
-                .verify(node, work.as_ref().map(|d| &d.data), &values)?;
+                .verify_with_images(node, work.as_ref().map(|d| &d.data), &values,
+                    |field, image| editor::image_matches(session, &request.item_id, field, image))?;
             checked_node = Some(node.clone());
             node_field_labels(node)
         }
@@ -1113,6 +1142,12 @@ pub fn execute(
         }
         if field.key == "rollback_reason" {
             args.insert(field.key.clone(), json!(value));
+        }
+        if let Some(editor) = field.settings.editor.as_ref().filter(|e| e.kind == "relation") {
+            let selected = if editor.multiple { serde_json::from_str(value).unwrap_or(Value::Null) } else { json!(value) };
+            if crate::creation::id_values(&selected).contains(&request.item_id.work_item_id) {
+                return Err(BackendError::validation("关联事项不能选择当前事项本身"));
+            }
         }
     }
     let plan = if entry.ledger_kind == "node_schedule" {
@@ -1449,6 +1484,10 @@ mod transition_tests;
 #[cfg(test)]
 #[path = "workflow_compound_tests.rs"]
 mod compound_tests;
+
+#[cfg(test)]
+#[path = "workflow_supported_fields_tests.rs"]
+mod supported_fields_tests;
 
 #[cfg(test)]
 mod tests {

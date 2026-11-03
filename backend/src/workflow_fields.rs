@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "workflow_schema.rs"]
 mod schema;
+#[path = "workflow_extended.rs"]
+mod extended;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 struct CompoundStep {
@@ -19,6 +21,7 @@ struct CompoundStep {
 enum Route {
     Node(String),
     WorkItem(String),
+    Role(String),
     Schedule {
         property: String,
         owner: Option<String>,
@@ -53,6 +56,9 @@ fn text(v: &Value) -> String {
 }
 
 fn work_value<'a>(work: &'a Value, key: &str, fallback: &'a Value) -> &'a Value {
+    if key == "name" {
+        return work["work_item_attribute"].get("work_item_name").unwrap_or(fallback);
+    }
     work["work_item_fields"].as_array()
         .and_then(|rows| rows.iter().find(|row| row.get("key").or_else(|| row.get("field_key")).and_then(Value::as_str) == Some(key)))
         .and_then(|row| row.get("value").or_else(|| row.get("field_value")))
@@ -66,7 +72,6 @@ fn page_only_node_field(key: &str) -> Option<&'static str> {
         "owners_finished_info" => Some("负责人完成结论与意见"),
         "owners_node_finished_conclusion" => Some("负责人完成结论"),
         "owners_node_finished_opinion" => Some("负责人完成意见"),
-        "actual_work_time" => Some("实际工时"),
         _ => None,
     }
 }
@@ -81,7 +86,7 @@ fn config_at_path<'a>(configs: &'a [Value], path: &[Value]) -> Option<&'a Value>
 
 fn page_only_type<'a>(key: &str, config: &'a Value) -> Option<&'a str> {
     if page_only_node_field(key).is_some() {
-        return Some(if key == "actual_work_time" { "actual_work_time" } else { "owners_finished_info" });
+        return Some("owners_finished_info");
     }
     config["field_type"].as_str().filter(|kind| matches!(*kind,
         "vote-boolean" | "vote-option" | "vote-option-multi"))
@@ -129,6 +134,20 @@ pub(super) async fn work_field_configs(
     fresh: bool,
 ) -> Result<Vec<Value>, BackendError> {
     session.field_metadata("list_workitem_field_config", project, type_key, fresh).await
+}
+
+pub(super) async fn append_role_configs(session: &Session, project: &str, type_key: &str, fresh: bool, forms: &[Value], configs: &mut Vec<Value>) -> Result<(), BackendError> {
+    let roles: BTreeSet<_> = forms.iter().filter(|row| row["class"] == "role" || row["form_item_type"] == "role")
+        .filter_map(|row| row.get("field_key").or_else(|| row.get("key")).and_then(Value::as_str)).collect();
+    if roles.is_empty() { return Ok(()); }
+    for role in session.field_metadata("list_workitem_role_config", project, type_key, fresh).await? {
+        let Some(id) = role["role_id"].as_str().filter(|id| !id.is_empty()) else { continue; };
+        let full_key = format!("role_{project}_{type_key}_{id}");
+        for key in roles.iter().filter(|key| **key == id || **key == full_key) {
+            configs.push(json!({"field_key":key,"field_name":role["role_name"],"field_type":"multi-user","_role_key":id}));
+        }
+    }
+    Ok(())
 }
 
 impl NodeForm {
@@ -226,7 +245,7 @@ impl NodeForm {
         for row in required_fields.values() {
             let key = text(row["_path"].as_array().unwrap().last().unwrap());
             let work_field = row["_scope"] == "work_item";
-            if !work_field || row["class"].as_str().is_some_and(|class| class != "field") {
+            if !work_field || row["class"].as_str().is_some_and(|class| class != "field" && class != "role") {
                 form.block_manual_fill(format!("{key}（无法识别可编辑字段）"));
                 continue;
             }
@@ -242,7 +261,7 @@ impl NodeForm {
         // 已完成的共享字段仍从确认表单读取，供草稿合并，不能填完后就失去云端值。
         for row in transition["confirm_form"].as_array().into_iter().flatten() {
             let key = text(&row["key"]);
-            if row["class"] == "field" && !key.is_empty() {
+            if matches!(row["class"].as_str(), Some("field" | "role")) && !key.is_empty() {
                 missing.entry(key).or_insert((row, true, false));
             }
         }
@@ -260,7 +279,7 @@ impl NodeForm {
                 .get("class")
                 .and_then(Value::as_str)
                 .or_else(|| confirm.and_then(|r| r["class"].as_str()));
-            if !work_field || class.is_some_and(|c| c != "field") {
+            if !work_field || class.is_some_and(|c| c != "field" && c != "role") {
                 if is_required { form.block_manual_fill(format!("{label}（无法识别可编辑字段）")); }
                 continue;
             }
@@ -270,6 +289,14 @@ impl NodeForm {
                 form.add_page_basic(&json!({"field_key":key}), label, Route::WorkItem(key), current);
                 continue;
             };
+            if let Some(role) = config["_role_key"].as_str() {
+                form.add_basic(config, label, is_required, Route::Role(role.into()), &extended::role_value(work, role));
+                continue;
+            }
+            if class == Some("role") {
+                if is_required { form.block_manual_fill(format!("{label}（无法确认角色配置）")); }
+                continue;
+            }
             if config["field_type"] == "multi_user_compound_field" {
                 form.add_compound(config, current, true, &[], &[], &[], &required_fields, &BTreeMap::new(), None, work)?;
             } else {
@@ -280,6 +307,26 @@ impl NodeForm {
     }
 
     fn add_basic(&mut self, config: &Value, label: String, required: bool, route: Route, current: &Value) {
+        if let Some(editor) = extended::editor(config, &label, required, current) {
+            let initial = extended::initial(&editor, current);
+            let kind = if editor.kind == "textarea" { FieldKind::Textarea } else { FieldKind::Text };
+            self.add(label, kind, required, route, Some(initial), None, None, None);
+            let input = self.inputs.last_mut().unwrap();
+            input.remote_type = text(&config["field_type"]);
+            if editor.kind == "textarea" {
+                input.field.settings.rich_text = Some(super::RichTextSettings {
+                    image_field_key: match &input.route {
+                        Route::WorkItem(key) => Some(key.clone()),
+                        Route::Compound { work_item:true, path, .. } => path.first().map(|s| s.field_key.clone()),
+                        _ => None,
+                    },
+                    structured_value: None,
+                });
+            }
+            input.field.options = editor.options.iter().map(|o| FieldOption { value:o.value.clone(), label:o.label.clone() }).collect();
+            input.field.settings.editor = Some(editor);
+            return;
+        }
         let (kind, options) = match schema::definition(config) {
             Ok(definition) => definition,
             Err(reason) => {
@@ -471,7 +518,7 @@ impl NodeForm {
             .iter()
             .filter_map(|f| {
                 let key = text(&f["field_key"]);
-                let work = f["form_item_type"] == "field" ||
+                let work = matches!(f["form_item_type"].as_str(), Some("field" | "role")) ||
                     (!node_configs.iter().any(|c| c["field_key"] == key) && work_configs.iter().any(|c| c["field_key"] == key));
                 (!key.is_empty()).then_some(((work, key), f.clone()))
             })
@@ -493,7 +540,7 @@ impl NodeForm {
                 editable_required.remove(required_id);
                 continue;
             }
-            if req["class"].as_str().is_some_and(|class| class != "field") {
+            if req["class"].as_str().is_some_and(|class| class != "field" && !(class == "role" && config.is_some_and(|c| c["_role_key"].is_string()))) {
                 form.block_manual_fill(format!("{key}（无法识别可编辑字段）"));
                 continue;
             }
@@ -544,6 +591,10 @@ impl NodeForm {
                 .if_empty(&text(&config["field_name"]))
                 .if_empty(&key);
             let kind = config["field_type"].as_str().unwrap_or("");
+            if let Some(role) = config["_role_key"].as_str() {
+                form.add_basic(config, label, needed.is_some(), Route::Role(role.into()), &extended::role_value(work_item, role));
+                continue;
+            }
             if kind == "multi_user_compound_field" {
                 let current = if work {
                     work_value(work_item, &key, &item["value"])
@@ -744,7 +795,7 @@ impl NodeForm {
                 settings: FieldSettings {
                     initial_value,
                     scope: Some(match &route {
-                        Route::WorkItem(_) => "work_item",
+                        Route::WorkItem(_) | Route::Role(_) => "work_item",
                         Route::Node(_) | Route::Schedule { owner: None, .. } => "node",
                         Route::Schedule { owner: Some(_), .. } | Route::Compound { .. } => "assignee",
                     }.into()),
@@ -781,17 +832,22 @@ impl NodeForm {
             let raw = values.get(&field.key)
                 .map(String::as_str)
                 .or(field.settings.initial_value.as_deref())
-                .unwrap_or("").trim();
-            if raw.is_empty() {
+                .unwrap_or("");
+            let rich_text = field.settings.editor.as_ref().is_some_and(|e| e.kind == "textarea");
+            let raw = if rich_text { raw } else { raw.trim() };
+            let editor_value = field.settings.editor.as_ref().map(|editor| extended::value(editor, raw)).transpose()?;
+            if raw.is_empty() || editor_value.as_ref().is_some_and(extended::empty) {
                 if field.required {
                     return Err(BackendError::validation(format!("请填写{}", field.label)));
                 }
-                continue;
+                if !values.contains_key(&field.key) || !field.settings.editor.as_ref().is_some_and(|e| e.multiple) { continue; }
             }
             if !values.contains_key(&field.key) {
                 continue;
             }
-            let value = match field.kind {
+            let value = if let (Some(editor), Some(value)) = (&field.settings.editor, &editor_value) {
+                crate::creation::encode(editor, value)?
+            } else { match field.kind {
                 FieldKind::Select => {
                     if !field.options.iter().any(|o| o.value == raw) {
                         return Err(BackendError::validation(format!(
@@ -821,8 +877,12 @@ impl NodeForm {
                 }
                 FieldKind::Date => json!(date_ms(raw)?),
                 _ => json!(raw),
-            };
-            let initial = field.settings.initial_value.as_deref().unwrap_or("").trim();
+            }};
+            let initial = field.settings.initial_value.as_deref().unwrap_or("");
+            let initial = if rich_text { initial } else { initial.trim() };
+            if let Some(editor) = field.settings.editor.as_ref().filter(|e| e.kind != "textarea") {
+                if crate::creation::id_values(&editor_value.clone().unwrap_or(Value::Null)) == crate::creation::id_values(&extended::value(editor, initial)?) { continue; }
+            }
             if raw == initial || (field.kind == FieldKind::Number &&
                 initial.parse::<f64>().is_ok_and(|old| value.as_f64() == Some(old))) {
                 continue;
@@ -832,6 +892,16 @@ impl NodeForm {
                 Route::WorkItem(key) => plan
                     .work_fields
                     .push(json!({"field_key":key,"field_value":wire(&value)})),
+                Route::Role(key) => {
+                    let before = crate::creation::id_values(&serde_json::from_str::<Value>(initial).unwrap_or(Value::Null));
+                    let after = crate::creation::id_values(&value);
+                    for (op, members) in [
+                        ("remove", before.iter().filter(|id| !after.contains(id)).cloned().collect::<Vec<_>>()),
+                        ("add", after.iter().filter(|id| !before.contains(id)).cloned().collect::<Vec<_>>()),
+                    ] {
+                        if !members.is_empty() { plan.role_operations.push(json!({"op":op,"role_key":key,"user_keys":members})); }
+                    }
+                }
                 Route::Node(key) => {
                     let value = if key == "node_progress" {
                         json!(value.as_f64().unwrap() / 100.0)
@@ -896,12 +966,17 @@ impl NodeForm {
         Ok(plan)
     }
 
+    #[cfg(test)]
     pub fn verify(
         &self,
         node: &Value,
         work: Option<&Value>,
         values: &BTreeMap<String, String>,
     ) -> Result<(), BackendError> {
+        self.verify_with_images(node, work, values, |_, _| false)
+    }
+
+    pub fn verify_with_images(&self, node: &Value, work: Option<&Value>, values: &BTreeMap<String, String>, mut image_matches: impl FnMut(&WorkflowField, crate::creation::richtext::ImageChange<'_>) -> bool) -> Result<(), BackendError> {
         for input in &self.inputs {
             let Some(raw) = values
                 .get(&input.field.key)
@@ -910,10 +985,11 @@ impl NodeForm {
                 continue;
             };
             let actual = match &input.route {
-                Route::WorkItem(key) => work
-                    .and_then(|w| w["work_item_fields"].as_array())
-                    .and_then(|fs| fs.iter().find(|f| f["key"] == *key))
-                    .map(|f| f["value"].clone()),
+                Route::WorkItem(key) => work.and_then(|w| {
+                    if key == "name" { w["work_item_attribute"].get("work_item_name").cloned() }
+                    else { w["work_item_fields"].as_array().and_then(|fs| fs.iter().find(|f| f["key"] == *key)).and_then(|f| f.get("value")).cloned() }
+                }),
+                Route::Role(key) => work.filter(|w| w["work_item_attribute"]["role_members"].is_array()).map(|w| extended::role_value(w, key)),
                 Route::Node(key) => node["form_items"]
                     .as_array()
                     .and_then(|fs| fs.iter().find(|f| f["field_key"] == *key))
@@ -934,13 +1010,16 @@ impl NodeForm {
                     Some(schema::field_value(&value, field))
                 }
             };
+            let present = actual.is_some();
             let actual = actual.unwrap_or(Value::Null);
             let observed = if input.field.kind == FieldKind::Select {
                 select_value(&actual)
             } else {
                 text(&actual)
             };
-            let matches = match input.field.kind {
+            let matches = if let Some(editor) = &input.field.settings.editor {
+                present && extended::matches(editor, raw, &actual, |image| image_matches(&input.field, image))?
+            } else { match input.field.kind {
                 FieldKind::Number => {
                     let expected = raw.parse::<f64>().unwrap();
                     let expected = if matches!(&input.route,Route::Node(k) if k=="node_progress") {
@@ -963,7 +1042,7 @@ impl NodeForm {
                     })
                     .is_some_and(|d| d.format("%Y-%m-%d").to_string() == raw.trim()),
                 _ => observed.trim() == raw.trim(),
-            };
+            }};
             if !matches {
                 let detail = if observed.trim().is_empty() {
                     format!("未读取到{}的有效云端值，尚不能确认字段已保存", input.field.label)
@@ -1089,6 +1168,7 @@ fn date_ms(raw: &str) -> Result<i64, BackendError> {
 pub(super) struct UpdatePlan {
     pub fields: BTreeMap<String, String>,
     pub work_fields: Vec<Value>,
+    role_operations: Vec<Value>,
     pub node_fields: Vec<Value>,
     pub node_schedule: Option<Value>,
     pub schedules: Vec<Value>,
@@ -1096,7 +1176,7 @@ pub(super) struct UpdatePlan {
 }
 impl UpdatePlan {
     pub fn has_work_fields(&self) -> bool {
-        !self.work_fields.is_empty() || self.compound_fields.iter().any(|(work, _)| *work)
+        !self.work_fields.is_empty() || !self.role_operations.is_empty() || self.compound_fields.iter().any(|(work, _)| *work)
     }
     pub fn calls(
         &self,
@@ -1105,16 +1185,19 @@ impl UpdatePlan {
         node: &str,
     ) -> Vec<(&'static str, Map<String, Value>)> {
         let mut calls = Vec::new();
-        if !self.work_fields.is_empty() {
+        if !self.work_fields.is_empty() || !self.role_operations.is_empty() {
+            let mut args = json!({"project_key":project,"work_item_id":id}).as_object().unwrap().clone();
+            if !self.work_fields.is_empty() { args.insert("fields".into(), json!(self.work_fields)); }
+            if !self.role_operations.is_empty() { args.insert("role_operate".into(), json!(self.role_operations)); }
             calls.push((
                 crate::mcp::feishu::TOOL_UPDATE_FIELD,
-                json!({"project_key":project,"work_item_id":id,"fields":self.work_fields})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
+                args,
             ));
         }
-        if !self.node_fields.is_empty()
+        let (separate, combined): (Vec<_>, Vec<_>) = self.node_fields.iter().partition(|field| {
+            matches!(field["field_key"].as_str(), Some("node_finished_conclusion" | "node_finished_opinion"))
+        });
+        if !combined.is_empty()
             || self.node_schedule.is_some()
             || !self.schedules.is_empty()
         {
@@ -1122,8 +1205,8 @@ impl UpdatePlan {
                 .as_object()
                 .unwrap()
                 .clone();
-            if !self.node_fields.is_empty() {
-                args.insert("fields".into(), json!(self.node_fields));
+            if !combined.is_empty() {
+                args.insert("fields".into(), json!(combined));
             }
             if let Some(s) = &self.node_schedule {
                 args.insert("node_schedule".into(), s.clone());
@@ -1132,6 +1215,11 @@ impl UpdatePlan {
                 args.insert("schedules".into(), json!(self.schedules));
             }
             calls.push((crate::mcp::feishu::TOOL_UPDATE_NODE, args));
+        }
+        // 节点整体结论与意见一次只写一项，避免服务仅保存第一个字段却返回 success。
+        for field in separate {
+            calls.push((crate::mcp::feishu::TOOL_UPDATE_NODE,
+                json!({"project_key":project,"work_item_id":id,"node_id":node,"fields":[field]}).as_object().unwrap().clone()));
         }
         // 同一根字段的不同负责人分别发送增量操作，避免字段 key 重复时被远端覆盖。
         for (work, field) in &self.compound_fields {
@@ -1150,6 +1238,9 @@ impl UpdatePlan {
 #[cfg(test)]
 #[path = "workflow_generic_tests.rs"]
 mod generic_tests;
+#[cfg(test)]
+#[path = "workflow_extended_tests.rs"]
+mod extended_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1354,8 +1445,8 @@ mod tests {
         node["form_items"][0]["field_name"] = json!("总估分");
         node["form_items"][3]["field_name"] = json!("完成比例");
         let form = NodeForm::build(&node, &required, &nc, &wc, &json!({})).unwrap();
-        assert!(form.requires_manual_fill());
-        assert!(form.requires_feishu());
+        assert!(!form.requires_manual_fill());
+        assert!(!form.requires_feishu());
         for independent in [form.progress_only().unwrap(), form.schedule_only().unwrap()] {
             assert!(independent.blocked.is_empty());
             assert!(!independent.requires_manual_fill(), "独立同步不继承流程补填要求");
@@ -1398,11 +1489,11 @@ mod tests {
     fn five_fields_route_to_correct_tools_and_each_owner_is_explicit() {
         let (node, required, nc, wc) = example();
         let form = NodeForm::build(&node, &required, &nc, &wc, &json!({})).unwrap();
-        assert_eq!(form.blocked, vec!["实际工时"]);
+        assert!(form.blocked.is_empty());
         assert!(form.fields().iter().any(|f| f.label == "实际工时 · 乙"));
         for input in &form.inputs {
             let scope = match &input.route {
-                Route::WorkItem(_) => "work_item",
+                Route::WorkItem(_) | Route::Role(_) => "work_item",
                 Route::Node(_) | Route::Schedule { owner: None, .. } => "node",
                 Route::Schedule { owner: Some(_), .. } | Route::Compound { .. } => "assignee",
             };
@@ -1416,13 +1507,16 @@ mod tests {
         assert_eq!(calls[1].0, "update_node");
         assert_eq!(calls[1].1["fields"][0]["field_value"], "0.75");
         let schedules = calls[1].1["schedules"].as_array().unwrap();
-        assert_eq!(schedules.len(), 1);
+        assert_eq!(schedules.len(), 2);
         assert_eq!(schedules[0]["owners"], json!(["a"]));
+        assert_eq!(schedules[1]["owners"], json!(["b"]));
         assert_eq!(schedules[0]["clear_schedule"], false);
         assert_eq!(schedules[0]["is_auto"], false);
+        assert_eq!(schedules[0]["actual_work_time"], 2.0);
+        assert_eq!(schedules[1]["actual_work_time"], 2.0);
         assert!(
-            schedules[0].get("actual_work_time").is_none(),
-            "实际工时是只读云端值，不得随排期写入"
+            schedules[1].get("estimate_start_date").is_none(),
+            "只填写工时不能复制或清空其他负责人的日期"
         );
         assert_eq!(schedules[0]["estimate_start_date"], 1792425600000i64);
     }
@@ -1560,12 +1654,10 @@ mod tests {
         let mut values = BTreeMap::new();
         for field in form.fields() {
             assert!(!field.required);
-            if field.settings.read_only == Some(true) {
-                assert_eq!(field.label, "actual_work_time");
-                continue;
-            }
+            assert_ne!(field.settings.read_only, Some(true));
             let value = match field.label.as_str() {
                 "point" => "2.5",
+                "actual_work_time" => "3",
                 "schedule · 开始日期" => "2026-10-24",
                 "schedule · 结束日期" => "2026-10-25",
                 _ => panic!("unexpected field: {}", field.label),
@@ -1576,7 +1668,7 @@ mod tests {
         let plan = form.plan(&values).unwrap();
         let schedule = plan.node_schedule.as_ref().unwrap();
         assert_eq!(schedule["points"].as_f64(), Some(2.5));
-        assert!(schedule.get("actual_work_time").is_none());
+        assert_eq!(schedule["actual_work_time"], 3.0);
         assert_eq!(schedule["estimate_start_date"], 1792771200000i64);
         assert_eq!(schedule["estimate_end_date"], 1792857600000i64);
     }
@@ -1607,9 +1699,9 @@ mod tests {
             assert_eq!(field.settings.initial_value.as_deref(), Some(expected));
         }
         let missing = fields.iter().find(|f| f.label == "实际工时 · 乙").unwrap();
-        assert!(!missing.required);
-        assert_eq!(missing.settings.read_only, Some(true));
-        assert_eq!(form.blocked, vec!["实际工时"]);
+        assert!(missing.required);
+        assert_ne!(missing.settings.read_only, Some(true));
+        assert!(form.blocked.is_empty());
         assert_eq!(missing.settings.initial_value.as_deref(), Some(""));
         assert!(!fields
             .iter()
@@ -1677,12 +1769,12 @@ mod tests {
             assert_eq!(plan.schedules.len(), owners.len());
             for (schedule, owner) in plan.schedules.iter().zip(&owners) {
                 assert_eq!(schedule["owners"], json!([owner]));
-                assert!(schedule.get("actual_work_time").is_none());
+                assert_eq!(schedule["actual_work_time"], 1.0);
                 assert_eq!(schedule["estimate_start_date"], 1793030400000i64);
                 assert_eq!(schedule["estimate_end_date"], 1793116800000i64);
             }
             assert!(form.verify(&node, None, &submitted).is_err(),
-                "必填清单消失不代表个人排期已保存");
+                "必填清单消失不代表个人工时和排期已保存");
         }
     }
 
@@ -1700,8 +1792,9 @@ mod tests {
             let field = &form.fields()[0];
             assert_eq!(field.settings.scope.as_deref(), Some("node"));
             assert_eq!(field.settings.initial_value.as_deref(), Some("2"));
-            assert_eq!(field.settings.read_only, Some(true));
-            assert!(form.plan(&BTreeMap::from([(field.key.clone(), "3".into())])).is_err());
+            assert_ne!(field.settings.read_only, Some(true));
+            let changed = form.plan(&BTreeMap::from([(field.key.clone(), "3".into())])).unwrap();
+            assert_eq!(changed.node_schedule.unwrap()["actual_work_time"], 3.0);
             let plan = form.plan(&BTreeMap::new()).unwrap();
             assert!(plan.node_schedule.is_none());
             assert!(plan.schedules.is_empty());
@@ -1756,10 +1849,10 @@ mod tests {
             ]}
         ]}});
         let form = NodeForm::build(&node, &required, &nc, &wc, &work).unwrap();
-        assert_eq!(form.blocked, vec!["实际工时"]);
+        assert!(form.blocked.is_empty());
         let fields = form.fields();
         for name in ["张三", "李四"] {
-            for caption in ["估分", "排期"] {
+            for caption in ["实际工时", "估分", "排期"] {
                 let label = format!("{caption} · {name}");
                 assert!(fields.iter().any(|f| f.required && f.label.starts_with(&label)));
             }
@@ -1768,7 +1861,7 @@ mod tests {
         let mut submitted = values(&form);
         for input in &form.inputs {
             if let Route::Schedule { property, owner: Some(owner) } = &input.route {
-                if property == "points" {
+                if property == "points" || property == "actual_work_time" {
                     submitted.insert(input.field.key.clone(), if owner == owners[0] { "2" } else { "3" }.into());
                 }
             }
@@ -1778,7 +1871,7 @@ mod tests {
         for (index, owner) in owners.iter().enumerate() {
             let schedule = &plan.schedules[index];
             assert_eq!(schedule["owners"], json!([owner]));
-            assert!(schedule.get("actual_work_time").is_none());
+            assert_eq!(schedule["actual_work_time"], json!((index + 2) as f64));
             assert_eq!(schedule["points"], json!((index + 2) as f64));
             assert_eq!(schedule["estimate_start_date"], 1792425600000i64);
             assert_eq!(schedule["estimate_end_date"], 1792512000000i64);
@@ -1792,7 +1885,7 @@ mod tests {
         })).collect::<Vec<_>>());
         let updated_work = json!({"work_item_fields":[{"key":"doc-key","value":"https://example.test/design"}]});
         assert!(form.verify(&node, Some(&updated_work), &submitted).is_ok());
-        node["assignee_schedule_list"][1]["schedule_info"]["points"] = json!(2);
+        node["assignee_schedule_list"][1]["schedule_info"]["actual_work_time"] = json!(2);
         assert!(form.verify(&node, Some(&updated_work), &submitted).is_err());
     }
 

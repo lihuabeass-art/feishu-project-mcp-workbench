@@ -21,7 +21,7 @@ import {
 } from "./creation";
 import type { CreationAttachment } from "./creationAttachments";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
 vi.mock("./creation", async (original) => ({
   ...(await original<typeof import("./creation")>()),
   getCreationForm: vi.fn(),

@@ -554,6 +554,15 @@ fn upload_with(
     image_id: &str,
     post: impl FnOnce(&UploadTicket, &CreationImage) -> Result<Value, BackendError>,
 ) -> Result<UploadedImage, BackendError> {
+    upload_checked(session, target, context, field_key, image_id, None, post)
+}
+
+/// 调用方须先核对当前流程字段、账号与事项；上传授权绑定真实事项。
+pub(crate) fn upload_existing(session: &Session, target: &Target, context: &str, field_key: &str, image_id: &str, item_id: &str) -> Result<UploadedImage, BackendError> {
+    upload_checked(session, target, context, field_key, image_id, Some(item_id), post_image)
+}
+
+fn upload_checked(session: &Session, target: &Target, context: &str, field_key: &str, image_id: &str, item_id: Option<&str>, post: impl FnOnce(&UploadTicket, &CreationImage) -> Result<Value, BackendError>) -> Result<UploadedImage, BackendError> {
     scope(target, context, field_key)?;
     let lock = upload_lock(session, target, context, field_key, image_id)?;
     let _guard = lock.try_lock().map_err(|failure| match failure {
@@ -567,24 +576,21 @@ fn upload_with(
     let identity = key(target, context, field_key, image_id);
     let image = stored_image(session, &identity)?;
     // 绕过待核验创建记录恢复分支，重新读取当前账号、字段和本机创建开关。
-    let form = discover_fresh(session, target)?;
-    if form.context != context
-        || !form
-            .fields
-            .iter()
-            .any(|f| f.key == field_key && f.kind == "textarea")
-    {
-        return Err(BackendError::validation(
-            "图片所属账号或字段已变化，请重新打开表单后核对",
-        ));
+    if item_id.is_none() {
+        let form = discover_fresh(session, target)?;
+        if form.context != context || !form.fields.iter().any(|f| f.key == field_key && f.kind == "textarea") {
+            return Err(BackendError::validation("图片所属账号或字段已变化，请重新打开表单后核对"));
+        }
     }
     if let Some(uploaded) = stored_upload(&image) {
         return Ok(uploaded);
     }
-    let authorization = session.call_tool_any(TOOL_UPLOAD_FILE, json!({
+    let mut arguments = json!({
         "project_key":target.project_key, "resource_type":16, "work_item_type":target.type_key,
         "field_key":field_key, "file_name":image.file_name, "mime_type":image.mime_type, "size":image.bytes.len()
-    }).as_object().unwrap(), true).map_err(safe_authorization_failure)?;
+    }).as_object().unwrap().clone();
+    if let Some(item_id) = item_id { arguments.insert("work_item_id".into(), json!(item_id)); }
+    let authorization = session.call_tool_any(TOOL_UPLOAD_FILE, &arguments, true).map_err(safe_authorization_failure)?;
     let ticket = ticket(&authorization, crate::sync::now_ms())?;
     let uploaded = uploaded_image(&post(&ticket, &image)?)?;
     session

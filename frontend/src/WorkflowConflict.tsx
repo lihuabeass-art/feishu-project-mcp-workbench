@@ -9,8 +9,11 @@ import {
   Eye,
   RotateCcw,
 } from "lucide-react";
-import { formatPercentage } from "./percentage";
-import type { WorkflowAction } from "./types";
+import type { CachedItem, WorkflowAction } from "./types";
+import { displayFieldValue, workflowValueEmpty } from "./workflowValues";
+import { WorkflowCloudValue } from "./WorkflowCloudValue";
+import { useScrollIsolation } from "./useScrollIsolation";
+export { displayFieldValue } from "./workflowValues";
 
 async function copyText(text: string) {
   try {
@@ -36,18 +39,9 @@ async function copyText(text: string) {
   }
 }
 
-export function displayFieldValue(
-  field: WorkflowAction["fields"][number],
-  text: string,
-) {
-  return (
-    field.options?.find((o) => o.value === text)?.label ||
-    (text && field.unit === "percent" ? formatPercentage(text) : text)
-  );
-}
-
 export function WorkflowConflict({
   field,
+  itemId,
   remote,
   value,
   conflict = true,
@@ -56,6 +50,7 @@ export function WorkflowConflict({
   onRestore,
 }: {
   field: WorkflowAction["fields"][number];
+  itemId?: CachedItem["id"];
   remote: string;
   value: string;
   conflict?: boolean;
@@ -69,6 +64,7 @@ export function WorkflowConflict({
   const [position, setPosition] = useState<CSSProperties>({});
   const trigger = useRef<HTMLButtonElement>(null);
   const tooltip = useRef<HTMLDivElement>(null);
+  const isolatedTooltip = useScrollIsolation(tooltip);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -78,6 +74,8 @@ export function WorkflowConflict({
   const tooltipId = useId();
   const explanationId = useId();
   const display = (text: string) => displayFieldValue(field, text) || "（空）";
+  const rendered = (text: string) => field.rich_text && itemId
+    ? <WorkflowCloudValue field={field} value={text} itemId={itemId} /> : display(text);
   const trimmed = value.trim();
   const invalidOption =
     field.kind === "select" &&
@@ -85,13 +83,13 @@ export function WorkflowConflict({
     !field.options?.some((option) => option.value === trimmed);
   const invalid =
     invalidOption ||
-    (field.required && !trimmed) ||
+    (field.required && workflowValueEmpty(field, trimmed)) ||
     (field.kind === "number" &&
       !!trimmed &&
       (!Number.isFinite(Number(trimmed)) ||
         (field.min !== undefined && Number(trimmed) < field.min) ||
         (field.max !== undefined && Number(trimmed) > field.max)));
-  const preview = trimmed || remote;
+  const preview = trimmed ? (field.rich_text ? value : trimmed) : remote;
 
   useEffect(() => {
     mounted.current = true;
@@ -182,7 +180,7 @@ export function WorkflowConflict({
   );
 
   if (!conflict) {
-    if (!remote.trim()) return null;
+    if (workflowValueEmpty(field, remote)) return null;
     // 文本字段可能多人共用，需能复制云端值后在其基础上合并。
     const copyable = field.kind === "text" || field.kind === "textarea";
     return (
@@ -191,11 +189,11 @@ export function WorkflowConflict({
         role="group"
         aria-label={`${field.label}云端对照`}
       >
-        <span className="workflow-field-note-text">
+        <div className="workflow-field-note-text">
           {captionText}
           {!trimmed && !field.required ? "留空沿用云端：" : "原值 "}
-          <span className="workflow-conflict-value">{display(remote)}</span>
-        </span>
+          <div className="workflow-conflict-value">{rendered(remote)}</div>
+        </div>
         <span className="workflow-field-note-actions">
           {copyable && copyButton}
           {onRestore && (
@@ -233,7 +231,7 @@ export function WorkflowConflict({
     );
   }
 
-  if (!remote.trim()) {
+  if (workflowValueEmpty(field, remote)) {
     return null;
   }
 
@@ -249,14 +247,14 @@ export function WorkflowConflict({
         size={12}
         aria-hidden="true"
       />
-      <span className="workflow-field-note-text workflow-conflict-remote">
+      <div className="workflow-field-note-text workflow-conflict-remote">
         <span id={explanationId} className="workflow-conflict-explanation">
           编辑期间云端也有修改，请核对后提交。
         </span>
         {captionText}
         <span className="workflow-conflict-label">云端最新值：</span>
-        <span className="workflow-conflict-value">{display(remote)}</span>
-      </span>
+        <div className="workflow-conflict-value">{rendered(remote)}</div>
+      </div>
       <span className="workflow-field-note-actions">
         {copyButton}
         <button
@@ -288,9 +286,9 @@ export function WorkflowConflict({
         createPortal(
           <div
             id={tooltipId}
-            ref={tooltip}
+            ref={isolatedTooltip}
             role="tooltip"
-            className="workflow-conflict-tooltip"
+            className="workflow-conflict-tooltip scroll-isolation-boundary"
             style={position}
             onMouseEnter={show}
             onMouseLeave={hide}
@@ -316,7 +314,7 @@ export function WorkflowConflict({
             ) : (
               <div className="workflow-preview-result">
                 <span className="workflow-preview-label">{field.label}</span>
-                <p className="workflow-conflict-value">{display(preview)}</p>
+                <div className="workflow-conflict-value">{rendered(preview)}</div>
               </div>
             )}
             {!invalid && !trimmed && (

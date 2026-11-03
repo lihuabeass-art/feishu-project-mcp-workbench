@@ -10,6 +10,11 @@ import { SteppedNumberInput } from "./SteppedNumberInput";
 import { displayFieldValue, WorkflowConflict } from "./WorkflowConflict";
 import { WorkflowReviewFields } from "./WorkflowReviewFields";
 import { WorkflowCloudValue } from "./WorkflowCloudValue";
+import { WorkflowFieldEditor } from "./WorkflowFieldEditor";
+import { withWorkflowLabels, workflowValueEmpty } from "./workflowValues";
+import { invoke } from "@tauri-apps/api/core";
+import type { CreationForm } from "./creation";
+import { hasInvalidLocalCreationImages, localCreationImageIds, replaceCreationImageReference, uploadCreationImage } from "./creationImages";
 import { layoutFields, ownerCell } from "./workflowLayout";
 import { loadWorkflowSkipConfirmation, useWorkflowSkipConfirmation } from "./workflowPreferences";
 import {
@@ -75,6 +80,7 @@ export function Workflow({
   const [returnCheckError, setReturnCheckError] = useState("");
   const [actionOpenError, setActionOpenError] = useState<{ id: string; message: string } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fieldBusy, setFieldBusy] = useState<Record<string, boolean>>({});
   const [revision, setRevision] = useState(0);
   const flight = useRef(false);
   const fieldId = useId();
@@ -297,7 +303,7 @@ export function Workflow({
       if (fromReturn && (!now.action || now.blocked)) {
         // 返回检查只更新可展示的云端信息；提交标记和本机编辑快照仍由明确恢复操作处理。
         setOptions(latest);
-        if (nextAction) setAction(nextAction);
+        if (nextAction) setAction(withWorkflowLabels(nextAction, now.fieldLabels));
         setReturnCheckError(
           now.action && !nextAction
             ? "云端已不再提供原动作，草稿和提交标记已保留，请先核对飞书状态。"
@@ -338,7 +344,7 @@ export function Workflow({
           updated_at: Date.now(),
         });
       setOptions(latest);
-      setAction(nextAction);
+      setAction(withWorkflowLabels(nextAction, merged.field_labels));
       setFields(merged.fields);
       setBaseFields(merged.base_fields);
       setFieldLabels(merged.field_labels);
@@ -497,14 +503,20 @@ export function Workflow({
       if (draft && !draft.pending && !fresh)
         setOptions({ ...source, version: draft.version });
       if (fresh) freshSelection.current = next.id;
-      setAction(next);
+      setAction(withWorkflowLabels(next, restored.field_labels));
     } catch (e) {
       setError(asError(e).message);
     }
   }
-  function change(key: string, value: string) {
+  function change(key: string, value: string, labels: Record<string, string> = {}) {
+    changeFields({ [key]: value }, labels);
+  }
+  function changeFields(changes: Record<string, string>, labels: Record<string, string> = {}) {
     if (!action || !options || action.requires_feishu) return;
-    const next = { ...fields, [key]: value };
+    const next = { ...fields, ...changes };
+    const nextLabels = { ...fieldLabels, ...labels };
+    setFieldLabels(nextLabels);
+    setAction(withWorkflowLabels(action, nextLabels));
     editor.current.fields = next;
     setFields(next);
     setReview(null);
@@ -512,7 +524,7 @@ export function Workflow({
       writeDraft(draftKey(identity, action.id), {
         fields: next,
         base_fields: baseFields,
-        field_labels: fieldLabels,
+        field_labels: nextLabels,
         conflicts,
         version: options.version,
         updated_at: Date.now(),
@@ -533,6 +545,7 @@ export function Workflow({
       busy ||
       flight.current ||
       blocked
+      || Object.values(fieldBusy).some(Boolean)
     )
       return;
     const origin = identity;
@@ -572,7 +585,7 @@ export function Workflow({
         updated_at: Date.now(),
       });
       setOptions(latest);
-      setAction(nextAction);
+      setAction(withWorkflowLabels(nextAction, merged.field_labels));
       setFields(merged.fields);
       setBaseFields(merged.base_fields);
       setFieldLabels(merged.field_labels);
@@ -594,7 +607,7 @@ export function Workflow({
       }
       if (nextAction.disabled_reason || nextAction.requires_feishu) return;
       const missing = nextAction.fields.find(
-        (field) => field.required && !merged.fields[field.key]?.trim(),
+        (field) => field.required && workflowValueEmpty(field, merged.fields[field.key]),
       );
       if (missing) {
         setError(`请完成必填字段：${missing.label}`);
@@ -612,6 +625,25 @@ export function Workflow({
       if (invalidOption) {
         setError(`请重新选择${invalidOption.label}：原选项已不可用。`);
         return;
+      }
+      for (const field of nextAction.fields.filter((field) => !field.read_only && field.editor?.kind === "textarea")) {
+        let markdown = merged.fields[field.key] || "";
+        if (hasInvalidLocalCreationImages(markdown)) throw new Error("正文含无法识别的本机图片，请重新粘贴，草稿已保留。");
+        const images = localCreationImageIds(markdown);
+        if (!images.length) continue;
+        if (!field.rich_text?.image_field_key) throw new Error("此节点字段无法确认图片归属，请在飞书中修改图片。");
+        const scope = await invoke<Pick<CreationForm, "target" | "context">>("get_workflow_editor_context", { itemId: item.id });
+        for (const imageId of images) {
+          if (identityRef.current !== origin || reads.current !== read) return;
+          const uploaded = await uploadCreationImage({ ...scope, fieldKey: field.rich_text.image_field_key, workflow: { itemId: item.id, actionId: action.id, fieldKey: field.key } }, imageId);
+          if (identityRef.current !== origin || reads.current !== read) return;
+          markdown = replaceCreationImageReference(markdown, imageId, uploaded.url, uploaded.file_token);
+          merged.fields[field.key] = markdown;
+          writeDraft(draftKey(origin, action.id), { ...merged, version: latest.version, updated_at: Date.now() });
+          if (identityRef.current !== origin || reads.current !== read) return;
+          setFields({ ...merged.fields });
+          editor.current.fields = { ...merged.fields };
+        }
       }
       const request: WorkflowRequest = {
         item_id: item.id,
@@ -825,7 +857,7 @@ export function Workflow({
         updated_at: Date.now(),
       });
       setOptions(latest);
-      setAction(nextAction);
+      setAction(withWorkflowLabels(nextAction, merged.field_labels));
       setFields(merged.fields);
       setBaseFields(merged.base_fields);
       setFieldLabels(merged.field_labels);
@@ -848,7 +880,7 @@ export function Workflow({
       if (identityRef.current === origin) setPending(false);
     }
   }
-  const locked = busy || pending;
+  const locked = busy || pending || Object.values(fieldBusy).some(Boolean);
   const retainedKeys = Object.keys(fields).filter(
     (key) => action && !action.fields.some((field) => field.key === key),
   );
@@ -1092,6 +1124,7 @@ export function Workflow({
     return (
       <WorkflowConflict
         key={field.key}
+        itemId={item.id}
         field={field}
         remote={remote}
         value={local}
@@ -1111,6 +1144,11 @@ export function Workflow({
     const disabled = locked || blocked || !!action?.requires_feishu;
     const placeholder = placeholderOf(field, inTable);
     const update = (next: string) => change(field.key, next);
+    if (field.editor && action) return <WorkflowFieldEditor
+      itemId={item.id} actionId={action.id} field={field} value={value} labels={fieldLabels}
+      disabled={disabled} onChange={(value, labels) => change(field.key, value, labels)}
+      onBusyChange={(busy) => setFieldBusy((previous) => previous[field.key] === busy ? previous : { ...previous, [field.key]: busy })}
+    />;
     if (field.kind === "select")
       return (
         <Select
@@ -1584,7 +1622,7 @@ export function Workflow({
                             !!action.disabled_reason ||
                             !!action.requires_feishu ||
                             action.fields.some(
-                              (f) => f.required && !fields[f.key]?.trim(),
+                              (f) => f.required && workflowValueEmpty(f, fields[f.key]),
                             )
                           }
                         >

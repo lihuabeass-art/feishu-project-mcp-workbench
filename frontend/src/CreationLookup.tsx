@@ -17,12 +17,18 @@ export function CreationLookup({
   value,
   labels,
   change,
+  loadOptions,
+  disabled = false,
+  allowClear = true,
 }: {
   form: CreationForm;
   field: CreationField;
   value: unknown;
   labels: Record<string, string>;
   change: (value: unknown, labels: Record<string, string>) => void;
+  loadOptions?: (query: string) => Promise<CreationLookupResult>;
+  disabled?: boolean;
+  allowClear?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -35,6 +41,8 @@ export function CreationLookup({
     query,
   ]);
   const activeLookup = useRef(lookupKey);
+  const load = useRef(loadOptions);
+  load.current = loadOptions;
   activeLookup.current = lookupKey;
   const [lookup, setLookup] = useState<
     | (CreationLookupResult & {
@@ -112,7 +120,7 @@ export function CreationLookup({
     };
   }, [open, position]);
   useEffect(() => {
-    if (!open) {
+    if (!open || disabled) {
       setLookup(null);
       return;
     }
@@ -128,7 +136,7 @@ export function CreationLookup({
     setActive(0);
     const timer = window.setTimeout(
       () => {
-        lookupCreationField(form.target, field.key, query)
+        (load.current ? load.current(query) : lookupCreationField(form.target, field.key, query))
           .then((found) => {
             if (isCurrent()) {
               setLookup({ ...found, key: lookupKey, busy: false, error: "" });
@@ -152,8 +160,9 @@ export function CreationLookup({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [open, lookupKey]);
+  }, [open, lookupKey, disabled]);
   function choose(option: CreationOption) {
+    if (disabled) return;
     const next = field.multiple
       ? selected.includes(option.value)
         ? selected.filter((v) => v !== option.value)
@@ -169,14 +178,16 @@ export function CreationLookup({
         className="creation-picker"
         ref={trigger}
         role="combobox"
-        tabIndex={0}
+        tabIndex={disabled ? -1 : 0}
+        aria-disabled={disabled}
         aria-label={field.label}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         aria-required={field.required}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => { if (!disabled) setOpen((v) => !v); }}
         onKeyDown={(e) => {
+          if (disabled) return;
           if (e.target !== e.currentTarget) return;
           if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
             e.preventDefault();
@@ -201,10 +212,11 @@ export function CreationLookup({
                   </span>
                 )}
                 {showLabel(id)}
-                <button
+                {allowClear && <button
                   type="button"
                   className="creation-chip-remove"
                   aria-label={`从${field.label}移除${showLabel(id)}`}
+                  disabled={disabled}
                   onClick={(e) => {
                     e.stopPropagation();
                     change(
@@ -214,7 +226,7 @@ export function CreationLookup({
                   }}
                 >
                   <X size={12} aria-hidden="true" />
-                </button>
+                </button>}
               </span>
             ))
           ) : (
@@ -223,17 +235,18 @@ export function CreationLookup({
         </span>
         <ChevronDown size={15} />
       </div>
-      {selected.length > 0 && (
+      {allowClear && selected.length > 0 && (
         <button
           type="button"
           className="creation-picker-clear"
           aria-label={`清空${field.label}`}
+          disabled={disabled}
           onClick={() => change(field.multiple ? [] : "", {})}
         >
           <X size={13} />
         </button>
       )}
-      {open &&
+      {open && !disabled &&
         position &&
         createPortal(
           <div

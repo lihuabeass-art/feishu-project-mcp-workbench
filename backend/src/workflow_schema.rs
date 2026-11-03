@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 fn basic_kind(kind: &str) -> Option<FieldKind> {
     Some(match kind {
-        "text" | "link" => FieldKind::Text,
+        "text" | "_name" | "link" => FieldKind::Text,
         "multi-pure-text" => FieldKind::Textarea,
         "number" => FieldKind::Number,
         "date" => FieldKind::Date,

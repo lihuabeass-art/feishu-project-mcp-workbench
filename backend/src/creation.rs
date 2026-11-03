@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 pub mod images;
 pub mod attachments;
-mod richtext;
+pub(crate) mod richtext;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Target {
@@ -155,7 +155,7 @@ fn account_context(session: &Session, user: &CurrentUser) -> String {
         &session.config.db_path,
     ))
 }
-fn account(session: &Session) -> Result<String, BackendError> {
+pub(crate) fn account(session: &Session) -> Result<String, BackendError> {
     Ok(account_context(session, &current_user(session)?))
 }
 fn ledger_key(target: &Target, account: &str) -> String {
@@ -244,7 +244,7 @@ fn default_value(meta: &Value) -> Value {
         .unwrap_or_else(|| raw.clone());
     decoded.get("value").cloned().unwrap_or(decoded)
 }
-fn field(meta: &Value, config: &Value) -> Field {
+pub(crate) fn field(meta: &Value, config: &Value) -> Field {
     let key = text(&meta["field_key"]);
     let label = text(&meta["field_name"]);
     let remote = config["field_type"]
@@ -492,16 +492,20 @@ pub fn lookup(
         .iter()
         .find(|f| f.key == field_key)
         .ok_or_else(|| BackendError::validation("所选字段已变化，请重新打开表单"))?;
+    lookup_field(session, &target.project_key, &form.context, f, query)
+}
+
+pub(crate) fn lookup_field(session: &Session, project_key: &str, context: &str, f: &Field, query: &str) -> Result<LookupResult, BackendError> {
     if query.chars().count() > 100 {
         return Err(BackendError::validation("搜索内容过长"));
     }
     if f.kind == "people" {
         let mut known = session
             .store
-            .creation_people(&form.context, &target.project_key)?;
+            .creation_people(context, project_key)?;
         for snapshot in session
             .store
-            .creation_people_snapshots(&target.project_key)?
+            .creation_people_snapshots(project_key)?
         {
             collect_people(&snapshot, &mut known);
         }
@@ -512,7 +516,7 @@ pub fn lookup(
         };
         let response = session.call_read_tool(
             "search_user_info",
-            json!({"project_key":target.project_key,"user_keys":keys})
+            json!({"project_key":project_key,"user_keys":keys})
                 .as_object()
                 .unwrap(),
         );
@@ -536,7 +540,7 @@ pub fn lookup(
         }
         session
             .store
-            .save_creation_people(&form.context, &target.project_key, &known)?;
+            .save_creation_people(context, project_key, &known)?;
         let query = query.trim().to_lowercase();
         let mut options = known
             .into_iter()
@@ -725,7 +729,7 @@ fn empty(value: &Value) -> bool {
         || value.as_str().is_some_and(|s| s.trim().is_empty())
         || value.as_array().is_some_and(Vec::is_empty)
 }
-fn encode(f: &Field, value: &Value) -> Result<Value, BackendError> {
+pub(crate) fn encode(f: &Field, value: &Value) -> Result<Value, BackendError> {
     let fail = || BackendError::validation(format!("请检查「{}」的填写内容", f.label));
     match f.kind.as_str() {
         "attachment" => attachments::encode(value),
@@ -878,7 +882,7 @@ fn remote_value(data: &Value, key: &str) -> Value {
             .unwrap_or(Value::Null),
     }
 }
-fn id_values(v: &Value) -> Vec<String> {
+pub(crate) fn id_values(v: &Value) -> Vec<String> {
     let list = if let Some(list) = v.as_array() {
         list.clone()
     } else {
@@ -888,7 +892,7 @@ fn id_values(v: &Value) -> Vec<String> {
         .iter()
         .map(|v| {
             if v.is_object() {
-                ["id", "key", "user_key", "option_id", "value"]
+                ["id", "key", "user_key", "work_item_id", "option_id", "value"]
                     .iter()
                     .find_map(|key| v.get(*key).and_then(detail::text))
                     .unwrap_or_default()

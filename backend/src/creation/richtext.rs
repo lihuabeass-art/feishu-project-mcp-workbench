@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 struct Image<'a> { alt: &'a str, url: &'a str, comment: &'a str }
 struct Parts<'a> { images: Vec<Image<'a>>, text: Vec<&'a str> }
-pub(super) struct ImageChange<'a> {
+pub(crate) struct ImageChange<'a> {
     pub original_url: &'a str,
     pub original_token: &'a str,
     pub remote_url: &'a str,
@@ -69,7 +69,7 @@ pub(super) fn matches(submitted: &str, remote: &str) -> bool {
     matches_with_images(submitted, remote, |_| false)
 }
 
-pub(super) fn matches_with_images(submitted: &str, remote: &str, mut verify: impl FnMut(ImageChange<'_>) -> bool) -> bool {
+pub(crate) fn matches_with_images(submitted: &str, remote: &str, mut verify: impl FnMut(ImageChange<'_>) -> bool) -> bool {
     let Some(changes) = image_changes(submitted, remote) else { return false; };
     // Structural checks finish before any download or original-cache lookup.
     changes.into_iter().all(|image| verify(image))

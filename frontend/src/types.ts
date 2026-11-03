@@ -219,6 +219,7 @@ export interface WorkflowAction {
     initial_value?: string;
     read_only?: boolean;
     rich_text?: { image_field_key?: string; structured_value?: unknown };
+    editor?: import("./creation").CreationField;
     scope?: "work_item" | "node" | "assignee";
     min?: number;
     max?: number;

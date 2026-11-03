@@ -2,6 +2,7 @@ import { useId } from "react";
 import { ArrowRight } from "lucide-react";
 import { displayFieldValue } from "./WorkflowConflict";
 import { WorkflowCloudValue } from "./WorkflowCloudValue";
+import { workflowValueEmpty } from "./workflowValues";
 import type { CachedItem, WorkflowAction, WorkflowRequest } from "./types";
 
 type Field = WorkflowAction["fields"][number];
@@ -38,7 +39,7 @@ export function WorkflowReviewFields({
   const modifiedCount = action.fields.filter(
     (field) =>
       changes[field.key] !== undefined &&
-      (remote[field.key] ?? field.initial_value ?? "").trim().length > 0,
+      !workflowValueEmpty(field, remote[field.key] ?? field.initial_value),
   ).length;
   const addedCount = changedCount - modifiedCount;
 
@@ -46,8 +47,8 @@ export function WorkflowReviewFields({
     const current = remote[field.key] ?? field.initial_value ?? "";
     const submitted = changes[field.key];
     const changed = submitted !== undefined;
-    const hasCurrent = current.trim().length > 0;
-    const value = changed ? submitted.trim() : current;
+    const hasCurrent = !workflowValueEmpty(field, current);
+    const value = changed ? (field.rich_text ? submitted : submitted.trim()) : current;
     const display = (text: string) => displayFieldValue(field, text);
     const shown = value.trim() ? display(value) || "未填写" : "未填写";
     return (
@@ -78,9 +79,9 @@ export function WorkflowReviewFields({
                       <small className="workflow-review-value-label">
                         云端当前值：
                       </small>
-                      <span className="workflow-review-before-value">
+                      {field.rich_text ? <WorkflowCloudValue field={field} value={current} itemId={itemId} /> : <span className="workflow-review-before-value">
                         {display(current)}
-                      </span>
+                      </span>}
                     </div>
                     <ArrowRight
                       className="workflow-review-arrow"
@@ -99,7 +100,7 @@ export function WorkflowReviewFields({
                   >
                     本次提交值
                   </small>
-                  <span className="workflow-review-value">{shown}</span>
+                  {field.rich_text ? <WorkflowCloudValue field={field} value={value} itemId={itemId} /> : <span className="workflow-review-value">{shown}</span>}
                 </div>
               </div>
             ) : (

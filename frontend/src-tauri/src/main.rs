@@ -434,6 +434,25 @@ async fn get_workflow_actions(item_id: WorkItemId, fresh: Option<bool>) -> Resul
 }
 
 #[tauri::command]
+async fn lookup_workflow_field(item_id: WorkItemId, action_id: String, field_key: String, query: String) -> Result<fstodo_backend::creation::LookupResult, UiError> {
+    blocking(move || {
+        let session = open_session()?;
+        ensure_workflow_enabled(&session)?;
+        workflow::lookup_field(&session, &item_id, &action_id, &field_key, &query)
+    }).await
+}
+
+#[tauri::command]
+async fn get_workflow_editor_context(item_id: WorkItemId) -> Result<workflow::editor::Context, UiError> {
+    blocking(move || workflow::editor::context(&open_session()?, &item_id)).await
+}
+
+#[tauri::command]
+async fn upload_workflow_image(item_id: WorkItemId, action_id: String, field_key: String, context: String, image_id: String) -> Result<fstodo_backend::UploadedCreationImage, UiError> {
+    blocking(move || workflow::editor::upload(&open_session()?, &item_id, &action_id, &field_key, &context, &image_id)).await
+}
+
+#[tauri::command]
 async fn get_pending_creations() -> Result<Vec<fstodo_backend::creation::Form>, UiError> {
     blocking(move || fstodo_backend::creation::pending_forms(&open_session()?)).await
 }
@@ -579,6 +598,9 @@ fn main() {
             load_filter_schemes,
             save_filter_schemes,
             get_workflow_actions,
+            lookup_workflow_field,
+            get_workflow_editor_context,
+            upload_workflow_image,
             get_pending_creations,
             get_creation_form,
             lookup_creation_field,
