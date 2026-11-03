@@ -6,6 +6,8 @@ mod display_mode;
 mod update_download;
 mod update_check;
 mod update_proxy;
+#[cfg(windows)]
+mod update_cleanup;
 #[cfg(test)]
 mod sync_permissions_tests;
 
@@ -531,6 +533,10 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             display_mode::restore(app);
+            #[cfg(all(windows, not(debug_assertions)))]
+            if let Ok(data_dir) = app.path().app_local_data_dir() {
+                update_cleanup::schedule(app.package_info().version.clone(), data_dir);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

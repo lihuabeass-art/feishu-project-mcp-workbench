@@ -24,7 +24,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { version = "1", features = ["sync", "time"] }
 
 [target.'cfg(windows)'.dependencies]
+semver = "1"
 winvd = "=0.0.49"
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinHttp", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 hyper-util = { version = "0.1", features = ["client-proxy"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+tempfile = "3"
