@@ -2,6 +2,38 @@ import type { WorkflowAction } from "./types";
 
 type Field = WorkflowAction["fields"][number];
 
+export type ScheduleDatePair = { start: Field; end: Field };
+
+// 排期字段按写入路由中的负责人 ID 配对，不按显示名称猜测归属。
+export function scheduleDatePairs(fields: Field[]): ScheduleDatePair[] {
+  const groups = new Map<string | null, Partial<ScheduleDatePair>>();
+  for (const field of fields) {
+    if (field.kind !== "date" || field.read_only || field.editor) continue;
+    try {
+      const route = JSON.parse(field.key)?.Schedule;
+      if (!route || (route.owner !== null && typeof route.owner !== "string"))
+        continue;
+      const endpoint =
+        route.property === "estimate_start_date"
+          ? "start"
+          : route.property === "estimate_end_date"
+            ? "end"
+            : null;
+      if (!endpoint) continue;
+      const pair = groups.get(route.owner) ?? {};
+      pair[endpoint] = field;
+      groups.set(route.owner, pair);
+    } catch {
+      // 普通日期及无法确认写入范围的字段保留独立控件。
+    }
+  }
+  return [...groups.values()].flatMap((pair) =>
+    pair.start && pair.end && pair.start.scope === pair.end.scope
+      ? [{ start: pair.start, end: pair.end }]
+      : [],
+  );
+}
+
 export interface OwnerTable {
   key: string;
   columns: string[];

@@ -7,6 +7,7 @@ import { ExternalLink, openExternalUrl } from "./ExternalLink";
 import { Select } from "./Select";
 import { PercentageInput } from "./PercentageInput";
 import { SteppedNumberInput } from "./SteppedNumberInput";
+import { DateRangePicker } from "./DateRangePicker";
 import { displayFieldValue, WorkflowConflict } from "./WorkflowConflict";
 import { WorkflowReviewFields } from "./WorkflowReviewFields";
 import { WorkflowCloudValue } from "./WorkflowCloudValue";
@@ -15,7 +16,7 @@ import { withWorkflowLabels, workflowValueEmpty } from "./workflowValues";
 import { invoke } from "@tauri-apps/api/core";
 import type { CreationForm } from "./creation";
 import { hasInvalidLocalCreationImages, localCreationImageIds, replaceCreationImageReference, uploadCreationImage } from "./creationImages";
-import { layoutFields, ownerCell } from "./workflowLayout";
+import { layoutFields, ownerCell, scheduleDatePairs, type ScheduleDatePair } from "./workflowLayout";
 import { loadWorkflowSkipConfirmation, useWorkflowSkipConfirmation } from "./workflowPreferences";
 import {
   changedFields,
@@ -1036,7 +1037,15 @@ export function Workflow({
   }
   const progressAction = action ? syncFor(action, "progress") : undefined;
   const scheduleAction = action ? syncFor(action, "schedule") : undefined;
-  const segments = layoutFields(action?.fields ?? []);
+  const layout = layoutFields(action?.fields ?? []);
+  const standaloneKeys = new Set(layout.flatMap((segment) => segment.kind === "field" ? [segment.field.key] : []));
+  const pairs = scheduleDatePairs(action?.fields ?? []);
+  const pairByKey = new Map(pairs.flatMap((pair) => [[pair.start.key, pair], [pair.end.key, pair]] as const));
+  const standalonePair = (field: Field) => {
+    const pair = pairByKey.get(field.key);
+    return pair && standaloneKeys.has(pair.start.key) && standaloneKeys.has(pair.end.key) ? pair : undefined;
+  };
+  const segments = layout.filter((segment) => segment.kind !== "field" || standalonePair(segment.field)?.end.key !== segment.field.key);
   const scheduleKeys = new Set(
     scheduleAction?.fields.map((field) => field.key),
   );
@@ -1221,6 +1230,16 @@ export function Workflow({
         onChange={(e) => update(e.target.value)}
       />
     );
+  }
+  function dateRange(pair: ScheduleDatePair) {
+    return <DateRangePicker
+      start={fields[pair.start.key] ?? ""} end={fields[pair.end.key] ?? ""}
+      startLabel={`${pair.start.label}${pair.start.required ? "（必填）" : ""}`}
+      endLabel={`${pair.end.label}${pair.end.required ? "（必填）" : ""}`}
+      startRequired={pair.start.required} endRequired={pair.end.required}
+      disabled={locked || blocked || !!action?.requires_feishu}
+      onChange={(start, end) => changeFields({ [pair.start.key]: start, [pair.end.key]: end })}
+    />;
   }
   function feishuLinkFor(candidate: Pick<WorkflowAction, "id">, mode: "fill" | "edit" | "verify" = "fill") {
     if (optionsIdentity.current !== identity) return null;
@@ -1418,6 +1437,11 @@ export function Workflow({
                             ))}
                           </div>
                           {segment.table.owners.map((owner) => {
+                            const ownerFields = segment.table.columns.flatMap((column) => {
+                              const field = segment.table.cells[ownerCell(owner, column)];
+                              return field ? [field] : [];
+                            });
+                            const pair = pairs.find((candidate) => ownerFields.some((field) => field.key === candidate.start.key) && ownerFields.some((field) => field.key === candidate.end.key));
                             const notes = segment.table.columns.flatMap(
                               (column) => {
                                 const field =
@@ -1431,7 +1455,11 @@ export function Workflow({
                                 <span className="workflow-owner-name">
                                   {owner}
                                 </span>
-                                {segment.table.columns.map((column) => {
+                                {pair ? <div className="workflow-owner-date-range">
+                                  {dateRange(pair)}
+                                  {retainedNote(pair.start)}
+                                  {retainedNote(pair.end)}
+                                </div> : segment.table.columns.map((column) => {
                                   const field =
                                     segment.table.cells[
                                       ownerCell(owner, column)
@@ -1485,6 +1513,14 @@ export function Workflow({
                               {hint}
                             </small>
                           ))}
+                          {index === scheduleSegment && scheduleButton()}
+                        </div>
+                      ) : standalonePair(segment.field) ? (
+                        <div className="workflow-field workflow-date-range" key={segment.field.key}>
+                          <span className="workflow-field-label">排期{segment.field.owner ? ` · ${segment.field.owner}` : ""}{standalonePair(segment.field)!.start.required || standalonePair(segment.field)!.end.required ? "（必填）" : ""}</span>
+                          {dateRange(standalonePair(segment.field)!)}
+                          {[standalonePair(segment.field)!.start, standalonePair(segment.field)!.end].map((field) => <div key={field.key}>{cloudNote(field)}{retainedNote(field)}</div>)}
+                          {[...new Set([standalonePair(segment.field)!.start.hint, standalonePair(segment.field)!.end.hint].filter(Boolean))].map((hint) => <small className="hint" key={hint}>{hint}</small>)}
                           {index === scheduleSegment && scheduleButton()}
                         </div>
                       ) : (

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { layoutFields, ownerCell } from "./workflowLayout";
+import { layoutFields, ownerCell, scheduleDatePairs } from "./workflowLayout";
 import type { WorkflowAction } from "./types";
 
 type Field = WorkflowAction["fields"][number];
@@ -93,4 +93,33 @@ it("相邻字段说明相同时只在最后一项展示一次，不同说明各�
       segment.kind === "field" ? segment.showHint : null,
     ),
   ).toEqual([false, true, true, false]);
+});
+
+it("仅将相同负责人写入路由的排期起止配对，普通日期、只读和跨范围字段保持独立", () => {
+  const schedule = (
+    property: string,
+    owner: string | null,
+    extra: Partial<Field> = {},
+  ): Field =>
+    plain(JSON.stringify({ Schedule: { property, owner } }), {
+      kind: "date",
+      ...extra,
+    });
+  const aStart = schedule("estimate_start_date", "a");
+  const aEnd = schedule("estimate_end_date", "a");
+  const bStart = schedule("estimate_start_date", "b");
+  const bEnd = schedule("estimate_end_date", "b", { read_only: true });
+  const nodeStart = schedule("estimate_start_date", null);
+  const nodeEnd = schedule("estimate_end_date", null, { scope: "assignee" });
+  expect(
+    scheduleDatePairs([
+      aStart,
+      bStart,
+      aEnd,
+      bEnd,
+      nodeStart,
+      nodeEnd,
+      plain("普通日期", { kind: "date" }),
+    ]),
+  ).toEqual([{ start: aStart, end: aEnd }]);
 });

@@ -292,3 +292,53 @@ it("完成节点被其他未支持必填项阻止时仍可进入日期同步，�
     fields: {},
   });
 });
+
+it("紧凑单月连续选起止，原子保存草稿且只通过日期动作提交这两个字段", async () => {
+  vi.mocked(getWorkflowActions).mockResolvedValue(
+    options("2026-11-02", "2026-11-03"),
+  );
+  const submit = vi.fn().mockResolvedValue(result);
+  const { user } = await open(submit);
+  await user.click(screen.getByLabelText("排期 · 开始日期（必填）"));
+  await user.click(screen.getByRole("button", { name: /^2026年11月5日，/ }));
+  expect(readDraft(draftKey(itemKey(item), completeId))?.fields).toMatchObject({
+    [startKey]: "2026-11-05",
+    [endKey]: "",
+  });
+  expect(screen.getByRole("dialog").textContent).toContain("请选择结束日期");
+  expect(submit).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: /^2026年11月8日，/ }));
+  await user.click(screen.getByRole("button", { name: "仅同步此日期" }));
+  await confirm(user);
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0][0]).toMatchObject({
+    action_id: scheduleId,
+    fields: { [startKey]: "2026-11-05", [endKey]: "2026-11-08" },
+  });
+  expect(Object.keys(submit.mock.calls[0][0].fields)).toHaveLength(2);
+});
+
+it("多位负责人各自连续选择排期，修改一个人的起止不会影响另一人", async () => {
+  vi.mocked(getWorkflowActions).mockResolvedValue(
+    options("2026-11-02", "2026-11-03", ["甲", "乙"]),
+  );
+  const { user } = await open();
+  await user.click(screen.getByLabelText("排期 · 甲 · 开始日期（必填）"));
+  await user.click(screen.getByRole("button", { name: /^2026年11月5日，/ }));
+  await user.click(screen.getByRole("button", { name: /^2026年11月8日，/ }));
+  expect(
+    (screen.getByLabelText("排期 · 甲 · 结束日期（必填）") as HTMLInputElement)
+      .value,
+  ).toBe("2026-11-08");
+  expect(
+    (screen.getByLabelText("排期 · 乙 · 开始日期（必填）") as HTMLInputElement)
+      .value,
+  ).toBe("2026-11-02");
+  expect(
+    (screen.getByLabelText("排期 · 乙 · 结束日期（必填）") as HTMLInputElement)
+      .value,
+  ).toBe("2026-11-03");
+  expect(screen.getAllByRole("button", { name: "仅同步此日期" })).toHaveLength(
+    1,
+  );
+});
