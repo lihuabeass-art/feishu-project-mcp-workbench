@@ -59,7 +59,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("重新打开旧草稿显示两份值，可在原框采用云端且保留其他本机填写", async () => {
+it("重新打开旧草稿后提交核对两份值，可在原框采用云端且保留其他本机填写", async () => {
   writeDraft(key, {
     fields: { shared: "本机文档", hours: "2" },
     base_fields: { shared: "原值", hours: "1" },
@@ -73,6 +73,7 @@ it("重新打开旧草稿显示两份值，可在原框采用云端且保留其�
   );
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
+  await user.click(screen.getByRole("button", { name: "提交" }));
   expect(screen.queryByText(/其他.*协作人也可能修改/)).toBeNull();
   expect(
     screen.getByRole("group", { name: "文档冲突处理" }).textContent,
@@ -501,6 +502,9 @@ it("保留的草稿选项已被云端删除时，重新选择前不能进入确�
   render(<Workflow item={item} available busy={false} submit={submit} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  expect(await screen.findByRole("group", { name: "文档冲突处理" })).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
   await user.click(screen.getByRole("button", { name: "提交" }));
   expect((await screen.findByRole("alert")).textContent).toContain(
     "请重新选择文档：原选项已不可用。",

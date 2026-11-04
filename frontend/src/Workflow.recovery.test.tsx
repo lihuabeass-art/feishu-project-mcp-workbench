@@ -359,23 +359,12 @@ function saveLegacy(pending = false, occupied = false) {
   });
 }
 
-it("旧总排期草稿在fresh检测前字节不变，确认本地表单后迁移对应个人字段", async () => {
+it("直接进入表单时迁移旧总排期草稿对应的个人字段，无需额外云端检查", async () => {
   saveLegacy();
-  const original = localStorage.getItem(key);
   const latest = scheduleOptions();
-  vi.mocked(getWorkflowActions).mockResolvedValueOnce(latest);
-  let resolve!: (value: WorkflowOptions) => void;
-  vi.mocked(getWorkflowActions).mockImplementationOnce(
-    () =>
-      new Promise((done) => {
-        resolve = done;
-      }),
-  );
-  const { view, user } = await open();
-  expect(screen.queryByLabelText("实际工时 a（必填）")).toBeNull();
-  expect(localStorage.getItem(key)).toBe(original);
   vi.mocked(getWorkflowActions).mockResolvedValue(latest);
-  await act(async () => resolve(latest));
+  const { view, user } = await open();
+  expect(getWorkflowActions).toHaveBeenCalledOnce();
   expect(
     (screen.getByLabelText("实际工时 a（必填）") as HTMLInputElement).value,
   ).toBe("1");

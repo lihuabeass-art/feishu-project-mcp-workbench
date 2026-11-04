@@ -97,7 +97,6 @@ export function Workflow({
   const backgroundRead = useRef<number | null>(null);
   const returnCheckRead = useRef<number | null>(null);
   const selectionRead = useRef<number | null>(null);
-  const freshSelection = useRef<string | null>(null);
   const knownPendingActions = useRef({ identity, actions: new Map<string, string>() });
   const editor = useRef({
     action,
@@ -133,7 +132,6 @@ export function Workflow({
     setReturnCheckError("");
     setActionOpenError(null);
     selectionRead.current = null;
-    freshSelection.current = null;
     setBlocked(false);
     setPending(false);
     if (!available || !item.id.project_key || !item.id.work_item_type_key)
@@ -223,14 +221,6 @@ export function Workflow({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
-  useEffect(() => {
-    if (!action) return;
-    if (freshSelection.current === action.id) {
-      freshSelection.current = null;
-      return;
-    }
-    checkRemoteRef.current();
-  }, [action?.id]);
   const lastItemVersion = useRef({
     identity,
     detail: item.detail_revision,
@@ -390,36 +380,25 @@ export function Workflow({
     const isCurrent = () => identityRef.current === origin &&
       manualFillEpoch.current === epoch && reads.current === read;
     try {
-      const latest = await getWorkflowActions(item.id, true);
-      if (!isCurrent()) return;
-      rememberPendingActions(latest);
-      setOptions(latest);
-      const next = latest.actions.find((action) => action.id === candidate.id);
-      if (!next) {
-        setError("云端流程已变化，原动作已不可用。已有草稿已保留，请重新选择动作。");
-        return;
-      }
-      if (next.requires_feishu) {
-        const href = validItemUrl(latest.item_url);
+      if (candidate.requires_feishu) {
+        const href = validItemUrl(options.item_url);
         if (!href) {
-          setActionOpenError({ id: next.id, message: "未取得当前事项的有效飞书地址，请在飞书项目中搜索该事项，填写并完成流程。" });
+          setActionOpenError({ id: candidate.id, message: "未取得当前事项的有效飞书地址，请在飞书项目中搜索该事项，填写并完成流程。" });
           return;
         }
         try {
           await openExternalUrl(href);
           if (isCurrent()) manualFillReturn.current = origin;
         } catch {
-          if (isCurrent()) setActionOpenError({ id: next.id, message: "打开飞书项目未完成，请重试或使用下方链接打开。" });
+          if (isCurrent()) setActionOpenError({ id: candidate.id, message: "打开飞书项目未完成，请重试或使用下方链接打开。" });
         }
         return;
       }
-      if (next.disabled_reason && !syncFor(next, "progress", latest) && !syncFor(next, "schedule", latest)) {
-        setActionOpenError({ id: next.id, message: "云端动作已不可用，请核对最新提示。已有草稿已保留。" });
+      if (candidate.disabled_reason && !syncFor(candidate, "progress") && !syncFor(candidate, "schedule")) {
+        setActionOpenError({ id: candidate.id, message: "云端动作已不可用，请核对最新提示。已有草稿已保留。" });
         return;
       }
-      choose(next, {}, latest, true);
-    } catch {
-      if (isCurrent()) setActionOpenError({ id: candidate.id, message: "动作检查未完成，现有清单和草稿已保留，请重试。" });
+      choose(candidate);
     } finally {
       if (selectionRead.current === read) {
         selectionRead.current = null;
@@ -427,7 +406,7 @@ export function Workflow({
       }
     }
   }
-  function choose(next: WorkflowAction, values: Record<string, string> = {}, source = options, fresh = false) {
+  function choose(next: WorkflowAction, values: Record<string, string> = {}, source = options) {
     if (!source || busy || flight.current) return;
     reads.current += 1;
     backgroundRead.current = null;
@@ -469,16 +448,21 @@ export function Workflow({
       )
         writeDraft(draftKey(identity, next.id), draft);
       const initial = reconcileDraft(next, null, source.version);
-      // 最新读取可直接推进基线；内部切换动作仍先恢复编辑快照，避免旧缓存制造冲突。
+      const savedFields = Object.fromEntries(
+        Object.entries(draft?.fields ?? {}).filter(
+          ([key, value]) => draft?.base_fields?.[key] !== undefined || !!value.trim(),
+        ),
+      );
+      // 进入表单先恢复编辑快照，云端差异由后续检查和提交前核对处理。
       const restored =
-        fresh || !draft || draft.pending
+        !draft || draft.pending
           ? reconcileDraft(next, draft, source.version)
           : {
-              fields: { ...initial.fields, ...draft.fields },
+              fields: { ...initial.fields, ...savedFields },
               base_fields: {
                 ...Object.fromEntries(
                   Object.entries(initial.base_fields).filter(
-                    ([key]) => draft.fields[key] === undefined,
+                    ([key]) => savedFields[key] === undefined,
                   ),
                 ),
                 ...draft.base_fields,
@@ -498,12 +482,8 @@ export function Workflow({
             ? "已恢复本机草稿"
             : "修改会自动保存为本机草稿",
       );
-      if (fresh && draft && !draft.pending) {
-        writeDraft(draftKey(identity, next.id), { ...restored, version: source.version, updated_at: Date.now() });
-      }
-      if (draft && !draft.pending && !fresh)
+      if (draft && !draft.pending)
         setOptions({ ...source, version: draft.version });
-      if (fresh) freshSelection.current = next.id;
       setAction(withWorkflowLabels(next, restored.field_labels));
     } catch (e) {
       setError(asError(e).message);
@@ -594,18 +574,14 @@ export function Workflow({
       setReview(null);
       setDraftStatus("草稿已保存在本机");
       const skipReview = canSkipConfirmation(nextAction) && loadWorkflowSkipConfirmation();
-      // 新冲突先展示；跳过核对页时，云端清空也须在原表单提示后再由用户提交。
+      // 云端空值按未填写处理；仅非空值的新冲突需要先在草稿中核对。
       const newConflicts = merged.conflicts.filter(
           (key) =>
             nextAction.fields.some((field) => field.key === key) &&
             (!previous.conflicts.includes(key) ||
               previous.baseFields[key] !== merged.base_fields[key]),
       );
-      if (newConflicts.some((key) => skipReview || !!merged.base_fields[key]?.trim())) {
-        const cleared = newConflicts.find((key) => !merged.base_fields[key]?.trim());
-        if (skipReview && cleared) setError(`${merged.field_labels[cleared]}的云端原值已清空，请核对当前填写后再次提交。`);
-        return;
-      }
+      if (newConflicts.some((key) => !!merged.base_fields[key]?.trim())) return;
       if (nextAction.disabled_reason || nextAction.requires_feishu) return;
       const missing = nextAction.fields.find(
         (field) => field.required && workflowValueEmpty(field, merged.fields[field.key]),
@@ -1102,7 +1078,7 @@ export function Workflow({
     action?.fields.map((field, index) => [field.key, index]),
   );
   const labelId = (field: Field) => `${fieldId}-${fieldIndex.get(field.key)}`;
-  const remoteOf = (field: Field) => blocked
+  const remoteOf = (field: Field) => blocked || field.read_only
     ? field.initial_value ?? baseFields[field.key] ?? ""
     : baseFields[field.key] ?? field.initial_value ?? "";
   // 数值和下拉留空时用占位文字说明沿用云端；文本需复制云端值协作修改，日期控件不显示占位文字。

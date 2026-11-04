@@ -57,7 +57,7 @@ it.each([true, false])("同步后当前详情自动回读，其他事项不干�
   panel.scrollTop = 120;
   const reads = vi.mocked(cachedItemDetail).mock.calls.length;
   const workflowReads = vi.mocked(getWorkflowActions).mock.calls.length;
-  expect(getWorkflowActions).toHaveBeenLastCalledWith(current.id, true);
+  expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(current.id);
 
   const changedOther = { ...other, detail_revision: "other-v2" };
   snapshot = { ...snapshot, items: [current, changedOther] };

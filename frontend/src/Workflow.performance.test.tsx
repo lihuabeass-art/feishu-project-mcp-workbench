@@ -19,7 +19,6 @@ it("核实草稿后直接使用刚取得的动作，避免再次请求整套流�
   writeDraft(key, { fields: {}, version: "v1", updated_at: Date.now(), pending });
   vi.mocked(getWorkflowActions)
     .mockResolvedValueOnce(options) // 清单初读。
-    .mockResolvedValueOnce(options) // 点击动作时核对最新可用性。
     .mockResolvedValueOnce({
       version: "v2", actions: [{ ...options.actions[0], label: "完成新节点" }],
     });
@@ -27,14 +26,13 @@ it("核实草稿后直接使用刚取得的动作，避免再次请求整套流�
   render(<Workflow item={item} available busy={false} submit={submit} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
-  expect(getWorkflowActions).toHaveBeenCalledTimes(2);
+  expect(getWorkflowActions).toHaveBeenCalledOnce();
   expect(getWorkflowActions).toHaveBeenNthCalledWith(1, item.id);
-  expect(getWorkflowActions).toHaveBeenNthCalledWith(2, item.id, true);
   expect(readDraft(key)?.pending).toEqual(pending);
   await user.click(screen.getByRole("button", { name: "重新读取云端，保留草稿" }));
   expect(await screen.findByText("完成新节点", { selector: "strong" })).toBeTruthy();
-  await waitFor(() => expect(getWorkflowActions).toHaveBeenCalledTimes(3));
-  expect(getWorkflowActions).toHaveBeenNthCalledWith(3, item.id, true);
+  await waitFor(() => expect(getWorkflowActions).toHaveBeenCalledTimes(2));
+  expect(getWorkflowActions).toHaveBeenNthCalledWith(2, item.id, true);
   expect(screen.queryByRole("alert")).toBeNull();
   expect(submit).not.toHaveBeenCalled();
   expect(readDraft(key)?.pending).toBeUndefined();

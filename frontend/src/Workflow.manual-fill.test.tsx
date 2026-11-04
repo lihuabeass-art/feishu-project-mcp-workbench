@@ -65,7 +65,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it.each(["node", "state"] as const)("%s 页面动作点击后先读取最新规则再直接打开事项，不创建草稿或写请求", async (kind) => {
+it.each(["node", "state"] as const)("%s 页面动作按已加载规则直接打开事项，不额外读取云端、创建草稿或写请求", async (kind) => {
   const current = options(kind);
   const currentItem = item("123", kind === "node" ? "story" : "issue");
   vi.mocked(getWorkflowActions).mockResolvedValue(current);
@@ -80,7 +80,7 @@ it.each(["node", "state"] as const)("%s 页面动作点击后先读取最新规�
   button.focus();
   await userEvent.keyboard("{Enter}");
   await waitFor(() => expect(invoke).toHaveBeenCalledExactlyOnceWith("open_external_url", { url, newWindow: false }));
-  expect(getWorkflowActions).toHaveBeenNthCalledWith(2, currentItem.id, true);
+  expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(currentItem.id);
   expect(screen.queryByRole("button", { name: "提交" })).toBeNull();
   expect(readDraft(draftKey(itemKey(currentItem), current.actions[0].id))).toBeNull();
   expect(submit).not.toHaveBeenCalled();
@@ -144,13 +144,19 @@ it.each(["node", "state"] as const)("%s 的关联上车版本按云端名称核�
   expect(invoke).not.toHaveBeenCalled();
 });
 
-it("缓存可本地执行但最新规则出现页面字段时，直接跳转而不进入过期表单", async () => {
+it("按缓存进入本地表单，提交前发现新必填页面字段时保留草稿并阻止写入", async () => {
   vi.mocked(getWorkflowActions).mockResolvedValueOnce(localOptions()).mockResolvedValue(options());
-  render(<Workflow item={item()} available busy={false} submit={vi.fn()} />);
+  const submit = vi.fn();
+  render(<Workflow item={item()} available busy={false} submit={submit} />);
   await userEvent.click(await screen.findByRole("button", { name: options().actions[0].label }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledOnce());
-  expect(screen.queryByLabelText("设计文档")).toBeNull();
-  expect(localStorage.length).toBe(0);
+  expect(getWorkflowActions).toHaveBeenCalledOnce();
+  fireEvent.change(screen.getByLabelText("设计文档"), { target: { value: "本机设计稿" } });
+  await userEvent.click(screen.getByRole("button", { name: "提交" }));
+  expect(await screen.findByText(editorExplanation)).toBeTruthy();
+  expect(readDraft(draftKey(itemKey(item()), options().actions[0].id))?.fields.doc).toBe("本机设计稿");
+  expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
+  expect(invoke).not.toHaveBeenCalled();
+  expect(submit).not.toHaveBeenCalled();
 });
 
 it("页面字段与未确认必填配置混合时仍以结构化标记直达飞书，不建立本地草稿", async () => {
@@ -200,12 +206,13 @@ it.each([undefined, "not-a-url", "javascript:alert(1)", "file:///C:/private"])(
   },
 );
 
-it("最新动作消失时保留已有草稿，反馈原动作不可用且不开错页", async () => {
+it("手动重读发现动作消失时保留已有待核实草稿且不开错页", async () => {
   const saved = savePending();
   vi.mocked(getWorkflowActions).mockResolvedValueOnce(options()).mockResolvedValue({ ...options(), version: "v2", actions: [] });
   render(<Workflow item={item()} available busy={false} submit={vi.fn()} />);
-  await userEvent.click(await screen.findByRole("button", { name: options().actions[0].label }));
-  expect(await screen.findByText(/云端流程已变化，原动作已不可用/)).toBeTruthy();
+  await screen.findByRole("button", { name: options().actions[0].label });
+  await userEvent.click(screen.getByRole("button", { name: "重新读取动作" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: options().actions[0].label })).toBeNull());
   expect(screen.getByText(/上次提交结果待核实/)).toBeTruthy();
   expect(screen.getByRole("link", { name: "去飞书核对" }).getAttribute("href")).toBe(url);
   expect(readDraft(saved.key)).toEqual(saved.before);
@@ -213,43 +220,41 @@ it("最新动作消失时保留已有草稿，反馈原动作不可用且不开�
   expect(screen.queryByRole("button", { name: "提交" })).toBeNull();
 });
 
-it("最新动作变为普通权限禁用时不能沿用旧跳转标记", async () => {
+it("手动重读后动作变为普通权限禁用时不能沿用旧跳转标记", async () => {
   const latest = options();
   latest.actions[0] = { ...latest.actions[0], requires_feishu: undefined, manual_fill_required: undefined, disabled_reason: "当前账号没有节点操作权限" };
   vi.mocked(getWorkflowActions).mockResolvedValueOnce(options()).mockResolvedValue(latest);
   render(<Workflow item={item()} available busy={false} submit={vi.fn()} />);
-  await userEvent.click(await screen.findByRole("button", { name: options().actions[0].label }));
-  expect(await screen.findByText("云端动作已不可用，请核对最新提示。已有草稿已保留。")).toBeTruthy();
+  await screen.findByRole("button", { name: options().actions[0].label });
+  await userEvent.click(screen.getByRole("button", { name: "重新读取动作" }));
+  expect(await screen.findByText("当前账号没有节点操作权限")).toBeTruthy();
   expect((screen.getByRole("button", { name: options().actions[0].label }) as HTMLButtonElement).disabled).toBe(true);
   expect(invoke).not.toHaveBeenCalled();
 });
 
-it("动作检测失败保留可用清单与旧草稿，可通过同一按钮重试", async () => {
+it("后续云端请求即使不可用也不阻断已加载页面动作，旧草稿保持原样", async () => {
   const saved = savePending();
   vi.mocked(getWorkflowActions).mockResolvedValueOnce(options()).mockRejectedValueOnce("temporary backend failure").mockResolvedValue(options());
   const submit = vi.fn();
   render(<Workflow item={item()} available busy={false} submit={submit} />);
   await userEvent.click(await screen.findByRole("button", { name: options().actions[0].label }));
-  const error = await screen.findByRole("alert");
-  expect(error.textContent).toBe("动作检查未完成，现有清单和草稿已保留，请重试。");
-  expect(screen.getByText(/上次提交结果待核实/)).toBeTruthy();
-  expect(readDraft(saved.key)).toEqual(saved.before);
-  expect(invoke).not.toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button", { name: options().actions[0].label }));
   await waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+  expect(getWorkflowActions).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText(/上次提交结果待核实/)).toBeTruthy();
   expect(readDraft(saved.key)).toEqual(saved.before);
   expect(submit).not.toHaveBeenCalled();
 });
 
-it("快速双击同一动作只检查和打开一次", async () => {
-  let resolveRead!: (value: WorkflowOptions) => void;
-  vi.mocked(getWorkflowActions).mockResolvedValueOnce(options()).mockImplementationOnce(() => new Promise((resolve) => { resolveRead = resolve; }));
+it("快速双击同一动作只打开一次且不额外读取云端", async () => {
+  let resolveOpen!: () => void;
+  vi.mocked(invoke).mockImplementationOnce(() => new Promise<void>((resolve) => { resolveOpen = resolve; }));
   render(<Workflow item={item()} available busy={false} submit={vi.fn()} />);
   const button = await screen.findByRole("button", { name: options().actions[0].label });
   fireEvent.click(button);
   fireEvent.click(button);
-  expect(getWorkflowActions).toHaveBeenCalledTimes(2);
-  await act(async () => { resolveRead(options()); });
+  expect(getWorkflowActions).toHaveBeenCalledOnce();
+  await act(async () => { resolveOpen(); });
   expect(invoke).toHaveBeenCalledOnce();
   expect(localStorage.length).toBe(0);
 });
@@ -265,7 +270,7 @@ it("打开失败在当前动作旁提供链接重试，不标记为已打开或�
   expect(error.textContent).toBe("打开飞书项目未完成，请重试或使用下方链接打开。");
   expect(error.closest(".workflow-option")?.contains(link)).toBe(true);
   fireEvent.focus(window);
-  expect(getWorkflowActions).toHaveBeenCalledTimes(2);
+  expect(getWorkflowActions).toHaveBeenCalledOnce();
   await userEvent.click(link);
   await waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
   expect(readDraft(saved.key)).toEqual(saved.before);
@@ -287,7 +292,7 @@ it("网页开发模式异步打开被拦截时显示原生链接重试", async (
 
 it("返回飞书后一次只读检查失败仍保留清单、旧pending提示与可重试入口", async () => {
   const saved = savePending();
-  vi.mocked(getWorkflowActions).mockResolvedValueOnce(options()).mockResolvedValueOnce(options()).mockRejectedValueOnce("read failed").mockResolvedValue(options());
+  vi.mocked(getWorkflowActions).mockResolvedValueOnce(options()).mockRejectedValueOnce("read failed").mockResolvedValue(options());
   const submit = vi.fn();
   render(<Workflow item={item()} available busy={false} submit={submit} />);
   await userEvent.click(await screen.findByRole("button", { name: options().actions[0].label }));
@@ -299,7 +304,7 @@ it("返回飞书后一次只读检查失败仍保留清单、旧pending提示与
   expect(screen.getByText(/上次提交结果待核实/)).toBeTruthy();
   expect(readDraft(saved.key)).toEqual(saved.before);
   fireEvent.focus(window);
-  expect(getWorkflowActions).toHaveBeenCalledTimes(3);
+  expect(getWorkflowActions).toHaveBeenCalledTimes(2);
   await userEvent.click(screen.getByRole("button", { name: "重新读取动作" }));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   expect(getWorkflowActions).toHaveBeenLastCalledWith(item().id, true);
@@ -407,13 +412,16 @@ it("旧pending返回检查失败只增加局部提示，重试只读不调用恢
   expect((screen.getByRole("button", { name: "提交" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
-it("缓存页面动作在fresh v2恢复为本地可写时使用v2初值和提交版本", async () => {
+it("手动重读后页面动作恢复为本地可写时使用v2初值和提交版本", async () => {
   const latest = localOptions("v2云端设计稿", "v2");
   vi.mocked(getWorkflowActions).mockResolvedValueOnce(options()).mockResolvedValue(latest);
   const submit = vi.fn().mockResolvedValue({ outcome: "unknown", verified: false });
   render(<Workflow item={item()} available busy={false} submit={submit} />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: options().actions[0].label }));
+  await screen.findByRole("button", { name: options().actions[0].label });
+  await user.click(screen.getByRole("button", { name: "重新读取动作" }));
+  await waitFor(() => expect(screen.queryByText(pageExplanation)).toBeNull());
+  await user.click(screen.getByRole("button", { name: options().actions[0].label }));
   expect((await screen.findByLabelText("设计文档") as HTMLInputElement).value).toBe("v2云端设计稿");
   expect(getWorkflowActions).toHaveBeenCalledTimes(2);
   expect(invoke).not.toHaveBeenCalled();
@@ -441,12 +449,13 @@ it("普通编辑器可见检查与飞书返回焦点共用在途读取，不重�
   expect(getWorkflowActions).toHaveBeenCalledTimes(calls + 1);
 });
 
-it("fresh检测迟到时不能跨事项打开旧页或创建任一事项草稿", async () => {
+it("手动重读迟到时不能跨事项打开旧页或创建任一事项草稿", async () => {
   let resolveRead!: (value: WorkflowOptions) => void;
   vi.mocked(getWorkflowActions).mockResolvedValueOnce(options()).mockImplementationOnce(() => new Promise((resolve) => { resolveRead = resolve; }));
   const submit = vi.fn();
   const view = render(<Workflow item={item()} available busy={false} submit={submit} />);
-  await userEvent.click(await screen.findByRole("button", { name: options().actions[0].label }));
+  await screen.findByRole("button", { name: options().actions[0].label });
+  await userEvent.click(screen.getByRole("button", { name: "重新读取动作" }));
   vi.mocked(getWorkflowActions).mockResolvedValue({ ...options(), item_url: "https://project.feishu.cn/other/story/detail/456" });
   view.rerender(<Workflow item={item("456")} available busy={false} submit={submit} />);
   await waitFor(() => expect(getWorkflowActions).toHaveBeenCalledWith(item("456").id));

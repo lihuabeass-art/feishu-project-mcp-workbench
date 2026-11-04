@@ -85,7 +85,6 @@ it.each([
     const nextAction = { ...action, id, kind };
     vi.mocked(getWorkflowActions)
       .mockResolvedValueOnce(options(nextAction))
-      .mockResolvedValueOnce(options(nextAction))
       .mockResolvedValue(
         options(
           {
@@ -114,6 +113,7 @@ it.each([
     const user = userEvent.setup();
     render(<Workflow item={item} available busy={false} submit={submit} />);
     await user.click(await screen.findByRole("button", { name: action.label }));
+    expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(item.id);
     await user.clear(screen.getByRole("textbox", { name: /^设计稿/ }));
     await user.type(
       screen.getByRole("textbox", { name: /^设计稿/ }),
@@ -207,6 +207,7 @@ it.each([
       }),
     );
     const submitLabel = kind === "progress" ? "同步进度" : "同步日期";
+    expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(item.id);
     if (skip) {
       expect(
         screen.getByText(`已关闭流程操作二次确认，点击「${submitLabel}」将直接执行。`),
@@ -245,7 +246,7 @@ it.each([
 );
 
 it.each(["同事的新设计稿", "", "   "])(
-  "跳过确认仍阻止新云端冲突（%j），展示后再由用户主动提交",
+  "跳过确认只拦截非空云端值冲突（%j），空值按未填写处理",
   async (remote) => {
     saveWorkflowSkipConfirmation(true);
     const submit = vi.fn().mockResolvedValue(result);
@@ -264,16 +265,16 @@ it.each(["同事的新设计稿", "", "   "])(
       ),
     );
     await user.click(screen.getByRole("button", { name: "提交" }));
-    if (remote.trim()) expect(await screen.findByText(remote)).toBeTruthy();
-    else {
-      expect((await screen.findByRole("alert")).textContent).toContain(
-        "云端原值已清空",
-      );
+    if (remote.trim()) {
+      expect(await screen.findByText(remote)).toBeTruthy();
+      expect(submit).not.toHaveBeenCalled();
+      await user.click(screen.getByRole("button", { name: "提交" }));
+    } else {
+      expect(screen.queryByRole("alert")).toBeNull();
       expect(document.querySelector(".workflow-review-comparison")).toBeNull();
     }
-    expect(submit).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "提交" }));
     await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+    expect(submit.mock.calls[0][0]).toMatchObject({ version: "v2", fields: { doc: "本地设计稿" } });
   },
 );
 

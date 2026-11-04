@@ -165,7 +165,7 @@ it("页面必填预检说明在飞书填写并完成流程，满足后仍去飞�
   current = { ...systemOwnerOptions("passed"), version: "owner-v2", item_url: itemUrl };
   current.actions[0].requires_feishu = true;
   fireEvent.focus(window);
-  await waitFor(() => expect(getWorkflowActions).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(getWorkflowActions).toHaveBeenCalledTimes(2));
   expect(screen.queryByText(reason)).toBeNull();
   expect(screen.getByText("此操作所需字段暂无法在本软件中处理。点击上方按钮，即可打开对应的飞书事项，填写并完成流程。")).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "完成设计节点" }));
@@ -576,12 +576,13 @@ it.each([null, "", "   ", "本机新文档"])(
     expect(
       (screen.getByLabelText("实际工时（必填）") as HTMLInputElement).value,
     ).toBe("0");
-    if (draftValue?.trim()) {
-      expect(
-        screen.getByRole("group", { name: "设计文档冲突处理" }),
-      ).toBeTruthy();
-    }
+    expect(getWorkflowActions).toHaveBeenCalledOnce();
     await user.click(screen.getByRole("button", { name: "提交" }));
+    if (draftValue?.trim()) {
+      expect(screen.getByRole("group", { name: "设计文档冲突处理" })).toBeTruthy();
+      expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
+      await user.click(screen.getByRole("button", { name: "提交" }));
+    }
     expect(
       screen.getByRole("region", { name: "提交前二次确认" }).textContent,
     ).toContain(expected);
@@ -795,7 +796,7 @@ it("进入二次确认前等待云端读取，不发送写入且不标记提交�
   vi.mocked(getWorkflowActions).mockImplementation(() => new Promise(() => {}));
   await user.click(screen.getByRole("button", { name: "提交" }));
   expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
-  expect(getWorkflowActions).toHaveBeenCalledTimes(3);
+  expect(getWorkflowActions).toHaveBeenCalledTimes(2);
   expect(getWorkflowActions).toHaveBeenLastCalledWith(item().id, true);
   expect(submit).not.toHaveBeenCalled();
   expect(
