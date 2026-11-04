@@ -97,6 +97,7 @@ export function Workflow({
   const backgroundRead = useRef<number | null>(null);
   const returnCheckRead = useRef<number | null>(null);
   const selectionRead = useRef<number | null>(null);
+  const refreshUnavailableActions = useRef(false);
   const knownPendingActions = useRef({ identity, actions: new Map<string, string>() });
   const editor = useRef({
     action,
@@ -132,6 +133,7 @@ export function Workflow({
     setReturnCheckError("");
     setActionOpenError(null);
     selectionRead.current = null;
+    refreshUnavailableActions.current = false;
     setBlocked(false);
     setPending(false);
     if (!available || !item.id.project_key || !item.id.work_item_type_key)
@@ -247,7 +249,7 @@ export function Workflow({
     if (
       !available ||
       !current.options ||
-      (!current.action && !onReturn) ||
+      (!current.action && !onReturn && !refreshUnavailableActions.current) ||
       current.review ||
       (current.blocked && !onReturn) ||
       current.busy ||
@@ -272,7 +274,9 @@ export function Workflow({
       setReturnCheckError("");
     }
     try {
-      const latest = await getWorkflowActions(item.id, true);
+      const latest = await readCurrentActions(actionId, () =>
+        reads.current === read && identityRef.current === origin && manualFillEpoch.current === epoch,
+      );
       if (
         reads.current !== read ||
         identityRef.current !== origin ||
@@ -291,7 +295,7 @@ export function Workflow({
         return;
       rememberPendingActions(latest);
       const nextAction = latest.actions.find((next) => next.id === actionId);
-      if (fromReturn && (!now.action || now.blocked)) {
+      if (!now.action || (fromReturn && now.blocked)) {
         // 返回检查只更新可展示的云端信息；提交标记和本机编辑快照仍由明确恢复操作处理。
         setOptions(latest);
         if (nextAction) setAction(withWorkflowLabels(nextAction, now.fieldLabels));
@@ -300,13 +304,18 @@ export function Workflow({
             ? "云端已不再提供原动作，草稿和提交标记已保留，请先核对飞书状态。"
             : "",
         );
+        if (!now.action) {
+          setError("");
+        }
         return;
       }
       if (!nextAction) {
+        if (!preserveEditorDraft(origin, now)) return;
+        refreshUnavailableActions.current = true;
         setOptions(latest);
         setAction(null);
         setError(
-          "云端流程已变化，原动作已不可用。草稿已保留，请重新选择动作。",
+          "流程已刷新，原动作已不可用。草稿已保留，请选择当前动作。",
         );
         return;
       }
@@ -360,6 +369,45 @@ export function Workflow({
     }
   }
 
+  async function readCurrentActions(actionId: string | undefined, isCurrent: () => boolean) {
+    const latest = await getWorkflowActions(item.id, true);
+    if (actionId && !latest.actions.some((candidate) => candidate.id === actionId) && isCurrent())
+      return getWorkflowActions(item.id, true);
+    return latest;
+  }
+
+  function preserveEditorDraft(origin: string, current: typeof editor.current) {
+    if (!current.action || !current.options) return true;
+    try {
+      const saved = readDraft(draftKey(origin, current.action.id));
+      if (saved?.pending) {
+        setBlocked(true);
+        setError("该动作已有待核实的提交，本窗口内容未覆盖原草稿，请先核对飞书状态。");
+        return false;
+      }
+      if (!saved && !Object.entries(current.fields).some(
+        ([key, value]) => value !== current.baseFields[key],
+      )) return true;
+      if (saved && !saved.pending && saved.version === current.options.version &&
+        JSON.stringify(saved.fields) === JSON.stringify(current.fields) &&
+        JSON.stringify(saved.base_fields) === JSON.stringify(current.baseFields) &&
+        JSON.stringify(saved.field_labels) === JSON.stringify(current.fieldLabels) &&
+        JSON.stringify(saved.conflicts) === JSON.stringify(current.conflicts)) return true;
+      writeDraft(draftKey(origin, current.action.id), {
+        fields: current.fields,
+        base_fields: current.baseFields,
+        field_labels: current.fieldLabels,
+        conflicts: current.conflicts,
+        version: current.options.version,
+        updated_at: Date.now(),
+      });
+      return true;
+    } catch {
+      setError("草稿保存失败，当前输入仅保留在本次窗口中；请勿关闭页面，稍后重试。");
+      return false;
+    }
+  }
+
   async function selectAction(candidate: WorkflowAction) {
     if (
       !options ||
@@ -408,6 +456,7 @@ export function Workflow({
   }
   function choose(next: WorkflowAction, values: Record<string, string> = {}, source = options) {
     if (!source || busy || flight.current) return;
+    refreshUnavailableActions.current = false;
     reads.current += 1;
     backgroundRead.current = null;
     setError("");
@@ -535,15 +584,19 @@ export function Workflow({
     setPending(true);
     setError("");
     try {
-      const latest = await getWorkflowActions(item.id, true);
+      const latest = await readCurrentActions(action.id, () =>
+        identityRef.current === origin && reads.current === read,
+      );
       if (identityRef.current !== origin || reads.current !== read) return;
       const nextAction = latest.actions.find((next) => next.id === action.id);
       if (!nextAction) {
+        if (!preserveEditorDraft(origin, editor.current)) return;
+        refreshUnavailableActions.current = true;
         setOptions(latest);
         setAction(null);
         setReview(null);
         setError(
-          "云端流程已变化，原动作已不可用。草稿已保留，请重新选择动作。",
+          "流程已刷新，原动作已不可用。草稿已保留，请选择当前动作。",
         );
         return;
       }
@@ -802,10 +855,13 @@ export function Workflow({
     setPending(true);
     setError("");
     try {
-      const latest = await getWorkflowActions(item.id, true);
+      const latest = await readCurrentActions(actionId, () =>
+        identityRef.current === origin && reads.current === read,
+      );
       if (identityRef.current !== origin || reads.current !== read) return;
       const nextAction = latest.actions.find((next) => next.id === actionId);
       if (!nextAction) {
+        refreshUnavailableActions.current = true;
         setOptions(latest);
         setAction(null);
         setReview(null);

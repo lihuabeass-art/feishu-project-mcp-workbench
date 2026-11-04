@@ -806,6 +806,95 @@ it("重开后提交前发现动作失效则保留完整草稿并显示最新动�
   expect(readDraft(key)).toEqual(saved);
 });
 
+it("提交前动作暂时缺失时自动复核并继续核对，保留草稿且不发送写入", async () => {
+  const user = userEvent.setup();
+  const submit = vi.fn();
+  render(<Workflow item={item} available busy={false} submit={submit} />);
+  await user.click(await screen.findByRole("button", { name: "完成节点" }));
+  fireEvent.change(screen.getByLabelText("代码版本号"), { target: { value: "本机修改" } });
+  vi.mocked(getWorkflowActions)
+    .mockResolvedValueOnce({ version: "v2", actions: [] })
+    .mockResolvedValueOnce(options("原值", "v3"));
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  expect(await screen.findByRole("region", { name: "提交前二次确认" })).toBeTruthy();
+  expect(readDraft(key)?.fields.shared).toBe("本机修改");
+  expect(getWorkflowActions).toHaveBeenCalledTimes(3);
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("动作确实失效后展示最新列表，聚焦时再次刷新且保留原草稿", async () => {
+  const user = userEvent.setup();
+  const submit = vi.fn();
+  render(<Workflow item={item} available busy={false} submit={submit} />);
+  await user.click(await screen.findByRole("button", { name: "完成节点" }));
+  fireEvent.change(screen.getByLabelText("代码版本号"), { target: { value: "本机修改" } });
+  const saved = readDraft(key);
+  remote = { version: "v2", actions: [] };
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("流程已刷新");
+  expect(screen.getByText("当前没有可执行的动作。")).toBeTruthy();
+  fireEvent.focus(window);
+  await waitFor(() => expect(getWorkflowActions).toHaveBeenCalledTimes(4));
+  remote = options("新云端值", "v3");
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  fireEvent.focus(window);
+  expect(await screen.findByRole("button", { name: "完成节点" })).toBeTruthy();
+  expect(screen.queryByText(/原动作已不可用/)).toBeNull();
+  expect(readDraft(key)).toEqual(saved);
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("草稿存储失败且动作失效时保留内存中的编辑内容（已有草稿：%s）", async (existingDraft) => {
+  const user = userEvent.setup();
+  const submit = vi.fn();
+  render(<Workflow item={item} available busy={false} submit={submit} />);
+  await user.click(await screen.findByRole("button", { name: "完成节点" }));
+  if (existingDraft) fireEvent.change(screen.getByLabelText("代码版本号"), { target: { value: "此前草稿" } });
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("存储失败"); });
+  const value = existingDraft ? "原值" : "仅在内存";
+  fireEvent.change(screen.getByLabelText("代码版本号"), { target: { value } });
+  remote = { version: "v2", actions: [] };
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("草稿保存失败");
+  expect((screen.getByLabelText("代码版本号") as HTMLInputElement).value).toBe(value);
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("动作缺失后的复核读取失败时保留编辑器和草稿", async () => {
+  const user = userEvent.setup();
+  const submit = vi.fn();
+  render(<Workflow item={item} available busy={false} submit={submit} />);
+  await user.click(await screen.findByRole("button", { name: "完成节点" }));
+  fireEvent.change(screen.getByLabelText("代码版本号"), { target: { value: "本机修改" } });
+  const saved = readDraft(key);
+  vi.mocked(getWorkflowActions)
+    .mockResolvedValueOnce({ version: "v2", actions: [] })
+    .mockRejectedValueOnce(new Error("复核读取失败"));
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("复核读取失败");
+  expect((screen.getByLabelText("代码版本号") as HTMLInputElement).value).toBe("本机修改");
+  expect(readDraft(key)).toEqual(saved);
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("动作失效时不覆盖另一窗口留下的待核实提交标记", async () => {
+  const user = userEvent.setup();
+  const submit = vi.fn();
+  render(<Workflow item={item} available busy={false} submit={submit} />);
+  await user.click(await screen.findByRole("button", { name: "完成节点" }));
+  fireEvent.change(screen.getByLabelText("代码版本号"), { target: { value: "本窗口内容" } });
+  const saved = readDraft(key)!;
+  writeDraft(key, { ...saved, pending: { item_id: item.id, action_id: "a", version: "v1", request_id: "other-window", fields: { shared: "另一窗口内容" } } });
+  const pendingDraft = readDraft(key);
+  remote = { version: "v2", actions: [] };
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("已有待核实的提交");
+  expect(readDraft(key)).toEqual(pendingDraft);
+  expect((screen.getByLabelText("代码版本号") as HTMLInputElement).value).toBe("本窗口内容");
+  expect((screen.getByRole("button", { name: "提交" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(submit).not.toHaveBeenCalled();
+});
+
 it("重开后的后台读取期间切换事项，迟到的旧响应不改写任一事项的草稿", async () => {
   const user = userEvent.setup();
   const submit = vi.fn();
