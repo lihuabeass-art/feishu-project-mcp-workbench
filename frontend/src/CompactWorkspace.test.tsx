@@ -698,7 +698,7 @@ describe("清单模式", () => {
       await user.click(screen.getByRole("button", { name: "返回清单" }));
       expect(alerts.contains(feedback)).toBe(true);
       await user.click(within(alerts as HTMLElement).getByRole("button", {
-        name: outcome === "verified" && !refreshFails ? "关闭结果提示" : "关闭错误提示",
+        name: /关闭.+的流程操作提示/,
       }));
       expect(document.querySelector(".list-mode-alerts")).toBeNull();
     },

@@ -88,7 +88,7 @@ it.each([true, false])("同步后当前详情自动回读，其他事项不干�
   const review = screen.getByRole("region", { name: "提交前二次确认" });
   expect(review.textContent).toContain("正在编辑的草稿");
   const reviewWorkflowReads = vi.mocked(getWorkflowActions).mock.calls.length;
-  expect(reviewWorkflowReads).toBe(workflowReads + 2);
+  expect(reviewWorkflowReads).toBe(workflowReads + 1);
   const changedAgain = { ...changedCurrent, detail_revision: "v3" };
   snapshot = { ...snapshot, items: [changedAgain, changedOther] };
   detail = { ...detail, data: { ...detail.data,

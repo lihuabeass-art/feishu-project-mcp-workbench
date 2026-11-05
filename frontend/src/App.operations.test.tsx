@@ -112,6 +112,41 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
+it.each([ ["full", true], ["full", false], ["compact", true], ["compact", false] ] as const)(
+  "%s 并行流程独立提交与反馈，先完成请求%s不会释放另一请求的上下文保护", async (mode, firstDoneFirst) => {
+    const data = snapshot();
+    enableWorkflow("verified", data);
+    data.items.push({ ...data.items[0], id: { ...data.items[0].id, work_item_id: "2" }, name: "另一条需求" });
+    data.total = 2;
+    const first = deferred<WorkflowResult>(), second = deferred<WorkflowResult>();
+    vi.mocked(executeWorkflowAction).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    await ready(mode);
+    await submitWorkflow();
+    click(mode === "compact" ? "返回清单" : "关闭详情");
+    click(/另一条需求/);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "完成研发节点" }));
+    await user.click(screen.getByRole("button", { name: "提交" }));
+    await user.click(screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"));
+    await user.click(screen.getByRole("button", { name: "确认提交并执行" }));
+    expect(executeWorkflowAction).toHaveBeenCalledTimes(2);
+    const unknown: WorkflowResult = { outcome: "unknown", verified: false, message: "第一项结果待核实",
+      request_id: "first", action_id: "confirm", resynced: false };
+    const success: WorkflowResult = { ...unknown, outcome: "verified", verified: true, message: "第二项已核验成功" };
+    await act(async () => { if (firstDoneFirst) first.resolve(unknown); else second.resolve(success); });
+    if (mode === "compact") await user.click(screen.getByRole("button", { name: "切换到完整模式" }));
+    click("连接与配置");
+    expect((screen.getByLabelText("MCP Token") as HTMLInputElement).disabled).toBe(true);
+    await expect(Promise.resolve().then(() => updater.prepareInstall())).rejects.toThrow("当前操作尚未结束");
+    await act(async () => { if (firstDoneFirst) second.resolve(success); else first.resolve(unknown); });
+    await waitFor(() => expect((screen.getByLabelText("MCP Token") as HTMLInputElement).disabled).toBe(false));
+    expect(screen.getByText("第一项结果待核实")).toBeTruthy();
+    expect(screen.getByText("第二项已核验成功")).toBeTruthy();
+    expect(syncTodos).toHaveBeenCalledOnce();
+    expect(executeWorkflowAction).toHaveBeenCalledTimes(2);
+  },
+);
+
 it("流程核验成功后刷新全部可执行启用来源，详情回读新状态且不被普通同步文案覆盖", async () => {
   const data = snapshot();
   data.sources.push({ ...data.sources[0], id: "b" }, { ...data.sources[0], id: "disabled", enabled: false }, { ...data.sources[0], id: "unavailable", executable: false });

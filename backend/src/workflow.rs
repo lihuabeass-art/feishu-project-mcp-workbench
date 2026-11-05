@@ -142,6 +142,8 @@ pub struct WorkflowAction {
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkflowOptions {
     pub version: String,
+    /// 各动作独立校验；无关节点变化不使当前填写失效。
+    pub action_versions: BTreeMap<String, String>,
     /// 同一轮已读事项的飞书项目详情页；无法确认完整身份或域名时省略。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_url: Option<String>,
@@ -252,6 +254,7 @@ impl Discovery {
         }.view.clone()).collect();
         WorkflowOptions {
             version: self.version.clone(),
+            action_versions: self.entries.iter().map(|entry| (entry.view.id.clone(), action_fingerprint(entry))).collect(),
             item_url: self.item_url.clone(),
             actions,
         }
@@ -876,6 +879,17 @@ fn fingerprint(entries: &[DiscoveredAction]) -> String {
     format!("v1:{:016x}", fnv1a64(&canonical))
 }
 
+fn action_fingerprint(entry: &DiscoveredAction) -> String {
+    format!("action:{}", fingerprint(std::slice::from_ref(entry)))
+}
+
+fn matches_version(discovery: &Discovery, request: &WorkflowRequest) -> bool {
+    // 旧客户端及旧草稿继续使用整份快照校验，不放宽其冲突保护。
+    discovery.version == request.version || discovery.entries.iter()
+        .find(|entry| entry.view.id == request.action_id)
+        .is_some_and(|entry| action_fingerprint(entry) == request.version)
+}
+
 /// FNV-1a 64 位。只当快照指纹用（比对用），不是安全散列，所以不引第三方依赖。
 fn fnv1a64(text: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -888,19 +902,19 @@ fn fnv1a64(text: &str) -> u64 {
 
 // ---------------------------------------------------------------- 执行
 
-// 在重新发现动作之前占用事项，避免同进程的不同 request_id 同时使用旧快照。
+// 同一动作拒绝重复提交；同事项的不同动作由 item_access 排队后各自重新校验。
 static EXECUTING_ITEMS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 struct ItemExecution(String);
 impl ItemExecution {
-    fn acquire(id: &WorkItemId) -> Result<Self, BackendError> {
-        let key = item_key(id);
+    fn acquire(id: &WorkItemId, action_id: &str) -> Result<Self, BackendError> {
+        let key = serde_json::to_string(&(item_key(id), action_id)).unwrap();
         if !EXECUTING_ITEMS
             .lock()
             .expect("workflow mutex poisoned")
             .insert(key.clone())
         {
             return Err(BackendError::conflict(
-                "该事项已有提交正在执行，请等待结果后再操作",
+                "该流程操作已有提交正在执行，请等待结果后再操作",
             ));
         }
         Ok(Self(key))
@@ -1076,10 +1090,10 @@ pub fn execute(
             "request_id 不能为空：它是幂等键，缺了就无从去重",
         ));
     }
-    let _execution = ItemExecution::acquire(&request.item_id)?;
+    let _execution = ItemExecution::acquire(&request.item_id, &request.action_id)?;
     let detail_access = crate::remote::runtime()?.block_on(crate::item_access::lock_workflow(&session.store, &request.item_id));
     let discovery = discover_with_freshness(session, &request.item_id, true)?;
-    if discovery.version != request.version {
+    if !matches_version(&discovery, request) {
         return Err(BackendError::conflict(format!(
             "远端流程已变化（当前 {}，界面持有 {}），请重新读取动作后再执行",
             discovery.version, request.version
@@ -1204,7 +1218,7 @@ pub fn execute(
 
     // 数据库占用覆盖共用缓存的进程；占用后再核对，避免发现与登记之间的旧快照。
     let current = discover_with_freshness(session, &request.item_id, true).and_then(|latest| {
-        if latest.version == request.version {
+        if matches_version(&latest, request) {
             Ok(())
         } else {
             Err(BackendError::conflict(
@@ -1496,21 +1510,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn same_item_execution_is_exclusive_and_released_on_drop() {
+    fn same_action_execution_is_exclusive_and_other_actions_remain_available() {
         let id = WorkItemId {
             project_key: Some("lock-test".into()),
             work_item_type_key: Some("story".into()),
             work_item_id: "1".into(),
         };
-        let first = ItemExecution::acquire(&id).unwrap();
-        assert!(ItemExecution::acquire(&id).is_err());
+        let first = ItemExecution::acquire(&id, "node:confirm:n1").unwrap();
+        assert!(ItemExecution::acquire(&id, "node:confirm:n1").is_err());
+        assert!(ItemExecution::acquire(&id, "node:confirm:n2").is_ok());
         let other = WorkItemId {
             project_key: Some("other-lock-test".into()),
             ..id.clone()
         };
-        assert!(ItemExecution::acquire(&other).is_ok());
+        assert!(ItemExecution::acquire(&other, "node:confirm:n1").is_ok());
         drop(first);
-        assert!(ItemExecution::acquire(&id).is_ok());
+        assert!(ItemExecution::acquire(&id, "node:confirm:n1").is_ok());
     }
 
     fn labels() -> BTreeMap<String, String> {

@@ -939,10 +939,9 @@ describe("工作台交互", () => {
     await user.click(screen.getByRole("button", { name: "提交" }));
     await user.click(await screen.findByLabelText("我已核对填写内容，理解提交后的修改限制"));
     await user.click(screen.getByRole("button", { name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/ }));
-    expect(await screen.findByRole("status")).toHaveProperty(
-      "textContent",
-      "回滚已核验",
-    );
+    const feedback = await screen.findByRole("status");
+    expect(feedback.textContent).toContain("回滚已核验");
+    expect(feedback.textContent).toContain("需求甲");
     expect(executeWorkflowAction).toHaveBeenCalledOnce();
     expect(executeWorkflowAction).toHaveBeenCalledWith(
       expect.objectContaining({

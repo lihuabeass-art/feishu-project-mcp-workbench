@@ -393,7 +393,7 @@ it("可选说明留空时确认页显示实际保留的云端内容，本机修�
   expect(submit.mock.calls[0][0].fields).toEqual({ doc: " 新版本 " });
 });
 
-it("确认页使用提交前刚读取的完整云端快照，迟到的旧响应不回退未修改的估分", async () => {
+it("确认页使用当前完整编辑快照，迟到的后台响应不改写未修改的估分", async () => {
   const submit = vi
     .fn()
     .mockResolvedValue({ outcome: "verified", verified: true });
@@ -423,15 +423,15 @@ it("确认页使用提交前刚读取的完整云端快照，迟到的旧响应�
   vi.mocked(getWorkflowActions).mockResolvedValue(latest);
   await user.click(screen.getByRole("button", { name: "提交" }));
   await screen.findByRole("region", { name: "提交前二次确认" });
-  expect(getWorkflowActions).toHaveBeenCalledTimes(3);
-  expect(within(reviewRow("估分 · 甲")).getByText("2")).toBeTruthy();
-  await act(async () => resolve(options()));
-  expect(within(reviewRow("估分 · 甲")).getByText("2")).toBeTruthy();
-  expect(within(reviewRow("估分 · 甲")).queryByText("1")).toBeNull();
+  expect(getWorkflowActions).toHaveBeenCalledTimes(2);
+  expect(within(reviewRow("估分 · 甲")).getByText("1")).toBeTruthy();
+  await act(async () => resolve(latest));
+  expect(within(reviewRow("估分 · 甲")).getByText("1")).toBeTruthy();
+  expect(within(reviewRow("估分 · 甲")).queryByText("2")).toBeNull();
   await confirm(user);
   await waitFor(() => expect(submit).toHaveBeenCalledOnce());
   expect(submit.mock.calls[0][0]).toMatchObject({
-    version: "v2",
+    version: "v1",
     fields: { doc: "新版本" },
   });
 });

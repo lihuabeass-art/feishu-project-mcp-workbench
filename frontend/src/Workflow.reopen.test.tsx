@@ -319,13 +319,13 @@ it("云端估分原本为空时，填写本机值不提示云端修改", async (
 
 it.each([
   ["切回窗口", "1"],
-  ["提交前检查", "1"],
+  ["可见检查", "1"],
   ["切回窗口", "0"],
-  ["提交前检查", "0"],
+  ["可见检查", "0"],
   ["切回窗口", ""],
-  ["提交前检查", ""],
+  ["可见检查", ""],
   ["切回窗口", " \n "],
-  ["提交前检查", " \n "],
+  ["可见检查", " \n "],
 ])(
   "%s 发现负责人估分云端变为「%s」时保留本机值，空值不提示清空，其他负责人同值不重复写入",
   async (trigger, value) => {
@@ -342,7 +342,7 @@ it.each([
     }
     remote = estimates(value, "1.5", "v2");
     if (trigger === "切回窗口") fireEvent.focus(window);
-    else await user.click(screen.getByRole("button", { name: "提交" }));
+    else fireEvent(document, new Event("visibilitychange"));
     if (value.trim()) {
       const conflict = await screen.findByRole("group", {
         name: "估分 · 甲冲突处理",
@@ -373,20 +373,13 @@ it.each([
     expect(
       screen.queryByRole("group", { name: "估分 · 乙云端对照" }),
     ).toBeNull();
-    if (trigger === "提交前检查" && !value.trim()) {
-      // 云端空值不制造无提示的首次提交阻断。
-      expect(
-        screen.getByRole("region", { name: "提交前二次确认" }),
-      ).toBeTruthy();
-    } else {
-      expect(
-        (screen.getByLabelText("估分 · 甲") as HTMLInputElement).value,
-      ).toBe("1.5");
-      expect(
-        screen.queryByRole("region", { name: "提交前二次确认" }),
-      ).toBeNull();
-      await user.click(screen.getByRole("button", { name: "提交" }));
-    }
+    expect(
+      (screen.getByLabelText("估分 · 甲") as HTMLInputElement).value,
+    ).toBe("1.5");
+    expect(
+      screen.queryByRole("region", { name: "提交前二次确认" }),
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "提交" }));
     await screen.findByRole("region", { name: "提交前二次确认" });
     expect(readDraft(key)?.fields).toEqual({
       "points:0": "1.5",
@@ -407,7 +400,7 @@ it.each([
     });
   },
 );
-it("退出表单后去飞书修改，再次进入直接恢复草稿，提交时再检查真实冲突", async () => {
+it("退出表单后去飞书修改，再次进入直接恢复草稿，后台检查真实冲突", async () => {
   const submit = vi.fn();
   const user = userEvent.setup();
   render(<Workflow item={item} available busy={false} submit={submit} />);
@@ -422,7 +415,7 @@ it("退出表单后去飞书修改，再次进入直接恢复草稿，提交时�
   await user.click(screen.getByRole("button", { name: "完成节点" }));
   expect(getWorkflowActions).toHaveBeenCalledOnce();
   expect(screen.queryByRole("group", { name: "代码版本号冲突处理" })).toBeNull();
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect(
     (await screen.findByRole("group", { name: "代码版本号冲突处理" }))
       .textContent,
@@ -434,7 +427,7 @@ it("退出表单后去飞书修改，再次进入直接恢复草稿，提交时�
   expect(submit).not.toHaveBeenCalled();
 });
 
-it("关闭事项后重开保留草稿，连续提交前均能识别新的云端冲突", async () => {
+it("关闭事项后重开保留草稿，后续后台检查仍能识别新的云端冲突", async () => {
   const user = userEvent.setup();
   const submit = vi.fn();
   const view = render(
@@ -450,7 +443,7 @@ it("关闭事项后重开保留草稿，连续提交前均能识别新的云端�
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
   expect(getWorkflowActions).toHaveBeenCalledTimes(2);
   expect(screen.queryByRole("group", { name: "代码版本号冲突处理" })).toBeNull();
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect(
     (await screen.findByRole("group", { name: "代码版本号冲突处理" }))
       .textContent,
@@ -458,7 +451,8 @@ it("关闭事项后重开保留草稿，连续提交前均能识别新的云端�
   await user.click(screen.getByRole("button", { name: "返回，保留草稿" }));
   remote = options("前端v2", "v3");
   await user.click(screen.getByRole("button", { name: "完成节点" }));
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
+  await waitFor(() => expect(readDraft(key)?.version).toBe("v3"));
   expect(
     (await screen.findByRole("group", { name: "代码版本号冲突处理" }))
       .textContent,
@@ -566,7 +560,7 @@ it("可选工时清空后沿用最新云端值，不再显示冲突；重新填�
   expect(submit.mock.calls[0][0].fields).toEqual({ shared: "本机说明" });
 });
 
-it("重开不受后续读取失败阻断，提交检查失败保留草稿，重试后显示最新冲突", async () => {
+it("重开不受后续读取失败阻断，后台检查失败保留草稿，恢复后显示最新冲突", async () => {
   const user = userEvent.setup();
   const submit = vi.fn();
   render(<Workflow item={item} available busy={false} submit={submit} />);
@@ -585,13 +579,13 @@ it("重开不受后续读取失败阻断，提交检查失败保留草稿，重�
   expect(getWorkflowActions).toHaveBeenCalledOnce();
   expect((screen.getByLabelText("代码版本号") as HTMLInputElement).value).toBe("本机修改");
   expect(screen.queryByRole("alert")).toBeNull();
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect((await screen.findByRole("alert")).textContent).toContain("读取失败");
   expect(readDraft(key)).toEqual(saved);
   expect(localStorage.getItem(key)).toBe(original);
   expect((screen.getByRole("button", { name: "提交" }) as HTMLButtonElement).disabled).toBe(false);
   remote = options("云端修改", "v2");
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect(
     (await screen.findByRole("group", { name: "代码版本号冲突处理" }))
       .textContent,
@@ -722,7 +716,7 @@ it("没有基线的旧草稿直接恢复并保留未知起点，后续检查新�
   ).toContain("云端新值");
 });
 
-it("读取期间返回再打开同一节点不重复检查，旧响应不覆盖草稿且提交仍读取最新值", async () => {
+it("读取期间返回再打开同一节点不重复检查，旧响应不覆盖草稿且后台仍可读取最新值", async () => {
   const user = userEvent.setup();
   render(<Workflow item={item} available busy={false} submit={vi.fn()} />);
   const open = await screen.findByRole("button", { name: "完成节点" });
@@ -745,7 +739,7 @@ it("读取期间返回再打开同一节点不重复检查，旧响应不覆盖�
   expect(screen.queryByRole("group", { name: "代码版本号冲突处理" })).toBeNull();
   await act(async () => resolve(options("迟到旧值", "v2")));
   expect(readDraft(key)?.base_fields?.shared).toBe("原值");
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect(
     (await screen.findByRole("group", { name: "代码版本号冲突处理" }))
       .textContent,
@@ -756,7 +750,7 @@ it("读取期间返回再打开同一节点不重复检查，旧响应不覆盖�
   );
 });
 
-it("直接进入表单后focus读取未完成时提交仍独立检查，旧响应不能覆盖二次确认", async () => {
+it("直接进入表单后focus读取未完成时仍直接确认，旧响应不能覆盖二次确认", async () => {
   const user = userEvent.setup();
   const submit = vi.fn();
   render(<Workflow item={item} available busy={false} submit={submit} />);
@@ -774,8 +768,8 @@ it("直接进入表单后focus读取未完成时提交仍独立检查，旧响�
   remote = options("原值", "v2");
   await user.click(screen.getByRole("button", { name: "提交" }));
   await screen.findByRole("region", { name: "提交前二次确认" });
-  expect(readDraft(key)?.version).toBe("v2");
-  expect(getWorkflowActions).toHaveBeenCalledTimes(3);
+  expect(readDraft(key)?.version).toBe("v1");
+  expect(getWorkflowActions).toHaveBeenCalledTimes(2);
   await act(async () => resolve(options("迟到旧值", "v1")));
   expect(readDraft(key)?.base_fields?.shared).toBe("原值");
   expect(readDraft(key)?.fields.hours).toBe("3");
@@ -785,7 +779,7 @@ it("直接进入表单后focus读取未完成时提交仍独立检查，旧响�
   expect(submit).not.toHaveBeenCalled();
 });
 
-it("重开后提交前发现动作失效则保留完整草稿并显示最新动作列表", async () => {
+it("重开后后台发现动作失效则保留完整草稿并显示最新动作列表", async () => {
   const user = userEvent.setup();
   render(<Workflow item={item} available busy={false} submit={vi.fn()} />);
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
@@ -797,7 +791,7 @@ it("重开后提交前发现动作失效则保留完整草稿并显示最新动�
   remote = { version: "v2", actions: [] };
   await user.click(screen.getByRole("button", { name: "完成节点" }));
   expect(getWorkflowActions).toHaveBeenCalledOnce();
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect((await screen.findByRole("alert")).textContent).toContain(
     "原动作已不可用",
   );
@@ -806,7 +800,7 @@ it("重开后提交前发现动作失效则保留完整草稿并显示最新动�
   expect(readDraft(key)).toEqual(saved);
 });
 
-it("提交前动作暂时缺失时自动复核并继续核对，保留草稿且不发送写入", async () => {
+it("后台发现动作暂时缺失时自动复核并继续核对，保留草稿且不发送写入", async () => {
   const user = userEvent.setup();
   const submit = vi.fn();
   render(<Workflow item={item} available busy={false} submit={submit} />);
@@ -815,6 +809,8 @@ it("提交前动作暂时缺失时自动复核并继续核对，保留草稿且�
   vi.mocked(getWorkflowActions)
     .mockResolvedValueOnce({ version: "v2", actions: [] })
     .mockResolvedValueOnce(options("原值", "v3"));
+  fireEvent.focus(window);
+  await waitFor(() => expect(readDraft(key)?.version).toBe("v3"));
   await user.click(screen.getByRole("button", { name: "提交" }));
   expect(await screen.findByRole("region", { name: "提交前二次确认" })).toBeTruthy();
   expect(readDraft(key)?.fields.shared).toBe("本机修改");
@@ -830,7 +826,7 @@ it("动作确实失效后展示最新列表，聚焦时再次刷新且保留原�
   fireEvent.change(screen.getByLabelText("代码版本号"), { target: { value: "本机修改" } });
   const saved = readDraft(key);
   remote = { version: "v2", actions: [] };
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect((await screen.findByRole("alert")).textContent).toContain("流程已刷新");
   expect(screen.getByText("当前没有可执行的动作。")).toBeTruthy();
   fireEvent.focus(window);
@@ -854,7 +850,7 @@ it.each([false, true])("草稿存储失败且动作失效时保留内存中的�
   const value = existingDraft ? "原值" : "仅在内存";
   fireEvent.change(screen.getByLabelText("代码版本号"), { target: { value } });
   remote = { version: "v2", actions: [] };
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect((await screen.findByRole("alert")).textContent).toContain("草稿保存失败");
   expect((screen.getByLabelText("代码版本号") as HTMLInputElement).value).toBe(value);
   expect(submit).not.toHaveBeenCalled();
@@ -870,7 +866,7 @@ it("动作缺失后的复核读取失败时保留编辑器和草稿", async () =
   vi.mocked(getWorkflowActions)
     .mockResolvedValueOnce({ version: "v2", actions: [] })
     .mockRejectedValueOnce(new Error("复核读取失败"));
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect((await screen.findByRole("alert")).textContent).toContain("复核读取失败");
   expect((screen.getByLabelText("代码版本号") as HTMLInputElement).value).toBe("本机修改");
   expect(readDraft(key)).toEqual(saved);
@@ -887,7 +883,7 @@ it("动作失效时不覆盖另一窗口留下的待核实提交标记", async (
   writeDraft(key, { ...saved, pending: { item_id: item.id, action_id: "a", version: "v1", request_id: "other-window", fields: { shared: "另一窗口内容" } } });
   const pendingDraft = readDraft(key);
   remote = { version: "v2", actions: [] };
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect((await screen.findByRole("alert")).textContent).toContain("已有待核实的提交");
   expect(readDraft(key)).toEqual(pendingDraft);
   expect((screen.getByLabelText("代码版本号") as HTMLInputElement).value).toBe("本窗口内容");

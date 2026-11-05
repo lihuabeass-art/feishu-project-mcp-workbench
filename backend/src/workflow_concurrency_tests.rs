@@ -177,6 +177,67 @@ fn execute_background(session: Arc<Session>, request: WorkflowRequest) -> mpsc::
     receive
 }
 
+struct IndependentNodes {
+    source: Arc<ConcurrentSource>,
+    other_progress: AtomicUsize,
+}
+
+#[async_trait]
+impl TodoSource for Arc<IndependentNodes> {
+    async fn describe(&self) -> Result<ConnectionInfo, BackendError> { unreachable!() }
+    async fn close(&mut self) {}
+    async fn call_tool(&self, tool: &str, args: &Map<String, Value>) -> Result<ToolResultPayload, BackendError> {
+        if tool == "update_node" && args["node_id"] == "independent" {
+            let value = args["fields"][0]["field_value"].as_str().unwrap().parse::<f64>().unwrap();
+            self.other_progress.store((value * 100.0).round() as usize, Ordering::SeqCst);
+            return Ok(ToolResultPayload::from_text("success"));
+        }
+        if tool == "get_node_detail" {
+            return Ok(ToolResultPayload::from_json(json!({"list":[
+                {"basic":{"node_key":"n1","name":"研发","status":"doing"},
+                 "form_items":[{"field_key":"node_progress","field_type":"number","value":self.source.progress.load(Ordering::SeqCst) as f64 / 100.0}]},
+                {"basic":{"node_key":"independent","name":"测试","status":"doing"},
+                 "form_items":[{"field_key":"node_progress","field_type":"number","value":self.other_progress.load(Ordering::SeqCst) as f64 / 100.0}]}
+            ],"pagination":{"has_more":false}})));
+        }
+        self.source.call_tool(tool, args).await
+    }
+}
+
+#[test]
+fn independent_actions_queue_and_verify_their_own_snapshot_without_blocking_each_other() {
+    let (session, source, installed, dir) = setup();
+    drop(installed);
+    let nodes = Arc::new(IndependentNodes { source: source.clone(), other_progress: AtomicUsize::new(0) });
+    let installed = crate::remote::install_test_client(&session.config, &session.credential().unwrap(), Box::new(nodes.clone()));
+    let item_id = identity(&source);
+    let options = actions(&session, &item_id).unwrap();
+    let make_request = |node: &str, value: &str| {
+        let action_id = format!("node:progress:{node}");
+        let action = options.actions.iter().find(|action| action.id == action_id).unwrap();
+        WorkflowRequest { item_id: item_id.clone(), version: options.action_versions[&action_id].clone(),
+            request_id: format!("parallel-{node}"), action_id,
+            fields: BTreeMap::from([(action.fields[0].key.clone(), value.into())]) }
+    };
+    let one = make_request("n1", "75");
+    let two = make_request("independent", "40");
+    source.pause_write.store(true, Ordering::SeqCst);
+    let first = execute_background(session.clone(), one.clone());
+    signal(&source.write_started);
+    assert!(execute(&session, &WorkflowRequest { request_id: "duplicate".into(), ..one }).is_err());
+    let second = execute_background(session.clone(), two.clone());
+    assert!(matches!(second.recv_timeout(Duration::from_millis(50)), Err(mpsc::RecvTimeoutError::Timeout)));
+    source.write_gate.add_permits(1);
+    assert!(first.recv_timeout(Duration::from_secs(5)).unwrap().unwrap().verified);
+    assert!(second.recv_timeout(Duration::from_secs(5)).unwrap().unwrap().verified);
+    assert_eq!(nodes.other_progress.load(Ordering::SeqCst), 40);
+    assert_eq!(source.writes.load(Ordering::SeqCst), 1);
+    // 同一动作自己的字段变化仍拒绝旧快照，不增加写入。
+    assert!(execute(&session, &WorkflowRequest { request_id: "stale".into(), ..two }).is_err());
+    assert_eq!(nodes.other_progress.load(Ordering::SeqCst), 40);
+    drop(installed); drop(session); std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn signal(notify: &Notify) {
     crate::remote::runtime().unwrap().block_on(async {
         tokio::time::timeout(Duration::from_secs(3), notify.notified()).await.expect("未收到测试阶段信号")

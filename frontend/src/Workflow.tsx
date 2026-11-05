@@ -18,6 +18,7 @@ import type { CreationForm } from "./creation";
 import { hasInvalidLocalCreationImages, localCreationImageIds, replaceCreationImageReference, uploadCreationImage } from "./creationImages";
 import { layoutFields, ownerCell, scheduleDatePairs, type ScheduleDatePair } from "./workflowLayout";
 import { loadWorkflowSkipConfirmation, useWorkflowSkipConfirmation } from "./workflowPreferences";
+import { useWorkflowSubmissions, workflowSubmissions as submissions } from "./workflowSubmissions";
 import {
   changedFields,
   draftKey,
@@ -75,7 +76,10 @@ export function Workflow({
   const [review, setReview] = useState<WorkflowRequest | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [pending, setPending] = useState(false);
+  const executing = useWorkflowSubmissions();
   const [blocked, setBlocked] = useState(false);
+  const [rejectedConflictActions, setRejectedConflictActions] = useState<string[]>([]);
+  const rejectedConflict = !!action && rejectedConflictActions.includes(action.id);
   const [draftStatus, setDraftStatus] = useState("");
   const [error, setError] = useState("");
   const [returnCheckError, setReturnCheckError] = useState("");
@@ -88,6 +92,7 @@ export function Workflow({
   const workflowRef = useRef<HTMLElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const identity = itemKey(item);
+  const executingAction = !!action && executing.has(draftKey(identity, action.id));
   const identityRef = useRef(identity);
   identityRef.current = identity;
   const optionsIdentity = useRef(identity);
@@ -163,6 +168,7 @@ export function Workflow({
     manualFillEpoch.current += 1;
     manualFillReturn.current = null;
     knownPendingActions.current = { identity, actions: new Map() };
+    setRejectedConflictActions([]);
     return () => {
       manualFillEpoch.current += 1;
       manualFillReturn.current = null;
@@ -254,6 +260,7 @@ export function Workflow({
       (current.blocked && !onReturn) ||
       current.busy ||
       flight.current ||
+      (current.action && submissions.has(draftKey(identity, current.action.id))) ||
       selectionRead.current !== null
     )
       return;
@@ -290,7 +297,8 @@ export function Workflow({
         now.review ||
         (now.blocked && !fromReturn) ||
         now.busy ||
-        flight.current
+        flight.current ||
+        (now.action && submissions.has(draftKey(origin, now.action.id)))
       )
         return;
       rememberPendingActions(latest);
@@ -349,6 +357,7 @@ export function Workflow({
       setBaseFields(merged.base_fields);
       setFieldLabels(merged.field_labels);
       setConflicts(merged.conflicts);
+      setRejectedConflictActions((ids) => ids.filter((id) => id !== nextAction.id));
       setDraftStatus(
         hasDraft ? "草稿已保存在本机" : "修改会自动保存为本机草稿",
       );
@@ -370,10 +379,12 @@ export function Workflow({
   }
 
   async function readCurrentActions(actionId: string | undefined, isCurrent: () => boolean) {
-    const latest = await getWorkflowActions(item.id, true);
+    let latest = await getWorkflowActions(item.id, true);
     if (actionId && !latest.actions.some((candidate) => candidate.id === actionId) && isCurrent())
-      return getWorkflowActions(item.id, true);
-    return latest;
+      latest = await getWorkflowActions(item.id, true);
+    return actionId && latest.action_versions?.[actionId]
+      ? { ...latest, version: latest.action_versions[actionId] }
+      : latest;
   }
 
   function preserveEditorDraft(origin: string, current: typeof editor.current) {
@@ -398,6 +409,7 @@ export function Workflow({
         base_fields: current.baseFields,
         field_labels: current.fieldLabels,
         conflicts: current.conflicts,
+        requires_refresh: rejectedConflictActions.includes(current.action.id) || undefined,
         version: current.options.version,
         updated_at: Date.now(),
       });
@@ -456,6 +468,7 @@ export function Workflow({
   }
   function choose(next: WorkflowAction, values: Record<string, string> = {}, source = options) {
     if (!source || busy || flight.current) return;
+    source = { ...source, version: source.action_versions?.[next.id] ?? source.version };
     refreshUnavailableActions.current = false;
     reads.current += 1;
     backgroundRead.current = null;
@@ -479,6 +492,7 @@ export function Workflow({
                 ),
               },
               field_labels: { ...saved?.field_labels, ...fieldLabels },
+              requires_refresh: saved?.requires_refresh,
               conflicts: [
                 ...(saved?.conflicts ?? []).filter(
                   (key) => !transferred.includes(key),
@@ -524,6 +538,8 @@ export function Workflow({
       setFieldLabels(restored.field_labels);
       setConflicts(restored.conflicts);
       setBlocked(!!draft?.pending);
+      if (draft?.requires_refresh)
+        setRejectedConflictActions((ids) => [...new Set([...ids, next.id])]);
       setDraftStatus(
         draft?.pending
           ? "已恢复本机草稿，上次提交结果待核实。"
@@ -531,8 +547,7 @@ export function Workflow({
             ? "已恢复本机草稿"
             : "修改会自动保存为本机草稿",
       );
-      if (draft && !draft.pending)
-        setOptions({ ...source, version: draft.version });
+      setOptions({ ...source, version: draft?.version ?? source.version });
       setAction(withWorkflowLabels(next, restored.field_labels));
     } catch (e) {
       setError(asError(e).message);
@@ -556,6 +571,7 @@ export function Workflow({
         base_fields: baseFields,
         field_labels: nextLabels,
         conflicts,
+        requires_refresh: rejectedConflict || undefined,
         version: options.version,
         updated_at: Date.now(),
       });
@@ -574,8 +590,10 @@ export function Workflow({
       action.requires_feishu ||
       busy ||
       flight.current ||
-      blocked
-      || Object.values(fieldBusy).some(Boolean)
+      submissions.has(draftKey(identity, action.id)) ||
+      blocked ||
+      rejectedConflict ||
+      Object.values(fieldBusy).some(Boolean)
     )
       return;
     const origin = identity;
@@ -584,25 +602,10 @@ export function Workflow({
     setPending(true);
     setError("");
     try {
-      const latest = await readCurrentActions(action.id, () =>
-        identityRef.current === origin && reads.current === read,
-      );
-      if (identityRef.current !== origin || reads.current !== read) return;
-      const nextAction = latest.actions.find((next) => next.id === action.id);
-      if (!nextAction) {
-        if (!preserveEditorDraft(origin, editor.current)) return;
-        refreshUnavailableActions.current = true;
-        setOptions(latest);
-        setAction(null);
-        setReview(null);
-        setError(
-          "流程已刷新，原动作已不可用。草稿已保留，请选择当前动作。",
-        );
-        return;
-      }
+      // 核对页使用当前编辑快照，云端版本与动作可用性留到正式提交时校验。
       const previous = editor.current;
       const merged = reconcileDraft(
-        nextAction,
+        action,
         {
           fields: previous.fields,
           base_fields: previous.baseFields,
@@ -611,39 +614,29 @@ export function Workflow({
           version: options.version,
           updated_at: Date.now(),
         },
-        latest.version,
+        options.version,
       );
       writeDraft(draftKey(identity, action.id), {
         ...merged,
-        version: latest.version,
+        version: options.version,
         updated_at: Date.now(),
       });
-      setOptions(latest);
-      setAction(withWorkflowLabels(nextAction, merged.field_labels));
+      setAction(withWorkflowLabels(action, merged.field_labels));
       setFields(merged.fields);
       setBaseFields(merged.base_fields);
       setFieldLabels(merged.field_labels);
       setConflicts(merged.conflicts);
       setReview(null);
       setDraftStatus("草稿已保存在本机");
-      const skipReview = canSkipConfirmation(nextAction) && loadWorkflowSkipConfirmation();
-      // 云端空值按未填写处理；仅非空值的新冲突需要先在草稿中核对。
-      const newConflicts = merged.conflicts.filter(
-          (key) =>
-            nextAction.fields.some((field) => field.key === key) &&
-            (!previous.conflicts.includes(key) ||
-              previous.baseFields[key] !== merged.base_fields[key]),
-      );
-      if (newConflicts.some((key) => !!merged.base_fields[key]?.trim())) return;
-      if (nextAction.disabled_reason || nextAction.requires_feishu) return;
-      const missing = nextAction.fields.find(
+      const skipReview = canSkipConfirmation(action) && loadWorkflowSkipConfirmation();
+      const missing = action.fields.find(
         (field) => field.required && workflowValueEmpty(field, merged.fields[field.key]),
       );
       if (missing) {
         setError(`请完成必填字段：${missing.label}`);
         return;
       }
-      const invalidOption = nextAction.fields.find(
+      const invalidOption = action.fields.find(
         (field) =>
           !field.read_only &&
           field.kind === "select" &&
@@ -656,7 +649,7 @@ export function Workflow({
         setError(`请重新选择${invalidOption.label}：原选项已不可用。`);
         return;
       }
-      for (const field of nextAction.fields.filter((field) => !field.read_only && field.editor?.kind === "textarea")) {
+      for (const field of action.fields.filter((field) => !field.read_only && field.editor?.kind === "textarea")) {
         let markdown = merged.fields[field.key] || "";
         if (hasInvalidLocalCreationImages(markdown)) throw new Error("正文含无法识别的本机图片，请重新粘贴，草稿已保留。");
         const images = localCreationImageIds(markdown);
@@ -669,7 +662,7 @@ export function Workflow({
           if (identityRef.current !== origin || reads.current !== read) return;
           markdown = replaceCreationImageReference(markdown, imageId, uploaded.url, uploaded.file_token);
           merged.fields[field.key] = markdown;
-          writeDraft(draftKey(origin, action.id), { ...merged, version: latest.version, updated_at: Date.now() });
+          writeDraft(draftKey(origin, action.id), { ...merged, version: options.version, updated_at: Date.now() });
           if (identityRef.current !== origin || reads.current !== read) return;
           setFields({ ...merged.fields });
           editor.current.fields = { ...merged.fields };
@@ -678,12 +671,12 @@ export function Workflow({
       const request: WorkflowRequest = {
         item_id: item.id,
         action_id: action.id,
-        version: latest.version,
-        fields: changedFields(nextAction, merged.fields, merged.base_fields),
+        version: options.version,
+        fields: changedFields(action, merged.fields, merged.base_fields),
         request_id: crypto.randomUUID(),
       };
       if (skipReview) {
-        await execute(request, nextAction, merged);
+        void execute(request, action, merged);
       } else {
         setReview(request);
         setAcknowledged(false);
@@ -703,7 +696,9 @@ export function Workflow({
       action.requires_feishu ||
       busy ||
       flight.current ||
+      submissions.has(draftKey(identity, action.id)) ||
       blocked ||
+      rejectedConflict ||
       !acknowledged
     )
       return;
@@ -722,11 +717,16 @@ export function Workflow({
     const { fields, base_fields: baseFields, field_labels: fieldLabels, conflicts } = draft;
     const origin = identity,
       key = draftKey(identity, action.id);
-    flight.current = true;
+    if (!submissions.begin(key, request.request_id)) return;
+    const isCurrent = () => identityRef.current === origin && editor.current.action?.id === action.id;
     reads.current += 1;
-    setPending(true);
     setError("");
     try {
+      if (readDraft(key)?.pending) {
+        setBlocked(true);
+        submissions.finish(key, request.request_id);
+        return;
+      }
       writeDraft(key, {
         fields,
         base_fields: baseFields,
@@ -738,8 +738,7 @@ export function Workflow({
       });
     } catch {
       setError("无法记录本次提交，尚未向飞书发送请求。请检查本机存储。");
-      flight.current = false;
-      setPending(false);
+      submissions.finish(key, request.request_id);
       return;
     }
     try {
@@ -747,7 +746,7 @@ export function Workflow({
       setDraftStatus("本机草稿已保留，正在等待飞书提交结果。");
       const result = await submit(request);
       if (!result || result.outcome === "unknown") {
-        if (identityRef.current === origin) {
+        if (isCurrent()) {
           setReview(null);
           setDraftStatus("本机草稿已保留，本次提交结果待核实。");
           setError(
@@ -760,6 +759,8 @@ export function Workflow({
       }
       let cleanupError = "";
       try {
+        if (readDraft(key)?.pending?.request_id !== request.request_id)
+          throw new Error("提交标记已变化，保留当前草稿");
         if (result.outcome === "verified") {
           const retained = Object.fromEntries(
             Object.entries(fields).filter(
@@ -797,7 +798,10 @@ export function Workflow({
       } catch {
         cleanupError = `${result.message}。本机草稿提交标记未能清理，再次操作前请核对飞书状态。`;
       }
-      if (identityRef.current !== origin) return;
+      if (!isCurrent()) {
+        if (identityRef.current === origin) refreshUnavailableActions.current = true;
+        return;
+      }
       setAction(null);
       setReview(null);
       if (cleanupError) setError(cleanupError);
@@ -813,11 +817,14 @@ export function Workflow({
       let released = rejected;
       if (rejected) {
         try {
+          if (readDraft(key)?.pending?.request_id !== request.request_id)
+            throw new Error("提交标记已变化，保留当前草稿");
           writeDraft(key, {
             fields,
             base_fields: baseFields,
             field_labels: fieldLabels,
             conflicts,
+            requires_refresh: failure.kind === "conflict" || undefined,
             version: request.version,
             updated_at: Date.now(),
           });
@@ -825,7 +832,9 @@ export function Workflow({
           released = false;
         }
       }
-      if (identityRef.current === origin) {
+      if (identityRef.current === origin && released && failure.kind === "conflict")
+        setRejectedConflictActions((ids) => [...new Set([...ids, action.id])]);
+      if (isCurrent()) {
         setBlocked(!released);
         setReview(null);
         setDraftStatus(
@@ -840,12 +849,13 @@ export function Workflow({
         );
       }
     } finally {
-      flight.current = false;
-      if (identityRef.current === origin) setPending(false);
+      submissions.finish(key, request.request_id);
+      if (identityRef.current === origin && !editor.current.action)
+        checkRemoteRef.current(true);
     }
   }
   async function recover() {
-    if (!action || !options || flight.current || busy) return;
+    if (!action || !options || flight.current || busy || submissions.has(draftKey(identity, action.id))) return;
     const origin = identity,
       actionId = action.id,
       key = draftKey(identity, actionId),
@@ -861,17 +871,20 @@ export function Workflow({
       if (identityRef.current !== origin || reads.current !== read) return;
       const nextAction = latest.actions.find((next) => next.id === actionId);
       if (!nextAction) {
+        if (rejectedConflict && !preserveEditorDraft(origin, editor.current)) return;
         refreshUnavailableActions.current = true;
         setOptions(latest);
         setAction(null);
         setReview(null);
         setBlocked(false);
+        setRejectedConflictActions((ids) => ids.filter((id) => id !== actionId));
         setError(
           "云端已不再提供原动作。草稿已保留，请根据当前流程重新选择动作。",
         );
         return;
       }
-      const saved = readDraft(key);
+      // 已拒绝的请求没有待核实快照，继续编辑时以内存为准，避免覆盖保存失败的新输入。
+      const saved = rejectedConflict ? null : readDraft(key);
       const merged = reconcileDraft(
         nextAction,
         {
@@ -898,6 +911,7 @@ export function Workflow({
       setReview(null);
       setAcknowledged(false);
       setBlocked(false);
+      setRejectedConflictActions((ids) => ids.filter((id) => id !== actionId));
       setDraftStatus(
         nextAction.requires_feishu
           ? "已重新读取云端，草稿已保留。请在飞书项目中核对并完成流程；上次提交结果仍以云端为准。"
@@ -913,7 +927,8 @@ export function Workflow({
       if (identityRef.current === origin) setPending(false);
     }
   }
-  const locked = busy || pending || Object.values(fieldBusy).some(Boolean);
+  const navigationLocked = busy || pending || Object.values(fieldBusy).some(Boolean);
+  const locked = navigationLocked || executingAction;
   const retainedKeys = Object.keys(fields).filter(
     (key) => action && !action.fields.some((field) => field.key === key),
   );
@@ -966,6 +981,7 @@ export function Workflow({
         base_fields: base,
         field_labels: labels,
         conflicts: remaining,
+        requires_refresh: rejectedConflict || undefined,
         version: options.version,
         updated_at: Date.now(),
       });
@@ -1365,7 +1381,8 @@ export function Workflow({
                   <button
                     className="secondary"
                     disabled={
-                      locked ||
+                      navigationLocked ||
+                      executing.has(draftKey(identity, a.id)) ||
                       (!!a.disabled_reason &&
                         !a.requires_feishu &&
                         !syncFor(a, "progress") &&
@@ -1373,12 +1390,12 @@ export function Workflow({
                     }
                     onClick={() => void selectAction(a)}
                   >
-                    {a.label}
+                    {a.label}{executing.has(draftKey(identity, a.id)) ? "（正在提交…）" : ""}
                   </button>
                   {(a.requires_feishu || a.disabled_reason) && (
                     <p className="hint">{a.requires_feishu ? feishuActionExplanation : a.disabled_reason}</p>
                   )}
-                  {pendingDraftFor(a) && (
+                  {pendingDraftFor(a) && !executing.has(draftKey(identity, a.id)) && (
                     <p className="workflow-error">上次提交结果待核实，已有草稿和提交标记已保留。请在飞书项目中核对。</p>
                   )}
                   {actionOpenError?.id === a.id && (
@@ -1641,13 +1658,15 @@ export function Workflow({
                       {error}
                     </p>
                   )}
-                  {blocked && !pending && (
+                  {(blocked || rejectedConflict) && !pending && !executingAction && (
                     <div className="workflow-recovery">
-                      <p className="workflow-error">
-                        {action.requires_feishu
-                          ? "这份草稿上次提交的结果尚待核实，已阻止重复提交。请在飞书项目中核对当前状态；需要补充的字段和流程操作可直接在飞书完成。"
-                          : "这份草稿上次提交的结果尚待核实，已阻止重复提交。重新读取云端后，可保留草稿并核对当前值，再继续操作。"}
-                      </p>
+                      {blocked && (
+                        <p className="workflow-error">
+                          {action.requires_feishu
+                            ? "这份草稿上次提交的结果尚待核实，已阻止重复提交。请在飞书项目中核对当前状态；需要补充的字段和流程操作可直接在飞书完成。"
+                            : "这份草稿上次提交的结果尚待核实，已阻止重复提交。重新读取云端后，可保留草稿并核对当前值，再继续操作。"}
+                        </p>
+                      )}
                       {feishuLinkFor(action, "verify")}
                       <button
                         type="button"
@@ -1673,7 +1692,7 @@ export function Workflow({
                         <button
                           type="button"
                           className="secondary"
-                          disabled={locked}
+                          disabled={navigationLocked}
                           onClick={() => {
                             reads.current += 1;
                             backgroundRead.current = null;
@@ -1687,6 +1706,7 @@ export function Workflow({
                           disabled={
                             locked ||
                             blocked ||
+                            rejectedConflict ||
                             !!action.disabled_reason ||
                             !!action.requires_feishu ||
                             action.fields.some(
@@ -1694,8 +1714,10 @@ export function Workflow({
                             )
                           }
                         >
-                          {pending
-                            ? "正在检查…"
+                          {executingAction
+                            ? "正在提交…"
+                            : pending
+                              ? "正在检查…"
                             : progressOnly
                               ? "同步进度"
                               : scheduleOnly
@@ -1738,18 +1760,25 @@ export function Workflow({
                         <button
                           type="button"
                           className="secondary"
-                          disabled={locked}
-                          onClick={() => setReview(null)}
+                          disabled={navigationLocked}
+                          onClick={() => {
+                            if (executingAction) {
+                              reads.current += 1;
+                              backgroundRead.current = null;
+                              setAction(null);
+                              setReview(null);
+                            } else setReview(null);
+                          }}
                         >
-                          返回修改
+                          {executingAction ? "返回，处理其他操作" : "返回修改"}
                         </button>
                         <button
                           type="button"
                           className="primary"
-                          disabled={locked || !acknowledged || blocked || !!action.requires_feishu}
+                          disabled={locked || !acknowledged || blocked || rejectedConflict || !!action.requires_feishu}
                           onClick={() => void confirm()}
                         >
-                          {pending ? "正在提交…" : confirmLabel}
+                          {pending || executingAction ? "正在提交…" : confirmLabel}
                         </button>
                       </div>
                       <p className="draft-status" role="status">

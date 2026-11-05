@@ -59,7 +59,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("重新打开旧草稿后提交核对两份值，可在原框采用云端且保留其他本机填写", async () => {
+it("重新打开旧草稿后后台核对两份值，可在原框采用云端且保留其他本机填写", async () => {
   writeDraft(key, {
     fields: { shared: "本机文档", hours: "2" },
     base_fields: { shared: "原值", hours: "1" },
@@ -73,7 +73,8 @@ it("重新打开旧草稿后提交核对两份值，可在原框采用云端且�
   );
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
+  await screen.findByRole("group", { name: "文档冲突处理" });
   expect(screen.queryByText(/其他.*协作人也可能修改/)).toBeNull();
   expect(
     screen.getByRole("group", { name: "文档冲突处理" }).textContent,
@@ -105,7 +106,7 @@ it("重新打开旧草稿后提交核对两份值，可在原框采用云端且�
   expect(submit).not.toHaveBeenCalled();
 });
 
-it("提交前新发现冲突先展示，保留本机输入不改也可正常提交确认", async () => {
+it("后台新发现冲突先展示，保留本机输入不改也可正常提交确认", async () => {
   const submit = vi
     .fn()
     .mockResolvedValue({ outcome: "verified", verified: true });
@@ -116,7 +117,7 @@ it("提交前新发现冲突先展示，保留本机输入不改也可正常提�
     target: { value: "我的文档" },
   });
   vi.mocked(getWorkflowActions).mockResolvedValue(options("同事文档", "v2"));
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect(
     await screen.findByRole("group", { name: "文档冲突处理" }),
   ).toBeTruthy();
@@ -295,7 +296,8 @@ it("事项详情更新时保留脏字段并显示冲突最新值，合并后云�
     target: { value: "前端v1；后端v1" },
   });
   vi.mocked(getWorkflowActions).mockResolvedValue(options("前端v2", "v3"));
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
+  await waitFor(() => expect(readDraft(key)?.version).toBe("v3"));
   expect(
     (await screen.findByRole("group", { name: "文档冲突处理" })).textContent,
   ).toContain("前端v2");
@@ -306,7 +308,7 @@ it("事项详情更新时保留脏字段并显示冲突最新值，合并后云�
   expect(submit).not.toHaveBeenCalled();
 });
 
-it("提交前检查取代未完成的后台检查，迟到的旧响应不覆盖确认内容", async () => {
+it("进入确认使未完成的后台检查失效，迟到的旧响应不覆盖确认内容", async () => {
   render(<Workflow item={item} available busy={false} submit={vi.fn()} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
@@ -329,7 +331,7 @@ it("提交前检查取代未完成的后台检查，迟到的旧响应不覆盖�
   ).toContain("4");
 });
 
-it("自动检查更新未编辑字段，读取失败保留草稿且不能进入确认", async () => {
+it("自动检查更新未编辑字段，后续读取失败保留草稿且仍可直接进入确认", async () => {
   const submit = vi.fn();
   render(<Workflow item={item} available busy={false} submit={submit} />);
   const user = userEvent.setup();
@@ -347,10 +349,13 @@ it("自动检查更新未编辑字段，读取失败保留草稿且不能进入�
     kind: "network",
     message: "读取失败",
   });
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect((await screen.findByRole("alert")).textContent).toContain("读取失败");
   expect(readDraft(key)?.fields).toEqual({ shared: "同事文档", hours: "2" });
-  expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
+  const reads = vi.mocked(getWorkflowActions).mock.calls.length;
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  expect(screen.getByRole("region", { name: "提交前二次确认" })).toBeTruthy();
+  expect(getWorkflowActions).toHaveBeenCalledTimes(reads);
   expect(submit).not.toHaveBeenCalled();
 });
 
@@ -395,7 +400,7 @@ it("必填项从云端表单消失时保留本机内容，按新表单确认无�
   const next = options("同事文档", "v2");
   next.actions[0].fields.shift();
   vi.mocked(getWorkflowActions).mockResolvedValue(next);
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect(
     (await screen.findByRole("group", { name: "文档保留草稿" })).textContent,
   ).toContain("本机文档");
@@ -417,7 +422,7 @@ it("必填项从云端表单消失时保留本机内容，按新表单确认无�
   expect(submit).not.toHaveBeenCalled();
 });
 
-it("仅同步进度继承冲突，云端再次变化会先展示再允许确认", async () => {
+it("仅同步进度继承冲突，后台读取到云端再次变化后直接确认", async () => {
   const progressOptions = (
     initial_value: string,
     version: string,
@@ -455,7 +460,7 @@ it("仅同步进度继承冲突，云端再次变化会先展示再允许确认"
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
   fireEvent.change(screen.getByRole("slider"), { target: { value: "60" } });
   vi.mocked(getWorkflowActions).mockResolvedValue(progressOptions("40", "v2"));
-  await user.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect(
     await screen.findByRole("group", { name: "进度冲突处理" }),
   ).toBeTruthy();
@@ -469,7 +474,8 @@ it("仅同步进度继承冲突，云端再次变化会先展示再允许确认"
   expect(progressDraft?.conflicts).toEqual(["progress"]);
   expect(progressDraft?.fields.progress).toBe("60");
   vi.mocked(getWorkflowActions).mockResolvedValue(progressOptions("50", "v3"));
-  await user.click(screen.getByRole("button", { name: "同步进度" }));
+  fireEvent.focus(window);
+  await waitFor(() => expect(readDraft(draftKey(itemKey(item), "node:progress:n"))?.version).toBe("v3"));
   expect(
     screen.getByRole("group", { name: "进度冲突处理" }).textContent,
   ).toContain("50%");
@@ -502,9 +508,6 @@ it("保留的草稿选项已被云端删除时，重新选择前不能进入确�
   render(<Workflow item={item} available busy={false} submit={submit} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
-  await user.click(screen.getByRole("button", { name: "提交" }));
-  expect(await screen.findByRole("group", { name: "文档冲突处理" })).toBeTruthy();
-  expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
   await user.click(screen.getByRole("button", { name: "提交" }));
   expect((await screen.findByRole("alert")).textContent).toContain(
     "请重新选择文档：原选项已不可用。",

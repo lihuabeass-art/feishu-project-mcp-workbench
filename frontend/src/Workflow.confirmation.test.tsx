@@ -11,7 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Workflow } from "./Workflow";
 import { getWorkflowActions } from "./api";
 import { itemKey } from "./model";
-import { draftKey, readDraft } from "./workflowDrafts";
+import { draftKey, readDraft, writeDraft } from "./workflowDrafts";
 import { saveWorkflowSkipConfirmation } from "./workflowPreferences";
 import type {
   CachedItem,
@@ -76,11 +76,116 @@ it("默认仍先核对且不提交，恢复开关后现有编辑器立即恢复�
 });
 
 it.each([
+  [action.id, "node", "提交"],
+  ["node:rollback:design", "node", "提交"],
+  ["state:resolve", "state", "提交"],
+] as const)("%s 在后续云端请求不可用时直接进入二次确认", async (id, kind, label) => {
+  const nextAction = { ...action, id, kind };
+  vi.mocked(getWorkflowActions).mockResolvedValueOnce(options(nextAction))
+    .mockImplementation(() => new Promise(() => {}));
+  const submit = vi.fn();
+  const user = userEvent.setup();
+  render(<Workflow item={item} available busy={false} submit={submit} />);
+  await user.click(await screen.findByRole("button", { name: action.label }));
+  await user.click(screen.getByRole("button", { name: label }));
+  expect(screen.getByRole("region", { name: "提交前二次确认" }).textContent).toContain("原设计稿");
+  expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(item.id);
+  expect(readDraft(draftKey(itemKey(item), id))?.pending).toBeUndefined();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("旧草稿最终提交冲突后可重读云端再提交，不重复使用旧版本（跳过确认：%s）", async (skip) => {
+  saveWorkflowSkipConfirmation(skip);
+  const key = draftKey(itemKey(item), action.id);
+  writeDraft(key, { fields: { doc: "本机设计稿" }, base_fields: { doc: "旧设计稿" }, version: "old", updated_at: 1 });
+  const submit = vi.fn().mockRejectedValueOnce({ kind: "conflict", message: "远端流程已变化，请重新读取动作后再执行" })
+    .mockResolvedValue(result);
+  const user = userEvent.setup();
+  const view = render(<Workflow item={item} available busy={false} submit={submit} />);
+  await user.click(await screen.findByRole("button", { name: action.label }));
+  const send = async () => {
+    await user.click(screen.getByRole("button", { name: "提交" }));
+    if (!skip) {
+      await user.click(screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"));
+      await user.click(screen.getByRole("button", { name: "确认完成节点" }));
+    }
+  };
+  await send();
+  expect((await screen.findByRole("alert")).textContent).toContain("已变化");
+  expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(item.id);
+  expect(submit.mock.calls[0][0]).toMatchObject({ version: "old", fields: { doc: "本机设计稿" } });
+  expect(readDraft(key)?.pending).toBeUndefined();
+  expect(readDraft(key)?.requires_refresh).toBe(true);
+  expect((screen.getByRole("button", { name: "提交" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "返回，保留草稿" }));
+  await user.click(screen.getByRole("button", { name: action.label }));
+  expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(item.id);
+  expect((screen.getByRole("button", { name: "提交" }) as HTMLButtonElement).disabled).toBe(true);
+  view.unmount();
+  const otherItem = { ...item, id: { ...item.id, project_key: "other-space" } };
+  const reopened = render(<Workflow item={otherItem} available busy={false} submit={submit} />);
+  await user.click(await screen.findByRole("button", { name: action.label }));
+  expect((screen.getByRole("button", { name: "提交" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.queryByRole("button", { name: "重新读取云端，保留草稿" })).toBeNull();
+  reopened.rerender(<Workflow item={item} available busy={false} submit={submit} />);
+  await user.click(await screen.findByRole("button", { name: action.label }));
+  expect(getWorkflowActions).toHaveBeenCalledTimes(3);
+  expect((screen.getByRole("button", { name: "提交" }) as HTMLButtonElement).disabled).toBe(true);
+  vi.mocked(getWorkflowActions).mockRejectedValueOnce({ kind: "network", message: "临时读取失败" });
+  await user.click(screen.getByRole("button", { name: "重新读取云端，保留草稿" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("临时读取失败");
+  expect(readDraft(key)?.fields.doc).toBe("本机设计稿");
+  expect(readDraft(key)?.requires_refresh).toBe(true);
+  expect((screen.getByRole("button", { name: "提交" }) as HTMLButtonElement).disabled).toBe(true);
+  const continued = "本机设计稿，冲突后继续补充";
+  const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => { throw new Error("quota"); });
+  fireEvent.change(screen.getByLabelText("设计稿（必填）"), { target: { value: continued } });
+  expect((screen.getByRole("alert")).textContent).toContain("草稿自动保存失败");
+  expect(readDraft(key)?.fields.doc).toBe("本机设计稿");
+  storage.mockRestore();
+  vi.mocked(getWorkflowActions).mockResolvedValue(options({ ...action, fields: [{ ...action.fields[0], initial_value: "同事设计稿" }] }, "v2"));
+  await user.click(screen.getByRole("button", { name: "重新读取云端，保留草稿" }));
+  await waitFor(() => expect(readDraft(key)?.version).toBe("v2"));
+  expect((screen.getByLabelText("设计稿（必填）") as HTMLInputElement).value).toBe(continued);
+  expect(readDraft(key)?.fields.doc).toBe(continued);
+  expect(readDraft(key)?.requires_refresh).toBeUndefined();
+  expect(screen.getByRole("group", { name: "设计稿冲突处理" }).textContent).toContain("同事设计稿");
+  expect(submit).toHaveBeenCalledOnce();
+  await send();
+  await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+  expect(submit.mock.calls[1][0]).toMatchObject({ version: "v2", fields: { doc: continued } });
+});
+
+it("冲突后继续编辑且保存失败，重读发现动作消失时仍保留内存输入", async () => {
+  saveWorkflowSkipConfirmation(true);
+  const key = draftKey(itemKey(item), action.id);
+  const submit = vi.fn().mockRejectedValue({ kind: "conflict", message: "远端流程已变化" });
+  const user = userEvent.setup();
+  render(<Workflow item={item} available busy={false} submit={submit} />);
+  await user.click(await screen.findByRole("button", { name: action.label }));
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  await screen.findByRole("button", { name: "重新读取云端，保留草稿" });
+  const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+  fireEvent.change(screen.getByLabelText("设计稿（必填）"), { target: { value: "仅在内存的新设计稿" } });
+  vi.mocked(getWorkflowActions).mockResolvedValue({ version: "v2", actions: [] });
+  await user.click(screen.getByRole("button", { name: "重新读取云端，保留草稿" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("草稿保存失败");
+  expect((screen.getByLabelText("设计稿（必填）") as HTMLInputElement).value).toBe("仅在内存的新设计稿");
+  expect(submit).toHaveBeenCalledOnce();
+  storage.mockRestore();
+  await user.click(screen.getByRole("button", { name: "重新读取云端，保留草稿" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("原动作");
+  expect(screen.queryByLabelText("设计稿（必填）")).toBeNull();
+  expect(readDraft(key)?.fields.doc).toBe("仅在内存的新设计稿");
+  expect(submit).toHaveBeenCalledOnce();
+});
+
+it.each([
   ["节点完成", action.id, "node"],
   ["节点回滚", "node:rollback:design", "node"],
   ["状态流转", "state:resolve", "state"],
 ] as const)(
-  "关闭确认时%s直接提交，但使用最新版本、差异字段并先保存提交标记",
+  "关闭确认时%s直接提交当前快照、差异字段并先保存提交标记",
   async (_label, id, kind) => {
     const nextAction = { ...action, id, kind };
     vi.mocked(getWorkflowActions)
@@ -107,7 +212,8 @@ it.each([
     const key = draftKey(itemKey(item), id);
     const submit = vi.fn().mockImplementation(async (request) => {
       expect(readDraft(key)?.pending).toEqual(request);
-      expect(readDraft(key)?.fields["remote-only"]).toBe("云端保留");
+      expect(readDraft(key)?.fields["remote-only"]).toBeUndefined();
+      expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(item.id);
       return { ...result, action_id: id };
     });
     const user = userEvent.setup();
@@ -124,7 +230,7 @@ it.each([
     expect(submit.mock.calls[0][0]).toMatchObject({
       item_id: item.id,
       action_id: id,
-      version: "v2",
+      version: "v1",
       fields: { doc: "新设计稿" },
     });
     expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
@@ -184,6 +290,7 @@ it.each([
     const key = draftKey(itemKey(item), sync.id);
     const submit = vi.fn().mockImplementation(async (request) => {
       expect(readDraft(key)?.pending).toEqual(request);
+      expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(item.id);
       return { ...result, action_id: sync.id };
     });
     const user = userEvent.setup();
@@ -216,6 +323,7 @@ it.each([
     vi.mocked(getWorkflowActions).mockResolvedValue({ ...source, version: "v2" });
     await user.click(screen.getByRole("button", { name: submitLabel }));
     if (!skip) {
+      expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(item.id);
       expect(
         await screen.findByRole("region", { name: "提交前二次确认" }),
       ).toBeTruthy();
@@ -234,7 +342,7 @@ it.each([
     expect(submit.mock.calls[0][0]).toMatchObject({
       item_id: item.id,
       action_id: sync.id,
-      version: "v2",
+      version: "v1",
     });
     expect(submit.mock.calls[0][0].fields).toEqual(
       kind === "progress" ? { progress } : { start: "2030-01-02" },
@@ -246,10 +354,13 @@ it.each([
 );
 
 it.each(["同事的新设计稿", "", "   "])(
-  "跳过确认只拦截非空云端值冲突（%j），空值按未填写处理",
+  "跳过确认时不预读云端值（%j），原快照交由正式提交检查",
   async (remote) => {
     saveWorkflowSkipConfirmation(true);
-    const submit = vi.fn().mockResolvedValue(result);
+    const submit = vi.fn().mockImplementation(async () => {
+      expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(item.id);
+      return result;
+    });
     const user = userEvent.setup();
     render(<Workflow item={item} available busy={false} submit={submit} />);
     await user.click(await screen.findByRole("button", { name: action.label }));
@@ -265,16 +376,8 @@ it.each(["同事的新设计稿", "", "   "])(
       ),
     );
     await user.click(screen.getByRole("button", { name: "提交" }));
-    if (remote.trim()) {
-      expect(await screen.findByText(remote)).toBeTruthy();
-      expect(submit).not.toHaveBeenCalled();
-      await user.click(screen.getByRole("button", { name: "提交" }));
-    } else {
-      expect(screen.queryByRole("alert")).toBeNull();
-      expect(document.querySelector(".workflow-review-comparison")).toBeNull();
-    }
     await waitFor(() => expect(submit).toHaveBeenCalledOnce());
-    expect(submit.mock.calls[0][0]).toMatchObject({ version: "v2", fields: { doc: "本地设计稿" } });
+    expect(submit.mock.calls[0][0]).toMatchObject({ version: "v1", fields: { doc: "本地设计稿" } });
   },
 );
 

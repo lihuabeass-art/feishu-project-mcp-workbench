@@ -7,6 +7,7 @@ export interface WorkflowDraft {
   base_fields?: Record<string, string>;
   field_labels?: Record<string, string>;
   conflicts?: string[];
+  requires_refresh?: boolean;
   pending?: WorkflowRequest;
 }
 export function draftKey(identity: string, actionId: string) {
@@ -28,6 +29,7 @@ export function readDraft(key: string): WorkflowDraft | null {
     !isFields(draft.fields) ||
     (draft.base_fields !== undefined && !isFields(draft.base_fields)) ||
     (draft.field_labels !== undefined && !isFields(draft.field_labels)) ||
+    (draft.requires_refresh !== undefined && typeof draft.requires_refresh !== "boolean") ||
     (draft.conflicts !== undefined &&
       (!Array.isArray(draft.conflicts) ||
         draft.conflicts.some((key) => typeof key !== "string")))

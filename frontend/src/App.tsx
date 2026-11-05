@@ -108,6 +108,7 @@ import {
 
 type View = "work" | "sources" | "settings";
 type Notice = { tone: "success" | "warning"; text: string };
+type WorkflowReport = { item: string; message: string; error?: AppError };
 type CreationRecordFeedback = { context: string; result: "empty" } |
   { context: string; result: "failed"; error: AppError };
 type ManualSync = {
@@ -259,6 +260,8 @@ function Workspace() {
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [orderBusy, setOrderBusy] = useState(false);
   const [workflowBusy, setWorkflowBusy] = useState(false);
+  const workflowSubmissions = useRef(new Set<string>());
+  const [workflowReports, setWorkflowReports] = useState<Record<string, WorkflowReport>>({});
   const [creationOpen, setCreationOpen] = useState(false);
   const [creationBusy, setCreationBusy] = useState(false);
   const [creationRecovery, setCreationRecovery] = useState(false);
@@ -979,6 +982,14 @@ function Workspace() {
 
   async function submitWorkflow(request: WorkflowRequest) {
     if (workspaceActionBlocked("workflow", currentActivity()) || !desktop) throw { kind: "conflict", message: "当前有其他操作正在执行或桌面连接不可用，本次尚未发送，请稍后重新检查。" };
+    const identity = itemKey({ id: request.item_id } as CachedItem);
+    const scope = JSON.stringify([identity, request.action_id]);
+    if (workflowSubmissions.current.has(scope)) throw { kind: "conflict", message: "该流程操作正在提交，请等待结果后再操作。" };
+    workflowSubmissions.current.add(scope);
+    const item = data?.items.find((item) => itemKey(item) === identity)?.name || "当前事项";
+    const report = (message: string, error?: AppError) => setWorkflowReports((current) => ({
+      ...current, [request.request_id]: { item, message, error },
+    }));
     // 流程可能与完整检查并行。写入开始后停止本轮快照补丁，整轮结束
     // 再回读当前缓存，防止写前已发出的批次覆盖写后核验的清单。
     syncProgressAbort.current?.abort();
@@ -989,15 +1000,11 @@ function Workspace() {
     setNotice(null);
     try {
       const result = await executeWorkflowAction(request);
-      // 结论先落地，再回读缓存：回读失败绝不能把后端刚给的事实换掉——「写请求已发出、结果
-      // 不确定，请先去飞书确认」这句是这里最不能丢的信息，丢了就等于把用户推向重试写入。
-      if (result.outcome === "verified") {
-        setNotice({ tone: "success", text: result.message });
-      } else if (result.outcome === "failed") {
-        setError({ kind: "action_failed", message: result.message });
-      } else {
-        setError({ kind: "unknown_result", message: result.message });
-      }
+      // 每次提交保留独立结论；另一操作成功不能覆盖失败或结果不确定。
+      const resultError = result.outcome === "verified" ? undefined : {
+        kind: result.outcome === "failed" ? "action_failed" : "unknown_result", message: result.message,
+      };
+      report(result.message, resultError);
       try {
         if (result.outcome === "verified" && result.verified) await refreshAfterWrite();
         else await reload();
@@ -1007,24 +1014,11 @@ function Workspace() {
         const note = result.outcome === "verified" && result.verified
           ? "（清单刷新未完成，已保留现有内容，可稍后刷新。）"
           : `（本地列表未能刷新：${refresh.message}）`;
-        setNotice(null);
-        if (result.outcome === "verified") {
-          setError({ kind: refresh.kind, message: `${result.message}${note}` });
-        } else if (result.outcome === "failed") {
-          setError({
-            kind: "action_failed",
-            message: `${result.message}${note}`,
-          });
-        } else {
-          setError({
-            kind: "unknown_result",
-            message: `${result.message}${note}`,
-          });
-        }
+        report(`${result.message}${note}`, { kind: resultError?.kind ?? refresh.kind, message: `${result.message}${note}` });
       }
       return result;
     } catch (e) {
-      setError(asError(e));
+      report(asError(e).message, asError(e));
       try {
         await reload();
       } catch {
@@ -1032,8 +1026,9 @@ function Workspace() {
       }
       throw e;
     } finally {
-      workflowRef.current = false;
-      setWorkflowBusy(false);
+      workflowSubmissions.current.delete(scope);
+      workflowRef.current = workflowSubmissions.current.size > 0;
+      setWorkflowBusy(workflowRef.current);
     }
   }
 
@@ -1270,7 +1265,7 @@ function Workspace() {
   };
   const syncDisabled =
     !desktop || !source?.executable || !!contextOperation || (syncBusy && !incremental) || loading;
-  const hasAlerts = settingsRefreshFailed || !!error || !!syncFailure || !!notice || !!recoveryFeedback || Object.values(typeOperationErrors).some(Boolean);
+  const hasAlerts = settingsRefreshFailed || !!error || !!syncFailure || !!notice || !!recoveryFeedback || Object.keys(workflowReports).length > 0 || Object.values(typeOperationErrors).some(Boolean);
   const alerts = (
     <>
       {settingsRefreshFailed && <div className="banner warning" role="status">
@@ -1293,6 +1288,14 @@ function Workspace() {
           </button>
         </div>
       )}
+      {Object.entries(workflowReports).map(([id, result]) => (
+        <div className={`banner ${result.error ? "error" : "success"}`} role={result.error ? "alert" : "status"} key={id}>
+          {result.error ? <Unplug size={18} /> : <Check size={17} />}
+          <div><strong>{result.item} · {result.error ? errorKindLabel(result.error.kind) : "流程操作已完成"}</strong><p>{result.message}</p></div>
+          <button className="icon-button" aria-label={`关闭${result.item}的流程操作提示`}
+            onClick={() => setWorkflowReports((current) => { const next = { ...current }; delete next[id]; return next; })}><X size={16} /></button>
+        </div>
+      ))}
       {(["order", "discovery"] as const).map((action) => {
         const failure = typeOperationErrors[action];
         const title = action === "order" ? "类型排序未保存" : "类型发现未完成";

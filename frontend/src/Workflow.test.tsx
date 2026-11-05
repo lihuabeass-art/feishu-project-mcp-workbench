@@ -578,11 +578,7 @@ it.each([null, "", "   ", "本机新文档"])(
     ).toBe("0");
     expect(getWorkflowActions).toHaveBeenCalledOnce();
     await user.click(screen.getByRole("button", { name: "提交" }));
-    if (draftValue?.trim()) {
-      expect(screen.getByRole("group", { name: "设计文档冲突处理" })).toBeTruthy();
-      expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
-      await user.click(screen.getByRole("button", { name: "提交" }));
-    }
+    expect(getWorkflowActions).toHaveBeenCalledOnce();
     expect(
       screen.getByRole("region", { name: "提交前二次确认" }).textContent,
     ).toContain(expected);
@@ -789,15 +785,14 @@ it("相同编号跨空间草稿隔离", async () => {
     (screen.getByLabelText("设计文档（必填）") as HTMLInputElement).value,
   ).toBe("");
 });
-it("进入二次确认前等待云端读取，不发送写入且不标记提交中", async () => {
+it("进入二次确认直接使用编辑快照，不读取云端、不发送写入且不标记提交中", async () => {
   const submit = vi.fn();
   render(<Workflow item={item()} available busy={false} submit={submit} />);
   const user = await edit();
   vi.mocked(getWorkflowActions).mockImplementation(() => new Promise(() => {}));
   await user.click(screen.getByRole("button", { name: "提交" }));
-  expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
-  expect(getWorkflowActions).toHaveBeenCalledTimes(2);
-  expect(getWorkflowActions).toHaveBeenLastCalledWith(item().id, true);
+  expect(screen.getByRole("region", { name: "提交前二次确认" })).toBeTruthy();
+  expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith(item().id);
   expect(submit).not.toHaveBeenCalled();
   expect(
     readDraft(draftKey(itemKey(item()), options.actions[0].id))?.pending,

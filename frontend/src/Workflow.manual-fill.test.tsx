@@ -144,14 +144,14 @@ it.each(["node", "state"] as const)("%s 的关联上车版本按云端名称核�
   expect(invoke).not.toHaveBeenCalled();
 });
 
-it("按缓存进入本地表单，提交前发现新必填页面字段时保留草稿并阻止写入", async () => {
+it("按缓存进入本地表单，后台发现新必填页面字段时保留草稿并阻止写入", async () => {
   vi.mocked(getWorkflowActions).mockResolvedValueOnce(localOptions()).mockResolvedValue(options());
   const submit = vi.fn();
   render(<Workflow item={item()} available busy={false} submit={submit} />);
   await userEvent.click(await screen.findByRole("button", { name: options().actions[0].label }));
   expect(getWorkflowActions).toHaveBeenCalledOnce();
   fireEvent.change(screen.getByLabelText("设计文档"), { target: { value: "本机设计稿" } });
-  await userEvent.click(screen.getByRole("button", { name: "提交" }));
+  fireEvent.focus(window);
   expect(await screen.findByText(editorExplanation)).toBeTruthy();
   expect(readDraft(draftKey(itemKey(item()), options().actions[0].id))?.fields.doc).toBe("本机设计稿");
   expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();

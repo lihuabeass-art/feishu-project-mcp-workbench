@@ -234,6 +234,7 @@ export interface WorkflowAction {
 }
 export interface WorkflowOptions {
   version: string;
+  action_versions?: Record<string, string>;
   item_url?: string;
   actions: WorkflowAction[];
 }
