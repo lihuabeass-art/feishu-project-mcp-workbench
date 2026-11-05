@@ -16,11 +16,13 @@ import {
   creationEmpty,
   creationTargetKey,
   getCreationForm,
+  lookupCreationField,
   resolveCreationRelationLabels,
   verifyCreation,
   type CreationField,
   type CreationForm,
   type CreationLocation,
+  type CreationLookupResult,
   type CreationRequest,
   type CreationResult,
 } from "./creation";
@@ -101,6 +103,39 @@ export function CreateWorkItem({
   );
   const location = locations.find((l) => creationTargetKey(l) === locationKey);
   const [form, setForm] = useState<CreationForm | null>(null);
+  const peopleLookup = useRef<{ form: CreationForm; request: Promise<CreationLookupResult> | null } | null>(null);
+  const relationLookup = useRef<{ form: CreationForm; requests: Map<string, Promise<CreationLookupResult>> } | null>(null);
+  function loadPeople(currentForm: CreationForm, fieldKey: string): Promise<CreationLookupResult> {
+    if (peopleLookup.current?.form !== currentForm)
+      peopleLookup.current = { form: currentForm, request: null };
+    const cache = peopleLookup.current;
+    if (!cache.request) {
+      const request = lookupCreationField(currentForm.target, fieldKey, "");
+      cache.request = request;
+      request.catch(() => {
+        if (cache.request === request) cache.request = null;
+      });
+    }
+    return cache.request;
+  }
+  function loadRelation(currentForm: CreationForm, fieldKey: string): Promise<CreationLookupResult> {
+    if (relationLookup.current?.form !== currentForm)
+      relationLookup.current = { form: currentForm, requests: new Map() };
+    const cache = relationLookup.current;
+    let request = cache.requests.get(fieldKey);
+    if (!request) {
+      request = lookupCreationField(currentForm.target, fieldKey, "");
+      cache.requests.set(fieldKey, request);
+      request.catch(() => { if (cache.requests.get(fieldKey) === request) cache.requests.delete(fieldKey); });
+    }
+    return request;
+  }
+  useEffect(() => {
+    const field = form?.fields.find((item) => item.kind === "people");
+    if (form && field) void loadPeople(form, field.key).catch(() => {});
+    if (form) for (const relation of form.fields.filter((item) => item.kind === "relation"))
+      void loadRelation(form, relation.key).catch(() => {});
+  }, [form]);
   const [draft, setDraft] = useState<Draft>({ values: {}, labels: {} });
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -718,6 +753,8 @@ export function CreateWorkItem({
           value={value}
           labels={draft.labels}
           change={(v, labels) => change(f.key, v, labels)}
+          loadOptions={() => f.kind === "people" ? loadPeople(form, f.key) : loadRelation(form, f.key)}
+          localFilter
         />
       );
     if (f.kind === "select")

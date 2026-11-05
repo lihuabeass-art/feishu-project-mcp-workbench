@@ -95,6 +95,18 @@ impl TodoSource for Arc<Fake> {
             },
             "search_by_mql" if self.mode.starts_with("relation-") => {
                 let mql = args["mql"].as_str().unwrap();
+            "search_by_mql" if self.mode.starts_with("lookup-pages") => {
+                if args.get("mql").is_some() {
+                    assert_eq!(args["mql"], "SELECT `work_item_id`, `name` FROM `space`.`project`");
+                    json!({"session_id":"lookup-session","list":[{"count":51,"group_infos":[{"group_id":"g"}]}],"data":{"g":(1..=50).map(|id| json!({"moql_field_list":[{"key":"work_item_id","value":{"long_value":id}},{"key":"name","value":{"string_value":format!("事项{id}")}}]})).collect::<Vec<_>>()}})
+                } else {
+                    assert_eq!(args["session_id"], "lookup-session");
+                    assert_eq!(args["group_pagination_list"][0]["page_num"], 2);
+                    let id = if self.mode == "lookup-pages-duplicate" { 1 } else { 51 };
+                    let rows = if self.mode == "lookup-pages-missing" { vec![] } else { vec![json!({"moql_field_list":[{"key":"work_item_id","value":{"long_value":id}},{"key":"name","value":{"string_value":"末页事项"}}]})] };
+                    json!({"data":{"g":rows}})
+                }
+            },
                 self.relation_queries.lock().unwrap().push(mql.into());
                 assert!(mql.contains("WHERE `work_item_id` IN ("));
                 assert!(!mql.contains("LIKE") && !mql.contains("LIMIT 20"));
@@ -226,6 +238,18 @@ impl Harness {
             std::process::id(),
             chrono::Utc::now().timestamp_nanos_opt().unwrap()
         ));
+
+#[test]
+fn relation_candidates_load_all_pages_and_reject_duplicates() {
+    let h = Harness::new("lookup-pages");
+    let result = lookup(&h.session, &h.target(), "related", "").unwrap();
+    assert_eq!(result.options.len(), 51);
+    assert_eq!(result.options.last().unwrap().label, "末页事项");
+    let broken = Harness::new("lookup-pages-duplicate");
+    assert!(lookup(&broken.session, &broken.target(), "related", "").is_err());
+    let missing = Harness::new("lookup-pages-missing");
+    assert!(lookup(&missing.session, &missing.target(), "related", "").is_err());
+}
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("token"), "creation-test-only-token").unwrap();
         std::fs::write(dir.join("config.toml"),format!("token_env='FSTODO_ABSENT_CREATION_TEST_TOKEN'\ntoken_file='{}'\n[[source]]\nid='test-source'\nkind='personal_todo'\nenabled=true\naction='todo'\n",dir.join("token").display().to_string().replace('\\',"/"))).unwrap();

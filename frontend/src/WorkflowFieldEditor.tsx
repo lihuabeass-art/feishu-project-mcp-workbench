@@ -15,11 +15,26 @@ export function WorkflowFieldEditor({ itemId, actionId, field, value, labels, di
   onBusyChange: (busy: boolean) => void;
 }) {
   const scopeKey = JSON.stringify([itemId, actionId, field.key]);
+  const lookup = useRef<{ key: string; request: Promise<CreationLookupResult> | null } | null>(null);
+  function loadOptions() {
+    if (lookup.current?.key !== scopeKey) lookup.current = { key: scopeKey, request: null };
+    const cache = lookup.current;
+    if (!cache.request) {
+      const request = invoke<CreationLookupResult>("lookup_workflow_field", { itemId, actionId, fieldKey: field.key, query: "" });
+      cache.request = request;
+      request.catch(() => { if (cache.request === request) cache.request = null; });
+    }
+    return cache.request;
+  }
   const [scope, setScope] = useState<{ key: string; target: CreationForm["target"]; context: string }>();
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const busyCallback = useRef(onBusyChange);
   busyCallback.current = onBusyChange;
+  useEffect(() => {
+    if (field.editor?.kind === "people" || field.editor?.kind === "relation")
+      void loadOptions().catch(() => {});
+  }, [scopeKey, field.editor?.kind]);
   useEffect(() => {
     if (field.editor?.kind !== "textarea") return;
     let cancelled = false;
@@ -52,7 +67,7 @@ export function WorkflowFieldEditor({ itemId, actionId, field, value, labels, di
   }
   if (editor.kind === "people" || editor.kind === "relation") return <CreationLookup
     form={form} field={editor} value={current} labels={labels} disabled={disabled} allowClear={editor.multiple} change={update}
-    loadOptions={(query) => invoke<CreationLookupResult>("lookup_workflow_field", { itemId, actionId, fieldKey: field.key, query })}
+    loadOptions={loadOptions} localFilter
   />;
   if (editor.kind === "select") return <CreationSelect field={editor} value={current} onChange={update} disabled={disabled} />;
   return null;

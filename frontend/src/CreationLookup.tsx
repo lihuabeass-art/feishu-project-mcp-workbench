@@ -18,6 +18,7 @@ export function CreationLookup({
   labels,
   change,
   loadOptions,
+  localFilter = false,
   disabled = false,
   allowClear = true,
 }: {
@@ -27,6 +28,7 @@ export function CreationLookup({
   labels: Record<string, string>;
   change: (value: unknown, labels: Record<string, string>) => void;
   loadOptions?: (query: string) => Promise<CreationLookupResult>;
+  localFilter?: boolean;
   disabled?: boolean;
   allowClear?: boolean;
 }) {
@@ -37,8 +39,9 @@ export function CreationLookup({
     form.target.source_id,
     form.target.project_key,
     form.target.type_key,
+    form.version,
     field.key,
-    query,
+    localFilter ? "" : query,
   ]);
   const activeLookup = useRef(lookupKey);
   const load = useRef(loadOptions);
@@ -53,7 +56,10 @@ export function CreationLookup({
     | null
   >(null);
   const currentLookup = lookup?.key === lookupKey ? lookup : null;
-  const options = currentLookup?.options || [];
+  const filter = query.trim().toLowerCase();
+  const options = (currentLookup?.options || []).filter((option) =>
+    !localFilter || !filter || option.label.toLowerCase().includes(filter) || option.value.toLowerCase().includes(filter),
+  );
   const busy = open && (!currentLookup || currentLookup.busy);
   const error = currentLookup?.error || "";
   const warning = currentLookup?.warning || "";
@@ -136,7 +142,7 @@ export function CreationLookup({
     setActive(0);
     const timer = window.setTimeout(
       () => {
-        (load.current ? load.current(query) : lookupCreationField(form.target, field.key, query))
+        (load.current ? load.current(localFilter ? "" : query) : lookupCreationField(form.target, field.key, localFilter ? "" : query))
           .then((found) => {
             if (isCurrent()) {
               setLookup({ ...found, key: lookupKey, busy: false, error: "" });
@@ -154,13 +160,13 @@ export function CreationLookup({
               });
           });
       },
-      query ? 250 : 0,
+      !localFilter && query ? 250 : 0,
     );
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [open, lookupKey, disabled]);
+  }, [open, lookupKey, disabled, localFilter]);
   function choose(option: CreationOption) {
     if (disabled) return;
     const next = field.multiple
@@ -268,7 +274,7 @@ export function CreationLookup({
                 aria-activedescendant={
                   options[active] ? `${listId}-${active}` : undefined
                 }
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => { setQuery(e.target.value); setActive(0); }}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
                     e.preventDefault();
@@ -322,8 +328,7 @@ export function CreationLookup({
             >
               {!busy && !error && !options.length && (
                 <p className="creation-picker-status">
-                  未找到匹配项，请输入更完整的
-                  {field.kind === "people" ? "姓名" : "标题"}。
+                  {localFilter ? `已加载的${field.kind === "people" ? "人员" : "关联事项"}中没有匹配项。` : <>未找到匹配项，请输入更完整的{field.kind === "people" ? "姓名" : "标题"}。</>}
                 </p>
               )}
               {options.map((option, index) => (
@@ -351,7 +356,9 @@ export function CreationLookup({
               ))}
             </div>
             <small className="creation-picker-status">
-              {field.kind === "people"
+              {localFilter
+                ? field.kind === "people" ? "筛选当前空间的本机已知人员" : "筛选已加载的关联事项"
+                : field.kind === "people"
                 ? "显示当前空间已知人员；输入姓名片段筛选，完整姓名可补充查询"
                 : "最多显示 20 项，输入标题缩小范围"}
             </small>

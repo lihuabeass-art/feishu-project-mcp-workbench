@@ -563,6 +563,9 @@ pub(crate) fn lookup_field(session: &Session, project_key: &str, context: &str, 
     if f.kind != "relation" {
         return Err(BackendError::validation("此字段不支持搜索"));
     }
+    if query.trim().is_empty() {
+        return load_relation_candidates(session, f);
+    }
     let escaped = query
         .trim()
         .replace('\\', "\\\\")
@@ -619,6 +622,57 @@ pub(crate) fn lookup_field(session: &Session, project_key: &str, context: &str, 
         options: found,
         warning: None,
     })
+}
+
+fn load_relation_candidates(session: &Session, field: &Field) -> Result<LookupResult, BackendError> {
+    let mut options = Vec::new();
+    for related in &field.related {
+        let mql = format!("SELECT `work_item_id`, `name` FROM {}.{}", identifier(&related.project_key)?, identifier(&related.type_key)?);
+        let mut cursor: Option<String> = None;
+        let mut group: Option<String> = None;
+        let mut total = 0;
+        let mut seen = std::collections::HashSet::new();
+        let mut complete = false;
+        for page in crate::config::page_numbers(session.config.max_pages) {
+            let args = if page == 1 {
+                json!({"project_key":related.project_key,"mql":mql})
+            } else {
+                json!({"project_key":related.project_key,"session_id":cursor,"group_pagination_list":[{"group_id":group,"page_num":page}]})
+            };
+            let value = session.call_read_tool("search_by_mql", args.as_object().unwrap())?;
+            if page == 1 {
+                if value.get("list") == Some(&Value::Null) && value["data"].as_object().is_some_and(|d| d.is_empty())
+                    && detail::text(&value["session_id"]).is_some() && value.get("search_status_info") == Some(&Value::Null)
+                    && value.get("extra_info") == Some(&Value::Null) { complete = true; break; }
+                let list = value["list"].as_array().filter(|list| list.len() == 1)
+                    .ok_or_else(|| BackendError::parse("关联事项", "缺少唯一查询结果"))?;
+                total = list[0]["count"].as_u64().ok_or_else(|| BackendError::parse("关联事项", "缺少有效数量"))?;
+                if total == 0 { complete = true; break; }
+                let groups = list[0]["group_infos"].as_array().ok_or_else(|| BackendError::parse("关联事项", "缺少分组"))?;
+                if groups.len() > 1 { return Err(BackendError::parse("关联事项", "意外返回多个分组")); }
+                group = groups.first().and_then(|g| detail::text(&g["group_id"]));
+                cursor = detail::text(&value["session_id"]);
+            }
+            let rows = group.as_ref().and_then(|g| value["data"].get(g)).and_then(Value::as_array)
+                .ok_or_else(|| BackendError::parse("关联事项", "缺少查询记录"))?;
+            for row in rows {
+                let fields = row["moql_field_list"].as_array().ok_or_else(|| BackendError::parse("关联事项", "缺少查询字段"))?;
+                let value = |key: &str| fields.iter().find(|v| v["key"] == key).map(|v| &v["value"]);
+                let id = value("work_item_id").and_then(|v| detail::text(&v["long_value"]).or_else(|| detail::text(&v["string_value"]))).unwrap_or_default();
+                let name = value("name").map(|v| text(&v["string_value"])).unwrap_or_default();
+                if id.is_empty() || name.trim().is_empty() || !seen.insert(id.clone()) {
+                    return Err(BackendError::parse("关联事项", "记录缺少标识或名称，或分页重复"));
+                }
+                options.push(OptionValue { value: id, label: name, color: None });
+            }
+            if seen.len() as u64 == total { complete = true; break; }
+            if seen.len() as u64 > total || rows.is_empty() || cursor.is_none() || group.is_none() {
+                return Err(BackendError::parse("关联事项", "查询分页不完整"));
+            }
+        }
+        if !complete { return Err(BackendError::parse("关联事项", "达到查询分页上限")); }
+    }
+    Ok(LookupResult { options, warning: None })
 }
 
 /// 补齐已选关联名称，独立于按名称搜索的前二十条候选。

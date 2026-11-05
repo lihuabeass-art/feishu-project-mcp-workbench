@@ -76,6 +76,20 @@ it.each([false,true])("关联事项按名称选择并完整核对，multiple=%s"
   expect(submit).toHaveBeenCalledWith(expect.objectContaining({fields:{selection:multiple?'["13"]':"13"}}));
 });
 
+it.each(["people", "relation"])("流程%s字段进入表单预加载并在本地筛选", async (kind) => {
+  await open(selected(kind, true));
+  const label = kind === "people" ? "研发负责人" : "上车版本";
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("lookup_workflow_field", { itemId: item.id, actionId, fieldKey: "selection", query: "" }));
+  await userEvent.click(screen.getByRole("combobox", { name: label }));
+  await screen.findByRole("option", { name: "十一月版本" });
+  const calls = vi.mocked(invoke).mock.calls.filter(([command]) => command === "lookup_workflow_field").length;
+  await userEvent.type(screen.getByRole("textbox", { name: `搜索${label}` }), "十二");
+  expect(screen.getByRole("option", { name: "十二月版本" })).toBeTruthy();
+  expect(screen.queryByRole("option", { name: "十一月版本" })).toBeNull();
+  expect(screen.queryByText("正在搜索…")).toBeNull();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "lookup_workflow_field")).toHaveLength(calls);
+});
+
 it("多人角色空选择继续要求补齐，保留选择名称到草稿", async () => {
   await open(selected("people",true));
   expect((screen.getByRole("button",{name:"提交"}) as HTMLButtonElement).disabled).toBe(true);

@@ -863,7 +863,7 @@ describe("通用创建表单", () => {
     expect(
       screen.getByRole("combobox", { name: "修复人" }).textContent,
     ).not.toContain("Token本人");
-    expect(lookupCreationField).not.toHaveBeenCalled();
+    expect(lookupCreationField).toHaveBeenCalledWith(target, "role:reporter", "");
     await user.click(
       screen.getByRole("button", { name: "从报告人移除Token本人" }),
     );
@@ -1336,7 +1336,7 @@ describe("通用创建表单", () => {
     expect(screen.getByRole("alert").textContent).toContain("没有创建权限");
   });
 
-  it("人员点击即加载，输入自动搜索，保留角色选择并使用红星标识真实必填项", async () => {
+  it("进入表单预加载人员，多个角色共享候选，输入只筛选缓存", async () => {
     const next = form();
     next.role_requirements_complete = false;
     next.fields.push({
@@ -1350,30 +1350,50 @@ describe("通用创建表单", () => {
       role_id: "fix",
     });
     vi.mocked(getCreationForm).mockResolvedValue(next);
+    vi.mocked(lookupCreationField).mockResolvedValue({
+      options: [{ value: "person-a", label: "示例用户" }, { value: "person-b", label: "其他用户" }],
+      warning: null,
+    });
     const user = userEvent.setup();
     const close = vi.fn();
     render(
       <CreateWorkItem locations={locations} close={close} created={vi.fn()} />,
     );
-    await user.click(await screen.findByRole("combobox", { name: "修复人" }));
+    const fixer = await screen.findByRole("combobox", { name: "修复人" });
+    await waitFor(() => expect(lookupCreationField).toHaveBeenCalledWith(target, "reporter", ""));
+    expect(lookupCreationField).toHaveBeenCalledTimes(1);
+    await user.click(fixer);
     expect(screen.queryByRole("button", { name: "查找修复人" })).toBeNull();
     await screen.findByRole("option", { name: "示例用户" });
-    expect(lookupCreationField).toHaveBeenCalledWith(target, "role:fix", "");
+    expect(lookupCreationField).toHaveBeenCalledTimes(1);
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("combobox", { name: "报告人" }));
+    await screen.findByRole("option", { name: "示例用户" });
+    expect(lookupCreationField).toHaveBeenCalledTimes(1);
+    await user.keyboard("{Escape}");
+    await user.click(fixer);
     await user.type(
       screen.getByRole("textbox", { name: "搜索修复人" }),
       "示例",
     );
-    await waitFor(() =>
-      expect(lookupCreationField).toHaveBeenCalledWith(
-        target,
-        "role:fix",
-        "示例",
-      ),
-    );
+    expect(screen.getByRole("option", { name: "示例用户" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "其他用户" })).toBeNull();
+    expect(screen.queryByText("正在搜索…")).toBeNull();
+    expect(lookupCreationField).toHaveBeenCalledTimes(1);
+    await user.clear(screen.getByRole("textbox", { name: "搜索修复人" }));
+    await user.type(screen.getByRole("textbox", { name: "搜索修复人" }), "不存在");
+    expect(screen.getByText("已加载的人员中没有匹配项。")).toBeTruthy();
+    expect(lookupCreationField).toHaveBeenCalledTimes(1);
+    await user.clear(screen.getByRole("textbox", { name: "搜索修复人" }));
+    await user.type(screen.getByRole("textbox", { name: "搜索修复人" }), "示例");
     await user.keyboard("{ArrowDown}{Enter}{Escape}");
     expect(
       screen.getByRole("combobox", { name: "修复人" }).textContent,
     ).toContain("示例用户");
+    await user.click(screen.getByRole("combobox", { name: "报告人" }));
+    await screen.findByRole("option", { name: "示例用户" });
+    expect(lookupCreationField).toHaveBeenCalledTimes(1);
+    await user.keyboard("{Escape}");
     expect(close).not.toHaveBeenCalled();
     expect(
       document.querySelector(
@@ -1381,6 +1401,78 @@ describe("通用创建表单", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText(/飞书未提供部分角色的必填规则/)).toBeTruthy();
+  });
+
+  it("人员预加载失败后打开字段可重试", async () => {
+    vi.mocked(lookupCreationField)
+      .mockRejectedValueOnce(new Error("暂时无法加载"))
+      .mockResolvedValue({ options: [{ value: "person-a", label: "示例用户" }], warning: null });
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    const reporter = await screen.findByRole("combobox", { name: "报告人" });
+    await waitFor(() => expect(lookupCreationField).toHaveBeenCalledTimes(1));
+    await user.click(reporter);
+    await screen.findByRole("option", { name: "示例用户" });
+    expect(lookupCreationField).toHaveBeenCalledTimes(2);
+  });
+
+  it("隐藏和显示的关联字段均预加载，搜索筛选各自的完整候选", async () => {
+    const next = form();
+    next.fields.push(
+      { key: "related", label: "所属项目", kind: "relation", required: true, multiple: false, initial: null, options: [] },
+      { key: "other", label: "关联版本", kind: "relation", required: false, multiple: false, initial: null, options: [] },
+    );
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    vi.mocked(lookupCreationField).mockImplementation(async (_, key) => ({
+      options: key === "related" ? Array.from({ length: 25 }, (_, i) => ({ value: String(i), label: `项目${i}` }))
+        : [{ value: key, label: key }], warning: null,
+    }));
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    const related = await screen.findByRole("combobox", { name: "所属项目" });
+    await waitFor(() => expect(lookupCreationField).toHaveBeenCalledWith(target, "other", ""));
+    expect(lookupCreationField).toHaveBeenCalledWith(target, "related", "");
+    const count = vi.mocked(lookupCreationField).mock.calls.length;
+    await user.click(related);
+    await screen.findByRole("option", { name: "项目24" });
+    await user.type(screen.getByRole("textbox", { name: "搜索所属项目" }), "项目24");
+    expect(screen.getByRole("option", { name: "项目24" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "项目1" })).toBeNull();
+    expect(screen.queryByText("正在搜索…")).toBeNull();
+    expect(lookupCreationField).toHaveBeenCalledTimes(count);
+  });
+
+  it("人员与多个关联字段预加载并发启动，无需等待其他字段完成", async () => {
+    const next = form();
+    next.fields.push(
+      { key: "related-a", label: "项目", kind: "relation", required: true, multiple: false, initial: null, options: [] },
+      { key: "related-b", label: "版本", kind: "relation", required: true, multiple: false, initial: null, options: [] },
+    );
+    vi.mocked(getCreationForm).mockResolvedValue(next);
+    vi.mocked(lookupCreationField).mockImplementation(() => new Promise(() => {}));
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await waitFor(() => expect(lookupCreationField).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(lookupCreationField).mock.calls.map(([, key]) => key)).toEqual(expect.arrayContaining(["reporter", "related-a", "related-b"]));
+  });
+
+  it("切换新建位置后预加载新位置人员，不使用迟到的旧结果", async () => {
+    const first = form();
+    const second = { ...form(), target: locations[1], context: "account-b" };
+    vi.mocked(getCreationForm).mockImplementation(async (location) => location.type_key === "issue" ? second : first);
+    let finish!: (value: { options: { value: string; label: string }[]; warning: null }) => void;
+    vi.mocked(lookupCreationField).mockImplementation((location) => location.type_key === "issue"
+      ? Promise.resolve({ options: [{ value: "new", label: "新位置人员" }], warning: null })
+      : new Promise((resolve) => { finish = resolve; }));
+    const user = userEvent.setup();
+    render(<CreateWorkItem locations={locations} close={vi.fn()} created={vi.fn()} />);
+    await waitFor(() => expect(lookupCreationField).toHaveBeenCalledWith(target, "reporter", ""));
+    await user.click(screen.getByRole("combobox", { name: "新建类型" }));
+    await user.click(screen.getByRole("option", { name: "缺陷跟踪" }));
+    await waitFor(() => expect(lookupCreationField).toHaveBeenCalledWith(locations[1], "reporter", ""));
+    await act(async () => finish({ options: [{ value: "old", label: "旧位置人员" }], warning: null }));
+    await user.click(await screen.findByRole("combobox", { name: "报告人" }));
+    await screen.findByRole("option", { name: "新位置人员" });
+    expect(screen.queryByRole("option", { name: "旧位置人员" })).toBeNull();
   });
 
   it("停用新建位置仍可直接恢复待核验记录，不依赖元数据读取", async () => {
