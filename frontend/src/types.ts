@@ -172,6 +172,7 @@ export interface ConnectionInfo {
 
 export interface ItemDetail {
   id: CachedItem["id"];
+  item_url?: string | null;
   fetched_at_ms: number;
   data: {
     work_item_attribute: Record<string, unknown>;

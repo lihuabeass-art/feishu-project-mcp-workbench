@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import { asError, itemKey, localTime } from "./model";
 import { readFailureMessage } from "./readFeedback";
@@ -317,6 +317,15 @@ export function WorkItemDetails({
         : "尚未检查";
   return (
     <div className="detail-section remote-details">
+      {detail?.item_url && detail.id.project_key === item.id.project_key &&
+        detail.id.work_item_type_key === item.id.work_item_type_key &&
+        detail.id.work_item_id === item.id.work_item_id && (
+        <div className="workflow-manual-fill detail-item-link">
+          <ExternalLink href={detail.item_url} title={`在飞书项目中打开「${item.name || item.id.work_item_id}」`}>
+            打开飞书事项<ArrowUpRight size={13} aria-hidden="true" />
+          </ExternalLink>
+        </div>
+      )}
       <h3>完整工作信息</h3>
       <div className="detail-freshness">
         <p className="hint detail-check-status" role="status" aria-atomic="true">

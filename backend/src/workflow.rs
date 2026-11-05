@@ -35,6 +35,7 @@ use crate::sync::now_ms;
 mod editing;
 #[path = "workflow_links.rs"]
 mod links;
+pub use links::item_url;
 #[path = "workflow_editor.rs"]
 pub mod editor;
 

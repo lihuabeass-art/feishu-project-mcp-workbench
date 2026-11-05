@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::model::domain::WorkItemId;
 
-pub(super) fn item_url(endpoint: &str, id: &WorkItemId, detail: &Value) -> Option<String> {
+pub fn item_url(endpoint: &str, id: &WorkItemId, detail: &Value) -> Option<String> {
     let endpoint = Url::parse(endpoint).ok()?;
     let host = endpoint.host_str()?.trim_end_matches('.');
     // 目前只确认飞书项目官方 MCP 端点与同站事项页面；代理或自定义端点不推断网页域名。

@@ -249,14 +249,32 @@ async fn load_snapshot() -> Result<Snapshot, UiError> {
     .await
 }
 
-#[tauri::command]
-async fn cached_item_detail(item_id: WorkItemId) -> Result<Option<fstodo_backend::detail::ItemDetail>, UiError> {
-    blocking(move || open_session()?.cached_item_detail(&item_id)).await
+#[derive(Serialize)]
+struct ItemDetailView {
+    #[serde(flatten)]
+    detail: fstodo_backend::detail::ItemDetail,
+    item_url: Option<String>,
+}
+
+fn detail_view(session: &Session, detail: fstodo_backend::detail::ItemDetail) -> ItemDetailView {
+    let item_url = workflow::item_url(&session.config.endpoint, &detail.id, &detail.data);
+    ItemDetailView { detail, item_url }
 }
 
 #[tauri::command]
-async fn refresh_item_detail(item_id: WorkItemId) -> Result<fstodo_backend::detail::ItemDetail, UiError> {
-    blocking(move || open_session()?.refresh_item_detail(&item_id)).await
+async fn cached_item_detail(item_id: WorkItemId) -> Result<Option<ItemDetailView>, UiError> {
+    blocking(move || {
+        let session = open_session()?;
+        Ok(session.cached_item_detail(&item_id)?.map(|detail| detail_view(&session, detail)))
+    }).await
+}
+
+#[tauri::command]
+async fn refresh_item_detail(item_id: WorkItemId) -> Result<ItemDetailView, UiError> {
+    blocking(move || {
+        let session = open_session()?;
+        Ok(detail_view(&session, session.refresh_item_detail(&item_id)?))
+    }).await
 }
 
 #[tauri::command]
