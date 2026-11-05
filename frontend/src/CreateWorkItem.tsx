@@ -551,7 +551,7 @@ export function CreateWorkItem({
       refreshWarning = "工作事项已确认创建，清单刷新失败，可稍后刷新。";
     }
     if (completed.continueCreating)
-      await prepareNext(completedForm, refreshWarning);
+      await prepareNext(completedForm, [completed.result?.warning, refreshWarning].filter(Boolean).join(" "));
     else if (refreshWarning) setError(refreshWarning);
   }
   async function retryNext() {
@@ -564,7 +564,7 @@ export function CreateWorkItem({
     busyRef.current = true;
     setBusy(true);
     try {
-      await prepareNext(form);
+      await prepareNext(form, draftRef.current.result?.warning || "");
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -1036,7 +1036,7 @@ export function CreateWorkItem({
                 </p>
               )}
               {form.fields.some((field) => field.kind === "attachment" && !creationEmpty(draft.values[field.key])) &&
-                <p className="hint">确认创建后会先上传附件；全部附件写入并从飞书回读核对后才显示成功。</p>}
+                <p className="hint">确认创建后会先上传附件；多份文件会在事项创建后继续追加，追加未确认时会单独提示。</p>}
               <CreationReview
                 form={form}
                 groups={groups}
@@ -1060,6 +1060,7 @@ export function CreateWorkItem({
                       "提交结果尚未确认，草稿已保留。请先在飞书核对，避免重复创建。"}
                 </p></div></div>
                 <div className="creation-result-summary"><FileText size={18} /><div><span>本次草稿 · {location?.name || "工作事项"}</span><strong>{String(draft.values.name || "未填写标题")}</strong><small>{location?.space}</small></div></div>
+                {draft.result?.warning && <p className="hint">{draft.result.warning}</p>}
                 {preparingNext && (
                   <p className="hint" role="status">
                     正在准备下一条创建表单…

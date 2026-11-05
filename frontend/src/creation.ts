@@ -42,6 +42,7 @@ export type CreationResult = {
   request_id: string;
   item_id: CachedItem["id"] | null;
   can_verify: boolean;
+  warning?: string | null;
   rejected_field_keys?: string[];
 };
 export type CreationForm = {

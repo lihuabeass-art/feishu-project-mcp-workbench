@@ -1,12 +1,13 @@
 use super::*;
 use crate::{
+    detail::ItemDetail,
     mcp::{ConnectionInfo, TodoSource, ToolResultPayload},
     store::{CachedType, TypePreference},
 };
 use async_trait::async_trait;
 use serde_json::Map;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 
@@ -16,6 +17,7 @@ struct Fake {
     fields: Mutex<Vec<Value>>,
     user: Mutex<String>,
     relation_queries: Mutex<Vec<String>>,
+    fail_read: AtomicBool,
 }
 #[async_trait]
 impl TodoSource for Arc<Fake> {
@@ -93,8 +95,6 @@ impl TodoSource for Arc<Fake> {
                 "示例同事" => json!([{"user_key":"ou_colleague","name_cn":"示例同事"}]),
                 _ => json!([]),
             },
-            "search_by_mql" if self.mode.starts_with("relation-") => {
-                let mql = args["mql"].as_str().unwrap();
             "search_by_mql" if self.mode.starts_with("lookup-pages") => {
                 if args.get("mql").is_some() {
                     assert_eq!(args["mql"], "SELECT `work_item_id`, `name` FROM `space`.`project`");
@@ -107,6 +107,8 @@ impl TodoSource for Arc<Fake> {
                     json!({"data":{"g":rows}})
                 }
             },
+            "search_by_mql" if self.mode.starts_with("relation-") => {
+                let mql = args["mql"].as_str().unwrap();
                 self.relation_queries.lock().unwrap().push(mql.into());
                 assert!(mql.contains("WHERE `work_item_id` IN ("));
                 assert!(!mql.contains("LIKE") && !mql.contains("LIMIT 20"));
@@ -129,7 +131,7 @@ impl TodoSource for Arc<Fake> {
                 match self.mode {
                     "required-rejection" => return Err(BackendError::Tool { tool: tool.into(), code: None, message: "error=ErrFieldRequired,message={field_name}({field_key}) 必填,远端说明,远端角色(description,role_space_custom-key_quality_owner) 必填,retriable=false\nlogid: fixture-only".into() }),
                     "gateway-rejection" => return Err(BackendError::Tool { tool: tool.into(), code: None, message: "error=MCPGatewayRequestMismatch,message=argument arguments.fields[1].field_value must be string, got number,retriable=false\nlogid: fixture-only".into() }),
-                    "unknown" | "old_item" => {
+                    "unknown" | "old_item" | "unknown-changed-fields" | "missing-create-time" => {
                         return Ok(ToolResultPayload {
                             is_error: false,
                             structured: None,
@@ -154,6 +156,9 @@ impl TodoSource for Arc<Fake> {
                 }
             }
             "get_workitem_brief" => {
+                if self.fail_read.load(Ordering::SeqCst) {
+                    return Err(BackendError::validation("fixture read unavailable"));
+                }
                 let stored = self.fields.lock().unwrap();
                 let fields = stored
                     .iter()
@@ -177,10 +182,12 @@ impl TodoSource for Arc<Fake> {
                 let role_value: Value = stored.iter().find(|f|f["field_key"]=="role_owners").map(|f| serde_json::from_str(f["field_value"].as_str().unwrap()).unwrap()).unwrap_or(json!([]));
                 let roles=role_value.as_array().into_iter().flatten()
                     .map(|r|json!({"key":r["role"],"members":r["owners"].as_array().unwrap().iter().map(|u|json!({"key":u})).collect::<Vec<_>>()})).collect::<Vec<_>>();
-                json!({"work_item_attribute":{"work_item_id":42,"work_item_name":if self.mode == "mismatch"{"其他标题"}else{"示例工作"},
-                    "owned_project":{"key":"space"},"work_item_type":{"key":"custom-key"},"template":{"id":123},"role_members":roles,
-                    "create_time":if self.mode=="old_item"{1}else{crate::sync::now_ms()}},
-                    "work_item_fields":fields,"pagination":{"has_more":false}})
+                let changed = self.mode.ends_with("changed-fields");
+                json!({"work_item_attribute":{"work_item_id":if self.mode == "wrong-id"{43}else{42},"work_item_name":if self.mode == "mismatch" || changed{"其他标题"}else{"示例工作"},
+                    "owned_project":{"key":if self.mode == "wrong-space"{"other-space"}else{"space"}},"work_item_type":{"key":if self.mode == "wrong-type"{"other-type"}else{"custom-key"}},
+                    "template":{"id":if changed{456}else{123}},"role_members":if changed{vec![]}else{roles},
+                    "create_time":if self.mode=="missing-create-time"{Value::Null}else{json!(if self.mode=="old_item"{1}else{crate::sync::now_ms()})}},
+                    "work_item_fields":if changed{vec![]}else{fields},"pagination":{"has_more":false}})
             }
             _ => panic!("unexpected {tool}"),
         };
@@ -231,13 +238,6 @@ struct Harness {
     _remote: crate::remote::TestRemote,
     dir: std::path::PathBuf,
 }
-impl Harness {
-    fn new(mode: &'static str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "fstodo-create-{}-{}",
-            std::process::id(),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap()
-        ));
 
 #[test]
 fn relation_candidates_load_all_pages_and_reject_duplicates() {
@@ -250,6 +250,13 @@ fn relation_candidates_load_all_pages_and_reject_duplicates() {
     let missing = Harness::new("lookup-pages-missing");
     assert!(lookup(&missing.session, &missing.target(), "related", "").is_err());
 }
+impl Harness {
+    fn new(mode: &'static str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "fstodo-create-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("token"), "creation-test-only-token").unwrap();
         std::fs::write(dir.join("config.toml"),format!("token_env='FSTODO_ABSENT_CREATION_TEST_TOKEN'\ntoken_file='{}'\n[[source]]\nid='test-source'\nkind='personal_todo'\nenabled=true\naction='todo'\n",dir.join("token").display().to_string().replace('\\',"/"))).unwrap();
@@ -264,6 +271,7 @@ fn relation_candidates_load_all_pages_and_reject_duplicates() {
             fields: Mutex::new(vec![]),
             user: Mutex::new("ou_person".into()),
             relation_queries: Mutex::new(vec![]),
+            fail_read: AtomicBool::new(mode == "read-error"),
         });
         let remote = crate::remote::install_test_client(
             &session.config,
@@ -328,59 +336,20 @@ fn relation_candidates_load_all_pages_and_reject_duplicates() {
             ]),
         }
     }
+    fn restore_pending(&self, request_id: &str) {
+        // 直接构造旧版台账；finish_action 只允许 pending 收尾，不能反向修改成功记录。
+        let conn = rusqlite::Connection::open(self.dir.join("cache.db")).unwrap();
+        assert_eq!(conn.execute("UPDATE workflow_action_run SET status='unknown', verified=0 WHERE request_id=?1 AND status='verified'", [request_id]).unwrap(), 1);
+        let record = self.session.store.action_by_request(request_id).unwrap().unwrap();
+        assert_eq!(record.status, "unknown");
+        assert!(!record.verified);
+        assert!(pending_forms(&self.session).unwrap().iter().any(|form| form.pending.as_ref().unwrap().request.request_id == request_id));
+    }
 }
 impl Drop for Harness {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
-}
-
-#[test]
-fn migrated_image_identity_requires_scoped_original_and_trusted_matching_bytes() {
-    let h = Harness::new("normal");
-    let form = discover(&h.session, &h.target()).unwrap();
-    let mut request = h.request();
-    let source_url = "https://example.invalid/source.png";
-    let source_token = "fixture-image-token";
-    let remote_url = format!("https://{}/file/migrated.png", reqwest::Url::parse(&h.session.config.endpoint).unwrap().host_str().unwrap());
-    let bytes = b"\x89PNG\r\n\x1a\nfixture-source-image";
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let image = images::save(&h.session, &request.target, &form.context, "description", &encoded, "image/png", "fixture.png").unwrap();
-    h.session.store.mark_creation_image_uploaded(&crate::store::CreationImageKey {context:&form.context,project_key:&request.target.project_key,type_key:&request.target.type_key,field_key:"description",image_id:&image.image_id}, source_url, source_token).unwrap();
-    request.fields.insert("description".into(), json!(format!("![截图]({source_url})<!--{source_token}-->正文")));
-    *h.fake.fields.lock().unwrap() = transport_fields(plan(&form, &request).unwrap());
-    let id = WorkItemId {project_key:Some(request.target.project_key.clone()),work_item_type_key:Some(request.target.type_key.clone()),work_item_id:"42".into()};
-    let mut detail = h.session.refresh_item_detail_fresh(&id).unwrap();
-    let fields = detail.data["work_item_fields"].as_array_mut().unwrap();
-    fields.iter_mut().find(|field| field["key"]=="description").unwrap()["value"] = json!(format!("![]({remote_url})<!-- image:{{\"uuid\":\"12345678-1234-1234-1234-123456789abc\"}} -->\n\n正文"));
-    let mut calls = 0;
-    matches_fields_with(&form, &request, &detail, |field, change| {
-        image_content_matches_with(&h.session, &form, &request, &detail, field, change, |_, actual_id, actual_field, actual_url| {
-            calls += 1;
-            assert_eq!(actual_id, &id); assert_eq!(actual_field, "description"); assert_eq!(actual_url, remote_url);
-            Ok(format!("data:image/png;base64,{encoded}"))
-        })
-    }).unwrap();
-    assert_eq!(calls, 1);
-    for case in ["no-cache", "wrong-context", "wrong-field", "wrong-token", "foreign-host", "different-bytes", "download-failed", "wrong-item"] {
-        let mut checked_form = form.clone();
-        let mut checked_detail = detail.clone();
-        if case=="wrong-context" { checked_form.context="other-context".into(); }
-        if case=="wrong-item" { checked_detail.id.work_item_type_key=Some("other-type".into()); }
-        let url = if case=="foreign-host" {"https://outside.invalid/image.png"} else {remote_url.as_str()};
-        let original = if case=="no-cache" {"https://example.invalid/missing.png"} else {source_url};
-        let token = if case=="wrong-token" {"other-token"} else {source_token};
-        let field = if case=="wrong-field" {"another-field"} else {"description"};
-        let mut loads = 0;
-        assert!(!image_content_matches_with(&h.session, &checked_form, &request, &checked_detail, field,
-            richtext::ImageChange {original_url:original,original_token:token,remote_url:url}, |_,_,_,_| {
-                loads += 1;
-                if case=="download-failed" {Err(BackendError::validation("fixture unavailable"))}
-                else {Ok(format!("data:image/png;base64,{}",base64::engine::general_purpose::STANDARD.encode(b"different image")))}
-            }), "{case}");
-        assert_eq!(loads, usize::from(case=="different-bytes" || case=="download-failed"));
-    }
-    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -399,7 +368,7 @@ fn pure_image_placeholder_is_transport_only_and_read_verification_never_recreate
         let record = h.session.store.action_by_request(&request.request_id).unwrap().unwrap();
         let saved: Value = serde_json::from_str(record.detail.as_deref().unwrap()).unwrap();
         assert_eq!(saved["request"]["fields"]["description"], original);
-        h.session.store.finish_action(&request.request_id, "unknown", false, record.detail.as_deref(), crate::sync::now_ms()).unwrap();
+        h.restore_pending(&request.request_id);
         assert_eq!(verify(&h.session, &request.request_id, None, None).unwrap().outcome, "verified");
         assert_eq!(execute(&h.session, &request).unwrap().outcome, "verified");
         assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
@@ -414,9 +383,8 @@ fn normalized_uploaded_image_is_verified_on_execute_and_later_read_without_rewri
     let result = execute(&h.session, &request).unwrap();
     assert_eq!(result.outcome, "verified");
     assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
-    let record = h.session.store.action_by_request(&request.request_id).unwrap().unwrap();
     // 模拟上一版本因富文本格式变化保留的待核验台账，只核验既有编号。
-    h.session.store.finish_action(&request.request_id, "unknown", false, record.detail.as_deref(), crate::sync::now_ms()).unwrap();
+    h.restore_pending(&request.request_id);
     assert_eq!(verify(&h.session, &request.request_id, None, None).unwrap().outcome, "verified");
     assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
     assert_eq!(execute(&h.session, &request).unwrap().outcome, "verified");
@@ -809,15 +777,62 @@ fn markdown_body_is_submitted_without_trimming_semantic_whitespace() {
 }
 
 #[test]
-fn changed_markdown_whitespace_keeps_result_uncertain_and_draft_intact() {
-    let h = Harness::new("trimmed-body");
-    let mut request = h.request();
-    request.fields.insert("description".into(), json!("    indented code\n\n"));
+fn created_item_does_not_require_identical_fields_and_legacy_pending_can_recover() {
+    for mode in ["trimmed-body", "changed-fields", "mismatch"] {
+        let h = Harness::new(mode);
+        let mut request = h.request();
+        request.fields.insert("description".into(), json!("    indented code\n\n![截图](https://example.invalid/original.png)<!--fixture-token-->"));
+        assert_eq!(execute(&h.session, &request).unwrap().outcome, "verified", "{mode}");
+        assert!(pending_forms(&h.session).unwrap().is_empty());
+        // 模拟旧版因字段差异留下的已知编号台账，重新核验只读且释放创建锁。
+        h.restore_pending(&request.request_id);
+        h.fake.fail_read.store(true, Ordering::SeqCst);
+        assert!(verify(&h.session, &request.request_id, None, None).is_err());
+        assert_eq!(h.session.store.action_by_request(&request.request_id).unwrap().unwrap().status, "unknown");
+        h.fake.fail_read.store(false, Ordering::SeqCst);
+        assert_eq!(verify(&h.session, &request.request_id, None, None).unwrap().outcome, "verified");
+        assert!(discover(&h.session, &h.target()).unwrap().pending.is_none());
+        let saved = h.session.store.action_by_request(&request.request_id).unwrap().unwrap();
+        let saved: Value = serde_json::from_str(saved.detail.as_deref().unwrap()).unwrap();
+        assert_eq!(saved["request"]["fields"], serde_json::to_value(&request.fields).unwrap());
+        assert_eq!(execute(&h.session, &request).unwrap().outcome, "verified");
+        assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
+        let mut next = request.clone();
+        next.request_id = "request-two".into();
+        assert_eq!(execute(&h.session, &next).unwrap().outcome, "verified");
+        assert_eq!(h.fake.writes.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[test]
+fn read_failure_keeps_pending_until_item_can_be_confirmed_without_recreating() {
+    let h = Harness::new("read-error");
+    let request = h.request();
     assert_eq!(execute(&h.session, &request).unwrap().outcome, "unknown");
-    let pending = discover(&h.session, &h.target()).unwrap().pending.unwrap();
-    assert_eq!(pending.request.fields, request.fields);
     assert!(verify(&h.session, &request.request_id, None, None).is_err());
+    h.fake.fail_read.store(false, Ordering::SeqCst);
+    assert_eq!(verify(&h.session, &request.request_id, None, None).unwrap().outcome, "verified");
+    assert!(pending_forms(&h.session).unwrap().is_empty());
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn manual_number_recovery_does_not_compare_fields() {
+    let h = Harness::new("unknown-changed-fields");
+    let request = h.request();
     assert_eq!(execute(&h.session, &request).unwrap().outcome, "unknown");
+    assert_eq!(verify(&h.session, &request.request_id, Some("42"), None).unwrap().outcome, "verified");
+    assert!(pending_forms(&h.session).unwrap().is_empty());
+    assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn manual_number_without_creation_time_stays_pending() {
+    let h = Harness::new("missing-create-time");
+    let request = h.request();
+    assert_eq!(execute(&h.session, &request).unwrap().outcome, "unknown");
+    assert!(verify(&h.session, &request.request_id, Some("42"), None).is_err());
+    assert_eq!(pending_forms(&h.session).unwrap().len(), 1);
     assert_eq!(h.fake.writes.load(Ordering::SeqCst), 1);
 }
 
@@ -858,7 +873,7 @@ fn default_off_and_preflight_failures_never_write() {
 
 #[test]
 fn uncertain_receipts_are_persisted_block_retries_and_can_only_be_read_back() {
-    for mode in ["unknown", "error", "precedence", "mismatch"] {
+    for mode in ["unknown", "error", "precedence", "wrong-id", "wrong-space", "wrong-type"] {
         let h = Harness::new(mode);
         let request = h.request();
         let result = execute(&h.session, &request).unwrap();

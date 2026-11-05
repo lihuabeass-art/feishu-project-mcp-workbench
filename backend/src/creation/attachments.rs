@@ -315,6 +315,23 @@ pub(super) fn matches(submitted: &Value, remote: &Value) -> bool {
     }
 }
 
+pub(super) fn needs_append(form: &Form, request: &Request) -> bool {
+    form.fields.iter().any(|field| field.kind == "attachment"
+        && request.fields.get(&field.key).and_then(Value::as_array).is_some_and(|files| files.len() > 1))
+}
+
+// 附件追加过程的安全检查只决定是否继续追加、是否提示，不影响事项已创建的事实。
+fn verify_appends(form: &Form, current: &Request, original: &Request, detail: &crate::detail::ItemDetail) -> Result<(), BackendError> {
+    for field in form.fields.iter().filter(|field| field.kind == "attachment") {
+        if !original.fields.get(&field.key).and_then(Value::as_array).is_some_and(|files| files.len() > 1) { continue; }
+        let value = current.fields.get(&field.key).unwrap_or(&Value::Null);
+        if !matches(&encode(value)?, &super::remote_value(&detail.data, &field.key)) {
+            return Err(BackendError::validation(format!("事项已创建，「{}」尚未确认全部添加，请在飞书核对附件", field.label)));
+        }
+    }
+    Ok(())
+}
+
 /// 创建请求中的每个附件字段先只写首个，避免多个简化对象触发飞书 unique 校验。
 pub(super) fn first_request(form: &Form, request: &Request) -> Request {
     let mut first = request.clone();
@@ -344,7 +361,7 @@ pub(super) fn complete(
         crate::remote::runtime()?.block_on(crate::item_access::lock_workflow(&session.store, id));
     let mut current = first_request(form, request);
     let detail = session.refresh_item_detail_fresh(id)?;
-    super::matches_fields(session, form, &current, &detail)?;
+    verify_appends(form, &current, request, &detail)?;
     for field in form
         .fields
         .iter()
@@ -356,7 +373,7 @@ pub(super) fn complete(
         for next in list.iter().skip(1) {
             // 每次覆盖前重新读取；原样保留 uid/url/未知字段，远端有并发变化则停止。
             let before = session.refresh_item_detail_fresh(id)?;
-            super::matches_fields(session, form, &current, &before)?;
+            verify_appends(form, &current, request, &before)?;
             let mut remote = remote_files(&super::remote_value(&before.data, &field.key))?;
             let appended = remote_files(&encode(&json!([next]))?)?;
             remote.extend(appended);
@@ -377,7 +394,7 @@ pub(super) fn complete(
             // 不论写回执是否可解析，最终只看同字段远端回读；失败不重发写入。
             let checked = session
                 .refresh_item_detail_fresh(id)
-                .and_then(|detail| super::matches_fields(session, form, &current, &detail));
+                .and_then(|detail| verify_appends(form, &current, request, &detail));
             if let Err(error) = checked {
                 return Err(receipt.err().unwrap_or(error));
             }

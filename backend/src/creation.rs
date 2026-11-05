@@ -2,7 +2,7 @@
 use crate::{
     api::Session,
     association::identifier,
-    detail::{self, ItemDetail},
+    detail,
     error::BackendError,
     mcp::feishu::TOOL_CREATE_WORKITEM,
     model::WorkItemId,
@@ -86,6 +86,8 @@ pub struct ResultView {
     pub request_id: String,
     pub item_id: Option<WorkItemId>,
     pub can_verify: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
     #[serde(default)]
     pub rejected_field_keys: Vec<String>,
 }
@@ -959,80 +961,6 @@ pub(crate) fn id_values(v: &Value) -> Vec<String> {
     values.dedup();
     values
 }
-fn image_content_matches_with(
-    session: &Session, form: &Form, request: &Request, detail: &ItemDetail,
-    field: &str, image: richtext::ImageChange<'_>,
-    load: impl FnOnce(&Session, &WorkItemId, &str, &str) -> Result<String, BackendError>,
-) -> bool {
-    let checked = || -> Result<bool, BackendError> {
-        let endpoint = reqwest::Url::parse(&session.config.endpoint).map_err(|_| BackendError::validation("图片服务地址无效"))?;
-        let remote = reqwest::Url::parse(image.remote_url).map_err(|_| BackendError::validation("图片地址无效"))?;
-        if remote.scheme() != "https" || remote.host_str().is_none() || remote.host_str() != endpoint.host_str()
-            || detail.id.project_key.as_deref() != Some(request.target.project_key.as_str())
-            || detail.id.work_item_type_key.as_deref() != Some(request.target.type_key.as_str())
-            || !detail.id.missing_parts().is_empty() { return Ok(false); }
-        let original = images::get_uploaded(session, &request.target, &form.context, field, image.original_url, image.original_token)?;
-        let original = original.data_url.split_once(',').ok_or_else(|| BackendError::validation("原图缓存无效"))?.1;
-        let original = base64::engine::general_purpose::STANDARD.decode(original).map_err(|_| BackendError::validation("原图缓存无效"))?;
-        let downloaded = load(session, &detail.id, field, image.remote_url)?;
-        let downloaded = downloaded.split_once(',').ok_or_else(|| BackendError::validation("回读图片无效"))?.1;
-        let downloaded = base64::engine::general_purpose::STANDARD.decode(downloaded).map_err(|_| BackendError::validation("回读图片无效"))?;
-        Ok(Sha256::digest(original) == Sha256::digest(downloaded))
-    };
-    checked().unwrap_or(false)
-}
-
-fn matches_fields(session: &Session, form: &Form, request: &Request, detail: &ItemDetail) -> Result<(), BackendError> {
-    matches_fields_with(form, request, detail, |field, image| {
-        image_content_matches_with(session, form, request, detail, field, image,
-            |session, id, field, url| crate::field_images::load(session, id, field, url, true))
-    })
-}
-
-fn matches_fields_with(form: &Form, request: &Request, detail: &ItemDetail, mut image_matches: impl FnMut(&str, richtext::ImageChange<'_>) -> bool) -> Result<(), BackendError> {
-    for f in &form.fields {
-        let input = request.fields.get(&f.key).unwrap_or(&Value::Null);
-        if empty(input) {
-            continue;
-        }
-        if f.kind == "unsupported" && !f.required {
-            continue;
-        }
-        let submitted = encode(f, input)?;
-        let remote = if let Some(role) = &f.role_id {
-            detail.data["work_item_attribute"]["role_members"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|r| r["key"] == *role || r["role_id"] == *role || r["role"] == *role)
-                .map(|r| r["members"].clone())
-                .unwrap_or(Value::Null)
-        } else {
-            remote_value(&detail.data, &f.key)
-        };
-        let equal = match f.kind.as_str() {
-            "select" | "people" | "relation" => id_values(&submitted) == id_values(&remote),
-            "text" => {
-                submitted.as_str().map(str::trim) == remote.as_str().map(str::trim)
-            }
-            "textarea" => match (submitted.as_str(), remote.as_str()) {
-                (Some(submitted), Some(remote)) => richtext::matches_with_images(submitted, remote, |image| image_matches(&f.key, image)),
-                _ => submitted.as_str() == remote.as_str(),
-            },
-            "number" => submitted.as_f64() == remote.as_f64(),
-            "date" => submitted == remote["timestamp"] || submitted == remote,
-            "attachment" => attachments::matches(&submitted, &remote),
-            _ => submitted == remote,
-        };
-        if !equal {
-            return Err(BackendError::validation(format!(
-                "「{}」尚未与提交值一致",
-                f.label
-            )));
-        }
-    }
-    Ok(())
-}
 fn result(request: &Request, item_id: Option<WorkItemId>, verified: bool) -> ResultView {
     ResultView {
         rejected_field_keys: Vec::new(),
@@ -1045,8 +973,14 @@ fn result(request: &Request, item_id: Option<WorkItemId>, verified: bool) -> Res
         .into(),
         request_id: request.request_id.clone(),
         can_verify: !verified,
+        warning: None,
         item_id,
     }
+}
+fn saved_result(request: &Request, item_id: Option<WorkItemId>, verified: bool, saved: &Value) -> ResultView {
+    let mut view = result(request, item_id, verified);
+    view.warning = saved["warning"].as_str().map(str::to_owned);
+    view
 }
 fn not_submitted(request: &Request) -> ResultView {
     ResultView {
@@ -1056,6 +990,7 @@ fn not_submitted(request: &Request) -> ResultView {
         request_id: request.request_id.clone(),
         item_id: None,
         can_verify: false,
+        warning: None,
     }
 }
 // 飞书网关已观测的字段类型校验拒绝；不可将一般业务错误或连接错误视作未创建。
@@ -1150,10 +1085,11 @@ pub fn execute(session: &Session, request: &Request) -> Result<ResultView, Backe
             return Ok(not_submitted(request));
         }
         if is_rejected(&record, &saved) { return Ok(rejected_result(request, &saved)); }
-        return Ok(result(
+        return Ok(saved_result(
             request,
             serde_json::from_value(saved["item_id"].clone())?,
             record.verified,
+            &saved,
         ));
     }
     let form = discover_fresh(session, &request.target)?;
@@ -1206,16 +1142,13 @@ pub fn execute(session: &Session, request: &Request) -> Result<ResultView, Backe
         &request.request_id,
         &json!({"request":request,"item_id":id,"form":form}).to_string(),
     );
-    let check = id.as_ref().map(|id| {
-        id_saved.and_then(|_| {
-            if form.fields.iter().any(|f| f.kind == "attachment") {
-                attachments::complete(session, &form, request, id)
-            } else {
-                session.refresh_item_detail_fresh(id).and_then(|detail| matches_fields(session, &form, request, &detail))
-            }
-        })
-    });
+    // 创建回执已给出新编号；只确认复合身份和存在性，不以字段内容差异锁住创建。
+    let check = id.as_ref().map(|id| id_saved.and_then(|_| session.refresh_item_detail_fresh(id).map(|_| ())));
     let verified = matches!(&check, Some(Ok(())));
+    let attachment_error = if verified && attachments::needs_append(&form, request) {
+        attachments::complete(session, &form, request, id.as_ref().unwrap()).err()
+    } else { None };
+    let warning = attachment_error.as_ref().map(|_| format!("事项 {} 已创建，但部分附件追加尚未确认，请在飞书核对附件。", id.as_ref().unwrap().work_item_id));
     let secret = session
         .credential()
         .ok()
@@ -1227,10 +1160,12 @@ pub fn execute(session: &Session, request: &Request) -> Result<ResultView, Backe
             check
                 .and_then(Result::err)
                 .map(|e| e.safe_message(secret.as_deref()))
-        });
+        })
+        .or_else(|| attachment_error.map(|e| e.safe_message(secret.as_deref())));
     let detail =
-        json!({"request":request,"item_id":id,"form":form,"diagnostic":diagnostic}).to_string();
+        json!({"request":request,"item_id":id,"form":form,"diagnostic":diagnostic,"warning":warning}).to_string();
     let mut result = result(request, id, verified);
+    result.warning = warning;
     if session
         .store
         .finish_action(
@@ -1299,7 +1234,7 @@ pub fn verify(
     if is_rejected(&record, &saved) { return Ok(rejected_result(&request, &saved)); }
     let id: Option<WorkItemId> = serde_json::from_value(saved["item_id"].clone())?;
     if record.verified {
-        return Ok(result(&request, id, true));
+        return Ok(saved_result(&request, id, true, &saved));
     }
     let manual = id.is_none();
     let id = id
@@ -1315,7 +1250,7 @@ pub fn verify(
         .ok_or_else(|| BackendError::validation("请填写在飞书中找到的新事项编号，再回读核对"))?;
     let form: Form = serde_json::from_value(saved["form"].clone())?;
     let detail = session.refresh_item_detail_fresh(&id)?;
-    matches_fields(session, &form, &request, &detail)?;
+    // 旧版因正文或图片规范化而锁定的记录，也只确认事项存在，不重发创建。
     if manual {
         let created = detail.data["work_item_attribute"]["create_time"]
             .as_i64()
@@ -1333,11 +1268,15 @@ pub fn verify(
     }
     let mut saved = saved;
     saved["item_id"] = serde_json::to_value(&id)?;
+    if attachments::needs_append(&form, &request) && saved["warning"].as_str().is_none() {
+        // 旧版或中断记录只确认创建，不重做附件写入，也不以附件内容阻止解锁。
+        saved["warning"] = json!(format!("事项 {} 已创建，请在飞书核对本次多附件的追加结果。", id.work_item_id));
+    }
     session
         .store
         .save_creation_detail(request_id, &saved.to_string())?;
     session.store.verify_created_action(request_id)?;
-    Ok(result(&request, Some(id), true))
+    Ok(saved_result(&request, Some(id), true, &saved))
 }
 
 #[cfg(test)]

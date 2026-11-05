@@ -110,13 +110,19 @@ impl TodoSource for Arc<Fake> {
                                 file["uid"] = json!("server-uid");
                                 file["unknown_metadata"] = json!("preserved");
                                 file["fileToken"] = json!("server-resigned-token");
+                                if self.mode == "changed-single-file" {
+                                    file["name"] = json!("server-name.bin");
+                                    file["type"] = json!("application/octet-stream");
+                                    file["size"] = json!("999");
+                                }
                             }
+                            if self.mode == "missing-single-file" { files.clear(); }
                             value = json!(serde_json::to_string(&files).unwrap());
                         }
                         json!({"key":field["field_key"],"value":value})
                     })
                     .collect::<Vec<_>>();
-                json!({"work_item_attribute":{"work_item_id":42,"work_item_name":"示例事项","owned_project":{"key":"space"},
+                json!({"work_item_attribute":{"work_item_id":42,"work_item_name":if self.mode == "changed-title"{"飞书已更改标题"}else{"示例事项"},"owned_project":{"key":"space"},
                     "work_item_type":{"key":"custom-type"},"template":{"id":123},"create_time":crate::sync::now_ms()},
                     "work_item_fields":fields,"pagination":{"has_more":false}})
             }
@@ -389,8 +395,30 @@ fn attachment_token_is_preserved_as_an_opaque_json_string() {
 }
 
 #[test]
+fn single_attachment_content_is_not_a_creation_or_legacy_recovery_gate() {
+    for mode in ["changed-single-file", "missing-single-file"] {
+        let h = Harness::new(mode);
+        let request = h.request(&[h.uploaded("a.pdf")]);
+        assert_eq!(super::super::execute(&h.session, &request).unwrap().outcome, "verified");
+        let conn = rusqlite::Connection::open(h.dir.join("cache.db")).unwrap();
+        assert_eq!(conn.execute("UPDATE workflow_action_run SET status='unknown', verified=0 WHERE request_id=?1 AND status='verified'", [&request.request_id]).unwrap(), 1);
+        let record = h.session.store.action_by_request(&request.request_id).unwrap().unwrap();
+        assert_eq!(record.status, "unknown");
+        assert!(!record.verified);
+        assert_eq!(super::super::pending_forms(&h.session).unwrap().len(), 1);
+        h.fake.fail_read.store(true, Ordering::SeqCst);
+        assert!(super::super::verify(&h.session, &request.request_id, None, None).is_err());
+        h.fake.fail_read.store(false, Ordering::SeqCst);
+        assert_eq!(super::super::verify(&h.session, &request.request_id, None, None).unwrap().outcome, "verified");
+        assert!(super::super::pending_forms(&h.session).unwrap().is_empty());
+        assert_eq!(h.fake.creates.load(Ordering::SeqCst), 1);
+        assert_eq!(h.fake.updates.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
 fn multiple_attachments_create_one_then_append_and_preserve_server_objects() {
-    for mode in ["ok", "tool-error"] {
+    for mode in ["ok", "tool-error", "changed-title"] {
         let h = Harness::new(mode);
         let request = h.request(&[
             h.uploaded("a.pdf"),
@@ -412,7 +440,7 @@ fn multiple_attachments_create_one_then_append_and_preserve_server_objects() {
 }
 
 #[test]
-fn partial_write_or_read_failure_retains_full_request_and_verification_never_rewrites() {
+fn attachment_append_failure_warns_without_locking_creation_and_never_rewrites() {
     for mode in ["mismatch", "read-error"] {
         let h = Harness::new(mode);
         let request = h.request(&[
@@ -420,28 +448,30 @@ fn partial_write_or_read_failure_retains_full_request_and_verification_never_rew
             h.uploaded("b.pdf"),
             h.uploaded("c.pdf"),
         ]);
-        assert_eq!(
-            super::super::execute(&h.session, &request).unwrap().outcome,
-            "unknown"
-        );
+        let result = super::super::execute(&h.session, &request).unwrap();
+        assert_eq!(result.outcome, "verified");
+        assert!(result.warning.as_deref().unwrap().contains("附件追加尚未确认"));
+        assert!(!result.can_verify);
         assert_eq!(h.fake.updates.load(Ordering::SeqCst), 1);
         h.fake.fail_read.store(false, Ordering::SeqCst);
-        assert!(super::super::verify(&h.session, &request.request_id, None, None).is_err());
-        assert_eq!(
-            super::super::discover(&h.session, &h.target())
-                .unwrap()
-                .pending
-                .unwrap()
-                .request
-                .fields,
-            request.fields
-        );
+        // 模拟旧版将附件差异绑定为结果不确定的记录，恢复只确认事项存在。
+        let conn = rusqlite::Connection::open(h.dir.join("cache.db")).unwrap();
+        assert_eq!(conn.execute("UPDATE workflow_action_run SET status='unknown', verified=0 WHERE request_id=?1 AND status='verified'", [&request.request_id]).unwrap(), 1);
+        assert_eq!(super::super::pending_forms(&h.session).unwrap().len(), 1);
+        let recovered = super::super::verify(&h.session, &request.request_id, None, None).unwrap();
+        assert_eq!(recovered.outcome, "verified");
+        assert_eq!(recovered.warning, result.warning);
+        assert!(super::super::pending_forms(&h.session).unwrap().is_empty());
+        let record = h.session.store.action_by_request(&request.request_id).unwrap().unwrap();
+        let saved: Value = serde_json::from_str(record.detail.as_deref().unwrap()).unwrap();
+        assert_eq!(saved["request"]["fields"], serde_json::to_value(&request.fields).unwrap());
         assert_eq!(
             super::super::execute(&h.session, &request).unwrap().outcome,
-            "unknown"
+            "verified"
         );
         assert_eq!(h.fake.creates.load(Ordering::SeqCst), 1);
         assert_eq!(h.fake.updates.load(Ordering::SeqCst), 1);
+        assert_eq!(super::super::execute(&h.session, &request).unwrap().warning, result.warning);
     }
 }
 
