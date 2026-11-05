@@ -745,7 +745,7 @@ export function Workflow({
       setBlocked(true);
       setDraftStatus("本机草稿已保留，正在等待飞书提交结果。");
       const result = await submit(request);
-      if (!result || result.outcome === "unknown") {
+      if (!result || result.outcome === "unknown" || (result.outcome === "verified" && !result.verified)) {
         if (isCurrent()) {
           setReview(null);
           setDraftStatus("本机草稿已保留，本次提交结果待核实。");

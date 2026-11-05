@@ -683,11 +683,14 @@ describe("清单模式", () => {
       await user.click(screen.getByRole("button", { name: /^确认(?:完成节点|回滚节点|流转到|提交并执行)/ }));
 
       const feedback = await screen.findByText(refreshFails ? `${message}（清单刷新未完成，已保留现有内容，可稍后刷新。）` : message);
-      const alerts = feedback.closest(".list-mode-alerts")!;
+      const alerts = feedback.closest(outcome === "verified" && !refreshFails ? ".workflow-toasts" : ".list-mode-alerts")!;
       const detail = screen.getByRole("complementary", { name: "事项详情" });
-      // 悬浮提示独立于详情覆盖区域，避免相同 z-index 再次遮挡。
-      expect(alerts.parentElement).toBe(document.querySelector(".list-mode-shell"));
-      expect(alerts.nextElementSibling).toBe(detail.parentElement);
+      if (outcome === "verified" && !refreshFails) {
+        expect(alerts.closest(".list-mode-shell")).toBeNull();
+      } else {
+        expect(alerts.parentElement).toBe(document.querySelector(".list-mode-shell"));
+        expect(alerts.nextElementSibling).toBe(detail.parentElement);
+      }
       expect(feedback.closest('[role="status"], [role="alert"]')?.getAttribute("role"))
         .toBe(outcome === "verified" && !refreshFails ? "status" : "alert");
       expect(executeWorkflowAction).toHaveBeenCalledOnce();
@@ -700,7 +703,7 @@ describe("清单模式", () => {
       await user.click(within(alerts as HTMLElement).getByRole("button", {
         name: /关闭.+的流程操作提示/,
       }));
-      expect(document.querySelector(".list-mode-alerts")).toBeNull();
+      expect(screen.queryByText(refreshFails ? `${message}（清单刷新未完成，已保留现有内容，可稍后刷新。）` : message)).toBeNull();
     },
   );
 

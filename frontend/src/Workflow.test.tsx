@@ -819,10 +819,10 @@ it("最终提交发现远端变化时保留草稿并释放提交标记", async (
   expect(draft?.fields.doc).toBe("文档链接");
   expect(draft?.pending).toBeUndefined();
 });
-it("结果不确定保留草稿和提交标记，重开后阻止直接重试", async () => {
+it.each(["unknown", "verified"] as const)("结果未核验（%s）保留草稿和提交标记，重开后阻止直接重试", async (outcome) => {
   const submit = vi
     .fn()
-    .mockResolvedValue({ ...result, outcome: "unknown", verified: false });
+    .mockResolvedValue({ ...result, outcome, verified: false });
   const view = render(
     <Workflow item={item()} available busy={false} submit={submit} />,
   );

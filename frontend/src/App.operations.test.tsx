@@ -164,6 +164,52 @@ it("流程核验成功后刷新全部可执行启用来源，详情回读新状�
   expect(executeWorkflowAction).toHaveBeenCalledOnce();
 });
 
+it.each(["full", "compact"] as const)("%s 模式的流程成功提示悬浮显示并在五秒后消失", async (mode) => {
+  enableWorkflow("verified");
+  const result = deferred<WorkflowResult>();
+  vi.mocked(executeWorkflowAction).mockReturnValue(result.promise);
+  await ready(mode);
+  await submitWorkflow();
+  vi.useFakeTimers();
+  await act(async () => { result.resolve({ outcome: "verified", verified: true, request_id: "r", action_id: "confirm", resynced: true, message: "流程推进已核验" }); });
+  const toast = screen.getByText("流程推进已核验").closest(".workflow-toasts");
+  expect(toast).toBeTruthy();
+  await act(async () => { vi.advanceTimersByTime(4999); });
+  expect(screen.getByText("流程推进已核验")).toBeTruthy();
+  await act(async () => { vi.advanceTimersByTime(1); });
+  expect(screen.queryByText("流程推进已核验")).toBeNull();
+});
+
+it("流程结果不确定的提示不会自动消失", async () => {
+  enableWorkflow("unknown");
+  const result = deferred<WorkflowResult>();
+  vi.mocked(executeWorkflowAction).mockReturnValue(result.promise);
+  await ready();
+  await submitWorkflow();
+  vi.useFakeTimers();
+  await act(async () => { result.resolve({ outcome: "unknown", verified: false, request_id: "r", action_id: "confirm", resynced: false, message: "流程结果不确定，请先核对飞书状态" }); });
+  await act(async () => { vi.advanceTimersByTime(6000); });
+  expect(screen.getByText("流程结果不确定，请先核对飞书状态")).toBeTruthy();
+});
+
+it("模态窗口遮挡成功提示时暂停倒计时，关闭后再显示五秒", async () => {
+  enableWorkflow("verified");
+  const result = deferred<WorkflowResult>();
+  vi.mocked(executeWorkflowAction).mockReturnValue(result.promise);
+  await ready();
+  await submitWorkflow();
+  const dialog = document.createElement("dialog");
+  dialog.setAttribute("open", "");
+  document.body.appendChild(dialog);
+  vi.useFakeTimers();
+  await act(async () => { result.resolve({ outcome: "verified", verified: true, request_id: "r", action_id: "confirm", resynced: true, message: "流程推进已核验" }); });
+  await act(async () => { vi.advanceTimersByTime(6000); });
+  expect(screen.getByText("流程推进已核验")).toBeTruthy();
+  await act(async () => { dialog.remove(); });
+  await act(async () => { vi.advanceTimersByTime(5000); });
+  expect(screen.queryByText("流程推进已核验")).toBeNull();
+});
+
 it.each(["unknown", "failed", "unverified"])("流程%s不触发成功后来源刷新", async (outcome) => {
   enableWorkflow("unknown");
   const message = "本次流程尚未核验成功";
@@ -172,6 +218,7 @@ it.each(["unknown", "failed", "unverified"])("流程%s不触发成功后来源�
   await submitWorkflow();
   await screen.findByText(message);
   expect(syncTodos).not.toHaveBeenCalled();
+  expect(screen.getByText(message).closest('[role="alert"]')).toBeTruthy();
 });
 
 it("新建成功回调应用真实来源补丁，不把仅属其他来源的新事项插入当前来源", async () => {

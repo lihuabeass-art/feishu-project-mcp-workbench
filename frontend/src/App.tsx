@@ -109,6 +109,28 @@ import {
 type View = "work" | "sources" | "settings";
 type Notice = { tone: "success" | "warning"; text: string };
 type WorkflowReport = { item: string; message: string; error?: AppError };
+function WorkflowSuccessToast({ id, report, dismiss }: { id: string; report: WorkflowReport; dismiss: (id: string, report: WorkflowReport) => void }) {
+  useEffect(() => {
+    let timer: number | undefined;
+    const update = () => {
+      if (document.querySelector("dialog[open]")) {
+        window.clearTimeout(timer);
+        timer = undefined;
+      } else if (timer === undefined) {
+        timer = window.setTimeout(() => dismiss(id, report), 5000);
+      }
+    };
+    const observer = new MutationObserver(update);
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["open"] });
+    update();
+    return () => { observer.disconnect(); window.clearTimeout(timer); };
+  }, [id, report, dismiss]);
+  return <div className="banner success workflow-toast" role="status">
+    <Check size={17} />
+    <div><strong>{report.item} · 流程操作已完成</strong><p>{report.message}</p></div>
+    <button className="icon-button" aria-label={`关闭${report.item}的流程操作提示`} onClick={() => dismiss(id, report)}><X size={16} /></button>
+  </div>;
+}
 type CreationRecordFeedback = { context: string; result: "empty" } |
   { context: string; result: "failed"; error: AppError };
 type ManualSync = {
@@ -262,6 +284,14 @@ function Workspace() {
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const workflowSubmissions = useRef(new Set<string>());
   const [workflowReports, setWorkflowReports] = useState<Record<string, WorkflowReport>>({});
+  const dismissWorkflowReport = useCallback((id: string, report: WorkflowReport) => {
+    setWorkflowReports((current) => {
+      if (current[id] !== report) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }, []);
   const [creationOpen, setCreationOpen] = useState(false);
   const [creationBusy, setCreationBusy] = useState(false);
   const [creationRecovery, setCreationRecovery] = useState(false);
@@ -1001,7 +1031,7 @@ function Workspace() {
     try {
       const result = await executeWorkflowAction(request);
       // 每次提交保留独立结论；另一操作成功不能覆盖失败或结果不确定。
-      const resultError = result.outcome === "verified" ? undefined : {
+      const resultError = result.outcome === "verified" && result.verified ? undefined : {
         kind: result.outcome === "failed" ? "action_failed" : "unknown_result", message: result.message,
       };
       report(result.message, resultError);
@@ -1265,7 +1295,7 @@ function Workspace() {
   };
   const syncDisabled =
     !desktop || !source?.executable || !!contextOperation || (syncBusy && !incremental) || loading;
-  const hasAlerts = settingsRefreshFailed || !!error || !!syncFailure || !!notice || !!recoveryFeedback || Object.keys(workflowReports).length > 0 || Object.values(typeOperationErrors).some(Boolean);
+  const hasAlerts = settingsRefreshFailed || !!error || !!syncFailure || !!notice || !!recoveryFeedback || Object.values(workflowReports).some((report) => !!report.error) || Object.values(typeOperationErrors).some(Boolean);
   const alerts = (
     <>
       {settingsRefreshFailed && <div className="banner warning" role="status">
@@ -1288,10 +1318,10 @@ function Workspace() {
           </button>
         </div>
       )}
-      {Object.entries(workflowReports).map(([id, result]) => (
-        <div className={`banner ${result.error ? "error" : "success"}`} role={result.error ? "alert" : "status"} key={id}>
-          {result.error ? <Unplug size={18} /> : <Check size={17} />}
-          <div><strong>{result.item} · {result.error ? errorKindLabel(result.error.kind) : "流程操作已完成"}</strong><p>{result.message}</p></div>
+      {Object.entries(workflowReports).filter(([, result]) => result.error).map(([id, result]) => (
+        <div className="banner error" role="alert" key={id}>
+          <Unplug size={18} />
+          <div><strong>{result.item} · {errorKindLabel(result.error!.kind)}</strong><p>{result.message}</p></div>
           <button className="icon-button" aria-label={`关闭${result.item}的流程操作提示`}
             onClick={() => setWorkflowReports((current) => { const next = { ...current }; delete next[id]; return next; })}><X size={16} /></button>
         </div>
@@ -1372,6 +1402,11 @@ function Workspace() {
 
   return (
     <>
+    <div className="workflow-toasts">
+      {Object.entries(workflowReports).filter(([, result]) => !result.error).map(([id, result]) => (
+        <WorkflowSuccessToast key={id} id={id} report={result} dismiss={dismissWorkflowReport} />
+      ))}
+    </div>
     {compact && (
       <CompactWorkspace
         items={compactItems}
