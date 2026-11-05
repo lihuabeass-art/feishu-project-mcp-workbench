@@ -43,6 +43,100 @@ fn reply(stream: &mut TcpStream, range: &str, body: &str) {
 }
 
 #[tokio::test]
+async fn production_sized_range_survives_exhausted_retries_and_manual_resume() {
+    let (url, handle) = server(|listener| {
+        let (mut first, _) = listener.accept().unwrap();
+        assert!(request(&mut first).contains("range: bytes=0-4194303\r\n"));
+        write!(first, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-4194303/8388611\r\nContent-Length: 4194304\r\nConnection: close\r\n\r\n").unwrap();
+        first.write_all(&vec![b'a'; 4 * 1024 * 1024]).unwrap();
+
+        for _ in 0..3 {
+            let (mut failed, _) = listener.accept().unwrap();
+            assert!(request(&mut failed).contains("range: bytes=4194304-8388607\r\n"));
+            write!(failed, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4194304-8388607/8388611\r\nContent-Length: 4194304\r\nConnection: close\r\n\r\ne").unwrap();
+        }
+        let (mut second, _) = listener.accept().unwrap();
+        assert!(request(&mut second).contains("range: bytes=4194304-8388607\r\n"));
+        write!(second, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4194304-8388607/8388611\r\nContent-Length: 4194304\r\nConnection: close\r\n\r\n").unwrap();
+        second.write_all(&vec![b'b'; 4 * 1024 * 1024]).unwrap();
+        let (mut last, _) = listener.accept().unwrap();
+        assert!(request(&mut last).contains("range: bytes=8388608-8388610\r\n"));
+        reply(&mut last, "8388608-8388610/8388611", "end");
+    });
+    let mut buffer = Buffer::default();
+    let mut events = Vec::new();
+    let client = client(Duration::from_secs(5), Duration::from_secs(10)).unwrap();
+    let policy = Policy {
+        retry_delay: Duration::ZERO,
+        ..POLICY
+    };
+    assert!(
+        transfer(&client, &url, &mut buffer, policy, &mut |event| events
+            .push(event))
+        .await
+        .is_err()
+    );
+    assert_eq!(buffer.bytes.len(), 4 * 1024 * 1024);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, DownloadEvent::Progress { .. }))
+            .count(),
+        1
+    );
+    let resume_event_index = events.len();
+    transfer(&client, &url, &mut buffer, policy, &mut |event| {
+        events.push(event)
+    })
+    .await
+    .unwrap();
+    handle.join().unwrap();
+    assert_eq!(buffer.bytes.len(), 8 * 1024 * 1024 + 3);
+    assert!(buffer.bytes[..4 * 1024 * 1024].iter().all(|b| *b == b'a'));
+    assert!(buffer.bytes[4 * 1024 * 1024..8 * 1024 * 1024]
+        .iter()
+        .all(|b| *b == b'b'));
+    assert!(buffer.bytes.ends_with(b"end"));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, DownloadEvent::Retrying { .. })));
+    assert!(
+        matches!(events[resume_event_index], DownloadEvent::Started { downloaded, .. } if downloaded == 4 * 1024 * 1024)
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                DownloadEvent::Progress { chunk_length } => Some(*chunk_length),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![4 * 1024 * 1024, 4 * 1024 * 1024, 3]
+    );
+}
+
+#[tokio::test]
+async fn request_deadline_applies_before_read_timeout() {
+    let (url, handle) = server(|listener| {
+        let (mut stream, _) = listener.accept().unwrap();
+        request(&mut stream);
+        write!(stream, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-3/4\r\nContent-Length: 4\r\n\r\na").unwrap();
+        for _ in 0..3 {
+            thread::sleep(Duration::from_millis(90));
+            if stream.write_all(b"b").is_err() {
+                break;
+            }
+        }
+    });
+    let client = client(Duration::from_secs(2), Duration::from_millis(150)).unwrap();
+    match fetch(&client, &url, 0, None, 4).await {
+        Err(Failure::Retry(message)) => assert_eq!(message, "下载连接超时或长时间未收到数据"),
+        _ => panic!("expected request timeout"),
+    }
+    handle.join().unwrap();
+}
+
+#[tokio::test]
 async fn stalled_segment_retries_only_missing_range_and_completes() {
     let (url, handle) = server(|listener| {
         for (index, expected) in ["0-3", "4-7", "4-7", "8-9"].iter().enumerate() {

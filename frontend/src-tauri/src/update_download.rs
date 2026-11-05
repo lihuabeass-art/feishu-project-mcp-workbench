@@ -19,7 +19,7 @@ struct Policy {
 }
 
 const POLICY: Policy = Policy {
-    segment_bytes: 512 * 1024,
+    segment_bytes: 4 * 1024 * 1024,
     attempts: 3,
     retry_delay: Duration::from_secs(1),
 };
@@ -114,7 +114,7 @@ pub async fn download_update(
     if buffer.complete {
         return Err("更新包已下载，请重新检查更新".into());
     }
-    let client = client(Duration::from_secs(20), Duration::from_secs(120))?;
+    let client = client(Duration::from_secs(20), Duration::from_secs(960))?;
     transfer(
         &client,
         &session.update.download_url,
