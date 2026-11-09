@@ -300,6 +300,7 @@ it.each(["0", "37.5", "100", "28.000000000000004"])(
       action_id: progress.id,
       fields: { progress: percentage },
     });
+    expect(submit).toHaveBeenCalledWith(expect.objectContaining({ action_id: progress.id }), "仅同步进度「设计」");
     expect(
       readDraft(draftKey(itemKey(item()), full.actions[0].id))?.fields.points,
     ).toBe("");
@@ -814,6 +815,7 @@ it("最终提交发现远端变化时保留草稿并释放提交标记", async (
   expect(screen.queryByRole("region", { name: "提交前二次确认" })).toBeNull();
   expect(submit).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({ version: "v1" }),
+    expect.any(String),
   );
   const draft = readDraft(draftKey(itemKey(item()), options.actions[0].id));
   expect(draft?.fields.doc).toBe("文档链接");

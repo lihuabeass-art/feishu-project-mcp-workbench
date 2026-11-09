@@ -118,6 +118,9 @@ it.each([ ["full", true], ["full", false], ["compact", true], ["compact", false]
     enableWorkflow("verified", data);
     data.items.push({ ...data.items[0], id: { ...data.items[0].id, work_item_id: "2" }, name: "另一条需求" });
     data.total = 2;
+    vi.mocked(getWorkflowActions).mockImplementation(async (id) => ({ version: "v1", actions: [{
+      id: "confirm", label: id.work_item_id === "2" ? "完成测试节点" : "完成研发节点", kind: "node", fields: [],
+    }] }));
     const first = deferred<WorkflowResult>(), second = deferred<WorkflowResult>();
     vi.mocked(executeWorkflowAction).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     await ready(mode);
@@ -125,7 +128,7 @@ it.each([ ["full", true], ["full", false], ["compact", true], ["compact", false]
     click(mode === "compact" ? "返回清单" : "关闭详情");
     click(/另一条需求/);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "完成研发节点" }));
+    await user.click(await screen.findByRole("button", { name: "完成测试节点" }));
     await user.click(screen.getByRole("button", { name: "提交" }));
     await user.click(screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"));
     await user.click(screen.getByRole("button", { name: "确认提交并执行" }));
@@ -142,6 +145,8 @@ it.each([ ["full", true], ["full", false], ["compact", true], ["compact", false]
     await waitFor(() => expect((screen.getByLabelText("MCP Token") as HTMLInputElement).disabled).toBe(false));
     expect(screen.getByText("第一项结果待核实")).toBeTruthy();
     expect(screen.getByText("第二项已核验成功")).toBeTruthy();
+    expect(screen.getByText("第二项已核验成功").closest('[role="status"]')?.textContent).toContain("另一条需求");
+    expect(screen.getByText("第二项已核验成功").closest('[role="status"]')?.textContent).toContain("已执行：完成测试节点");
     expect(syncTodos).toHaveBeenCalledOnce();
     expect(executeWorkflowAction).toHaveBeenCalledTimes(2);
   },
@@ -164,6 +169,18 @@ it("流程核验成功后刷新全部可执行启用来源，详情回读新状�
   expect(executeWorkflowAction).toHaveBeenCalledOnce();
 });
 
+it("已核验提示不重复动作，并保留缓存未更新说明", async () => {
+  enableWorkflow("verified");
+  vi.mocked(executeWorkflowAction).mockResolvedValue({ outcome: "verified", verified: true, request_id: "r", action_id: "confirm", resynced: false, message: "「完成研发节点」已执行，回读确认远端状态已变化。本地缓存暂未刷新，下次同步会更新。" });
+  await ready();
+  await submitWorkflow();
+  const toast = screen.getByText("回读确认远端状态已变化。本地缓存暂未刷新，下次同步会更新。").closest('[role="status"]');
+  expect(toast?.textContent).toContain("已执行：完成研发节点");
+  expect(toast?.textContent?.match(/完成研发节点/g)).toHaveLength(1);
+  expect(toast?.textContent).toContain("回读确认远端状态已变化");
+  expect(toast?.textContent).toContain("待处理需求");
+});
+
 it.each(["full", "compact"] as const)("%s 模式的流程成功提示悬浮显示并在五秒后消失", async (mode) => {
   enableWorkflow("verified");
   const result = deferred<WorkflowResult>();
@@ -174,6 +191,8 @@ it.each(["full", "compact"] as const)("%s 模式的流程成功提示悬浮显�
   await act(async () => { result.resolve({ outcome: "verified", verified: true, request_id: "r", action_id: "confirm", resynced: true, message: "流程推进已核验" }); });
   const toast = screen.getByText("流程推进已核验").closest(".workflow-toasts");
   expect(toast).toBeTruthy();
+  expect(toast?.textContent).toContain("待处理需求");
+  expect(toast?.textContent).toContain("已执行：完成研发节点");
   await act(async () => { vi.advanceTimersByTime(4999); });
   expect(screen.getByText("流程推进已核验")).toBeTruthy();
   await act(async () => { vi.advanceTimersByTime(1); });

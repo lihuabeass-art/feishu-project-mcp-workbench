@@ -108,7 +108,7 @@ import {
 
 type View = "work" | "sources" | "settings";
 type Notice = { tone: "success" | "warning"; text: string };
-type WorkflowReport = { item: string; message: string; error?: AppError };
+type WorkflowReport = { item: string; action: string; message: string; error?: AppError };
 function WorkflowSuccessToast({ id, report, dismiss }: { id: string; report: WorkflowReport; dismiss: (id: string, report: WorkflowReport) => void }) {
   useEffect(() => {
     let timer: number | undefined;
@@ -125,9 +125,11 @@ function WorkflowSuccessToast({ id, report, dismiss }: { id: string; report: Wor
     update();
     return () => { observer.disconnect(); window.clearTimeout(timer); };
   }, [id, report, dismiss]);
+  const repeated = `「${report.action}」已执行，`;
+  const detail = report.message.startsWith(repeated) ? report.message.slice(repeated.length) : report.message;
   return <div className="banner success workflow-toast" role="status">
     <Check size={17} />
-    <div><strong>{report.item} · 流程操作已完成</strong><p>{report.message}</p></div>
+    <div><strong>已执行：{report.action}</strong><p>{report.item}</p>{detail && <p>{detail}</p>}</div>
     <button className="icon-button" aria-label={`关闭${report.item}的流程操作提示`} onClick={() => dismiss(id, report)}><X size={16} /></button>
   </div>;
 }
@@ -188,7 +190,7 @@ function Detail({
   detailsAvailable: boolean;
   onDetailRefreshed: () => Promise<void>;
   busy: boolean;
-  submit: (request: WorkflowRequest) => Promise<WorkflowResult | undefined>;
+  submit: (request: WorkflowRequest, actionLabel: string) => Promise<WorkflowResult | undefined>;
   compact?: boolean;
 }) {
   return (
@@ -1010,7 +1012,7 @@ function Workspace() {
     void run("sync", true, incremental ? due : undefined);
   };
 
-  async function submitWorkflow(request: WorkflowRequest) {
+  async function submitWorkflow(request: WorkflowRequest, actionLabel: string) {
     if (workspaceActionBlocked("workflow", currentActivity()) || !desktop) throw { kind: "conflict", message: "当前有其他操作正在执行或桌面连接不可用，本次尚未发送，请稍后重新检查。" };
     const identity = itemKey({ id: request.item_id } as CachedItem);
     const scope = JSON.stringify([identity, request.action_id]);
@@ -1018,7 +1020,7 @@ function Workspace() {
     workflowSubmissions.current.add(scope);
     const item = data?.items.find((item) => itemKey(item) === identity)?.name || "当前事项";
     const report = (message: string, error?: AppError) => setWorkflowReports((current) => ({
-      ...current, [request.request_id]: { item, message, error },
+      ...current, [request.request_id]: { item, action: actionLabel, message, error },
     }));
     // 流程可能与完整检查并行。写入开始后停止本轮快照补丁，整轮结束
     // 再回读当前缓存，防止写前已发出的批次覆盖写后核验的清单。

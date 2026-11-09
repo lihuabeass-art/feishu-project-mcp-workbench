@@ -58,7 +58,7 @@ it("实际工时恢复旧版负责人草稿，确认后仅提交本次工时差�
   expect(await screen.findByRole("region",{name:"提交前二次确认"})).toBeTruthy();
   expect(submit).not.toHaveBeenCalled();
   await confirm();
-  expect(submit).toHaveBeenCalledWith(expect.objectContaining({fields:{[key]:"1.5"}}));
+  expect(submit).toHaveBeenCalledWith(expect.objectContaining({fields:{[key]:"1.5"}}), expect.any(String));
   expect(invoke).not.toHaveBeenCalledWith("open_external_url",expect.anything());
 });
 
@@ -73,7 +73,7 @@ it.each([false,true])("关联事项按名称选择并完整核对，multiple=%s"
   expect(review.textContent).toContain("十一月版本");
   expect(review.textContent).toContain("1 项新增");
   await confirm();
-  expect(submit).toHaveBeenCalledWith(expect.objectContaining({fields:{selection:multiple?'["13"]':"13"}}));
+  expect(submit).toHaveBeenCalledWith(expect.objectContaining({fields:{selection:multiple?'["13"]':"13"}}), expect.any(String));
 });
 
 it.each(["people", "relation"])("流程%s字段进入表单预加载并在本地筛选", async (kind) => {

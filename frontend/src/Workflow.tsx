@@ -64,7 +64,7 @@ export function Workflow({
   item: CachedItem;
   available: boolean;
   busy: boolean;
-  submit: (request: WorkflowRequest) => Promise<WorkflowResult | undefined>;
+  submit: (request: WorkflowRequest, actionLabel: string) => Promise<WorkflowResult | undefined>;
 }) {
   const skipConfirmation = useWorkflowSkipConfirmation();
   const [options, setOptions] = useState<WorkflowOptions | null>(null);
@@ -744,7 +744,7 @@ export function Workflow({
     try {
       setBlocked(true);
       setDraftStatus("本机草稿已保留，正在等待飞书提交结果。");
-      const result = await submit(request);
+      const result = await submit(request, action.label);
       if (!result || result.outcome === "unknown" || (result.outcome === "verified" && !result.verified)) {
         if (isCurrent()) {
           setReview(null);

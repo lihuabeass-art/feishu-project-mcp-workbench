@@ -172,6 +172,7 @@ it("日期入口带入开始和结束，其他必填缺失不阻塞，确认只�
     action_id: scheduleId,
     fields: { [startKey]: "2026-10-28", [endKey]: "2026-10-30" },
   });
+  expect(submit).toHaveBeenCalledWith(expect.objectContaining({ action_id: scheduleId }), "同步日期");
   expect(submit.mock.calls[0][0].fields).toEqual({
     [startKey]: "2026-10-28",
     [endKey]: "2026-10-30",
