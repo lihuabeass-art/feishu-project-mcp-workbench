@@ -69,7 +69,7 @@ function snapshot(): Snapshot {
   };
 }
 
-it("saved multiple-type scope has a combination tab, and clicking the first type narrows it explicitly", async () => {
+it("multiple-type scope has a combination tab, and clicking the first type narrows it explicitly", async () => {
   const user = userEvent.setup();
   const items = [item("1", "需求甲"), item("2", "缺陷乙", "issue")];
   const filters = { ...emptyWorkFilters, type: ["story", "issue"] };

@@ -1,12 +1,15 @@
 import { emptyWorkFilters, type WorkFilters } from "./workFilters";
 import { nodeFilterLabel } from "./model";
 
+// 类型由清单导航管理，不属于可复用的筛选方案。
+export type FilterSchemeFilters = Omit<WorkFilters, "type" | "typeLabel">;
+
 export interface FilterScheme {
   id: string;
   name: string;
   // 保留旧版文档字段；读取和保存统一为 false，搜索仅作为临时条件。
   includeQuery: boolean;
-  filters: WorkFilters;
+  filters: FilterSchemeFilters;
 }
 export interface FilterSchemeDocument {
   schemaVersion: 1;
@@ -14,12 +17,12 @@ export interface FilterSchemeDocument {
   defaultId: string | null;
 }
 export const emptySchemeDocument = (): FilterSchemeDocument => ({ schemaVersion: 1, schemes: [], defaultId: null });
-const fields = ["space", "type", "project", "flowKind", "nodeName", "stateName"] as const;
+const fields = ["space", "project", "flowKind", "nodeName", "stateName"] as const;
 
-function parseFilters(value: unknown): WorkFilters {
+function parseFilters(value: unknown): FilterSchemeFilters {
   if (!value || typeof value !== "object") throw new Error("筛选方案条件格式无法读取，原数据已保留");
   const entry = value as Record<string, unknown>;
-  const filters = structuredClone(emptyWorkFilters);
+  const filters = savedFilters(emptyWorkFilters);
   for (const key of fields) {
     if (!Array.isArray(entry[key]) || !(entry[key] as unknown[]).every((value) => typeof value === "string"))
       throw new Error("筛选方案条件格式无法读取，原数据已保留");
@@ -27,7 +30,7 @@ function parseFilters(value: unknown): WorkFilters {
   }
   if (typeof entry.query !== "string") throw new Error("筛选方案关键词格式无法读取，原数据已保留");
   filters.query = entry.query;
-  for (const key of ["spaceLabel", "typeLabel", "projectLabel"] as const) {
+  for (const key of ["spaceLabel", "projectLabel"] as const) {
     const labels = entry[key];
     if (labels && typeof labels === "object" && !Array.isArray(labels))
       filters[key] = Object.fromEntries(Object.entries(labels).filter(([, value]) => typeof value === "string")) as Record<string, string>;
@@ -58,16 +61,18 @@ export function readSchemeDocument(value: unknown): FilterSchemeDocument {
   return { schemaVersion: 1, schemes, defaultId: defaultId as string | null ?? null };
 }
 
-export function savedFilters(filters: WorkFilters): WorkFilters {
-  return structuredClone({ ...filters, query: "" });
+export function savedFilters(filters: FilterSchemeFilters): FilterSchemeFilters {
+  return structuredClone({ query: "", space: filters.space, spaceLabel: filters.spaceLabel,
+    project: filters.project, projectLabel: filters.projectLabel, flowKind: filters.flowKind,
+    nodeName: filters.nodeName, stateName: filters.stateName });
 }
 export function schemeAdjusted(filters: WorkFilters, scheme: FilterScheme): boolean {
   return fields.some((key) => JSON.stringify([...new Set(filters[key])].sort()) !== JSON.stringify([...new Set(scheme.filters[key])].sort()));
 }
-export function schemeSummary(filters: WorkFilters) {
-  const labels = { space: "空间", type: "事项类型", project: "项目", flowKind: "流程", nodeName: "节点", stateName: "状态" };
+export function schemeSummary(filters: FilterSchemeFilters) {
+  const labels = { space: "空间", project: "项目", flowKind: "流程", nodeName: "节点", stateName: "状态" };
   const parts = fields.filter((key) => filters[key].length).map((key) => {
-    const names = key === "space" ? filters.spaceLabel : key === "type" ? filters.typeLabel : key === "project" ? filters.projectLabel : {};
+    const names = key === "space" ? filters.spaceLabel : key === "project" ? filters.projectLabel : {};
     return `${labels[key]}：${filters[key].map((value) => names[value] || (key === "nodeName" ? nodeFilterLabel(value) : value)).join("、")}`;
   });
   return parts.join("；") || "不限条件";

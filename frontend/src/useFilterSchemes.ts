@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emptyWorkFilters, type WorkFilters } from "./workFilters";
-import { emptySchemeDocument, readSchemeDocument, savedFilters, schemeAdjusted, type FilterSchemeDocument } from "./filterSchemes";
+import { emptySchemeDocument, readSchemeDocument, savedFilters, schemeAdjusted, type FilterSchemeDocument, type FilterSchemeFilters } from "./filterSchemes";
 import { asError } from "./model";
 import { readFailureMessage } from "./readFeedback";
 
@@ -21,9 +21,12 @@ export function useFilterSchemes({ enabled, context, active, filters, apply }: {
   const lastAccount = useRef<string | null>(null);
   const latestView = useRef({ filters, currentId }); latestView.current = { filters, currentId };
   const current = document.schemes.find((scheme) => scheme.id === currentId);
+  const applySchemeFilters = (next: FilterSchemeFilters) => {
+    applyRef.current({ ...latestView.current.filters, ...savedFilters(next) });
+  };
   const applyDocumentDefault = (next: FilterSchemeDocument) => {
     const scheme = next.schemes.find((scheme) => scheme.id === next.defaultId);
-    applyRef.current(scheme ? savedFilters(scheme.filters) : structuredClone(emptyWorkFilters));
+    applySchemeFilters(scheme?.filters ?? emptyWorkFilters);
     setCurrentId(scheme?.id ?? null);
   };
   useEffect(() => {
@@ -80,22 +83,23 @@ export function useFilterSchemes({ enabled, context, active, filters, apply }: {
     retry: () => setRetry((value) => value + 1),
     apply(id: string | null) {
       const scheme = document.schemes.find((entry) => entry.id === id);
-      apply(scheme ? savedFilters(scheme.filters) : structuredClone(emptyWorkFilters)); setCurrentId(scheme?.id ?? null);
+      applySchemeFilters(scheme?.filters ?? emptyWorkFilters); setCurrentId(scheme?.id ?? null);
     },
     detach: () => setCurrentId(null),
     save(name: string, makeDefault: boolean) {
       const scheme = { id: crypto.randomUUID(), name: name.trim(), includeQuery: false, filters: savedFilters(filters) };
       return persist({ ...document, schemes: [...document.schemes, scheme], defaultId: makeDefault ? scheme.id : document.defaultId }, () => {
-        setCurrentId(scheme.id); apply(savedFilters(scheme.filters));
+        setCurrentId(scheme.id); applySchemeFilters(scheme.filters);
       });
     },
     update() {
       if (!current) return;
       const updated = { ...current, includeQuery: false, filters: savedFilters(filters) };
       return persist({ ...document, schemes: document.schemes.map((scheme) => scheme.id === current.id ? updated : scheme) }, () => {
-        // 写入等待期间的新选择应继续生效，不能被旧请求捕获的条件覆盖。
-        if (latestView.current.filters === filters && latestView.current.currentId === current.id)
-          apply(savedFilters(updated.filters));
+        // 仅切换类型不影响方案完成处理；新的搜索、方案条件或方案选择继续保留。
+        const latest = latestView.current;
+        if (latest.currentId === current.id && latest.filters.query === filters.query && !schemeAdjusted(latest.filters, updated))
+          applySchemeFilters(updated.filters);
       });
     },
     rename(id: string, name: string) { return persist({ ...document, schemes: document.schemes.map((scheme) => scheme.id === id ? { ...scheme, name: name.trim() } : scheme) }); },

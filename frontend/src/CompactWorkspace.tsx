@@ -135,7 +135,7 @@ export function CompactWorkspace({
   const cancelHover = () => window.clearTimeout(hoverTimer.current);
   const extraCount = [filters.flowKind, filters.nodeName, filters.stateName].filter((values) => values.length > 0).length;
   const filterCount = workFilterCount({ ...filters, type: [] });
-  // A saved combination can contain multiple types; represent that whole scope in navigation.
+  // Represent the whole current type scope in navigation.
   const selectedType = filters.type.length > 1 ? "\u0000saved-type-combination" : filters.type[0] || "";
   const navigationTypeOptions = filters.type.length > 1 ? [{
     key: selectedType,

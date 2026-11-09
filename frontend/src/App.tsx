@@ -394,7 +394,7 @@ function Workspace() {
     context: JSON.stringify([credentialRevision, data?.settings?.endpoint, data?.db_path]),
     active: view === "work" || compact,
     filters,
-    apply: (next) => { setPendingType(null); setFilters(next); },
+    apply: setFilters,
   });
   const receiveTypeNames = useCallback((sourceId: string, types: Parameters<typeof applySourceTypeNames>[2], context: Snapshot) => {
     ++typeNamesRevision.current;

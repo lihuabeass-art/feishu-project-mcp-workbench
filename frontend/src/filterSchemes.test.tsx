@@ -27,7 +27,7 @@ describe("saved filter document compatibility", () => {
       { id: "node", name: "斜线节点", includeQuery: false, filters },
     ] };
     const restored = readSchemeDocument(JSON.parse(JSON.stringify(document)));
-    expect(restored.schemes[0].filters).toEqual(filters);
+    expect(restored.schemes[0].filters).toEqual(savedFilters(filters));
     expect(schemeSummary(filters)).toBe(`节点：${name}`);
     const base = { flow: { kind: "node", node_name: name, node_state_key: null, start_state_key_name: null, end_state_key_name: null },
       id: { project_key: "space", work_item_type_key: "story", work_item_id: "1" }, name: "原名", project_name: "空间",
@@ -42,16 +42,20 @@ describe("saved filter document compatibility", () => {
     const old = version === 0 ? { version: 0, schemes: seed().schemes, defaultSchemeId: "b" } : { ...seed(), defaultId: "b" };
     const original = structuredClone(old);
     const migrated = readSchemeDocument(old);
-    expect(migrated).toEqual({ ...seed(), defaultId: "b", schemes: seed().schemes.map((scheme) => ({ ...scheme, includeQuery: false, filters: { ...scheme.filters, query: "" } })) });
+    expect(migrated).toEqual({ ...seed(), defaultId: "b", schemes: seed().schemes.map((scheme) => ({ ...scheme, includeQuery: false, filters: savedFilters(scheme.filters) })) });
     expect(readSchemeDocument(JSON.parse(JSON.stringify(migrated)))).toEqual(migrated);
     expect(old).toEqual(original);
   });
-  it("compares business sets, ignoring labels and all temporary search, including legacy schemes", () => {
-    const current = { ...combination, type: ["issue", "story"], spaceLabel: { "space-a": "改名" } };
+  it("compares scheme conditions, ignoring navigation types, labels and temporary search", () => {
+    const current = { ...combination, type: ["unrelated-type"], spaceLabel: { "space-a": "改名" } };
     expect(schemeAdjusted(current, seed().schemes[0])).toBe(false);
     expect(schemeAdjusted({ ...current, nodeName: ["新节点"] }, seed().schemes[0])).toBe(true);
     expect(schemeAdjusted(current, seed().schemes[1])).toBe(false);
     expect(schemeSummary(current)).not.toContain("搜索");
+    expect(schemeSummary(current)).not.toContain("事项类型");
+    expect(schemeSummary({ ...emptyWorkFilters, type: ["story"] } as WorkFilters)).toBe("不限条件");
+    expect(savedFilters(combination)).not.toHaveProperty("type");
+    expect(savedFilters(combination)).not.toHaveProperty("typeLabel");
   });
   it("does not silently overwrite unreadable data or import transient filter caches", () => {
     expect(() => readSchemeDocument(combination)).toThrow();
@@ -86,7 +90,7 @@ describe("saved filter lifecycle", () => {
   it("restores only on entry; refresh/layout renders and temporary adjustments never persist", async () => {
     const { result, rerender } = setup();
     await waitFor(() => expect(result.current.controller.available).toBe(true));
-    expect(result.current.filters).toEqual(seed().schemes[0].filters);
+    expect(result.current.filters).toEqual({ ...emptyWorkFilters, ...seed().schemes[0].filters });
     act(() => result.current.setFilters({ ...combination, query: "temporary", nodeName: ["无结果节点"] }));
     rerender({ active: true, context: "credential-1" });
     expect(result.current.filters.nodeName).toEqual(["无结果节点"]);
@@ -94,7 +98,7 @@ describe("saved filter lifecycle", () => {
     expect(writes).toHaveLength(0);
     rerender({ active: false, context: "credential-1" });
     rerender({ active: true, context: "credential-1" });
-    expect(result.current.filters).toEqual(seed().schemes[0].filters);
+    expect(result.current.filters).toEqual({ ...emptyWorkFilters, ...seed().schemes[0].filters, type: combination.type, typeLabel: combination.typeLabel });
   });
   it("keeps current and default independent, explicit update and rename preserve identity, delete retains temporary filters", async () => {
     const { result, rerender } = setup();
@@ -174,7 +178,8 @@ describe("saved filter lifecycle", () => {
     act(() => result.current.setFilters(combination));
     await act(() => result.current.controller.save("新方案", true));
     expect(result.current.filters.query).toBe("");
-    expect(stored[account].schemes[2]).toMatchObject({ includeQuery: false, filters: { ...combination, query: "" } });
+    expect(stored[account].schemes[2]).toMatchObject({ includeQuery: false, filters: savedFilters(combination) });
+    expect(stored[account].schemes[2].filters).not.toHaveProperty("type");
     expect(stored[account].schemes).toHaveLength(3);
     expect(stored[account].defaultId).toBe(result.current.controller.current?.id);
     vi.mocked(invoke).mockRejectedValueOnce(new Error("磁盘失败"));
@@ -189,7 +194,7 @@ describe("saved filter lifecycle", () => {
     const { result, rerender } = setup();
     await waitFor(() => expect(result.current.controller.available).toBe(true));
     expect(result.current.controller.current?.id).toBe("b");
-    expect(result.current.filters).toEqual({ ...original.schemes[1].filters, query: "" });
+    expect(result.current.filters).toEqual({ ...emptyWorkFilters, ...savedFilters(original.schemes[1].filters) });
     act(() => result.current.setFilters({ ...combination, query: "再次搜索" }));
     expect(result.current.controller.adjusted).toBe(false);
     act(() => result.current.controller.apply("b"));
@@ -197,7 +202,7 @@ describe("saved filter lifecycle", () => {
     act(() => result.current.setFilters({ ...combination, query: "离开前搜索", nodeName: ["临时节点"] }));
     rerender({ active: false, context: "credential-1" });
     rerender({ active: true, context: "credential-1" });
-    expect(result.current.filters).toEqual({ ...original.schemes[1].filters, query: "" });
+    expect(result.current.filters).toEqual({ ...combination, ...savedFilters(original.schemes[1].filters) });
     expect(stored[account]).toEqual(original);
     expect(writes).toHaveLength(0);
   });
@@ -214,10 +219,10 @@ describe("saved filter lifecycle", () => {
     expect(stored[account]).toEqual(original);
     await act(() => result.current.controller.update());
     expect(result.current.filters).toEqual({ ...temporary, query: "" });
-    expect(stored[account].schemes[0]).toMatchObject({ id: "a", includeQuery: false, filters: { ...temporary, query: "" } });
+    expect(stored[account].schemes[0]).toMatchObject({ id: "a", includeQuery: false, filters: savedFilters(temporary) });
   });
 
-  it.each(["conditions", "scheme"])("late update completion preserves a newer %s selection", async (choice) => {
+  it.each(["conditions", "scheme", "type", "search"])("late update completion preserves a newer %s selection", async (choice) => {
     const { result } = setup();
     await waitFor(() => expect(result.current.controller.available).toBe(true));
     const submitted = { ...combination, nodeName: ["提交时节点"] };
@@ -230,14 +235,57 @@ describe("saved filter lifecycle", () => {
     });
     let updating!: ReturnType<typeof result.current.controller.update>;
     act(() => { updating = result.current.controller.update(); });
-    if (choice === "conditions") act(() => result.current.setFilters({ ...submitted, query: "较新的搜索", nodeName: ["较新的节点"] }));
-    else act(() => result.current.controller.apply("b"));
+    if (choice === "conditions") act(() => result.current.setFilters({ ...submitted, nodeName: ["较新的节点"] }));
+    else if (choice === "scheme") act(() => result.current.controller.apply("b"));
+    else if (choice === "type") act(() => result.current.setFilters({ ...submitted, type: ["issue"], typeLabel: { issue: "缺陷跟踪" } }));
+    else act(() => result.current.setFilters({ ...submitted, query: "较新的搜索" }));
     const selected = structuredClone(result.current.filters);
     const selectedId = result.current.controller.current?.id;
     await act(async () => { complete(); await updating; });
-    expect(result.current.filters).toEqual(selected);
+    expect(result.current.filters).toEqual(choice === "type" ? { ...selected, query: "" } : selected);
     expect(result.current.controller.current?.id).toBe(selectedId);
-    expect(stored[account].schemes[0].filters).toEqual({ ...submitted, query: "" });
+    expect(stored[account].schemes[0].filters).toEqual(savedFilters(submitted));
+  });
+  it("applying, restoring defaults and clearing schemes preserve the independent type navigation", async () => {
+    const { result, rerender } = setup();
+    await waitFor(() => expect(result.current.controller.available).toBe(true));
+    const navigation = { type: ["issue"], typeLabel: { issue: "缺陷跟踪" } };
+    act(() => result.current.setFilters({ ...result.current.filters, ...navigation }));
+    expect(result.current.controller.adjusted).toBe(false);
+    act(() => result.current.controller.apply("b"));
+    expect(result.current.filters).toEqual({ ...emptyWorkFilters, ...savedFilters(combination), ...navigation });
+    act(() => result.current.controller.apply(null));
+    expect(result.current.filters).toEqual({ ...emptyWorkFilters, ...navigation });
+    rerender({ active: false, context: "credential-1" });
+    rerender({ active: true, context: "credential-1" });
+    expect(result.current.filters).toEqual({ ...emptyWorkFilters, ...savedFilters(combination), ...navigation });
+    await act(() => result.current.controller.setDefault(null));
+    rerender({ active: false, context: "credential-1" });
+    rerender({ active: true, context: "credential-1" });
+    expect(result.current.filters).toEqual({ ...emptyWorkFilters, ...navigation });
+    expect(writes).toHaveLength(1);
+  });
+  it("a late default load and a late save retain the latest type selection", async () => {
+    let finishLoad!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise((resolve) => { finishLoad = resolve; }));
+    const { result } = setup();
+    act(() => result.current.setFilters({ ...emptyWorkFilters, type: ["issue"] }));
+    await act(async () => { finishLoad({ account, document: seed() }); });
+    expect(result.current.filters.type).toEqual(["issue"]);
+    let finishSave!: () => void;
+    vi.mocked(invoke).mockImplementationOnce(async (_command, args) => {
+      await new Promise<void>((resolve) => { finishSave = resolve; });
+      const payload = args as { account: string; document: FilterSchemeDocument };
+      stored[payload.account] = structuredClone(payload.document);
+    });
+    let saving!: ReturnType<typeof result.current.controller.save>;
+    act(() => { saving = result.current.controller.save("跨类型复用", false); });
+    act(() => result.current.setFilters({ ...result.current.filters, type: ["story"], typeLabel: { story: "需求研发" } }));
+    await act(async () => { finishSave(); await saving; });
+    expect(result.current.filters.type).toEqual(["story"]);
+    expect(result.current.filters.typeLabel).toEqual({ story: "需求研发" });
+    expect(result.current.controller.adjusted).toBe(false);
+    expect(stored[account].schemes[2].filters).not.toHaveProperty("type");
   });
   it.each(["auth", "permission", "connection", "store", "validation", "unknown"])("%s IPC errors expose only stable actionable categories", async (kind) => {
     const { result, rerender } = setup();
