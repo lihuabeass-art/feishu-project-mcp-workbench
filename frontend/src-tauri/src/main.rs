@@ -298,6 +298,11 @@ async fn refresh_workspace_catalog() -> Result<fstodo_backend::catalog::CatalogR
 }
 
 #[tauri::command]
+async fn discover_spaces() -> Result<fstodo_backend::catalog::SpaceDiscovery, UiError> {
+    blocking(move || open_session()?.discover_spaces()).await
+}
+
+#[tauri::command]
 async fn save_work_source(source: fstodo_backend::config::SourceTable) -> Result<(), UiError> {
     blocking(move || open_session()?.config.save_source(source)).await
 }
@@ -599,6 +604,7 @@ fn main() {
             resolve_link_metadata,
             discover_source_fields,
             refresh_workspace_catalog,
+            discover_spaces,
             save_work_source,
             remove_work_source,
             set_work_source_enabled,

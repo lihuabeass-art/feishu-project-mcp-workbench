@@ -197,6 +197,18 @@ impl Session {
         self.store.item_detail(id)
     }
 
+    /// 直接发现空间，不同步待办或修改事项缓存。
+    pub fn discover_spaces(&self) -> Result<crate::catalog::SpaceDiscovery, BackendError> {
+        let generation = self.store.begin_workspace_catalog_refresh()?;
+        let credential = self.credential()?;
+        let client = self.client(&credential);
+        let spaces = runtime()?.block_on(crate::catalog::discover_spaces(&client, self.store.workspace_catalog()?, self.config.max_pages))?;
+        if !self.store.save_workspace_catalog(generation, &spaces.spaces)? {
+            return Err(BackendError::conflict("空间目录读取已过期，请重新刷新"));
+        }
+        Ok(spaces)
+    }
+
     /// 只读取空间及关联项目目录；目录故障保留上次成功缓存，并独立报告。
     pub fn refresh_workspace_catalog(&self) -> Result<crate::catalog::CatalogRefresh, BackendError> {
         let mut credential = None;
@@ -454,9 +466,7 @@ impl Session {
 
     /// 发现并保存某来源可见的工作项类型（联网，只读）。
     ///
-    /// 空间清单来自本地缓存里出现过的 `project_key`：MCP 没有「列出我有权限的全部空间」
-    /// 的工具（`search_project_info` 必须给空间名），所以只能枚举已经同步到事项的空间。
-    /// 因此**新空间要先同步到它的事项，才会出现在类型清单里**——这是接口能力限制，不是实现偷懒。
+    /// 类型发现使用已配置、已同步或已有类型缓存的空间；空间选择可独立通过 discover_spaces 读取。
     ///
     /// 单个空间读失败（无权限、临时故障）不拖垮整次发现：剩下的空间照旧扫完，
     /// 快照按已发现的部分落库，失败清单原样回传给调用方明说。只有**全部空间都失败**

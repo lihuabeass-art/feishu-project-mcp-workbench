@@ -42,6 +42,50 @@ pub struct CatalogRefresh {
     pub warning_kinds: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SpaceDiscovery {
+    pub spaces: Vec<SpaceCatalog>,
+    pub has_remote_spaces: bool,
+}
+
+/// 按当前连接直接读取空间，不依赖事项或工作来源。
+pub async fn discover_spaces(client: &dyn TodoSource, mut cached: Vec<SpaceCatalog>, max_pages: u32)
+    -> Result<SpaceDiscovery, BackendError>
+{
+    let mut seen = HashSet::new();
+    for page in crate::config::page_numbers(max_pages) {
+        let args = json!({"page_num": page});
+        let response = parse_tool_json("search_project_info", &client.call_tool("search_project_info", args.as_object().unwrap()).await?)?;
+        let projects = response["projects"].as_array().ok_or_else(|| BackendError::parse("空间目录", "缺少空间列表"))?;
+        let before = seen.len();
+        for item in projects {
+            let key = text(&item["project_key"]).ok_or_else(|| BackendError::parse("空间目录", "缺少空间标识"))?;
+            let name = text(&item["name"]).ok_or_else(|| BackendError::parse("空间目录", "缺少空间名称"))?;
+            let simple = text(&item["simple_name"]);
+            if !seen.insert(key.clone()) { continue; }
+            let mut space = SpaceCatalog { project_key: key.clone(), name: Some(name), simple_name: simple.clone(), projects: Vec::new() };
+            for prior in cached.iter().filter(|prior| prior.project_key == key || simple.as_ref() == Some(&prior.project_key)) {
+                for option in &prior.projects {
+                    if !space.projects.iter().any(|p| p.type_key == option.type_key && p.project.field_key == option.project.field_key && p.project.id == option.project.id) {
+                        space.projects.push(option.clone());
+                    }
+                }
+            }
+            cached.retain(|prior| prior.project_key != key && simple.as_ref() != Some(&prior.project_key));
+            cached.push(space);
+        }
+        match response["pagination"]["has_more"].as_bool() {
+            Some(false) => {
+                cached.sort_by(|a,b| a.project_key.cmp(&b.project_key));
+                return Ok(SpaceDiscovery { spaces: cached, has_remote_spaces: !seen.is_empty() });
+            },
+            Some(true) if seen.len() > before => {},
+            _ => return Err(BackendError::parse("空间目录", "空间分页不完整")),
+        }
+    }
+    Err(BackendError::parse("空间目录", "空间分页超过读取上限"))
+}
+
 pub async fn refresh_catalog(client: &dyn TodoSource, inputs: std::collections::BTreeMap<String, CatalogInput>,
     mut spaces: Vec<SpaceCatalog>, max_pages: u32, token: Option<&str>) -> Result<CatalogRefresh, BackendError>
 {

@@ -3,10 +3,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
-import { loadSnapshot, refreshWorkspaceCatalog, saveWorkSource, syncTodos } from "./api";
-import type { CachedItem, CatalogRefresh, Snapshot, SpaceCatalog, SyncReport } from "./types";
+import { discoverSpaces, loadSnapshot, refreshWorkspaceCatalog, saveWorkSource, setWorkSourceEnabled, syncTodos } from "./api";
+import type { CachedItem, CatalogRefresh, Snapshot, SpaceCatalog, SpaceDiscovery, SyncReport } from "./types";
 
-vi.mock("./api", () => ({ desktop: true, loadSnapshot: vi.fn(), refreshWorkspaceCatalog: vi.fn(),
+vi.mock("./api", () => ({ desktop: true, discoverSpaces: vi.fn(), loadSnapshot: vi.fn(), refreshWorkspaceCatalog: vi.fn(),
   syncTodos: vi.fn(), checkConnection: vi.fn(), saveToken: vi.fn(), saveConnectionSettings: vi.fn(),
   refreshSourceTypes: vi.fn(), saveSourceTypes: vi.fn(), clearSourceTypes: vi.fn(), saveTypeOrder: vi.fn(),
   executeWorkflowAction: vi.fn(), cachedItemDetail: vi.fn(), refreshItemDetail: vi.fn(),
@@ -48,10 +48,9 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
-it.each([[false, true], [true, true], [false, false], [true, false]])(
-  "新电脑可从无空间标识的待办发现候选，不依赖所选来源或旧凭证状态（增量：%s，凭证：%s）", async (incremental, credentialReady) => {
+it.each([true, false])(
+  "无需待办直接发现空间，且可从旧凭证状态恢复（凭证：%s）", async (credentialReady) => {
   const initial = snapshot();
-  initial.capabilities!.incremental_sync = incremental;
   initial.items = [];
   initial.total = 0;
   initial.credential_ready = credentialReady;
@@ -59,32 +58,28 @@ it.each([[false, true], [true, true], [false, false], [true, false]])(
   initial.sources[0].executable = false;
   initial.sources[1].project_key = null;
   initial.sources[1].executable = false;
-  // 所有来源都没有空间；当前选中逾期待办，发现必须读取普通待办。
-  initial.sources.push({ ...initial.sources[0], id: "my-todos", enabled: true, executable: true });
-  initial.sources.push({ ...initial.sources[2], id: "overdue", builtin_key: "overdue", action: "overdue" });
   vi.mocked(loadSnapshot).mockResolvedValue(initial);
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: [], warnings: [] });
-  const synced = deferred<SyncReport>();
-  vi.mocked(syncTodos).mockReturnValue(synced.promise);
+  const found = deferred<SpaceDiscovery>();
+  vi.mocked(discoverSpaces).mockReturnValue(found.promise);
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("combobox", { name: "显示来源" });
-  await choose(user, "显示来源", "逾期待办");
+  if (credentialReady) await waitFor(() => expect(refreshWorkspaceCatalog).toHaveBeenCalledOnce());
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
   await user.click(screen.getByRole("button", { name: "添加我参与的缺陷" }));
   expect(screen.getByRole("combobox", { name: "来源空间" })).toBeTruthy();
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "");
-  await user.click(screen.getByRole("button", { name: "同步待办并发现空间" }));
-  if (incremental) expect(syncTodos).toHaveBeenCalledWith("*", false, ["my-todos"]);
-  else expect(syncTodos).toHaveBeenCalledWith("my-todos", false);
-  expect(syncTodos).toHaveBeenCalledOnce();
-  const next = { ...initial, items: snapshot().items, total: 2, workspace_catalog: catalog, credential_ready: true };
+  await user.type(screen.getByLabelText("来源空间标识"), "draft-space");
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
+  expect(discoverSpaces).toHaveBeenCalledOnce();
+  expect(syncTodos).not.toHaveBeenCalled();
+  const next = { ...initial, workspace_catalog: catalog, credential_ready: true };
   vi.mocked(loadSnapshot).mockResolvedValue(next);
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
-  await act(async () => synced.resolve({ ...report(incremental), ...(incremental ? {
-    patch: { added: next.items, modified: [], removed: [], updated_count: 0 }, total: 2,
-  } : {}) }));
+  await act(async () => found.resolve({ spaces: catalog, has_remote_spaces: true }));
+  expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
   await user.click(screen.getByRole("combobox", { name: "来源空间" }));
   await user.click(await screen.findByRole("option", { name: "正式研发空间 · space" }));
   await user.click(screen.getByRole("button", { name: "保存工作来源" }));
@@ -94,18 +89,17 @@ it.each([[false, true], [true, true], [false, false], [true, false]])(
 });
 
 it.each([
-  ["credential", "暂时无法读取本机凭证"],
-  ["auth", "连接凭证已失效"],
-  ["permission", "没有读取权限"],
-])("空间发现保留来源失败类别，修复授权后可在原表单重试（%s）", async (kind, message) => {
+  ["credential", "暂时无法读取本机凭证，请允许系统凭证访问后重试，或在连接设置中检查 Token"],
+  ["auth", "连接凭证已失效，请在连接设置中更新 Token"],
+  ["permission", "没有读取权限，请检查账号在原软件中的访问权限"],
+])("空间发现保留来源恢复指引、旧候选和草稿，修复后可在原表单重试（%s）", async (kind, message) => {
   const initial = snapshot();
   initial.capabilities!.incremental_sync = true;
   initial.credential_ready = false;
+  initial.workspace_catalog = catalog;
   vi.mocked(loadSnapshot).mockResolvedValue(initial);
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
-  vi.mocked(syncTodos).mockResolvedValueOnce({ ...report(true), status: "failed", complete: false,
-    checks: [{ source_id: "todo", report: null, error_kind: kind, error_message: "RPCError private" }],
-  }).mockResolvedValueOnce(report(true));
+  vi.mocked(discoverSpaces).mockRejectedValueOnce({ kind, message: "RPCError private" }).mockResolvedValueOnce({ spaces: catalog, has_remote_spaces: true });
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("combobox", { name: "显示来源" });
@@ -113,20 +107,77 @@ it.each([
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
   await user.click(screen.getByRole("button", { name: "添加我参与的缺陷" }));
   await user.type(screen.getByLabelText("来源空间标识"), "draft-space");
-  await user.click(screen.getByRole("button", { name: "同步待办并发现空间" }));
-  expect(await screen.findByText(new RegExp(`空间发现未完成：${message}`))).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
+  expect(await screen.findByText(`空间发现未完成：${message}。已保留当前填写内容。`)).toBeTruthy();
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
   expect(document.body.textContent).not.toMatch(/RPCError private/);
-  await user.click(screen.getByRole("button", { name: "同步待办并发现空间" }));
+  await user.click(screen.getByRole("combobox", { name: "来源空间" }));
+  expect(screen.getByRole("option", { name: "正式研发空间 · space" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
   await waitFor(() => expect(screen.queryByText(/空间发现未完成：/)).toBeNull());
-  expect(syncTodos).toHaveBeenCalledTimes(2);
+  expect(discoverSpaces).toHaveBeenCalledTimes(2);
+  expect(syncTodos).not.toHaveBeenCalled();
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
+});
+
+it("远端空结果提示后仍可手动填写并保存空间", async () => {
+  const initial = snapshot();
+  initial.items = [];
+  initial.total = 0;
+  initial.workspace_catalog = [];
+  initial.sources[0].enabled = false;
+  initial.sources[0].executable = false;
+  initial.sources[1].project_key = null;
+  initial.sources[1].executable = false;
+  vi.mocked(loadSnapshot).mockResolvedValue(initial);
+  vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: [], warnings: [] });
+  vi.mocked(discoverSpaces).mockResolvedValue({ spaces: [], has_remote_spaces: false });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole("combobox", { name: "显示来源" });
+  await user.click(screen.getByRole("button", { name: "工作来源" }));
+  await user.click(screen.getByRole("button", { name: "添加内置来源" }));
+  await user.click(screen.getByRole("button", { name: "添加我参与的缺陷" }));
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
+  expect(await screen.findByText(/本次没有发现可访问的空间/)).toBeTruthy();
+  await user.type(screen.getByLabelText("来源空间标识"), "manual-space");
+  await user.click(screen.getByRole("button", { name: "保存工作来源" }));
+  await waitFor(() => expect(saveWorkSource).toHaveBeenCalledWith(expect.objectContaining({
+    builtin_key: "issues", project_key: "manual-space",
+  })));
+  expect(syncTodos).not.toHaveBeenCalled();
+});
+
+it("发现空间会补充已有候选并保留手填草稿", async () => {
+  const initial = snapshot();
+  initial.workspace_catalog = [{ project_key: "cached-space", name: "上次成功目录", simple_name: null, projects: [] }];
+  vi.mocked(loadSnapshot).mockResolvedValue(initial);
+  vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: initial.workspace_catalog, warnings: [] });
+  const discovered: SpaceCatalog = { project_key: "new-space", name: "新发现空间", simple_name: null, projects: [] };
+  vi.mocked(discoverSpaces).mockResolvedValue({ spaces: [...initial.workspace_catalog, discovered], has_remote_spaces: true });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole("combobox", { name: "显示来源" });
+  await user.click(screen.getByRole("button", { name: "工作来源" }));
+  await user.click(screen.getByRole("button", { name: "添加内置来源" }));
+  await user.click(screen.getByRole("button", { name: "添加我参与的缺陷" }));
+  await user.type(screen.getByLabelText("来源空间标识"), "draft-space");
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
+  expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
+  await user.click(screen.getByRole("combobox", { name: "来源空间" }));
+  expect(screen.getByRole("option", { name: "上次成功目录 · cached-space" })).toBeTruthy();
+  await user.click(screen.getByRole("option", { name: "新发现空间 · new-space" }));
+  await user.click(screen.getByRole("button", { name: "保存工作来源" }));
+  await waitFor(() => expect(saveWorkSource).toHaveBeenCalledWith(expect.objectContaining({
+    builtin_key: "issues", project_key: "new-space",
+  })));
 });
 
 it("空间发现读取失败在表单说明原因，保留草稿并允许重试", async () => {
   vi.mocked(loadSnapshot).mockResolvedValue(snapshot());
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
-  vi.mocked(syncTodos).mockRejectedValue({ kind: "connection", message: "RPCError secret; log_id: private-log" });
+  vi.mocked(discoverSpaces).mockRejectedValue({ kind: "connection", message: "RPCError secret; log_id: private-log" });
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("combobox", { name: "显示来源" });
@@ -134,12 +185,103 @@ it("空间发现读取失败在表单说明原因，保留草稿并允许重试"
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
   await user.click(screen.getByRole("button", { name: "添加我参与的缺陷" }));
   await user.type(screen.getByLabelText("来源空间标识"), "draft-space");
-  await user.click(screen.getByRole("button", { name: "同步待办并发现空间" }));
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
   expect(await screen.findByText(/空间发现未完成：暂时无法连接服务/)).toBeTruthy();
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
-  expect(screen.getByRole("button", { name: "同步待办并发现空间" })).toHaveProperty("disabled", false);
+  expect(screen.getByRole("button", { name: "发现空间" })).toHaveProperty("disabled", false);
   expect(document.body.textContent).not.toMatch(/RPCError|private-log/);
   expect(saveWorkSource).not.toHaveBeenCalled();
+});
+
+it("发现空间成功不清除已有的项目目录失败提示", async () => {
+  vi.mocked(loadSnapshot).mockResolvedValue(snapshot());
+  vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: ["项目目录失败"], warning_kinds: ["permission"] });
+  vi.mocked(discoverSpaces).mockResolvedValue({ spaces: catalog, has_remote_spaces: true });
+  const user = userEvent.setup();
+  render(<App />);
+  expect(await screen.findByText(/空间与项目目录未刷新/)).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "工作来源" }));
+  await user.click(screen.getByRole("button", { name: "添加内置来源" }));
+  await user.click(screen.getByRole("button", { name: "添加我参与的缺陷" }));
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
+  await waitFor(() => expect(discoverSpaces).toHaveBeenCalledOnce());
+  expect(screen.getAllByText(/空间与项目目录未刷新/).length).toBeGreaterThan(0);
+});
+
+it("较早的手动发现结果不能覆盖后续刷新取得的空间目录", async () => {
+  const data = snapshot();
+  data.capabilities!.incremental_sync = true;
+  vi.mocked(loadSnapshot).mockResolvedValue(data);
+  const recent: SpaceCatalog[] = [{ ...catalog[0], name: "刷新后的空间" }];
+  vi.mocked(refreshWorkspaceCatalog).mockResolvedValueOnce({ spaces: catalog, warnings: [] })
+    .mockResolvedValue({ spaces: recent, warnings: [] });
+  const pending = deferred<SpaceDiscovery>();
+  vi.mocked(discoverSpaces).mockReturnValue(pending.promise);
+  vi.mocked(syncTodos).mockResolvedValue(report(true));
+  const user = userEvent.setup();
+  render(<App />);
+  expect(await screen.findAllByText("空间：正式研发空间")).toHaveLength(2);
+  await user.click(screen.getByRole("button", { name: "工作来源" }));
+  await user.click(screen.getByRole("button", { name: "添加内置来源" }));
+  await user.click(screen.getByRole("button", { name: "添加我参与的缺陷" }));
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
+  await user.click(screen.getByRole("button", { name: /我的工作/ }));
+  await user.click(screen.getByRole("button", { name: "立即刷新" }));
+  expect(await screen.findAllByText("空间：刷新后的空间")).toHaveLength(2);
+  await act(async () => pending.resolve({ spaces: catalog, has_remote_spaces: true }));
+  expect(screen.getAllByText("空间：刷新后的空间")).toHaveLength(2);
+});
+
+it("较早的快照回读不能覆盖手动发现的空间", async () => {
+  const initial = snapshot();
+  const oldSnapshot = deferred<Snapshot>();
+  vi.mocked(loadSnapshot).mockResolvedValueOnce(initial).mockReturnValue(oldSnapshot.promise);
+  const laterCatalog = deferred<CatalogRefresh>();
+  vi.mocked(refreshWorkspaceCatalog).mockResolvedValueOnce({ spaces: [], warnings: [] }).mockReturnValue(laterCatalog.promise);
+  vi.mocked(setWorkSourceEnabled).mockResolvedValue(undefined);
+  const found: SpaceCatalog = { project_key: "new-space", name: "新发现的空间", simple_name: null, projects: [] };
+  vi.mocked(discoverSpaces).mockResolvedValue({ spaces: [found], has_remote_spaces: true });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByText("需求0");
+  await user.click(screen.getByRole("button", { name: "工作来源" }));
+  await user.click(screen.getByRole("switch", { name: "启用todo" }));
+  await waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(2));
+  await user.click(screen.getByRole("button", { name: /我的工作/ }));
+  await user.click(screen.getByRole("button", { name: "工作来源" }));
+  await user.click(screen.getByRole("button", { name: "添加内置来源" }));
+  await user.click(screen.getByRole("button", { name: "添加我参与的缺陷" }));
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
+  await user.click(screen.getByRole("combobox", { name: "来源空间" }));
+  expect(await screen.findByRole("option", { name: "新发现的空间 · new-space" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+  await act(async () => oldSnapshot.resolve(initial));
+  await user.click(screen.getByRole("combobox", { name: "来源空间" }));
+  expect(screen.getByRole("option", { name: "新发现的空间 · new-space" })).toBeTruthy();
+});
+
+it("较早的快照回读不能覆盖自动刷新取得的空间目录", async () => {
+  const initial = snapshot();
+  initial.capabilities!.incremental_sync = true;
+  const oldSnapshot = deferred<Snapshot>();
+  vi.mocked(loadSnapshot).mockResolvedValueOnce(initial).mockReturnValue(oldSnapshot.promise);
+  const latest: SpaceCatalog[] = [{ ...catalog[0], name: "自动刷新的空间" }];
+  const laterCatalog = deferred<CatalogRefresh>();
+  vi.mocked(refreshWorkspaceCatalog).mockResolvedValueOnce({ spaces: catalog, warnings: [] })
+    .mockResolvedValueOnce({ spaces: latest, warnings: [] }).mockReturnValue(laterCatalog.promise);
+  vi.mocked(setWorkSourceEnabled).mockResolvedValue(undefined);
+  vi.mocked(syncTodos).mockResolvedValue(report(true));
+  const user = userEvent.setup();
+  render(<App />);
+  expect(await screen.findAllByText("空间：正式研发空间")).toHaveLength(2);
+  await user.click(screen.getByRole("button", { name: "工作来源" }));
+  await user.click(screen.getByRole("switch", { name: "启用todo" }));
+  await waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(2));
+  await user.click(screen.getByRole("button", { name: /我的工作/ }));
+  await user.click(screen.getByRole("button", { name: "立即刷新" }));
+  expect(await screen.findAllByText("空间：自动刷新的空间")).toHaveLength(2);
+  await act(async () => oldSnapshot.resolve(initial));
+  expect(screen.getAllByText("空间：自动刷新的空间")).toHaveLength(2);
 });
 it("全部来源的重叠事项只出现一次，空间统一命名，所属项目仅显示有工作的候选", async () => {
   vi.mocked(loadSnapshot).mockResolvedValue(snapshot());

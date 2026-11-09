@@ -10,6 +10,10 @@ export interface SpaceCatalog {
   simple_name: string | null;
   projects: (RelatedProject & { type_key: string })[];
 }
+export interface SpaceDiscovery {
+  spaces: SpaceCatalog[];
+  has_remote_spaces: boolean;
+}
 export interface CatalogRefresh {
   spaces: SpaceCatalog[];
   warnings: string[];

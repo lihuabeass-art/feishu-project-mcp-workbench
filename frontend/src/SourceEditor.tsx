@@ -32,7 +32,7 @@ export function SourceEditor({
   sources: Source[];
   items: CachedItem[];
   workspaceCatalog?: SpaceCatalog[];
-  discoverSpaces?: () => Promise<void>;
+  discoverSpaces?: () => Promise<boolean>;
   spaceDiscoveryDisabled?: boolean;
   spaceDiscoveryWarning?: string;
   disabled: boolean;
@@ -63,7 +63,7 @@ export function SourceEditor({
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [discoveringSpaces, setDiscoveringSpaces] = useState(false);
-  const [spacesChecked, setSpacesChecked] = useState(false);
+  const [spacesFound, setSpacesFound] = useState<boolean | null>(null);
   const spaceDiscoveryRef = useRef(false);
   const projects = sourceProjects(sources, items, workspaceCatalog);
   const locked = disabled || pending;
@@ -162,11 +162,10 @@ export function SourceEditor({
     if (!discoverSpaces || spaceDiscoveryRef.current || locked || spaceDiscoveryDisabled) return;
     spaceDiscoveryRef.current = true;
     setDiscoveringSpaces(true);
-    setSpacesChecked(false);
+    setSpacesFound(null);
     setError("");
     try {
-      await discoverSpaces();
-      setSpacesChecked(true);
+      setSpacesFound(await discoverSpaces());
     } catch (e) {
       setError(asError(e).message);
     } finally {
@@ -388,7 +387,7 @@ export function SourceEditor({
                 disabled={locked || spaceDiscoveryDisabled || discoveringSpaces}
                 onClick={() => void discoverProjects()}
               >
-                {discoveringSpaces ? "正在同步待办并发现空间…" : "同步待办并发现空间"}
+                {discoveringSpaces ? "正在发现空间…" : "发现空间"}
               </button>
             )}
             {(manualProject || !projects.has(project)) && (
@@ -412,11 +411,11 @@ export function SourceEditor({
               仅查询所选空间。候选来自本机已同步的事项、已发现的工作类型与空间目录；
               {projects.size > 0
                 ? "其他空间可选择手动填写标识。"
-                : "可先同步「我的待办」获取空间名称，无需预先填写空间标识；也可手动填写空间标识。"}
+                : "可通过发现空间获取候选，也可手动填写空间标识。"}
             </p>
-            {spacesChecked && !projects.size && (
+            {spacesFound === false && (
               <p className="hint" role="status">
-                待办中尚未发现空间。请确认当前账号在飞书中有待办，或手动填写空间标识。
+                本次没有发现可访问的空间；已保留现有候选，也可手动填写空间标识。
               </p>
             )}
             {spaceDiscoveryWarning && <p className="hint" role="status">{spaceDiscoveryWarning}</p>}

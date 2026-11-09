@@ -33,7 +33,7 @@ export function WorkSources({
   sources: Source[];
   items: CachedItem[];
   workspaceCatalog?: SpaceCatalog[];
-  discoverSpaces?: () => Promise<void>;
+  discoverSpaces?: () => Promise<boolean>;
   spaceDiscoveryDisabled?: boolean;
   spaceDiscoveryWarning?: string;
   selectedId: string;

@@ -162,7 +162,7 @@ it("没有已同步空间时可手动添加需求来源", async () => {
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
   await user.click(screen.getByRole("button", { name: "添加我参与的需求" }));
   expect(screen.getByRole("combobox", { name: "来源空间" })).toBeTruthy();
-  expect(screen.getByText(/可先同步「我的待办」获取空间名称/)).toBeTruthy();
+  expect(screen.getByText(/可通过发现空间获取候选/)).toBeTruthy();
   await user.type(screen.getByLabelText("来源空间标识"), "new-space");
   await user.click(screen.getByRole("button", { name: "保存工作来源" }));
   await waitFor(() =>
@@ -175,9 +175,9 @@ it("没有已同步空间时可手动添加需求来源", async () => {
 });
 
 it("空缓存仍显示空间选择，发现失败可重试，候选到达后保留手填草稿并可选择保存", async () => {
-  let finish!: () => void;
+  let finish!: (hasSpaces: boolean) => void;
   const discoverSpaces = vi.fn().mockRejectedValueOnce(new Error("空间发现未完成，请稍后重试。"))
-    .mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    .mockImplementationOnce(() => new Promise<boolean>((resolve) => { finish = resolve; }));
   const props = { sources: [todo], items: [], selectedId: todo.id, select: vi.fn(),
     disabled: false, editable: true, saved: vi.fn().mockResolvedValue(undefined), discoverSpaces };
   const { rerender } = render(<WorkSources {...props} />);
@@ -185,13 +185,13 @@ it("空缓存仍显示空间选择，发现失败可重试，候选到达后保�
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
   await user.click(screen.getByRole("button", { name: "添加我参与的需求" }));
   await user.type(screen.getByLabelText("来源空间标识"), "draft-space");
-  await user.click(screen.getByRole("button", { name: "同步待办并发现空间" }));
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
   expect(await screen.findByRole("alert")).toHaveProperty("textContent", "空间发现未完成，请稍后重试。");
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
-  await user.click(screen.getByRole("button", { name: "同步待办并发现空间" }));
-  expect(screen.getByRole("button", { name: "正在同步待办并发现空间…" })).toHaveProperty("disabled", true);
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
+  expect(screen.getByRole("button", { name: "正在发现空间…" })).toHaveProperty("disabled", true);
   rerender(<WorkSources {...props} workspaceCatalog={[{ project_key: "found-space", name: "发现的空间", simple_name: null, projects: [] }]} />);
-  await act(async () => finish());
+  await act(async () => finish(true));
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
   await user.click(screen.getByRole("combobox", { name: "来源空间" }));
   await user.click(screen.getByRole("option", { name: "发现的空间 · found-space" }));
@@ -200,16 +200,20 @@ it("空缓存仍显示空间选择，发现失败可重试，候选到达后保�
   expect(discoverSpaces).toHaveBeenCalledTimes(2);
 });
 
-it("待办未返回空间时保留选择和手填入口，明确说明尚未发现空间", async () => {
+it("远端未返回空间时保留旧候选和手填入口并明确说明", async () => {
   const user = userEvent.setup();
-  render(<WorkSources sources={[todo]} items={[]} selectedId={todo.id} select={vi.fn()} disabled={false}
-    editable saved={vi.fn()} discoverSpaces={vi.fn().mockResolvedValue(undefined)} />);
+  render(<WorkSources sources={[todo]} items={[]} workspaceCatalog={[{
+    project_key: "cached-space", name: "上次成功目录", simple_name: null, projects: [],
+  }]} selectedId={todo.id} select={vi.fn()} disabled={false}
+    editable saved={vi.fn()} discoverSpaces={vi.fn().mockResolvedValue(false)} />);
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
   await user.click(screen.getByRole("button", { name: "添加我参与的需求" }));
-  await user.click(screen.getByRole("button", { name: "同步待办并发现空间" }));
-  expect(await screen.findByText(/待办中尚未发现空间/)).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "发现空间" }));
+  expect(await screen.findByText(/本次没有发现可访问的空间/)).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "来源空间" })).toBeTruthy();
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "");
+  await user.click(screen.getByRole("combobox", { name: "来源空间" }));
+  expect(screen.getByRole("option", { name: "上次成功目录 · cached-space" })).toBeTruthy();
   expect(saveWorkSource).not.toHaveBeenCalled();
 });
 

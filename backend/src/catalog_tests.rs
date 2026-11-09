@@ -71,6 +71,56 @@ async fn space_name_requires_matching_identity_and_reads_later_pages() {
 }
 
 #[tokio::test]
+async fn discovers_spaces_without_todos_and_preserves_cached_project_options() {
+    struct Spaces(Mutex<u32>);
+    #[async_trait]
+    impl TodoSource for Spaces {
+        async fn describe(&self) -> Result<ConnectionInfo, BackendError> { unreachable!() }
+        async fn close(&mut self) {}
+        async fn call_tool(&self, tool: &str, args: &serde_json::Map<String, Value>) -> Result<ToolResultPayload, BackendError> {
+            assert_eq!(tool, "search_project_info");
+            assert_eq!(args.len(), 1);
+            let mut page = self.0.lock().unwrap();
+            *page += 1;
+            assert_eq!(args["page_num"], *page);
+            Ok(ToolResultPayload::from_json(if *page == 1 {
+                json!({"projects":[{"project_key":"p","simple_name":"alias","name":"空间甲"}],"pagination":{"has_more":true}})
+            } else {
+                json!({"projects":[{"project_key":"q","name":"空间乙"}],"pagination":{"has_more":false}})
+            }))
+        }
+    }
+    let cached = vec![SpaceCatalog { project_key:"alias".into(), name:None, simple_name:None,
+        projects:vec![ProjectOption { type_key:"story".into(), project:RelatedProject {
+            field_key:"field".into(), id:"1".into(), name:"项目".into() } }] }];
+    let discovery = discover_spaces(&Spaces(Mutex::new(0)), cached, 2).await.unwrap();
+    assert!(discovery.has_remote_spaces);
+    assert_eq!(discovery.spaces.iter().map(|s|s.project_key.as_str()).collect::<Vec<_>>(), ["p", "q"]);
+    assert_eq!(discovery.spaces[0].name.as_deref(), Some("空间甲"));
+    assert_eq!(discovery.spaces[0].projects.len(), 1);
+}
+
+#[tokio::test]
+async fn space_discovery_reports_empty_remote_results_without_dropping_cached_spaces() {
+    let cached = vec![SpaceCatalog { project_key:"cached".into(), name:Some("旧目录".into()),
+        simple_name:None, projects:Vec::new() }];
+    let empty_with_cache = Fake(Mutex::new(VecDeque::from([("search_project_info", json!({"projects":[],"pagination":{"has_more":false}}))])));
+    let discovery = discover_spaces(&empty_with_cache, cached, 2).await.unwrap();
+    assert!(!discovery.has_remote_spaces);
+    assert_eq!(discovery.spaces.len(), 1);
+    assert_eq!(discovery.spaces[0].project_key, "cached");
+
+    let empty = Fake(Mutex::new(VecDeque::from([("search_project_info", json!({"projects":[],"pagination":{"has_more":false}}))])));
+    let discovery = discover_spaces(&empty, Vec::new(), 2).await.unwrap();
+    assert!(!discovery.has_remote_spaces);
+    assert!(discovery.spaces.is_empty());
+    let incomplete = Fake(Mutex::new(VecDeque::from([("search_project_info", json!({"projects":[],"pagination":{"has_more":true}}))])));
+    assert!(discover_spaces(&incomplete, Vec::new(), 2).await.is_err());
+    let limited = Fake(Mutex::new(VecDeque::from([("search_project_info", json!({"projects":[{"project_key":"p","name":"空间"}],"pagination":{"has_more":true}}))])));
+    assert!(discover_spaces(&limited, Vec::new(), 1).await.is_err());
+}
+
+#[tokio::test]
 async fn project_directory_reads_all_records_even_without_matching_todos() {
     let fake=Fake(Mutex::new(VecDeque::from([("list_workitem_field_config",fields()),
         ("search_by_mql",page(&[1,2])),("search_by_mql",page(&[3]))])));

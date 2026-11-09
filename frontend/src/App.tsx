@@ -35,6 +35,7 @@ import {
 import {
   checkConnection,
   desktop,
+  discoverSpaces,
   loadSnapshot,
   refreshWorkspaceCatalog,
   saveTypeOrder,
@@ -337,6 +338,7 @@ function Workspace() {
   const [catalogEpoch, setCatalogEpoch] = useState(0);
   const [catalogWarning, setCatalogWarning] = useState("");
   const catalogRequest = useRef(0);
+  const catalogRevision = useRef(0);
   const catalogInFlight = useRef<{
     scope: string;
     promise: ReturnType<typeof refreshWorkspaceCatalog>;
@@ -501,6 +503,7 @@ function Workspace() {
     const request = ++snapshotRequest.current;
     ++catalogRequest.current;
     const patchRevision = syncPatchRevision.current;
+    const directoryRevision = catalogRevision.current;
     const namesRevision = typeNamesRevision.current;
     const orderRevision = typeOrderRevision.current;
     const preferencesRevision = preferenceRevision.current;
@@ -524,6 +527,8 @@ function Workspace() {
         runs: current.runs,
         last_success: current.last_success,
       } : snapshot;
+      if (current && directoryRevision !== catalogRevision.current && typeNameConnection(current) === typeNameConnection(snapshot))
+        next = { ...next, workspace_catalog: current.workspace_catalog };
       // 回读开始后取得的新名称不能被较早读取的目录覆盖；范围和偏好仍采用回读结果。
       if (current && namesRevision !== typeNamesRevision.current && typeNameConnection(current) === typeNameConnection(snapshot)) {
         for (const source of current.sources) {
@@ -577,6 +582,7 @@ function Workspace() {
     const task = catalogInFlight.current;
     void task.promise.then((result) => {
       if (cancelled || request !== catalogRequest.current) return;
+      ++catalogRevision.current;
       setData((current) => current ? { ...current, workspace_catalog: result.spaces } : current);
       const kinds = result.warning_kinds?.length ? result.warning_kinds : result.warnings.length ? ["unknown"] : [];
       setCatalogWarning(kinds.length
@@ -994,19 +1000,27 @@ function Workspace() {
   async function discoverSourceSpaces() {
     if (!desktop || !data || loading || workspaceActionBlocked("sync", currentActivity()))
       throw new Error("当前正在读取或保存，请等待完成后再发现空间。");
-    const todo = data.sources.find((source) => source.kind === "personal_todo" && source.action === "todo"
-      && source.enabled && source.executable);
-    if (!todo) throw new Error("请先添加并启用「我的待办」，再同步待办并发现空间。");
-    // 以本次实际读取为准；旧快照可能记录了钥匙串尚未授权时的失败。
-    const failure = await run("sync", false, [todo.id]);
-    if (failure) {
+    const request = ++catalogRequest.current;
+    catalogInFlight.current = null;
+    try {
+      const result = await discoverSpaces();
+      if (request !== catalogRequest.current)
+        throw new Error("空间信息已变化，请重新发现空间。");
+      if (!data.credential_ready) {
+        await reload();
+      } else {
+        ++catalogRevision.current;
+        setData((current) => current && request === catalogRequest.current
+          ? { ...current, workspace_catalog: result.spaces } : current);
+      }
+      return result.has_remote_spaces;
+    } catch (error) {
+      const failure = asError(error);
       const message = failure.kind === "credential"
         ? "暂时无法读取本机凭证，请允许系统凭证访问后重试，或在连接设置中检查 Token"
         : readFailureMessage(failure.kind);
       throw new Error(`空间发现未完成：${message}。已保留当前填写内容。`);
     }
-    // 增量同步可只应用事项补丁；首次授权恢复后还需更新凭证快照，启动目录读取。
-    if (!data.credential_ready) await reload();
   }
   function refreshAfterWrite(): Promise<void> {
     return new Promise((resolve, reject) => {

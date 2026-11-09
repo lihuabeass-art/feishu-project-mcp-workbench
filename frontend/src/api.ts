@@ -15,11 +15,13 @@ import type {
   CatalogRefresh,
   SourceTypeScope,
   SyncProgress,
+  SpaceDiscovery,
 } from "./types";
 
 export const desktop = isTauri();
 export const refreshWorkspaceCatalog = () =>
   invoke<CatalogRefresh>("refresh_workspace_catalog");
+export const discoverSpaces = () => invoke<SpaceDiscovery>("discover_spaces");
 const localTypeOrderKey = "fstodo.type-order";
 
 function readLocalTypeOrder(): string[] {
