@@ -117,7 +117,7 @@ function WorkflowSuccessToast({ id, report, dismiss }: { id: string; report: Wor
         window.clearTimeout(timer);
         timer = undefined;
       } else if (timer === undefined) {
-        timer = window.setTimeout(() => dismiss(id, report), 5000);
+        timer = window.setTimeout(() => dismiss(id, report), 3000);
       }
     };
     const observer = new MutationObserver(update);

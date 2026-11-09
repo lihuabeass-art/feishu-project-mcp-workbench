@@ -181,7 +181,7 @@ it("已核验提示不重复动作，并保留缓存未更新说明", async () =
   expect(toast?.textContent).toContain("待处理需求");
 });
 
-it.each(["full", "compact"] as const)("%s 模式的流程成功提示悬浮显示并在五秒后消失", async (mode) => {
+it.each(["full", "compact"] as const)("%s 模式的流程成功提示悬浮显示并在三秒后消失", async (mode) => {
   enableWorkflow("verified");
   const result = deferred<WorkflowResult>();
   vi.mocked(executeWorkflowAction).mockReturnValue(result.promise);
@@ -193,7 +193,7 @@ it.each(["full", "compact"] as const)("%s 模式的流程成功提示悬浮显�
   expect(toast).toBeTruthy();
   expect(toast?.textContent).toContain("待处理需求");
   expect(toast?.textContent).toContain("已执行：完成研发节点");
-  await act(async () => { vi.advanceTimersByTime(4999); });
+  await act(async () => { vi.advanceTimersByTime(2999); });
   expect(screen.getByText("流程推进已核验")).toBeTruthy();
   await act(async () => { vi.advanceTimersByTime(1); });
   expect(screen.queryByText("流程推进已核验")).toBeNull();
@@ -211,7 +211,7 @@ it("流程结果不确定的提示不会自动消失", async () => {
   expect(screen.getByText("流程结果不确定，请先核对飞书状态")).toBeTruthy();
 });
 
-it("模态窗口遮挡成功提示时暂停倒计时，关闭后再显示五秒", async () => {
+it("模态窗口遮挡成功提示时暂停倒计时，关闭后再显示三秒", async () => {
   enableWorkflow("verified");
   const result = deferred<WorkflowResult>();
   vi.mocked(executeWorkflowAction).mockReturnValue(result.promise);
@@ -225,7 +225,9 @@ it("模态窗口遮挡成功提示时暂停倒计时，关闭后再显示五秒"
   await act(async () => { vi.advanceTimersByTime(6000); });
   expect(screen.getByText("流程推进已核验")).toBeTruthy();
   await act(async () => { dialog.remove(); });
-  await act(async () => { vi.advanceTimersByTime(5000); });
+  await act(async () => { vi.advanceTimersByTime(2999); });
+  expect(screen.getByText("流程推进已核验")).toBeTruthy();
+  await act(async () => { vi.advanceTimersByTime(1); });
   expect(screen.queryByText("流程推进已核验")).toBeNull();
 });
 
