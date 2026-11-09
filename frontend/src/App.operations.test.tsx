@@ -169,16 +169,23 @@ it("流程核验成功后刷新全部可执行启用来源，详情回读新状�
   expect(executeWorkflowAction).toHaveBeenCalledOnce();
 });
 
-it("已核验提示不重复动作，并保留缓存未更新说明", async () => {
+it.each([
+  ["本地缓存暂未刷新，下次同步会更新。", ""],
+  ["本地缓存已刷新。", ""],
+  ["本地缓存暂未刷新，下次同步会更新。", "（本地动作台账未能记录）"],
+])("已核验提示省略常规回读与缓存说明，保留其他提示（%s）", async (cacheMessage, note) => {
   enableWorkflow("verified");
-  vi.mocked(executeWorkflowAction).mockResolvedValue({ outcome: "verified", verified: true, request_id: "r", action_id: "confirm", resynced: false, message: "「完成研发节点」已执行，回读确认远端状态已变化。本地缓存暂未刷新，下次同步会更新。" });
+  vi.mocked(executeWorkflowAction).mockResolvedValue({ outcome: "verified", verified: true, request_id: "r", action_id: "confirm", resynced: false, message: `「完成研发节点」已执行，回读确认远端状态已变化。${cacheMessage}${note}` });
   await ready();
   await submitWorkflow();
-  const toast = screen.getByText("回读确认远端状态已变化。本地缓存暂未刷新，下次同步会更新。").closest('[role="status"]');
+  const toast = screen.getByText("已执行：完成研发节点").closest('[role="status"]');
   expect(toast?.textContent).toContain("已执行：完成研发节点");
   expect(toast?.textContent?.match(/完成研发节点/g)).toHaveLength(1);
-  expect(toast?.textContent).toContain("回读确认远端状态已变化");
+  expect(toast?.textContent).not.toContain("回读确认远端状态已变化");
+  expect(toast?.textContent).not.toContain(cacheMessage);
   expect(toast?.textContent).toContain("待处理需求");
+  if (note) expect(toast?.textContent).toContain(note);
+  else expect(toast?.querySelectorAll("p")).toHaveLength(1);
 });
 
 it.each(["full", "compact"] as const)("%s 模式的流程成功提示悬浮显示并在三秒后消失", async (mode) => {

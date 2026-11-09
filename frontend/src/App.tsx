@@ -126,7 +126,10 @@ function WorkflowSuccessToast({ id, report, dismiss }: { id: string; report: Wor
     return () => { observer.disconnect(); window.clearTimeout(timer); };
   }, [id, report, dismiss]);
   const repeated = `「${report.action}」已执行，`;
-  const detail = report.message.startsWith(repeated) ? report.message.slice(repeated.length) : report.message;
+  let detail = report.message.startsWith(repeated) ? report.message.slice(repeated.length) : report.message;
+  for (const summary of ["回读确认远端状态已变化。本地缓存暂未刷新，下次同步会更新。", "回读确认远端状态已变化。本地缓存已刷新。"]) {
+    if (detail.startsWith(summary)) { detail = detail.slice(summary.length); break; }
+  }
   return <div className="banner success workflow-toast" role="status">
     <Check size={17} />
     <div><strong>已执行：{report.action}</strong><p>{report.item}</p>{detail && <p>{detail}</p>}</div>
