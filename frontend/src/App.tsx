@@ -786,7 +786,7 @@ function Workspace() {
     }
   }
 
-  async function run(action: "sync" | "check", automatic = false, requestedIds?: string[], afterWrite = false) {
+  async function run(action: "sync" | "check", automatic = false, requestedIds?: string[], afterWrite = false): Promise<AppError | null | undefined> {
     const ids = requestedIds || (incremental
       ? sourceId === "*" ? enabledIds : enabledIds.filter((id) => id === sourceId)
       : [sourceId]);
@@ -858,7 +858,7 @@ function Workspace() {
           ? data?.capabilities?.progressive_sync && !workflowInFlightAtStart
             ? await syncTodos("*", automatic, ids, { receive: applyPatch, signal: progressAbort.signal })
             : await syncTodos("*", automatic, ids)
-          : await syncTodos(sourceId, automatic);
+          : await syncTodos(requestedIds?.[0] || sourceId, automatic);
         if (report.patch) {
           finalPatchReceived = !progressAbort.signal.aborted;
           applyPatch(report);
@@ -987,6 +987,26 @@ function Workspace() {
         throw new Error("清单刷新未完成，已保留现有内容，可稍后刷新。");
       }
     }
+    return [...outcomes.values()].find((outcome) => outcome && readFailureNeedsAction(outcome.kind))
+      || [...outcomes.values()].find(Boolean) || failure || cacheReadFailure;
+  }
+
+  async function discoverSourceSpaces() {
+    if (!desktop || !data || loading || workspaceActionBlocked("sync", currentActivity()))
+      throw new Error("当前正在读取或保存，请等待完成后再发现空间。");
+    const todo = data.sources.find((source) => source.kind === "personal_todo" && source.action === "todo"
+      && source.enabled && source.executable);
+    if (!todo) throw new Error("请先添加并启用「我的待办」，再同步待办并发现空间。");
+    // 以本次实际读取为准；旧快照可能记录了钥匙串尚未授权时的失败。
+    const failure = await run("sync", false, [todo.id]);
+    if (failure) {
+      const message = failure.kind === "credential"
+        ? "暂时无法读取本机凭证，请允许系统凭证访问后重试，或在连接设置中检查 Token"
+        : readFailureMessage(failure.kind);
+      throw new Error(`空间发现未完成：${message}。已保留当前填写内容。`);
+    }
+    // 增量同步可只应用事项补丁；首次授权恢复后还需更新凭证快照，启动目录读取。
+    if (!data.credential_ready) await reload();
   }
   function refreshAfterWrite(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -1794,6 +1814,9 @@ function Workspace() {
               </div>
               <WorkSources sources={data?.sources || []} items={data?.items || []}
                 workspaceCatalog={data?.workspace_catalog}
+                discoverSpaces={discoverSourceSpaces}
+                spaceDiscoveryDisabled={loading || workspaceActionBlocked("sync", activity)}
+                spaceDiscoveryWarning={catalogWarning}
                 selectedId={sourceId} select={changeSource}
                 disabled={!desktop || loading || !!contextOperation}
                 editable={!!data?.capabilities?.source_queries}

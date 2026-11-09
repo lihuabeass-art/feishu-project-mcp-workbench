@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { discoverSourceFields, saveWorkSource } from "./api";
 import { asError } from "./model";
 import { Select } from "./Select";
@@ -20,6 +20,9 @@ export function SourceEditor({
   sources,
   items,
   workspaceCatalog,
+  discoverSpaces,
+  spaceDiscoveryDisabled,
+  spaceDiscoveryWarning,
   disabled,
   saved,
   editingSource,
@@ -29,6 +32,9 @@ export function SourceEditor({
   sources: Source[];
   items: CachedItem[];
   workspaceCatalog?: SpaceCatalog[];
+  discoverSpaces?: () => Promise<void>;
+  spaceDiscoveryDisabled?: boolean;
+  spaceDiscoveryWarning?: string;
   disabled: boolean;
   saved: (id: string) => Promise<void>;
   editingSource?: Source;
@@ -56,6 +62,9 @@ export function SourceEditor({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [discoveringSpaces, setDiscoveringSpaces] = useState(false);
+  const [spacesChecked, setSpacesChecked] = useState(false);
+  const spaceDiscoveryRef = useRef(false);
   const projects = sourceProjects(sources, items, workspaceCatalog);
   const locked = disabled || pending;
   const editedSource = sources.find((source) => source.id === editing);
@@ -147,6 +156,22 @@ export function SourceEditor({
       setError(asError(e).message);
     } finally {
       setPending(false);
+    }
+  }
+  async function discoverProjects() {
+    if (!discoverSpaces || spaceDiscoveryRef.current || locked || spaceDiscoveryDisabled) return;
+    spaceDiscoveryRef.current = true;
+    setDiscoveringSpaces(true);
+    setSpacesChecked(false);
+    setError("");
+    try {
+      await discoverSpaces();
+      setSpacesChecked(true);
+    } catch (e) {
+      setError(asError(e).message);
+    } finally {
+      spaceDiscoveryRef.current = false;
+      setDiscoveringSpaces(false);
     }
   }
   async function save() {
@@ -336,27 +361,35 @@ export function SourceEditor({
         )}
         {kind !== "personal_todo" && (
           <>
-            {projects.size > 0 && (
-              <label>
-                空间
-                <Select
-                  ariaLabel="来源空间"
-                  value={!manualProject && projects.has(project) ? project : ""}
-                  disabled={locked}
-                  onChange={(value) => {
-                    setProject(value);
-                    setManualProject(!value);
-                    setMetadata(null);
-                  }}
-                  options={[
-                    { value: "", label: "请选择空间，或手动填写标识" },
-                    ...Array.from(projects, ([value, label]) => ({
-                      value,
-                      label: label === value ? value : `${label} · ${value}`,
-                    })),
-                  ]}
-                />
-              </label>
+            <label>
+              空间
+              <Select
+                ariaLabel="来源空间"
+                value={!manualProject && projects.has(project) ? project : ""}
+                disabled={locked}
+                onChange={(value) => {
+                  setProject(value);
+                  setManualProject(!value);
+                  setMetadata(null);
+                }}
+                options={[
+                  { value: "", label: "请选择空间，或手动填写标识" },
+                  ...Array.from(projects, ([value, label]) => ({
+                    value,
+                    label: label === value ? value : `${label} · ${value}`,
+                  })),
+                ]}
+              />
+            </label>
+            {discoverSpaces && (
+              <button
+                type="button"
+                className="secondary"
+                disabled={locked || spaceDiscoveryDisabled || discoveringSpaces}
+                onClick={() => void discoverProjects()}
+              >
+                {discoveringSpaces ? "正在同步待办并发现空间…" : "同步待办并发现空间"}
+              </button>
             )}
             {(manualProject || !projects.has(project)) && (
               <label>
@@ -376,11 +409,17 @@ export function SourceEditor({
               </label>
             )}
             <p className="hint" id="source-project-help">
-              仅查询所选空间。候选来自本机已同步的事项与已发现的工作类型；
+              仅查询所选空间。候选来自本机已同步的事项、已发现的工作类型与空间目录；
               {projects.size > 0
                 ? "其他空间可选择手动填写标识。"
-                : "可先同步「我的待办」获取空间名称，也可手动填写空间标识。"}
+                : "可先同步「我的待办」获取空间名称，无需预先填写空间标识；也可手动填写空间标识。"}
             </p>
+            {spacesChecked && !projects.size && (
+              <p className="hint" role="status">
+                待办中尚未发现空间。请确认当前账号在飞书中有待办，或手动填写空间标识。
+              </p>
+            )}
+            {spaceDiscoveryWarning && <p className="hint" role="status">{spaceDiscoveryWarning}</p>}
             {builtinKey === "stories" && <p className="hint">同步该空间内我参与的需求，进入工作清单后可再按「所属项目」筛选。</p>}
           </>
         )}

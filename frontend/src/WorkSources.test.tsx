@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WorkSources } from "./WorkSources";
 import { removeWorkSource, setWorkSourceEnabled, saveWorkSource } from "./api";
@@ -161,6 +161,7 @@ it("没有已同步空间时可手动添加需求来源", async () => {
   const { user } = setup([todo]);
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
   await user.click(screen.getByRole("button", { name: "添加我参与的需求" }));
+  expect(screen.getByRole("combobox", { name: "来源空间" })).toBeTruthy();
   expect(screen.getByText(/可先同步「我的待办」获取空间名称/)).toBeTruthy();
   await user.type(screen.getByLabelText("来源空间标识"), "new-space");
   await user.click(screen.getByRole("button", { name: "保存工作来源" }));
@@ -171,6 +172,45 @@ it("没有已同步空间时可手动添加需求来源", async () => {
       }),
     ),
   );
+});
+
+it("空缓存仍显示空间选择，发现失败可重试，候选到达后保留手填草稿并可选择保存", async () => {
+  let finish!: () => void;
+  const discoverSpaces = vi.fn().mockRejectedValueOnce(new Error("空间发现未完成，请稍后重试。"))
+    .mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  const props = { sources: [todo], items: [], selectedId: todo.id, select: vi.fn(),
+    disabled: false, editable: true, saved: vi.fn().mockResolvedValue(undefined), discoverSpaces };
+  const { rerender } = render(<WorkSources {...props} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "添加内置来源" }));
+  await user.click(screen.getByRole("button", { name: "添加我参与的需求" }));
+  await user.type(screen.getByLabelText("来源空间标识"), "draft-space");
+  await user.click(screen.getByRole("button", { name: "同步待办并发现空间" }));
+  expect(await screen.findByRole("alert")).toHaveProperty("textContent", "空间发现未完成，请稍后重试。");
+  expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
+  await user.click(screen.getByRole("button", { name: "同步待办并发现空间" }));
+  expect(screen.getByRole("button", { name: "正在同步待办并发现空间…" })).toHaveProperty("disabled", true);
+  rerender(<WorkSources {...props} workspaceCatalog={[{ project_key: "found-space", name: "发现的空间", simple_name: null, projects: [] }]} />);
+  await act(async () => finish());
+  expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
+  await user.click(screen.getByRole("combobox", { name: "来源空间" }));
+  await user.click(screen.getByRole("option", { name: "发现的空间 · found-space" }));
+  await user.click(screen.getByRole("button", { name: "保存工作来源" }));
+  await waitFor(() => expect(saveWorkSource).toHaveBeenCalledWith(expect.objectContaining({ project_key: "found-space" })));
+  expect(discoverSpaces).toHaveBeenCalledTimes(2);
+});
+
+it("待办未返回空间时保留选择和手填入口，明确说明尚未发现空间", async () => {
+  const user = userEvent.setup();
+  render(<WorkSources sources={[todo]} items={[]} selectedId={todo.id} select={vi.fn()} disabled={false}
+    editable saved={vi.fn()} discoverSpaces={vi.fn().mockResolvedValue(undefined)} />);
+  await user.click(screen.getByRole("button", { name: "添加内置来源" }));
+  await user.click(screen.getByRole("button", { name: "添加我参与的需求" }));
+  await user.click(screen.getByRole("button", { name: "同步待办并发现空间" }));
+  expect(await screen.findByText(/待办中尚未发现空间/)).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "来源空间" })).toBeTruthy();
+  expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "");
+  expect(saveWorkSource).not.toHaveBeenCalled();
 });
 
 it("未知空间名称回退到标识，编辑已有来源保留空间", async () => {

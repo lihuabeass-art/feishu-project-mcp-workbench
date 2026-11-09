@@ -21,6 +21,9 @@ export function WorkSources({
   sources,
   items,
   workspaceCatalog,
+  discoverSpaces,
+  spaceDiscoveryDisabled,
+  spaceDiscoveryWarning,
   selectedId,
   select,
   disabled,
@@ -30,6 +33,9 @@ export function WorkSources({
   sources: Source[];
   items: CachedItem[];
   workspaceCatalog?: SpaceCatalog[];
+  discoverSpaces?: () => Promise<void>;
+  spaceDiscoveryDisabled?: boolean;
+  spaceDiscoveryWarning?: string;
   selectedId: string;
   select: (id: string) => void;
   disabled: boolean;
@@ -316,6 +322,9 @@ export function WorkSources({
           sources={sources}
           items={items}
           workspaceCatalog={workspaceCatalog}
+          discoverSpaces={discoverSpaces}
+          spaceDiscoveryDisabled={spaceDiscoveryDisabled}
+          spaceDiscoveryWarning={spaceDiscoveryWarning}
           disabled={locked}
           editingSource={editor.mode === "edit" ? editor.source : undefined}
           builtinKey={
