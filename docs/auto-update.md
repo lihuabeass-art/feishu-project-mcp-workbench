@@ -12,7 +12,7 @@ FSTODO 使用 Tauri 2 官方 Updater 选择平台与版本、执行系统安装�
 
 ## 下载中断与恢复
 
-安装包按 512 KiB 的 HTTP Range 顺序下载，每次从固定版本的 Release URL 获取，避免整包长连接卡住，也避免重用过期的临时跳转地址。连接超时为 15 秒，连续 20 秒未收到数据会中断当前请求；单次请求最多 120 秒。每段最多尝试 3 次，间隔 1 秒、2 秒，界面会显示自动重试状态；达到上限后显示失败和手动重试入口，不无限等待。
+安装包按 4 MiB 的 HTTP Range 顺序下载，减少请求与跳转次数；每次从固定版本的 Release URL 获取，避免重用过期的临时跳转地址。连接超时为 15 秒，连续 20 秒未收到数据会中断当前请求；单次请求最多 960 秒，以兼容低速网络。每段最多尝试 3 次，间隔 1 秒、2 秒，界面会显示自动重试状态；达到上限后显示失败和手动重试入口，不无限等待。
 
 仅完整接收的分段计入进度并保留在内存中。手动重试从本次运行中已完成的分段继续，重新检查更新或退出应用后清除；不支持跨重启续传。服务器不支持 Range 时可回退到有超时的完整下载，成功后整体替换，不能把完整响应拼到已有分段后面。分段范围、长度或总大小异常时丢弃缓存；完整包必须按内置公钥通过与官方插件相同的 minisign 校验，验签失败时清空内容并拒绝安装。Windows 与 macOS 共用这套下载逻辑，仍分别由官方插件执行安装。
 
@@ -86,7 +86,7 @@ npm run build:windows
 
 签名更新所需文件为同次构建生成的 `FSTODO_<版本>_x64-setup.exe` 与相邻的 `.exe.sig`。保留同次构建的 `artifacts/release/release.json`，用于生成更新清单。
 
-macOS `Build macOS` 工作流从 GitHub Secrets 读取 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。有私钥时收集 Universal `.app.tar.gz` 与 `.app.tar.gz.sig`；没有私钥时仍只交付 DMG，日志会明确没有自动更新包，此时不满足在线更新发布要求。Actions Artifact 同时携带 `release.json` 和 `RELEASE_NOTES.md`；工作流负责构建并上传 Artifact，待收齐 Windows 与 macOS 产物后再统一准备草稿和发布正式 GitHub Release。
+macOS `Build macOS` 工作流从 GitHub Secrets 读取 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。有私钥时收集 Universal `.app.tar.gz` 与 `.app.tar.gz.sig`；没有私钥时仍只交付 DMG，日志会明确没有自动更新包，此时不满足 macOS 在线更新发布要求。Actions Artifact 同时携带 `release.json` 和 `RELEASE_NOTES.md`；确认 Windows 正式 Release 已成为 Latest 后才启动该工作流，并将通过核验的 macOS 产物补入同一 Release。
 
 两端必须基于同一版本 tag、同一提交构建，使用同一 updater 密钥。macOS 归档文件名通常不包含版本号，必须保留对应 Mac 构建携带的 `release.json`，不可拿其他版本的归档搭配新的记录。
 
@@ -131,7 +131,7 @@ FSTODO.app.tar.gz
 FSTODO.app.tar.gz.sig
 ```
 
-先完成两个平台构建与核验，再把全部文件放入 `lihuabeass-art/feishu-project-mcp-workbench` 的同一 tag 草稿 Release，另附 DMG、`RELEASE_NOTES.md`、`LICENSE` 和 `THIRD_PARTY_NOTICES.md`；确认资源、版本与许可完整后，最后作为正式 Release 一次发布。不要先发布只包含一个平台的清单，也不要把测试中的较旧版本设为最新版本。草稿只用于发布前汇总附件；匿名下载验收须在正式发布后以未登录状态验证 `latest.json` 与其中两个固定版本下载 URL 均可访问，避免拿登录后的维护者权限当作客户端可用证明。
+先发布并核验 Windows，再构建 macOS 并补入同一正式 Release。Windows 阶段允许临时 `latest.json` 只包含已验证的 `windows-x86_64` 包；现有完整清单脚本仍要求两个平台，不能把旧版 Mac 包冒充新版。在 Mac 包补齐前，Mac 客户端不能通过该清单更新，需明确告知用户。完整清单应在两个平台包和签名均上传核验后生成并替换临时清单。不要把较旧版本设为最新版本；最终须匿名下载并验证清单与两个固定版本更新包。
 
 ## 安装与在线更新验收
 

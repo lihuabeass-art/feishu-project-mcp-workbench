@@ -2,7 +2,7 @@
 
 本文件仅在用户明确要求发版，或维护发版能力时读取。准备文档、修改 CI、开发功能、验证测试，都不等于本次获准打 tag、启动发版编译或对外分发。
 
-源码与正式安装包统一发布到公开仓库 `lihuabeass-art/feishu-project-mcp-workbench`。Windows 在本机编译，macOS 通过 GitHub Actions 编译；收齐同一 tag 的两平台完整包、updater 签名和更新清单后，先上传草稿 GitHub Release，再正式发布。软件从公开 Release 自动检查更新、后台下载并验签，准备好后提示，由用户确认重启安装；自动检查与下载可关闭。首次安装与手动恢复仍可直接下载 NSIS / DMG；软件内当前版本的更新记录继续支持离线查看。
+源码与正式安装包统一发布到公开仓库 `lihuabeass-art/feishu-project-mcp-workbench`。先在 Windows 本机构建、签名并发布正式 Release，确认 Windows 安装包已出现在 GitHub Latest；随后通过 GitHub Actions 构建同一 tag 的 macOS 版本，补齐同一 Release 的附件与更新清单。软件从公开 Release 自动检查更新、后台下载并验签，准备好后提示，由用户确认重启安装；自动检查与下载可关闭。首次安装与手动恢复仍可直接下载 NSIS / DMG；软件内当前版本的更新记录继续支持离线查看。
 
 ## 正式发版的授权与完成标准
 
@@ -44,19 +44,17 @@
 3. 预览变更记录，核对比较起点与提交内容。自动汇总是初稿，应把提交记录与实际改动一起核对，避免把代码维护描述误当成已交付用户功能。
 4. 如需提交代码，遵循仓库的 `checkai → commitsplitter → 用户确认 → 本地提交` 链路。确认发布提交后，再给该提交创建用户指定的 tag。已交付版本的 tag 不移动、不覆盖；仅对本次任务创建且尚未交付的 tag，用户要求调整本次内容时，先停止旧构建并保留旧产物，再将本次 tag 校正到经审查的提交后重建，校正前须确认远端 tag 未被他人更改。
 5. 在 Windows 本机检出该 tag 对应的提交，配置 updater 签名私钥后执行 `npm run build:windows`。构建校验 tag，并生成用于软件内展示和随包交付的同一份记录。保留 NSIS、相邻 `.sig`、`release.json` 和 `RELEASE_NOTES.md`；安装包须包含本项目 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`。
-6. 按本次正式发版授权推送已确认的代码及该 tag；单独的本地提交请求不代表已获准推送或发布。推送版本 tag 触发 `Build macOS` 工作流。已有 tag 的手动构建或失败重跑，须填写该 tag。
-7. CI 检出指定 tag 和完整历史，前端测试、macOS 后端及钥匙串测试、Universal 构建并行运行；构建生成记录、DMG，并核验架构与签名。通过 GitHub Secrets 配置同一 updater 私钥后，还须生成 Universal `.app.tar.gz` 与相邻 `.sig`；构建产物保存为 Actions Artifact，只有整次运行所有任务成功后才允许用于发布，不能仅凭构建任务成功或 Artifact 已存在继续上传。用户从构建运行中下载文件，产物保留 14 天。Actions 成功只证明构建与脚本检查通过，不能代替 Mac 实机安装验证。
-8. 汇总两平台产物，核对版本、tag、提交与记录一致，按[自动更新说明](auto-update.md)生成 `latest.json`。未取得任一平台签名完整包时，不发布在线更新；不能把无签名普通安装包当作更新包。
-9. 创建该 tag 的草稿 Release，上传 NSIS、Universal `.app.tar.gz`、各自 `.sig`、`latest.json`、DMG、`release.json`、更新说明及许可说明。核对附件完整、远端文件大小和 SHA256 与已核验产物一致后，将草稿作为正式 Release 一次发布，并核对 `draft=false`、`prerelease=false` 及 Latest 指向本次正式版本；草稿和预发布 Release 不作为客户端正式更新源。
-10. 未登录 GitHub 验证正式 Release、最新 `latest.json` 及两个固定版本下载地址可匿名访问，核对清单中的版本与文件，完整下载两个更新包并比对 SHA256、执行实际签名校验，再向用户提供正式发布页和安装包链接。Windows 用包含 updater 的旧安装版本真实执行“自动检查 → 后台下载与验签 → 就绪提示 → 确认安装 → 重新打开”，验证前三步不抢焦点、确认前不安装，并检查关闭自动更新、手动检查、失败重试、新版本、离线记录及本机数据保留；Mac 分别记录 Actions 构建结果与实机首次安装、覆盖更新、重启及钥匙串结果。未执行的检查明确记为待验收。需要向群友发送文件或消息时，仍须有明确发送指令。
+6. `Build macOS` 会由 main 或 tag 推送触发；为严格保证顺序，推送前暂时停用该工作流，记录其原状态，再推送已确认代码及 tag。发布未完成时也要恢复原状态；只有 Windows 已发布并确认为 Latest 后才手动启动指定 tag 的 macOS 构建。
+7. 先核验 Windows 包、签名、版本及许可文件，创建草稿并上传 Windows 安装包、`.sig`、`release.json`、更新说明和许可附件。可发布只包含 `windows-x86_64` 的临时 `latest.json`，其版本、正文、日期、固定 tag URL 和签名来自同一 Windows 构建；验证签名及远端摘要后发布正式 Release 并设为 Latest。阶段性清单没有 macOS 平台项，Mac 客户端在补齐前不能通过该清单更新，应明确告知用户。
+8. 确认 GitHub Latest 指向本版、Windows 文件及签名已上传且摘要一致，匿名下载 Windows 包并核验 SHA256 和签名；之后恢复工作流并手动运行 `Build macOS`，指定相同 tag。不能在确认 Windows 发布前启动 macOS 发版构建。
+9. CI 检出指定 tag 和完整历史，前端测试、macOS 后端及钥匙串测试、Universal 构建并行运行；仅整次运行所有任务成功后，才能使用其 Artifact。核验 macOS 构建记录与 Windows 的版本、tag、提交一致，并验证 Universal 更新包签名，然后上传 DMG、`.app.tar.gz` 和 `.sig` 到已发布的同一 Release。按[自动更新说明](auto-update.md)生成完整 `latest.json`，上传并核验后替换阶段性清单；不得覆盖已发布的 Windows 安装包。Actions 成功不等于 Mac 实机安装验收。
+10. 未登录 GitHub 验证正式 Release、完整 `latest.json` 及两个固定版本下载地址，完整下载两个更新包并比对 SHA256、执行签名校验，向用户提供 Release 和安装包链接。Windows 用旧安装版本检查真实更新；Mac 分别记录 Actions 构建结果与实机首次安装、覆盖更新、重启及钥匙串结果。未执行的检查明确记为待验收。需要向群友发送文件或消息时，仍须有明确发送指令。
 
 在线更新使用 Tauri 官方 updater 签名校验，自动检查与下载在后台完成，安装仍须用户明确确认；关闭窗口或正常退出不自动安装。macOS 继续使用 ad-hoc 签名，首次安装用 DMG、应用内更新用 Universal `.app.tar.gz`；updater 签名不等于 Apple Developer ID 签名或公证。分发前须核对 Gatekeeper、覆盖安装、重启及钥匙串体验；Windows 须验证旧版到新版的真实安装以及 WebView2 安装行为。macOS 的安装限制见[构建与安装说明](macos试用版构建.md)。
 
-本机向 GitHub 上传较大的 macOS 文件发生超时，可手动运行 [Upload existing macOS release assets](../.github/workflows/upload-macos-release.yml)，填写版本 `tag`、同一 tag 的成功 `Build macOS` 运行 `run_id`，以及已有草稿的 `release_id`。工作流复用未过期的构建 Artifact，上传 Universal `.app.tar.gz` 和 DMG，不重新编译或签名；它核对运行、tag、提交、包元数据和远端摘要，已有同名完整附件且字节数、SHA256 一致时跳过，同名未完成上传或内容不一致时停止，不覆盖附件。
+本机向 GitHub 上传较大的 macOS 文件发生超时，应保留已发布的 Windows Release 并排查网络；现有 [Upload existing macOS release assets](../.github/workflows/upload-macos-release.yml) 只接受草稿 Release，不能用于已发布的 Release，也不能为绕过限制把正式版退回草稿。
 
-Windows 正式 NSIS 安装包上传同样超时，可先在本机记录原始文件的 SHA256 和总字节数，按每段 524288 字节（512 KiB）拆分，最后一段保留剩余字节，并上传至同一草稿。分段资产必须依次命名为 `FSTODO_<版本>_x64-setup.exe.part-0000`、`part-0001` 等，序号从零开始、至少四位；分段数为总字节数除以 524288 后向上取整。再次运行上述工作流，同时填写 `windows_sha256`（64 位十六进制）与 `windows_bytes`（正整数）；两项全空则跳过 Windows，不能只填其中一项。工作流只读取计算得出的确切分段名称，要求各段均已完整上传且大小正确，下载到临时目录依序拼接，核对总字节数与原始 SHA256 后，才按相同的冲突与回读规则上传正式 `.exe`；它不会执行安装包或删除远端分段。
-
-分段仅用于草稿中转，不能出现在正式 Release。正式 Windows 包回读核验通过后，由操作者按明确资产 ID 清理本次分段并核对草稿附件；签名、清单、说明和许可文件仍须补齐，全部核验后再正式发布。清理分段后再次运行工作流时，将两项 Windows 输入留空；macOS 已有匹配附件可重复运行并跳过。该工作流本身不创建或发布 Release。
+Windows 安装包上传超时，应保留草稿并排查网络；现有分段重组工作流依赖已成功的 macOS 构建，因此不能用于 Windows 先发布阶段。分段文件仅可作为草稿中转，不得出现在正式 Release。
 
 ## 编译阻塞项的修复授权
 
