@@ -326,7 +326,11 @@ export function WorkItemDetails({
       try {
         const cached = await cachedItemDetail(item.id);
         if (active && request === cacheRead.current && cached) {
-          setDetail(cached);
+          setDetail(previous => previous && previous.id.project_key === cached.id.project_key &&
+            previous.id.work_item_type_key === cached.id.work_item_type_key &&
+            previous.id.work_item_id === cached.id.work_item_id
+            ? { ...cached, item_url: cached.item_url ?? previous.item_url }
+            : cached);
           setCacheError("");
         }
       } catch (e) {
@@ -351,7 +355,13 @@ export function WorkItemDetails({
           const changedDuringRefresh = startingRead !== cacheRead.current;
           const request = ++cacheRead.current;
           // 同步可能已先更新缓存，迟到的远端响应不能直接覆盖该快照。
-          const current = changedDuringRefresh ? await cachedItemDetail(item.id) : latest;
+          const cached = changedDuringRefresh ? await cachedItemDetail(item.id) : null;
+          const current = changedDuringRefresh && cached
+            ? { ...cached, item_url: cached.item_url ?? (
+              cached.id.project_key === latest.id.project_key &&
+              cached.id.work_item_type_key === latest.id.work_item_type_key &&
+              cached.id.work_item_id === latest.id.work_item_id ? latest.item_url : null) }
+            : changedDuringRefresh ? null : latest;
           if (!active) return;
           // 内容采用最新回读；本次检查的成功结果不随缓存读取序号失效。
           setHasChecked(true);

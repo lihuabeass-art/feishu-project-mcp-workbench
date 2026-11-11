@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { WorkItemDetails } from "./WorkItemDetails";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import type { CachedItem, ItemDetail } from "./types";
@@ -28,4 +28,14 @@ it("没有可信的事项地址时不显示跳转入口", async () => {
   render(<WorkItemDetails item={item} enabled />);
   await screen.findByText("角色与人员");
   expect(screen.queryByRole("link", { name: "打开飞书事项" })).toBeNull();
+});
+
+it("同一事项的缓存更新不丢失刚核实的飞书入口", async () => {
+  vi.mocked(cachedItemDetail).mockResolvedValue({ ...detail, item_url: null });
+  vi.mocked(refreshItemDetail).mockResolvedValue(detail);
+  const view = render(<WorkItemDetails item={{ ...item, detail_revision: "1" }} enabled />);
+  await screen.findByRole("link", { name: "打开飞书事项" });
+  view.rerender(<WorkItemDetails item={{ ...item, detail_revision: "2" }} enabled />);
+  await waitFor(() => expect(cachedItemDetail).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole("link", { name: "打开飞书事项" }).getAttribute("href")).toBe(url);
 });

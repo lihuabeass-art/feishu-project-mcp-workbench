@@ -263,6 +263,11 @@ fn detail_view(session: &Session, detail: fstodo_backend::detail::ItemDetail) ->
     ItemDetailView { detail, item_url }
 }
 
+fn refreshed_detail_view(session: &Session, detail: fstodo_backend::detail::ItemDetail) -> ItemDetailView {
+    let item_url = workflow::resolve_item_url(session, &detail.id, &detail.data);
+    ItemDetailView { detail, item_url }
+}
+
 #[tauri::command]
 async fn cached_item_detail(item_id: WorkItemId) -> Result<Option<ItemDetailView>, UiError> {
     blocking(move || {
@@ -275,7 +280,7 @@ async fn cached_item_detail(item_id: WorkItemId) -> Result<Option<ItemDetailView
 async fn refresh_item_detail(item_id: WorkItemId) -> Result<ItemDetailView, UiError> {
     blocking(move || {
         let session = open_session()?;
-        Ok(detail_view(&session, session.refresh_item_detail(&item_id)?))
+        Ok(refreshed_detail_view(&session, session.refresh_item_detail(&item_id)?))
     }).await
 }
 

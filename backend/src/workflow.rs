@@ -35,7 +35,7 @@ use crate::sync::now_ms;
 mod editing;
 #[path = "workflow_links.rs"]
 mod links;
-pub use links::item_url;
+pub use links::{item_url, resolve_item_url};
 #[path = "workflow_editor.rs"]
 pub mod editor;
 
@@ -297,7 +297,7 @@ async fn discover_async(session: &Session, id: &WorkItemId, fresh: bool) -> Resu
     // Use the explicit model from a complete remote detail, never infer it from a type name.
     // UI details and this request share the same in-flight read; execution bypasses all TTL caches.
     let detail = session.refresh_item_detail_async(id, fresh).await?;
-    let item_url = links::item_url(&session.config.endpoint, id, &detail.data);
+    let item_url = links::resolve_item_url_async(session, id, &detail.data).await;
     let results = match detail.data["work_item_attribute"]["work_item_mod"].as_str() {
         Some("节点流") => vec![node_entries(session, id, &detail, fresh).await],
         Some("状态流") => vec![state_entries(session, id, &detail, fresh).await],

@@ -5,6 +5,45 @@ use reqwest::Url;
 use serde_json::Value;
 
 use crate::model::domain::WorkItemId;
+use crate::api::Session;
+
+// 类型列表属于指定空间；只接受唯一、精确匹配的类型路由。
+fn from_types(endpoint: &str, id: &WorkItemId, detail: &Value, types: &Value) -> Option<String> {
+    let key = id.work_item_type_key.as_deref()?;
+    let mut matches = types["list"].as_array()?.iter().filter(|entry| entry["type_key"].as_str() == Some(key));
+    let name = matches.next()?.get("api_name")?.as_str()?;
+    if matches.next().is_some() { return None; }
+    let mut enriched = detail.clone();
+    enriched.pointer_mut("/work_item_attribute/work_item_type")?.as_object_mut()?
+        .insert("api_name".into(), Value::String(name.to_owned()));
+    item_url(endpoint, id, &enriched)
+}
+
+fn needs_type_lookup(endpoint: &str, id: &WorkItemId, detail: &Value) -> bool {
+    let kind = &detail["work_item_attribute"]["work_item_type"];
+    if !kind.is_object() || !kind.get("api_name").is_none_or(Value::is_null) { return false; }
+    let mut probe = detail.clone();
+    probe["work_item_attribute"]["work_item_type"]["api_name"] = Value::String("route_probe".into());
+    item_url(endpoint, id, &probe).is_some()
+}
+
+pub fn resolve_item_url(session: &Session, id: &WorkItemId, detail: &Value) -> Option<String> {
+    let endpoint = &session.config.endpoint;
+    if let Some(url) = item_url(endpoint, id, detail) { return Some(url); }
+    if !needs_type_lookup(endpoint, id, detail) { return None; }
+    let args = serde_json::json!({"project_key": id.project_key.as_deref()?});
+    let types = session.call_read_tool("list_workitem_types", args.as_object()?).ok()?;
+    from_types(endpoint, id, detail, &types)
+}
+
+pub async fn resolve_item_url_async(session: &Session, id: &WorkItemId, detail: &Value) -> Option<String> {
+    let endpoint = &session.config.endpoint;
+    if let Some(url) = item_url(endpoint, id, detail) { return Some(url); }
+    if !needs_type_lookup(endpoint, id, detail) { return None; }
+    let args = serde_json::json!({"project_key": id.project_key.as_deref()?});
+    let types = session.read_tool("list_workitem_types", args.as_object()?).await.ok()?;
+    from_types(endpoint, id, detail, &types)
+}
 
 pub fn item_url(endpoint: &str, id: &WorkItemId, detail: &Value) -> Option<String> {
     let endpoint = Url::parse(endpoint).ok()?;
@@ -237,6 +276,32 @@ mod tests {
         );
         detail["work_item_attribute"]["work_item_type"]["api_name"] = json!("");
         assert!(item_url("https://project.feishu.cn/mcp_server/v1", &id, &detail).is_none());
+    }
+
+    #[test]
+    fn custom_type_route_comes_from_unique_matching_space_type_metadata() {
+        let endpoint = "https://project.feishu.cn/mcp_server/v1";
+        let mut id = identity();
+        id.work_item_type_key = Some("custom-key".into());
+        let mut detail = detail();
+        detail["work_item_attribute"]["work_item_type"]["key"] = json!("custom-key");
+        assert!(needs_type_lookup(endpoint, &id, &detail));
+        let list = json!({"list":[{"type_key":"other","api_name":"wrong"},
+            {"type_key":"custom-key","api_name":"feedback"}]});
+        assert_eq!(from_types(endpoint, &id, &detail, &list).as_deref(),
+            Some("https://project.feishu.cn/sample/feedback/detail/1234"));
+        for types in [json!({"list":[]}), json!({"list":[{"type_key":"custom-key"}]}),
+            json!({"list":[{"type_key":"custom-key","api_name":"feedback"},
+                {"type_key":"custom-key","api_name":"other"}]}),
+            json!({"list":[{"type_key":"custom-key","api_name":"setting"}]})] {
+            assert!(from_types(endpoint, &id, &detail, &types).is_none());
+        }
+        detail["work_item_attribute"]["work_item_id"] = json!("other");
+        assert!(!needs_type_lookup(endpoint, &id, &detail));
+        assert!(from_types(endpoint, &id, &detail, &list).is_none());
+        detail["work_item_attribute"]["work_item_type"] = json!("malformed");
+        assert!(!needs_type_lookup(endpoint, &id, &detail));
+        assert!(from_types(endpoint, &id, &detail, &list).is_none());
     }
 
     #[test]
