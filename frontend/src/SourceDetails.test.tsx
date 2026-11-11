@@ -446,6 +446,7 @@ it("各项目角色按名称稳定排序，缓存和刷新顺序不影响展示�
     "修复人",
   ];
   await screen.findByText("角色详情");
+  await userEvent.click(screen.getByText("更多信息", { exact: true }));
   expect(visibleRoles()).toEqual(expected);
   expect(cached.data.work_item_attribute.role_members).toEqual(roles);
 
@@ -467,6 +468,8 @@ it("各项目角色按名称稳定排序，缓存和刷新顺序不影响展示�
   vi.mocked(cachedItemDetail).mockResolvedValue(null);
   vi.mocked(refreshItemDetail).mockResolvedValue(otherDetail);
   view.rerender(<WorkItemDetails item={otherItem} enabled />);
+  await screen.findByText("后端成员");
+  await userEvent.click(screen.getByText("更多信息", { exact: true }));
   await waitFor(() =>
     expect(visibleRoles()).toEqual(["后端研发", "前端研发", "运维"]),
   );
@@ -515,12 +518,10 @@ it("详情按用途分层：概要提炼负责人，空字段合并，系统字�
   expect(screen.getByText("必现")).toBeTruthy();
   expect(screen.getByText("未填写：报告人、发现版本")).toBeTruthy();
   expect(screen.getByText("未指派：产品经理")).toBeTruthy();
-  expect(
-    document.querySelector(".remote-details details:not(.more-fields)"),
-  ).toBeNull();
+  expect(document.querySelector(".detail-more-information")?.hasAttribute("open")).toBe(false);
   const more = document.querySelector(".more-fields")!;
   expect(more.hasAttribute("open")).toBe(false);
-  expect(more.querySelector("summary")?.textContent).toBe("更多字段（4）");
+  expect(more.querySelector("summary")?.textContent).toBe("系统字段（4）");
   expect(more.textContent).toContain("自增数字1277");
   expect(more.textContent).toContain("是否完成否");
   expect(more.textContent).toContain("是否冻结否");

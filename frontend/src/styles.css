@@ -28,7 +28,8 @@
 .rule-options { display: grid; gap: 8px; }
 .rule-options label { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 .remote-details, .remote-details dd { min-width: 0; overflow-wrap: anywhere; }
-.detail-freshness { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.detail-freshness { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.detail-freshness-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-left: auto; }
 .detail-check-status { min-width: 0; }
 .detail-refresh { color: var(--text-secondary); }
 .business-fields > div, .field-object dl > div { padding-block: 10px; border-bottom: 1px solid var(--line); }
@@ -1900,7 +1901,7 @@ input {
   margin-top: 29px;
 }
 .detail-item-link {
-  margin: 0 0 20px;
+  margin: 0;
 }
 .detail h3 {
   font-size: 11px;
@@ -1949,6 +1950,37 @@ input {
 }
 .detail .detail-summary dd {
   color: var(--heading);
+}
+.detail-description {
+  margin-top: 22px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--text);
+}
+.detail-more-information {
+  margin-top: 22px;
+  border-top: 1px solid var(--line);
+}
+.detail-more-information > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-top: 12px;
+  min-height: 36px;
+  list-style: none;
+  cursor: pointer;
+  color: var(--green);
+  font-size: 11px;
+}
+.detail-more-information > summary::-webkit-details-marker { display: none; }
+.detail-more-information > summary svg { flex-shrink: 0; }
+.detail-more-information[open] > summary svg { transform: rotate(90deg); }
+.detail-more-hint { color: var(--text-secondary); margin-left: auto; }
+.detail-more-content { display: grid; gap: 22px; padding-top: 18px; min-width: 0; }
+.detail-more-content .more-fields { margin-top: 0; }
+@media (max-width: 420px) {
+  .detail-more-hint { flex-basis: 100%; margin-left: 19px; }
 }
 .more-fields {
   margin-top: 14px;
@@ -3136,3 +3168,8 @@ input {
     transform: translateX(12px);
   }
 }
+.detail-node-overview { margin: 18px 0; }
+.detail-display-settings { margin: 16px 0; }
+.detail-field-choices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.detail-field-choices button { max-width: 100%; overflow-wrap: anywhere; }
+.detail-field-choices button[aria-pressed="true"] { border-color: var(--green); color: var(--green); }

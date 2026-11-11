@@ -4,7 +4,7 @@ import type { ItemDetail } from "./types";
 type Field = ItemDetail["data"]["work_item_fields"][number];
 
 // 飞书项目内置字段的固定 key；空间自定义字段统一为 field_xxxxxx，始终视为业务内容。
-// 这些字段是流程内部标识、计数或与概要重复的值，收进“更多字段”而不是丢弃。
+// 这些字段是流程内部标识、计数或与概要重复的值，收进“系统字段”而不是丢弃。
 const SYSTEM_FIELD_KEYS = new Set([
   "auto_number",
   "template_version",
@@ -25,7 +25,7 @@ export const SUMMARY_FIELD_KEYS = {
 const summaryKeys = new Set<string>(Object.values(SUMMARY_FIELD_KEYS));
 
 export function isEmpty(value: unknown) {
-  if (value == null || value === "") return true;
+  if (value == null || (typeof value === "string" && !value.trim())) return true;
   if (Array.isArray(value)) return value.length === 0;
   return typeof value === "object" && Object.keys(value).length === 0;
 }
@@ -74,22 +74,31 @@ function isSystemField(field: Field) {
   return SYSTEM_FIELD_KEYS.has(field.key);
 }
 
-export function classifyFields(fields: Field[]) {
+export function classifyFields(fields: Field[], pinnedKeys: string[] = [], attribute: Record<string, unknown> = {}) {
+  const description = fields.find((field) => field.key === "description");
+  const pinned: Field[] = [];
   const summary: Partial<Record<keyof typeof SUMMARY_FIELD_KEYS, Field>> = {};
   const inline: Field[] = [];
   const block: Field[] = [];
   const empty: Field[] = [];
   const system: Field[] = [];
   for (const field of fields) {
+    if (field === description) continue;
+    // 仅按协议中明确的同义 key 与原值消除摘要重复，不按名称或跨语义的相同文本去重。
+    const alias = ({ created_by: "create_by", created_at: "create_time", updated_by: "updated_by", updated_at: "update_time",
+      work_item_status: "work_item_status" } as Record<string, string>)[field.key];
+    if (alias && !isEmpty(attribute[alias]) && JSON.stringify(attribute[alias]) === JSON.stringify(field.value)) continue;
     if (summaryKeys.has(field.key) && !isEmpty(field.value)) {
       const slot = field.key === SUMMARY_FIELD_KEYS.priority ? "priority" : "operators";
       summary[slot] ??= field;
+    } else if (pinnedKeys.includes(field.key)) {
+      pinned.push(field);
     } else if (isSystemField(field)) {
       if (!isEmpty(field.value)) system.push(field);
     } else if (isEmpty(field.value)) empty.push(field);
     else (isInline(field.value) ? inline : block).push(field);
   }
-  return { summary, inline, block, empty, system };
+  return { summary, description, pinned, inline, block, empty, system };
 }
 
 // 基础属性中已由标题、概要、角色或技术信息展示的部分。

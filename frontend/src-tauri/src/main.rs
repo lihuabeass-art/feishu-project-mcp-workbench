@@ -130,6 +130,7 @@ struct Capabilities {
     workspace_catalog: bool,
     creation: bool,
     filter_schemes: bool,
+    detail_display: bool,
 }
 
 #[derive(Serialize)]
@@ -220,6 +221,7 @@ async fn load_snapshot() -> Result<Snapshot, UiError> {
                 workspace_catalog: true,
                 creation: true,
                 filter_schemes: true,
+                detail_display: true,
             },
             // 缓存是累积集合，不能把默认 200 条截断误报成全部。
             items: session.query_cached_items(&ItemFilter {
@@ -413,6 +415,27 @@ async fn load_filter_schemes() -> Result<fstodo_backend::filter_schemes::FilterS
 #[tauri::command]
 async fn save_filter_schemes(account: String, document: serde_json::Value) -> Result<(), UiError> {
     blocking(move || fstodo_backend::filter_schemes::save(&open_session()?, &account, &document)).await
+}
+
+#[tauri::command]
+async fn load_detail_display(project: String, kind: String) -> Result<fstodo_backend::filter_schemes::FilterSchemePreferences, UiError> {
+    blocking(move || {
+        let session = open_session()?;
+        let account = fstodo_backend::filter_schemes::account(&session)?;
+        let document = session.store.detail_display(&account, &project, &kind)?;
+        Ok(fstodo_backend::filter_schemes::FilterSchemePreferences { account, document })
+    }).await
+}
+
+#[tauri::command]
+async fn save_detail_display(account: String, project: String, kind: String, document: serde_json::Value) -> Result<(), UiError> {
+    blocking(move || {
+        let session = open_session()?;
+        if fstodo_backend::filter_schemes::account(&session)? != account {
+            return Err(BackendError::validation("飞书账号已变化，请重新加载详情显示设置"));
+        }
+        session.store.set_detail_display(&account, &project, &kind, &document)
+    }).await
 }
 
 #[tauri::command]
@@ -621,6 +644,8 @@ fn main() {
             save_source_type_preferences,
             load_filter_schemes,
             save_filter_schemes,
+            load_detail_display,
+            save_detail_display,
             get_workflow_actions,
             lookup_workflow_field,
             get_workflow_editor_context,

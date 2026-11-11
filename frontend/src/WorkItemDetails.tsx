@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowUpRight, RefreshCw } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowUpRight, Check, ChevronRight, RefreshCw } from "lucide-react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import { asError, itemKey, localTime } from "./model";
 import { readFailureMessage } from "./readFeedback";
 import type { CachedItem, ItemDetail } from "./types";
 import { BusinessField } from "./BusinessField";
 import { ExternalLink } from "./ExternalLink";
+import { useDetailDisplay } from "./useDetailDisplay";
 import {
   classifyFields,
   extraAttributes,
@@ -55,12 +56,12 @@ function RoleMembers({ value }: { value: unknown }) {
   );
 }
 
-function CurrentNodes({ nodes }: { nodes: Array<Record<string, unknown>> }) {
+function CurrentNodes({ nodes, personalId }: { nodes: Array<Record<string, unknown>>; personalId?: string | null }) {
   return (
     <dl className="role-members">
       {nodes.map((node, i) => (
         <div key={`${String(node.id ?? "")}-${i}`}>
-          <dt>{String(node.name ?? node.id ?? "未命名节点")}</dt>
+          <dt>{String(node.name ?? "名称未提供")}{personalId != null && node.id === personalId ? "（我的待办）" : ""}</dt>
           <dd>
             {isEmpty(node.owners) ? (
               <span className="muted">未指派</span>
@@ -127,13 +128,42 @@ export function FieldValue({ value }: { value: unknown }) {
   );
 }
 
-function DetailBody({ detail }: { detail: ItemDetail }) {
+function NodeOverview({ item, detail, mergedStatusNode }: { item: CachedItem; detail?: ItemDetail; mergedStatusNode?: boolean }) {
+  const nodes = detail?.data.work_item_current_node;
+  const flow = item.flow;
+  const personal = item.node_scope === "personal";
+  const personalMatch = personal && !!flow?.node_state_key && nodes?.some((node) => node.id === flow.node_state_key && node.name === flow.node_name);
+  // 完整节点只替代共享摘要；个人来源节点属于不同业务范围，不能按同名合并。
+  const showSummary = flow && (flow.kind === "node" || flow.kind === "both") && ((personal && !personalMatch) || nodes === undefined);
+  const state = flow && (flow.kind === "state" || flow.kind === "both") ?
+    [flow.start_state_key_name, flow.end_state_key_name].filter(Boolean).join(" → ") : "";
+  const status = detail && readable(detail.data.work_item_attribute.work_item_status);
+  if ((!nodes?.length || mergedStatusNode) && !showSummary && (!state || state === status)) return null;
+  return <section className="detail-node-overview">
+    {!!nodes?.length && !mergedStatusNode && <><h4>当前节点</h4><CurrentNodes nodes={nodes} personalId={personalMatch ? flow.node_state_key : undefined} /></>}
+    {showSummary && <p className="hint">{personal ? "我的待办节点" : "当前节点"} · <span>{flow.node_name || "名称未提供"}</span></p>}
+    {!!state && state !== status && <p className="hint">状态 · {state}</p>}
+  </section>;
+}
+
+function DetailBody({ detail, item, display, children }: { detail: ItemDetail; item: CachedItem;
+  display: ReturnType<typeof useDetailDisplay>; children?: ReactNode }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [configure, setConfigure] = useState(false);
   const attribute = detail.data.work_item_attribute;
-  const { summary, inline, block, empty, system } = classifyFields(
-    detail.data.work_item_fields,
+  const { summary, description, pinned, inline, block, empty, system } = classifyFields(
+    detail.data.work_item_fields, display.keys, attribute,
+  );
+  const descriptionTitle = description?.name?.trim() || (
+    detail.id.work_item_type_key === "story" ? "需求说明" :
+      detail.id.work_item_type_key === "issue" ? "缺陷描述" : "事项说明"
   );
   const created = actorAt(attribute.create_by, attribute.create_time);
   const updated = actorAt(attribute.updated_by, attribute.update_time);
+  const nodes = detail.data.work_item_current_node;
+  const statusNode = nodes?.length === 1 && nodes[0].name === readable(attribute.work_item_status) ? nodes[0] : undefined;
+  const statusNodeOwners = statusNode && !isEmpty(statusNode.owners) &&
+    JSON.stringify(statusNode.owners) !== JSON.stringify(summary.operators?.value) ? statusNode.owners : undefined;
   const extras = extraAttributes(attribute);
   const more = [...system, ...extras];
   const field = (f: (typeof inline)[number], i: number) => (
@@ -150,6 +180,8 @@ function DetailBody({ detail }: { detail: ItemDetail }) {
         <dt>当前状态</dt>
         <dd>
           <FieldValue value={attribute.work_item_status} />
+          {statusNode && item.node_scope === "personal" && statusNode.id === item.flow?.node_state_key && statusNode.name === item.flow.node_name && <span className="muted">（我的待办）</span>}
+          {statusNodeOwners !== undefined && <div><FieldValue value={statusNodeOwners} /></div>}
         </dd>
         {summary.operators && (
           <>
@@ -180,42 +212,75 @@ function DetailBody({ detail }: { detail: ItemDetail }) {
           </>
         )}
       </dl>
-      <h4>角色与人员</h4>
-      <RoleMembers value={attribute.role_members} />
-      {!!detail.data.work_item_current_node?.length && (
-        <>
-          <h4>全部当前节点</h4>
-          <CurrentNodes nodes={detail.data.work_item_current_node} />
-        </>
-      )}
-      <h4>业务字段</h4>
-      {inline.length > 0 && (
-        <dl className="inline-fields">{inline.map(field)}</dl>
-      )}
-      {block.length > 0 && (
-        <dl className="business-fields">{block.map(field)}</dl>
-      )}
-      {!inline.length && !block.length && (
-        <p className="hint">没有已填写的业务字段。</p>
-      )}
-      {empty.length > 0 && (
-        <p className="hint">未填写：{empty.map(fieldName).join("、")}</p>
-      )}
-      {more.length > 0 && (
-        <details className="more-fields">
-          <summary>更多字段（{more.length}）</summary>
-          <dl className="inline-fields">
-            {more.map((f, i) => (
-              <div key={`${f.key}-${i}`}>
-                <dt>{f.name || f.key}</dt>
-                <dd>
-                  <FieldValue value={f.value} />
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </details>
-      )}
+      <section className="detail-description" aria-label={descriptionTitle}>
+        <h4>{descriptionTitle}</h4>
+        {description ? (
+          isEmpty(description.value) ? <p className="hint">暂无{descriptionTitle}</p> :
+            <BusinessField value={description.value} itemId={detail.id} fieldKey={description.key} />
+        ) : (
+          <p className="hint">暂无{descriptionTitle}</p>
+        )}
+      </section>
+      <NodeOverview item={item} detail={detail} mergedStatusNode={!!statusNode} />
+      {pinned.length > 0 && <dl className="business-fields detail-pinned-fields">{pinned.map(field)}</dl>}
+      <div className="detail-display-settings">
+        <button type="button" className="text-button" aria-expanded={configure}
+          onClick={() => setConfigure((value) => !value)}>设置常显字段</button>
+        {configure && <div>
+          <p className="hint">选择代码版本、设计文档等需要直接查看的字段，按当前账号、空间和事项类型保存。</p>
+          {display.busy && <p className="hint" role="status">正在处理常显设置…</p>}
+          {display.available && <div className="detail-field-choices">{detail.data.work_item_fields
+            .filter((f) => !["description", "priority", "current_status_operator"].includes(f.key))
+            .map((f) => <button key={f.key} type="button" className="secondary" aria-pressed={display.keys.includes(f.key)}
+              disabled={display.busy} title={f.key} onClick={() => void display.toggle(f.key)}>
+              {display.keys.includes(f.key) && <Check size={13} aria-hidden="true" />}{fieldName(f)}</button>)}</div>}
+          {!display.available && !display.busy && !display.error && <p className="hint">当前连接暂不能保存常显设置。</p>}
+        </div>}
+        {display.error && <p className="error-text" role="alert">{display.error}<button className="text-button" onClick={display.retry}>重新读取设置</button></p>}
+      </div>
+      <details className="detail-more-information" open={moreOpen}
+        onToggle={(event) => setMoreOpen(event.currentTarget.open)}>
+        <summary>
+          <ChevronRight size={13} aria-hidden="true" />
+          <span>{moreOpen ? "收起更多信息" : "更多信息"}</span>
+          <span className="detail-more-hint">角色、其他字段</span>
+        </summary>
+        <div className="detail-more-content">
+          <section>
+            <h4>角色与人员</h4>
+            <RoleMembers value={attribute.role_members} />
+          </section>
+          <section>
+            <h4>其他业务字段</h4>
+            {inline.length > 0 && (
+              <dl className="inline-fields">{inline.map(field)}</dl>
+            )}
+            {block.length > 0 && (
+              <dl className="business-fields">{block.map(field)}</dl>
+            )}
+            {!inline.length && !block.length && (
+              <p className="hint">没有其他已填写的业务字段。</p>
+            )}
+            {empty.length > 0 && (
+              <p className="hint">未填写：{empty.map(fieldName).join("、")}</p>
+            )}
+          </section>
+          {more.length > 0 && (
+            <details className="more-fields">
+              <summary>系统字段（{more.length}）</summary>
+              <dl className="inline-fields">
+                {more.map((f, i) => (
+                  <div key={`${f.key}-${i}`}>
+                    <dt>{f.name || f.key}</dt>
+                    <dd><FieldValue value={f.value} /></dd>
+                  </div>
+                ))}
+              </dl>
+            </details>
+          )}
+          {children}
+        </div>
+      </details>
     </>
   );
 }
@@ -224,11 +289,18 @@ export function WorkItemDetails({
   item,
   enabled,
   onRefreshed,
+  children,
+  displaySettingsEnabled = false,
+  displayContext = "",
 }: {
   item: CachedItem;
   enabled: boolean;
   onRefreshed?: () => Promise<void>;
+  children?: ReactNode;
+  displaySettingsEnabled?: boolean;
+  displayContext?: string;
 }) {
+  const display = useDetailDisplay(displaySettingsEnabled && enabled, displayContext, item.id.project_key, item.id.work_item_type_key);
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [hasChecked, setHasChecked] = useState(false);
@@ -307,7 +379,7 @@ export function WorkItemDetails({
       active = false;
     };
   }, [identity, enabled, attempt, onRefreshed]); // 复合身份变化时，旧请求不能写入新事项。
-  if (!enabled) return null;
+  if (!enabled) return <><NodeOverview item={item} />{children}</>;
   const checkStatus = loading
     ? "正在检查最新信息…"
     : error
@@ -317,30 +389,31 @@ export function WorkItemDetails({
         : "尚未检查";
   return (
     <div className="detail-section remote-details">
-      {detail?.item_url && detail.id.project_key === item.id.project_key &&
-        detail.id.work_item_type_key === item.id.work_item_type_key &&
-        detail.id.work_item_id === item.id.work_item_id && (
-        <div className="workflow-manual-fill detail-item-link">
-          <ExternalLink href={detail.item_url} title={`在飞书项目中打开「${item.name || item.id.work_item_id}」`}>
-            打开飞书事项<ArrowUpRight size={13} aria-hidden="true" />
-          </ExternalLink>
-        </div>
-      )}
-      <h3>完整工作信息</h3>
       <div className="detail-freshness">
         <p className="hint detail-check-status" role="status" aria-atomic="true">
           {checkStatus}
         </p>
-        <button
-          type="button"
-          className="icon-button detail-refresh"
-          aria-label={loading ? "正在检查最新信息" : "刷新详情"}
-          title={loading ? "正在检查最新信息" : "刷新详情"}
-          disabled={loading}
-          onClick={() => setAttempt((n) => n + 1)}
-        >
-          <RefreshCw size={14} className={loading ? "spin" : undefined} aria-hidden="true" />
-        </button>
+        <div className="detail-freshness-actions">
+          {detail?.item_url && detail.id.project_key === item.id.project_key &&
+            detail.id.work_item_type_key === item.id.work_item_type_key &&
+            detail.id.work_item_id === item.id.work_item_id && (
+              <div className="workflow-manual-fill detail-item-link">
+                <ExternalLink href={detail.item_url} title={`在飞书项目中打开「${item.name || item.id.work_item_id}」`}>
+                  打开飞书事项<ArrowUpRight size={13} aria-hidden="true" />
+                </ExternalLink>
+              </div>
+            )}
+          <button
+            type="button"
+            className="icon-button detail-refresh"
+            aria-label={loading ? "正在检查最新信息" : "刷新详情"}
+            title={loading ? "正在检查最新信息" : "刷新详情"}
+            disabled={loading}
+            onClick={() => setAttempt((n) => n + 1)}
+          >
+            <RefreshCw size={14} className={loading ? "spin" : undefined} aria-hidden="true" />
+          </button>
+        </div>
       </div>
       {(error || cacheError) && (
         <p className="error-text" role="alert">
@@ -353,8 +426,10 @@ export function WorkItemDetails({
           详情已检查，清单摘要读取失败：{summaryError}
         </p>
       )}
-      {detail && <DetailBody detail={detail} />}
+      {detail && <DetailBody key={identity} detail={detail} item={item} display={display}>{children}</DetailBody>}
+      {!detail && <NodeOverview item={item} />}
       {!detail && !loading && !error && <p className="hint">尚未取得详情。</p>}
+      {!detail && children}
     </div>
   );
 }

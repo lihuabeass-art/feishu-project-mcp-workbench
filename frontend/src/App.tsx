@@ -150,30 +150,16 @@ type ManualSync = {
 
 function Flow({ item }: { item: CachedItem }) {
   const f = item.flow;
-  return (
-    <div className="flow-lines">
-      {(f.kind === "node" || f.kind === "both") && (
-        <span title={nodeScopeLabel(item)}>
-          <i className="status-dot" />
-          {f.node_name || "名称未提供"}
-          {f.node_state_key && <small>{f.node_state_key}</small>}
-        </span>
-      )}
-      {(f.kind === "state" || f.kind === "both") && (
-        <span>
-          <i className="status-dot amber" />
-          状态 · {f.start_state_key_name || "未提供"}
-          {f.end_state_key_name && (
-            <>
-              <ArrowRight size={12} />
-              {f.end_state_key_name}
-            </>
-          )}
-        </span>
-      )}
-      {f.kind === "none" && <span className="muted">流程信息未提供</span>}
-    </div>
-  );
+  return <div className="flow-lines">
+    {(f.kind === "node" || f.kind === "both") && <span title={nodeScopeLabel(item)}>
+      <i className="status-dot" />{f.node_name || "名称未提供"}
+    </span>}
+    {(f.kind === "state" || f.kind === "both") && <span>
+      <i className="status-dot amber" />状态 · {f.start_state_key_name || "未提供"}
+      {f.end_state_key_name && <><ArrowRight size={12} />{f.end_state_key_name}</>}
+    </span>}
+    {f.kind === "none" && <span className="muted">流程信息未提供</span>}
+  </div>;
 }
 
 function Detail({
@@ -186,6 +172,8 @@ function Detail({
   busy,
   submit,
   compact = false,
+  displayContext,
+  displaySettingsEnabled,
 }: {
   item: CachedItem;
   close: () => void;
@@ -196,6 +184,8 @@ function Detail({
   busy: boolean;
   submit: (request: WorkflowRequest, actionLabel: string) => Promise<WorkflowResult | undefined>;
   compact?: boolean;
+  displayContext: string;
+  displaySettingsEnabled: boolean;
 }) {
   return (
     <aside className="detail" aria-label="事项详情">
@@ -225,10 +215,6 @@ function Detail({
         <p className="item-id">
           #{item.id.work_item_id} · {item.project_name || "空间名称未提供"}
         </p>
-        <div className="detail-section">
-          <h3>节点与状态</h3>
-          <Flow item={item} />
-        </div>
         {(item.schedule.start_raw || item.schedule.end_raw) && (
           <div className="detail-section">
             <h3>排期原文</h3>
@@ -241,26 +227,29 @@ function Detail({
             <p className="hint">时间单位尚未确认，保留飞书返回值。</p>
           </div>
         )}
-        <WorkItemDetails item={item} enabled={detailsAvailable} onRefreshed={onDetailRefreshed} />
+        <WorkItemDetails item={item} enabled={detailsAvailable} onRefreshed={onDetailRefreshed}
+          displayContext={displayContext} displaySettingsEnabled={displaySettingsEnabled}>
+          <details className="tech-info">
+            <summary>技术信息</summary>
+            <dl>
+              <dt>空间标识</dt>
+              <dd>{item.id.project_key || "未提供"}</dd>
+              <dt>类型标识</dt>
+              <dd>{item.id.work_item_type_key || "未提供"}</dd>
+              <dt>流程模型</dt>
+              <dd>{flowLabel[item.flow.kind]}</dd>
+              {item.flow.node_state_key && <><dt>节点标识</dt><dd>{item.flow.node_state_key}</dd></>}
+              <dt>最近取得</dt>
+              <dd>{localTime(item.last_seen_at_ms)}</dd>
+            </dl>
+          </details>
+        </WorkItemDetails>
         <Workflow
           item={item}
           available={workflowAvailable}
           busy={busy}
           submit={submit}
         />
-        <details className="detail-section tech-info">
-          <summary>技术信息</summary>
-          <dl>
-            <dt>空间标识</dt>
-            <dd>{item.id.project_key || "未提供"}</dd>
-            <dt>类型标识</dt>
-            <dd>{item.id.work_item_type_key || "未提供"}</dd>
-            <dt>流程模型</dt>
-            <dd>{flowLabel[item.flow.kind]}</dd>
-            <dt>最近取得</dt>
-            <dd>{localTime(item.last_seen_at_ms)}</dd>
-          </dl>
-        </details>
         {item.identity_missing_flags.length > 0 && (
           <p className="hint">
             部分身份字段未提供：{item.identity_missing_flags.join("、")}
@@ -1433,6 +1422,8 @@ function Workspace() {
       busy={workspaceActionBlocked("workflow", activity)}
       submit={submitWorkflow}
       compact={inCompact}
+      displayContext={JSON.stringify([credentialRevision, data?.settings?.endpoint, data?.db_path])}
+      displaySettingsEnabled={desktop && !!data?.capabilities?.detail_display}
     />
   );
 

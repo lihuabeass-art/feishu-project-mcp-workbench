@@ -27,6 +27,7 @@ use crate::paths;
 
 mod type_preferences;
 mod filter_schemes;
+mod detail_display;
 pub use type_preferences::{SourceTypePreferences, TypePreference, TypePreferences};
 mod creation_images;
 pub(crate) use creation_images::{CreationImage, CreationImageKey, UploadedCreationImageKey};
@@ -398,6 +399,7 @@ impl Store {
         tx.execute_batch(SCHEMA_V6)?;
         tx.execute_batch(type_preferences::SCHEMA)?;
         tx.execute_batch(filter_schemes::SCHEMA)?;
+        tx.execute_batch(detail_display::SCHEMA)?;
         tx.execute_batch(creation_images::SCHEMA)?;
         ensure_column(&tx, "creation_image", "uploaded_token", "TEXT")?;
         if version < 6 {
@@ -1896,6 +1898,7 @@ fn schema_is_current(conn: &Connection) -> Result<bool, BackendError> {
         ("source_type_disabled", &[][..]), ("item_cache_gc", &[][..]),
         ("source_type_preferences", &["preferences_json"][..]),
         ("filter_scheme_preferences", &["account_key", "document_json"][..]),
+        ("detail_display_preferences", &["account_key", "project_key", "type_key", "document_json"][..]),
         ("creation_people", &["context", "project_key", "user_key", "name"][..]),
         ("creation_image", &["context", "project_key", "type_key", "field_key", "image_id", "mime_type", "file_name", "bytes", "uploaded_url", "uploaded_token"][..]),
     ] {
