@@ -1072,6 +1072,7 @@ export function Workflow({
       !candidate.id.startsWith("node:progress:") &&
       !candidate.id.startsWith("node:schedule:"),
   );
+  const rollbackActions = flowActions?.filter((candidate) => candidate.id.startsWith("node:rollback:")) ?? [];
   const progressOnly = action?.id.startsWith("node:progress:") ?? false;
   const scheduleOnly = action?.id.startsWith("node:schedule:") ?? false;
   function syncFor(candidate: WorkflowAction, kind: "progress" | "schedule", source = options) {
@@ -1376,7 +1377,38 @@ export function Workflow({
               {flowActions?.length === 0 && (
                 <p className="hint">当前没有可执行的动作。</p>
               )}
-              {flowActions?.map((a) => (
+              {flowActions?.map((a) => {
+                if (rollbackActions.length > 1 && a.id.startsWith("node:rollback:")) {
+                  if (a.id !== rollbackActions[0].id) return null;
+                  return (
+                    <div className="workflow-option" key="rollback-actions">
+                      <Select
+                        ariaLabel="回滚节点"
+                        triggerLabel="回滚节点"
+                        value=""
+                        disabled={navigationLocked}
+                        options={rollbackActions.map((candidate) => ({
+                          value: candidate.id,
+                          label: `${candidate.label}${executing.has(draftKey(identity, candidate.id)) ? "（正在提交…）" : pendingDraftFor(candidate) ? "（上次提交结果待核实，请在飞书项目中核对）" : ""}${candidate.requires_feishu ? "（需在飞书填写并完成流程）" : candidate.disabled_reason ? `（${candidate.disabled_reason}）` : ""}`,
+                          disabled: executing.has(draftKey(identity, candidate.id)) ||
+                            (!!candidate.disabled_reason && !candidate.requires_feishu &&
+                              !syncFor(candidate, "progress") && !syncFor(candidate, "schedule")),
+                        }))}
+                        onChange={(id) => {
+                          const candidate = rollbackActions.find((entry) => entry.id === id);
+                          if (candidate) void selectAction(candidate);
+                        }}
+                      />
+                      {rollbackActions.filter((candidate) => actionOpenError?.id === candidate.id).map((candidate) => (
+                        <div className="workflow-recovery" key={candidate.id}>
+                          <p className="workflow-error" role="alert">{actionOpenError?.message}</p>
+                          {candidate.requires_feishu && validItemUrl(options?.item_url) && feishuLinkFor(candidate)}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                }
+                return (
                 <div className="workflow-option" key={a.id}>
                   <button
                     className="secondary"
@@ -1427,7 +1459,8 @@ export function Workflow({
                     </p>
                   )}
                 </div>
-              ))}
+                );
+              })}
               <button
                 className="text-button"
                 disabled={locked}

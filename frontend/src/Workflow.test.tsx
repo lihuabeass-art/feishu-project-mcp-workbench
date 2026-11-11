@@ -52,6 +52,53 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("多个回滚目标收拢到同一入口，选择后提交对应节点", async () => {
+  const rollbackOptions: WorkflowOptions = {
+    ...options,
+    actions: [options.actions[0], ...["设计", "开发"].map((name, index) => ({
+      id: `node:rollback:n${index}`,
+      label: `回滚节点「${name}」`,
+      kind: "node" as const,
+      fields: [{ key: "reason", label: "回滚原因", kind: "text" as const, required: true }],
+    }))],
+  };
+  vi.mocked(getWorkflowActions).mockResolvedValue(rollbackOptions);
+  const submit = vi.fn().mockResolvedValue(result);
+  const user = userEvent.setup();
+  render(<Workflow item={item()} available busy={false} submit={submit} />);
+
+  await user.click(await screen.findByRole("combobox", { name: "回滚节点" }));
+  await user.click(screen.getByRole("option", { name: "回滚节点「开发」" }));
+  await user.type(await screen.findByLabelText(/回滚原因/), "需要调整");
+  await user.click(screen.getByRole("button", { name: "提交" }));
+  expect((await screen.findByRole("region", { name: "提交前二次确认" })).textContent).toContain("回滚节点「开发」");
+  await user.click(screen.getByLabelText("我已核对填写内容，理解提交后的修改限制"));
+  await user.click(screen.getByRole("button", { name: "确认回滚节点" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0][0]).toMatchObject({ action_id: "node:rollback:n1", fields: { reason: "需要调整" } });
+});
+
+it("合并的回滚菜单提前说明需要去飞书完成的目标", async () => {
+  vi.mocked(getWorkflowActions).mockResolvedValue({
+    ...options,
+    actions: ["设计", "开发"].map((name, index) => ({
+      id: `node:rollback:n${index}`,
+      label: `回滚节点「${name}」`,
+      kind: "node" as const,
+      fields: [],
+      requires_feishu: index === 1,
+    })),
+  });
+  writeDraft(draftKey(itemKey(item()), "node:rollback:n1"), {
+    fields: {}, version: "v1", updated_at: 1,
+    pending: { item_id: item().id, action_id: "node:rollback:n1", version: "v1", fields: {}, request_id: "pending" },
+  });
+  const user = userEvent.setup();
+  render(<Workflow item={item()} available busy={false} submit={vi.fn()} />);
+  await user.click(await screen.findByRole("combobox", { name: "回滚节点" }));
+  expect(screen.getByRole("option", { name: "回滚节点「开发」（上次提交结果待核实，请在飞书项目中核对）（需在飞书填写并完成流程）" })).toBeTruthy();
+});
+
 it("系统负责人字段只读展示云端值，旧填写保留为本次不提交且确认仅发送可编辑字段", async () => {
   const readonlyOptions: WorkflowOptions = {
     ...options,
