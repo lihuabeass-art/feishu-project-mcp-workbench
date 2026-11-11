@@ -29,8 +29,8 @@
 .rule-options label { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 .remote-details, .remote-details dd { min-width: 0; overflow-wrap: anywhere; }
 .detail-freshness { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
-.detail-freshness-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-left: auto; }
-.detail-check-status { min-width: 0; }
+.detail-freshness-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; }
+.hint.detail-check-status { flex: 1 0 auto; min-width: 0; max-width: 100%; margin: 0; }
 .detail-refresh { color: var(--text-secondary); }
 .business-fields > div, .field-object dl > div { padding-block: 10px; border-bottom: 1px solid var(--line); }
 .field-text { white-space: pre-wrap; }
