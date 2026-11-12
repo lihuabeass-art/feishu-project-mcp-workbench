@@ -19,6 +19,7 @@ it("自动读取本机缺陷，筛选已知个人来源并打开缺陷", async (
   const open = vi.fn(), create = vi.fn(), user = userEvent.setup();
   render(<RelatedDefects item={item} canCreate open={open} create={create} revision="0" />);
   await screen.findByText("我的缺陷");
+  expect(screen.queryByText(/显示本机已同步的缺陷/)).toBeNull();
   expect(invoke).toHaveBeenCalledWith("list_related_defects", { itemId: item.id });
   await user.click(screen.getByRole("button", { name: "与我相关" }));
   expect(screen.queryByText("其他缺陷")).toBeNull();
@@ -28,11 +29,22 @@ it("自动读取本机缺陷，筛选已知个人来源并打开缺陷", async (
   expect(create).toHaveBeenCalledWith("relation");
 });
 
-it("关闭缺陷新建时不显示入口，并提示本机信息不完整", async () => {
+it("没有关联缺陷且关闭新建时隐藏整栏", async () => {
   vi.mocked(invoke).mockResolvedValue({ relation_field: "relation", items: [], mine_available: false, incomplete_details: 1 });
-  render(<RelatedDefects item={item} canCreate={false} open={vi.fn()} create={vi.fn()} revision="0" />);
-  await waitFor(() => expect(screen.getByText(/部分本机缺陷尚无完整关联信息/)).toBeTruthy());
-  expect(screen.queryByRole("button", { name: "＋ 新建缺陷" })).toBeNull();
+  const view = render(<RelatedDefects item={item} canCreate open={vi.fn()} create={vi.fn()} revision="0" />);
+  await screen.findByRole("button", { name: "＋ 新建缺陷" });
+  view.rerender(<RelatedDefects item={item} canCreate={false} open={vi.fn()} create={vi.fn()} revision="0" />);
+  expect(screen.queryByRole("region", { name: "关联缺陷" })).toBeNull();
+});
+
+it("没有关联缺陷但开启新建时只保留新建入口", async () => {
+  vi.mocked(invoke).mockResolvedValue({ relation_field: "relation", items: [], mine_available: false, incomplete_details: 1 });
+  const create = vi.fn();
+  render(<RelatedDefects item={item} canCreate open={vi.fn()} create={create} revision="0" />);
+  await userEvent.click(await screen.findByRole("button", { name: "＋ 新建缺陷" }));
+  expect(create).toHaveBeenCalledWith("relation");
+  expect(screen.queryByRole("group", { name: "关联缺陷筛选" })).toBeNull();
+  expect(screen.queryByText(/本机|同步/)).toBeNull();
 });
 
 it("已有同步改变本机内容时自动更新，开启新建后才提供入口", async () => {
