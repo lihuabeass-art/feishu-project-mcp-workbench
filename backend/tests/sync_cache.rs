@@ -562,6 +562,14 @@ async fn query_filters_cover_project_type_flow_text_and_identity_flags() {
     ]}))]);
     run_sync(&mut source, &store, &query(), 10).await.unwrap();
 
+    // 过滤共享流程时，使用事项来源的摘要而非个人节点上下文。
+    let run = store.begin_run("work_item_type", None, RunTrigger::Manual, Some("related"), 1).unwrap();
+    for raw in [item_named("F-1", Some("space_demo"), "story", "甲任务"),
+        item_named("F-2", Some("space_two"), "issue", "乙缺陷"),
+        item_named("F-3", None, "story", "丙任务")] {
+        let item = to_work_item(&fstodo_backend::model::raw::RawTodoRecord { item: serde_json::from_value(raw.clone()).unwrap(), raw }).unwrap();
+        store.upsert_items(run, &[item], 1).unwrap();
+    }
     let ids = |items: Vec<fstodo_backend::CachedItem>| -> Vec<String> {
         items.into_iter().map(|c| c.item.id.work_item_id).collect()
     };
@@ -583,7 +591,7 @@ async fn query_filters_cover_project_type_flow_text_and_identity_flags() {
     let row2 = store.query_items(&ItemFilter::default()).unwrap().into_iter().find(|c| c.item.id.work_item_id == "F-3").unwrap();
     assert!(row2.last_seen_at_ms > row.first_seen_at_ms, "第二次同步必须晚于首见时刻，这保证下一条断言可证伪");
     assert_eq!(row2.first_seen_at_ms, row.first_seen_at_ms, "首见时间一经写入不再改（若 UPSERT 覆盖，此刻已能被看出）");
-    assert_eq!(row2.seen_count, 2);
+    assert_eq!(row2.seen_count, 3);
 }
 
 #[tokio::test]

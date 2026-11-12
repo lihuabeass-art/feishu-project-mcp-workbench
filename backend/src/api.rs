@@ -664,12 +664,27 @@ fn cache_patch(before: &[CachedItem], after: &[CachedItem]) -> Result<Value, Bac
             None => added.push(row),
             Some(previous) if business(previous)? != business(row)? => {
                 modified.push(row);
-                // 旧缓存缺少节点排期时，首次补齐需要更新 UI，但不冒充远端业务变更。
+                // 旧缓存首次补齐个人节点上下文需要更新 UI，但不冒充远端业务变更。
+                let mut prior = business(previous)?;
                 let mut current = business(row)?;
+                prior.as_object_mut().unwrap().remove("personal_cache_errors");
+                current.as_object_mut().unwrap().remove("personal_cache_errors");
                 current["personal_schedules"] = serde_json::to_value(row.personal_schedules.iter()
                     .filter(|(source,_)| previous.personal_schedules.contains_key(*source))
                     .collect::<std::collections::BTreeMap<_,_>>())?;
-                if business(previous)? != current { updated_count += 1; }
+                current["personal_flows"] = serde_json::to_value(row.personal_flows.iter()
+                    .filter(|(source,_)| previous.personal_flows.contains_key(*source))
+                    .collect::<std::collections::BTreeMap<_,_>>())?;
+                // 任一侧损坏时无法比较，仅排除对应来源和字段。
+                for (source, fields) in previous.personal_cache_errors.iter().chain(row.personal_cache_errors.iter()) {
+                    for (field, key) in [("flow", "personal_flows"), ("schedule", "personal_schedules")] {
+                        if fields.iter().any(|f| f == field) {
+                            prior[key].as_object_mut().unwrap().remove(source);
+                            current[key].as_object_mut().unwrap().remove(source);
+                        }
+                    }
+                }
+                if prior != current { updated_count += 1; }
             },
             _ => {}
         }
@@ -885,6 +900,103 @@ mod sync_schedule_tests;
 #[cfg(test)]
 mod incremental_api_tests {
     use super::*;
+    #[test]
+    fn first_personal_flow_context_is_a_patch_not_a_business_change() {
+        let store = Store::in_memory().unwrap();
+        let raw = serde_json::json!({"project_key":"p","work_item_info":{"work_item_id":"1","work_item_type_key":"story"},"node_info":{"node_name":"节点"}});
+        let item = crate::model::domain::to_work_item(&crate::model::raw::RawTodoRecord { item: serde_json::from_value(raw.clone()).unwrap(), raw }).unwrap();
+        let run = store.begin_run("todo", None, RunTrigger::Manual, Some("a"), 1).unwrap();
+        store.upsert_items(run, &[item], 1).unwrap();
+        let after = store.query_items(&ItemFilter::default()).unwrap().remove(0);
+        let mut before = after.clone();
+        before.personal_flows.clear();
+        let patch = cache_patch(&[before.clone()], &[after.clone()]).unwrap();
+        assert_eq!(patch["modified"].as_array().unwrap().len(), 1);
+        assert_eq!(patch["updated_count"], 0);
+        let mut changed = after.clone();
+        changed.personal_flows.get_mut("a").unwrap().node_name = Some("新节点".into());
+        assert_eq!(cache_patch(&[after.clone()], &[changed]).unwrap()["updated_count"], 1);
+        let mut changed = after;
+        changed.item.name = Some("正文相关摘要变化".into());
+        assert_eq!(cache_patch(&[before], &[changed]).unwrap()["updated_count"], 1);
+    }
+    #[test]
+    fn cache_patch_distinguishes_corrupt_personal_cache_recovery_from_business_changes() {
+        let store = Store::in_memory().unwrap();
+        let raw = serde_json::json!({"project_key":"p","work_item_info":{
+            "work_item_id":"1","work_item_type_key":"story","work_item_name":"事项"},
+            "node_info":{"node_name":"节点","node_state_key":"dev"},
+            "schedule":{"start_time":"2026-10-19","end_time":"2026-10-23"}});
+        let item = crate::model::domain::to_work_item(&crate::model::raw::RawTodoRecord {
+            item: serde_json::from_value(raw.clone()).unwrap(), raw,
+        }).unwrap();
+        for source in ["damaged", "valid"] {
+            let run = store.begin_run("todo", None, RunTrigger::Manual, Some(source), 1).unwrap();
+            store.upsert_items(run, std::slice::from_ref(&item), 1).unwrap();
+        }
+        let recovered = store.query_items(&ItemFilter::default()).unwrap().remove(0);
+        for fields in [vec!["flow"], vec!["schedule"], vec!["flow", "schedule"], vec![]] {
+            let mut damaged = recovered.clone();
+            damaged.personal_cache_errors.insert("damaged".into(),
+                if fields.is_empty() { vec!["flow".into()] } else { fields.iter().map(|s| (*s).into()).collect() });
+            if fields.contains(&"flow") { damaged.personal_flows.remove("damaged"); }
+            if fields.contains(&"schedule") { damaged.personal_schedules.remove("damaged"); }
+            let patch = cache_patch(&[damaged.clone()], &[recovered.clone()]).unwrap();
+            assert_eq!(patch["updated_count"], 0, "{fields:?}");
+            assert_eq!(patch["modified"].as_array().unwrap().len(), 1);
+            assert_eq!(patch["modified"][0]["personal_cache_errors"], serde_json::json!({}));
+            let reverse = cache_patch(&[recovered.clone()], &[damaged.clone()]).unwrap();
+            assert_eq!(reverse["updated_count"], 0, "{fields:?}");
+            assert_eq!(reverse["modified"].as_array().unwrap().len(), 1);
+
+            let mut changed = recovered.clone();
+            changed.item.name = Some("新标题".into());
+            changed.detail_revision = Some("新正文".into());
+            assert_eq!(cache_patch(&[damaged.clone()], &[changed]).unwrap()["updated_count"], 1);
+            let mut changed_damaged = damaged.clone();
+            changed_damaged.item.name = Some("新标题".into());
+            changed_damaged.detail_revision = Some("新正文".into());
+            assert_eq!(cache_patch(&[recovered.clone()], &[changed_damaged]).unwrap()["updated_count"], 1);
+            for field in ["flow", "schedule"] {
+                let mut changed = recovered.clone();
+                if field == "flow" {
+                    changed.personal_flows.get_mut("valid").unwrap().node_name = Some("新节点".into());
+                } else {
+                    changed.personal_schedules.get_mut("valid").unwrap().start_raw = Some("新排期".into());
+                }
+                assert_eq!(cache_patch(&[damaged.clone()], &[changed]).unwrap()["updated_count"], 1, "{fields:?} {field}");
+                let mut changed_damaged = damaged.clone();
+                if field == "flow" { changed_damaged.personal_flows.get_mut("valid").unwrap().node_name = Some("新节点".into()); }
+                else { changed_damaged.personal_schedules.get_mut("valid").unwrap().start_raw = Some("新排期".into()); }
+                assert_eq!(cache_patch(&[recovered.clone()], &[changed_damaged]).unwrap()["updated_count"], 1, "{fields:?} {field}");
+            }
+        }
+        // 同一来源的另一个合法字段仍可比较；完整合法缓存的变化也要计数。
+        for damaged_field in ["flow", "schedule"] {
+            let mut before = recovered.clone();
+            before.personal_cache_errors.insert("damaged".into(), vec![damaged_field.into()]);
+            if damaged_field == "flow" { before.personal_flows.remove("damaged"); }
+            else { before.personal_schedules.remove("damaged"); }
+            let mut after = recovered.clone();
+            if damaged_field == "flow" {
+                after.personal_schedules.get_mut("damaged").unwrap().start_raw = Some("新排期".into());
+            } else {
+                after.personal_flows.get_mut("damaged").unwrap().node_name = Some("新节点".into());
+            }
+            assert_eq!(cache_patch(&[before], &[after]).unwrap()["updated_count"], 1);
+            let mut damaged = recovered.clone();
+            damaged.personal_cache_errors.insert("damaged".into(), vec![damaged_field.into()]);
+            if damaged_field == "flow" { damaged.personal_flows.remove("damaged"); damaged.personal_schedules.get_mut("damaged").unwrap().start_raw = Some("新排期".into()); }
+            else { damaged.personal_schedules.remove("damaged"); damaged.personal_flows.get_mut("damaged").unwrap().node_name = Some("新节点".into()); }
+            assert_eq!(cache_patch(&[recovered.clone()], &[damaged]).unwrap()["updated_count"], 1);
+        }
+        for field in ["flow", "schedule"] {
+            let mut after = recovered.clone();
+            if field == "flow" { after.personal_flows.get_mut("damaged").unwrap().node_name = Some("新节点".into()); }
+            else { after.personal_schedules.get_mut("damaged").unwrap().start_raw = Some("新排期".into()); }
+            assert_eq!(cache_patch(&[recovered.clone()], &[after]).unwrap()["updated_count"], 1);
+        }
+    }
     #[test]
     fn final_patch_reconciles_reverted_values_temporary_items_and_missed_batches_without_counting_them() {
         let store = Store::in_memory().unwrap();

@@ -184,6 +184,8 @@ pub struct CachedItem {
     pub current_node_names: Option<Vec<String>>,
     /// 待办接口的节点排期按来源保留，不能覆盖事项自身排期。
     pub personal_schedules: std::collections::BTreeMap<String, Schedule>,
+    /// 来源缓存解析失败的字段；不包含原始缓存内容。
+    pub personal_cache_errors: std::collections::BTreeMap<String, Vec<String>>,
     /// 飞书完整详情中的业务时间；不使用本地同步时间补齐。
     pub created_at_ms: Option<i64>,
     pub updated_at_ms: Option<i64>,
@@ -311,18 +313,18 @@ const SELECT_COLUMNS: &str = "project_key, work_item_type_key, work_item_id, ide
         AND d.type_key=work_item.work_item_type_key AND d.item_id=work_item.work_item_id), \
      (SELECT content_revision FROM item_detail d WHERE d.project_key=work_item.project_key \
         AND d.type_key=work_item.work_item_type_key AND d.item_id=work_item.work_item_id), \
-     (SELECT json_group_object(source_id,json(personal_flow_json)) FROM work_item_source s \
+     (SELECT json_group_object(source_id,personal_flow_json) FROM work_item_source s \
       WHERE s.project_key=work_item.project_key AND s.work_item_type_key=work_item.work_item_type_key \
         AND s.work_item_id=work_item.work_item_id AND personal_flow_json IS NOT NULL), \
      (SELECT related_projects_json FROM item_detail d WHERE d.project_key=work_item.project_key \
         AND d.type_key=work_item.work_item_type_key AND d.item_id=work_item.work_item_id), \
-     (SELECT json_group_object(source_id,json(personal_schedule_json)) FROM work_item_source s \
+     (SELECT json_group_object(source_id,personal_schedule_json) FROM work_item_source s \
       WHERE s.project_key=work_item.project_key AND s.work_item_type_key=work_item.work_item_type_key \
         AND s.work_item_id=work_item.work_item_id AND personal_schedule_json IS NOT NULL), \
-     (SELECT json_extract(snapshot_json, '$.data.work_item_current_node') FROM item_detail d \
+     (SELECT CASE WHEN json_valid(snapshot_json) THEN CASE WHEN json_type(snapshot_json, '$.data.work_item_current_node') = 'array' THEN json_extract(snapshot_json, '$.data.work_item_current_node') END END FROM item_detail d \
       WHERE d.project_key=work_item.project_key AND d.type_key=work_item.work_item_type_key \
         AND d.item_id=work_item.work_item_id), \
-     (SELECT json_extract(snapshot_json, '$.data.work_item_attribute.work_item_mod') FROM item_detail d \
+     (SELECT CASE WHEN json_valid(snapshot_json) THEN CASE WHEN json_type(snapshot_json, '$.data.work_item_attribute.work_item_mod') = 'text' THEN json_extract(snapshot_json, '$.data.work_item_attribute.work_item_mod') END END FROM item_detail d \
       WHERE d.project_key=work_item.project_key AND d.type_key=work_item.work_item_type_key \
         AND d.item_id=work_item.work_item_id)";
 
@@ -452,11 +454,16 @@ impl Store {
             };
             for (p,t,i,detail) in rows {
                 // 旧 raw_json 没有可靠的来源归属，不能据此复制节点排期；由各来源首次读取补齐。
-                let detail: crate::detail::ItemDetail = serde_json::from_str(&detail)?;
-                let schedule = work_item_from_summary(crate::detail::summary(&detail,serde_json::Value::Null))?.schedule;
-                tx.execute("UPDATE work_item SET schedule_start_raw=?4,schedule_end_raw=?5
-                    WHERE project_key=?1 AND work_item_type_key=?2 AND work_item_id=?3",
-                    params![p,t,i,schedule.start_raw,schedule.end_raw])?;
+                let canonical = serde_json::from_str::<crate::detail::ItemDetail>(&detail).ok()
+                    .filter(|detail| detail.id.key_tuple() == (p.clone(), t.clone(), i.clone()) && detail_has_summary_structure(detail))
+                    .and_then(|detail| work_item_from_summary(crate::detail::summary(&detail,serde_json::Value::Null)).ok());
+                if let Some(canonical) = canonical {
+                    tx.execute("UPDATE work_item SET schedule_start_raw=?4,schedule_end_raw=?5
+                        WHERE project_key=?1 AND work_item_type_key=?2 AND work_item_id=?3",
+                        params![p,t,i,canonical.schedule.start_raw,canonical.schedule.end_raw])?;
+                } else {
+                    tx.execute("UPDATE item_detail SET refresh_generation=refresh_generation + CASE WHEN refresh_required=0 THEN 1 ELSE 0 END, refresh_required=1 WHERE project_key=?1 AND type_key=?2 AND item_id=?3", params![p,t,i])?;
+                }
             }
         }
         tx.execute_batch("CREATE TABLE IF NOT EXISTS source_version_evidence (
@@ -772,32 +779,73 @@ impl Store {
                     seen_count             = seen_count + 1",
             )?;
 
-            let mut batch_latest = std::collections::HashMap::new();
+            let mut batch_latest: std::collections::HashMap<_, WorkItem> = std::collections::HashMap::new();
             for (item, probe_existed) in items.iter().zip(existing.iter()) {
                 let (p, t, i) = item.id.key_tuple();
                 let personal_flow = personal.then(||serde_json::to_string(&item.flow)).transpose()?;
                 let personal_schedule = personal.then(||serde_json::to_string(&item.schedule)).transpose()?;
+                let old_flow: Option<String> = tx.query_row("SELECT personal_flow_json FROM work_item_source
+                    WHERE source_id=?1 AND project_key=?2 AND work_item_type_key=?3 AND work_item_id=?4",
+                    params![source_id.as_deref().unwrap_or(""),p,t,i], |r|r.get(0)).optional()?.flatten();
+                let flow_changed = personal && old_flow.as_deref().and_then(|raw| {
+                    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+                    if !value.is_object() || !["kind", "node_name", "node_state_key", "start_state_key_name", "end_state_key_name"].iter().all(|key| value.get(key).is_some()) { return None; }
+                    serde_json::from_value::<crate::model::domain::FlowInfo>(value).ok()
+                }).is_some_and(|old| old != item.flow);
                 let old_schedule: Option<String> = tx.query_row("SELECT personal_schedule_json FROM work_item_source
                     WHERE source_id=?1 AND project_key=?2 AND work_item_type_key=?3 AND work_item_id=?4",
                     params![source_id.as_deref().unwrap_or(""),p,t,i], |r|r.get(0)).optional()?.flatten();
-                let schedule_changed = personal && old_schedule.as_ref().is_some_and(|old| Some(old) != personal_schedule.as_ref());
+                let schedule_changed = personal && old_schedule.as_deref().and_then(|raw| {
+                    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+                    if !value.is_object() || value.get("start_raw").is_none() || value.get("end_raw").is_none() { return None; }
+                    serde_json::from_value::<Schedule>(value).ok()
+                }).is_some_and(|old| old != item.schedule);
                 let mut effective = item.clone();
+                let mut fallback_shared = false;
                 if personal {
                     let raw: Option<String> = tx.query_row("SELECT snapshot_json FROM item_detail
                         WHERE project_key=?1 AND type_key=?2 AND item_id=?3 AND snapshot_json<>'null'",
                         params![p,t,i],|r|r.get(0)).optional()?;
-                    if let Some(raw) = raw {
-                        let detail: crate::detail::ItemDetail = serde_json::from_str(&raw)?;
-                        let summary = crate::detail::summary(&detail,serde_json::Value::Null);
-                        let canonical = work_item_from_summary(summary)?;
-                        effective.flow = canonical.flow;
-                        effective.schedule = canonical.schedule;
+                    {
+                        let canonical = raw.as_deref().and_then(|raw| serde_json::from_str::<crate::detail::ItemDetail>(raw).ok())
+                            .filter(|detail| detail.id.key_tuple() == item.id.key_tuple())
+                            .filter(detail_has_summary_structure)
+                            .and_then(|detail| work_item_from_summary(crate::detail::summary(&detail,serde_json::Value::Null)).ok());
+                        if let Some(canonical) = canonical {
+                            effective.flow = canonical.flow;
+                            effective.schedule = canonical.schedule;
+                        } else {
+                            fallback_shared = true;
+                            // 保留共享摘要；个人来源的节点排期不能充当事项排期。
+                            let key = (p.clone(), t.clone(), i.clone());
+                            if let Some(previous) = batch_latest.get(&key) {
+                                effective.flow = previous.flow.clone();
+                                effective.schedule = previous.schedule.clone();
+                            } else {
+                                let saved = tx.query_row("SELECT flow_kind,node_name,node_state_key,start_state_key_name,end_state_key_name,schedule_start_raw,schedule_end_raw FROM work_item WHERE project_key=?1 AND work_item_type_key=?2 AND work_item_id=?3", params![p,t,i], |r| {
+                                    Ok((crate::model::domain::FlowInfo { kind: FlowKind::parse(&r.get::<_, String>(0)?).unwrap_or(FlowKind::None), node_name:r.get(1)?, node_state_key:r.get(2)?, start_state_key_name:r.get(3)?, end_state_key_name:r.get(4)? }, Schedule { start_raw:r.get(5)?, end_raw:r.get(6)? }))
+                                }).optional()?;
+                                let (flow, schedule) = saved.unwrap_or((crate::model::domain::FlowInfo {
+                                    kind: FlowKind::None, node_name: None, node_state_key: None,
+                                    start_state_key_name: None, end_state_key_name: None,
+                                }, Schedule::default()));
+                                effective.flow = flow;
+                                effective.schedule = schedule;
+                            }
+                            tx.execute("UPDATE item_detail SET refresh_generation=refresh_generation + CASE WHEN refresh_required=0 THEN 1 ELSE 0 END, refresh_required=1 WHERE project_key=?1 AND type_key=?2 AND item_id=?3", params![p,t,i])?;
+                        }
                     }
                 }
                 let item = &effective;
                 // 同页重复身份按上一条实际写入的业务值比较。
                 let key = (p.clone(), t.clone(), i.clone());
-                let previous = batch_latest.insert(key, item.clone()).or_else(||probe_existed.clone());
+                let mut previous = batch_latest.insert(key, item.clone()).or_else(||probe_existed.clone());
+                if fallback_shared {
+                    if let Some(old) = previous.as_mut() {
+                        old.flow = item.flow.clone();
+                        old.schedule = item.schedule.clone();
+                    }
+                }
                 let unchanged = previous.as_ref() == Some(item);
                 let business_unchanged = previous.as_ref().is_some_and(|old| old.id == item.id
                     && old.project_name == item.project_name && old.name == item.name
@@ -822,7 +870,7 @@ impl Store {
                 tx.execute("DELETE FROM item_cache_gc WHERE project_key=?1 AND type_key=?2 AND item_id=?3",
                     params![p,t,i])?;
                 if previous.is_some() {
-                    if !business_unchanged || schedule_changed { stats.updated += 1; }
+                    if !business_unchanged || schedule_changed || flow_changed { stats.updated += 1; }
                 } else {
                     stats.inserted += 1;
                 }
@@ -1574,6 +1622,11 @@ impl Store {
     }
 }
 
+fn detail_has_summary_structure(detail: &crate::detail::ItemDetail) -> bool {
+    crate::detail::identity(&detail.data).is_ok_and(|id| id.key_tuple() == detail.id.key_tuple())
+        && detail.data.get("work_item_fields").is_some_and(|v| v.is_array())
+}
+
 fn work_item_from_summary(raw: serde_json::Value) -> Result<WorkItem, BackendError> {
     crate::model::domain::to_work_item(&crate::model::raw::RawTodoRecord {
         item:serde_json::from_value(raw.clone())?,raw,
@@ -1615,6 +1668,29 @@ fn detail_activity(detail: &crate::detail::ItemDetail) -> (Option<i64>, Option<i
 }
 
 fn map_cached_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedItem> {
+    fn decode_sources<T: serde::de::DeserializeOwned>(raw: String, field: &str, errors: &mut std::collections::BTreeMap<String, Vec<String>>) -> rusqlite::Result<std::collections::BTreeMap<String, T>> {
+        let entries: std::collections::BTreeMap<String, String> = serde_json::from_str(&raw)
+            .map_err(|error| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error)))?;
+        let mut values = std::collections::BTreeMap::new();
+        for (source, raw) in entries {
+            match serde_json::from_str::<serde_json::Value>(&raw).ok().filter(|value| {
+                value.is_object() && match field {
+                    "schedule" => ["start_raw", "end_raw"].iter().all(|key| value.get(key).is_some()),
+                    "flow" => ["kind", "node_name", "node_state_key", "start_state_key_name", "end_state_key_name"]
+                        .iter().all(|key| value.get(key).is_some()),
+                    _ => false,
+                }
+            })
+                .and_then(|value| serde_json::from_value(value).ok()) {
+                Some(value) => { values.insert(source, value); },
+                None => errors.entry(source).or_default().push(field.to_owned()),
+            }
+        }
+        Ok(values)
+    }
+    let mut personal_cache_errors = std::collections::BTreeMap::new();
+    let personal_flows = decode_sources(row.get(22)?, "flow", &mut personal_cache_errors)?;
+    let personal_schedules = decode_sources(row.get(24)?, "schedule", &mut personal_cache_errors)?;
     let flags: String = row.get(3)?;
     let current_nodes = row.get::<_, Option<String>>(25)?.map(|raw| {
         serde_json::from_str::<Vec<serde_json::Value>>(&raw).map_err(|error|
@@ -1670,10 +1746,9 @@ fn map_cached_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedItem> {
     Ok(CachedItem {
         item,
         current_node_names,
-        personal_flows: serde_json::from_str(&row.get::<_,String>(22)?).map_err(|error|
-            rusqlite::Error::FromSqlConversionFailure(22,rusqlite::types::Type::Text,Box::new(error)))?,
-        personal_schedules: serde_json::from_str(&row.get::<_,String>(24)?).map_err(|error|
-            rusqlite::Error::FromSqlConversionFailure(24,rusqlite::types::Type::Text,Box::new(error)))?,
+        personal_flows,
+        personal_schedules,
+        personal_cache_errors,
         created_at_ms: row.get(18)?,
         updated_at_ms: row.get(19)?,
         is_completed: row.get(20)?,
@@ -2284,6 +2359,157 @@ mod additive_migration_tests {
         assert_eq!(store.conn.lock().unwrap().query_row::<i64,_,_>("PRAGMA user_version",[],|row|row.get(0)).unwrap(),SCHEMA_VERSION);
     }
     #[test]
+    fn missing_detail_keeps_personal_context_out_of_shared_summary() {
+        for null_snapshot in [false, true] {
+            let store = Store::in_memory().unwrap();
+            let a = work_item_from_summary(serde_json::json!({"project_key":"p","work_item_info":{"work_item_id":"1","work_item_type_key":"story"},"node_info":{"node_name":"甲"},"schedule":{"start_time":"node-a"}})).unwrap();
+            let mut b = a.clone();
+            b.flow.node_name = Some("乙".into());
+            b.schedule.start_raw = Some("node-b".into());
+            if null_snapshot {
+                store.conn.lock().unwrap().execute("INSERT INTO item_detail(project_key,type_key,item_id,snapshot_json) VALUES ('p','story','1','null')", []).unwrap();
+            }
+            let ar = store.begin_run("todo", None, RunTrigger::Manual, Some("a"), 1).unwrap();
+            let br = store.begin_run("todo", None, RunTrigger::Manual, Some("b"), 1).unwrap();
+            for (run, item) in [(ar, &a), (br, &b), (br, &b), (ar, &a)] {
+                store.upsert_items(run, std::slice::from_ref(item), 1).unwrap();
+                let row = store.query_items(&ItemFilter::default()).unwrap().remove(0);
+                assert_eq!(row.item.flow.kind, FlowKind::None);
+                assert_eq!(row.item.schedule, Schedule::default());
+            }
+            let row = store.query_items(&ItemFilter::default()).unwrap().remove(0);
+            assert_eq!(row.personal_flows["a"], a.flow);
+            assert_eq!(row.personal_flows["b"], b.flow);
+            assert_eq!(row.personal_schedules["a"], a.schedule);
+            assert_eq!(row.personal_schedules["b"], b.schedule);
+            let mut related = a.clone();
+            related.flow.node_name = Some("事项节点".into());
+            related.schedule.start_raw = Some("item-start".into());
+            let rr = store.begin_run("work_item_type", None, RunTrigger::Manual, Some("related"), 1).unwrap();
+            store.upsert_items(rr, &[related.clone()], 2).unwrap();
+            for (run, item) in [(br, &b), (ar, &a), (rr, &related), (ar, &a), (br, &b)] {
+                assert_eq!(store.upsert_items(run, std::slice::from_ref(item), 3).unwrap().updated, 0);
+                let row = store.query_items(&ItemFilter::default()).unwrap().remove(0);
+                assert_eq!(row.item.flow, related.flow);
+                assert_eq!(row.item.schedule, related.schedule);
+                assert_eq!(row.personal_flows["a"], a.flow);
+                assert_eq!(row.personal_schedules["b"], b.schedule);
+            }
+        }
+    }
+    #[test]
+    fn damaged_detail_without_shared_item_does_not_promote_personal_schedule_and_sql_errors_propagate() {
+        let store = Store::in_memory().unwrap();
+        let item = work_item_from_summary(serde_json::json!({"project_key":"p","work_item_info":{"work_item_id":"1","work_item_type_key":"story"},"node_info":{"node_name":"个人节点"},"schedule":{"start_time":"node-start"}})).unwrap();
+        store.conn.lock().unwrap().execute("INSERT INTO item_detail(project_key,type_key,item_id,snapshot_json) VALUES ('p','story','1','{}')", []).unwrap();
+        let run = store.begin_run("todo",None,RunTrigger::Manual,Some("a"),1).unwrap();
+        store.upsert_items(run, &[item.clone()], 1).unwrap();
+        let row = store.query_items(&ItemFilter::default()).unwrap().remove(0);
+        assert_eq!(row.item.schedule, Schedule::default());
+        assert_eq!(row.item.flow.kind, FlowKind::None);
+        assert_eq!(row.personal_schedules["a"], item.schedule);
+        store.conn.lock().unwrap().execute_batch("CREATE TRIGGER fail_refresh BEFORE UPDATE ON item_detail BEGIN SELECT RAISE(ABORT, 'disk failure'); END;").unwrap();
+        assert!(store.upsert_items(run, &[item], 2).is_err());
+    }
+    #[test]
+    fn damaged_detail_preserves_shared_summary_and_recovers_personal_sources() {
+        for damaged in ["{broken", "{}", r#"{"id":{"project_key":"p","work_item_type_key":"story","work_item_id":"1"},"fetched_at_ms":1,"data":null,"pages":[]}"#, r#"{"id":{"project_key":"p","work_item_type_key":"story","work_item_id":"1"},"fetched_at_ms":1,"data":{},"pages":[]}"#, r#"{"id":{"project_key":"p","work_item_type_key":"story","work_item_id":"1"},"fetched_at_ms":1,"data":{"work_item_attribute":{},"work_item_fields":null},"pages":[]}"#, r#"{"id":{"project_key":"p","work_item_type_key":"story","work_item_id":"1"},"fetched_at_ms":1,"data":{"work_item_attribute":{},"work_item_fields":[]},"pages":[]}"#, r#"{"id":{"project_key":"p","work_item_type_key":"story","work_item_id":"1"},"fetched_at_ms":1,"data":{"work_item_attribute":{"owned_project":{"key":"other"},"work_item_type":{"key":"story"},"work_item_id":"1"},"work_item_fields":[]},"pages":[]}"#, r#"{"id":{"project_key":"p","work_item_type_key":"story","work_item_id":"2"},"fetched_at_ms":1,"data":{"work_item_attribute":{"owned_project":{"key":"p"},"work_item_type":{"key":"story"},"work_item_id":"2"},"work_item_fields":[]},"pages":[]}"#] {
+            let store = Store::in_memory().unwrap();
+            let raw = serde_json::json!({"project_key":"p","work_item_info":{"work_item_id":"1","work_item_type_key":"story","work_item_name":"事项"},"node_info":{"node_name":"甲"},"schedule":{"start_time":"node-a"}});
+            let a = work_item_from_summary(raw).unwrap();
+            let mut b = a.clone();
+            b.flow.node_name = Some("乙".into());
+            b.schedule.start_raw = Some("node-b".into());
+            let detail = crate::detail::ItemDetail { id:a.id.clone(), fetched_at_ms:1,
+                data:serde_json::json!({"work_item_attribute":{"owned_project":{"key":"p"},"work_item_type":{"key":"story"},"work_item_id":"1","work_item_name":"事项","work_item_mod":"状态流","work_item_status":{"name":"进行中"}},"work_item_fields":[{"key":"schedule","value":{"start_time":"item-start","end_time":"item-end"}}]}),
+                pages:vec![serde_json::json!({"pagination":{"has_more":false}})] };
+            store.save_item_detail_versioned(&detail, Some("v1")).unwrap();
+            let ar = store.begin_run("todo",None,RunTrigger::Manual,Some("a"),1).unwrap();
+            let br = store.begin_run("todo",None,RunTrigger::Manual,Some("b"),1).unwrap();
+            store.upsert_items(ar, &[a.clone()], 1).unwrap();
+            store.upsert_items(br, &[b.clone()], 1).unwrap();
+            let before = store.query_items(&ItemFilter::default()).unwrap().remove(0);
+            assert_eq!(before.item.schedule.start_raw.as_deref(), Some("item-start"));
+            store.conn.lock().unwrap().execute("UPDATE item_detail SET snapshot_json=?1", [damaged]).unwrap();
+            assert_eq!(store.upsert_items(ar, &[a.clone()], 2).unwrap().updated, 0);
+            assert_eq!(store.upsert_items(br, &[b.clone()], 2).unwrap().updated, 0);
+            let row = store.query_items(&ItemFilter::default()).unwrap().remove(0);
+            assert_eq!(row.item.flow, before.item.flow);
+            assert_eq!(row.item.schedule, before.item.schedule);
+            assert_eq!(row.personal_schedules["a"], a.schedule);
+            assert_eq!(row.personal_schedules["b"], b.schedule);
+            assert_eq!(row.personal_flows["a"], a.flow);
+            assert_eq!(row.personal_flows["b"], b.flow);
+            store.conn.lock().unwrap().execute("UPDATE work_item_source SET personal_schedule_json='{broken' WHERE source_id='a'", []).unwrap();
+            assert_eq!(store.upsert_items(ar, &[a.clone()], 2).unwrap().updated, 0);
+            let (snapshot, refresh): (String, i64) = store.conn.lock().unwrap().query_row("SELECT snapshot_json,refresh_required FROM item_detail", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+            assert_eq!(snapshot, damaged);
+            assert_eq!(refresh, 1);
+            assert!(store.detail_versions(&[a.id.clone()]).unwrap()[&a.id.key_tuple()].version.is_none());
+            b.schedule.start_raw = Some("node-b-changed".into());
+            assert_eq!(store.upsert_items(br, &[b.clone()], 3).unwrap().updated, 1);
+            store.save_item_detail_versioned(&detail, Some("v2")).unwrap();
+            assert_eq!(store.upsert_items(ar, &[a.clone()], 4).unwrap().updated, 0);
+            assert_eq!(store.query_items(&ItemFilter::default()).unwrap()[0].item.schedule, before.item.schedule);
+            assert_eq!(store.detail_versions(&[a.id.clone()]).unwrap()[&a.id.key_tuple()].version.as_deref(), Some("v2"));
+            let mut cleared = detail.clone();
+            cleared.data["work_item_fields"] = serde_json::json!([]);
+            store.save_item_detail_versioned(&cleared, Some("v3")).unwrap();
+            assert_eq!(store.upsert_items(ar, &[a.clone()], 5).unwrap().updated, 1);
+            let row = store.query_items(&ItemFilter::default()).unwrap().remove(0);
+            assert_eq!(row.item.schedule, Schedule::default());
+            assert_eq!(row.personal_schedules["a"], a.schedule);
+            assert_eq!(row.personal_schedules["b"], b.schedule);
+        }
+    }
+    #[test]
+    fn summary_structure_requires_matching_complete_identity_and_fields_array() {
+        let id = WorkItemId { project_key: Some("p".into()), work_item_type_key: Some("story".into()), work_item_id: "1".into() };
+        let mut detail = crate::detail::ItemDetail { id, fetched_at_ms: 1, data: serde_json::json!({
+            "work_item_attribute": {"owned_project":{"key":"p"}, "work_item_type":{"key":"story"}, "work_item_id":1},
+            "work_item_fields": []
+        }), pages: vec![] };
+        assert!(detail_has_summary_structure(&detail));
+        detail.data["work_item_fields"] = serde_json::Value::Null;
+        assert!(!detail_has_summary_structure(&detail));
+        detail.data["work_item_fields"] = serde_json::json!([]);
+        for (field, wrong) in [("owned_project", serde_json::json!({"key":"q"})),
+            ("work_item_type", serde_json::json!({"key":"bug"})), ("work_item_id", serde_json::json!(2))] {
+            let original = detail.data["work_item_attribute"][field].clone();
+            detail.data["work_item_attribute"][field] = wrong;
+            assert!(!detail_has_summary_structure(&detail), "{field}");
+            detail.data["work_item_attribute"][field] = original;
+        }
+    }
+    #[test]
+    fn incomplete_personal_flow_is_reported_and_first_repair_is_not_a_change() {
+        let store = Store::in_memory().unwrap();
+        let a = work_item_from_summary(serde_json::json!({"project_key":"p","work_item_info":{"work_item_id":"1","work_item_type_key":"story"},"node_info":{"node_name":"甲"},"schedule":{"start_time":"node-a"}})).unwrap();
+        let mut b = a.clone();
+        b.flow.node_name = Some("乙".into());
+        b.schedule.start_raw = Some("node-b".into());
+        let detail = crate::detail::ItemDetail { id:a.id.clone(), fetched_at_ms:1, data:serde_json::json!({"work_item_attribute":{"owned_project":{"key":"p"},"work_item_type":{"key":"story"},"work_item_id":"1"},"work_item_fields":[]}), pages:vec![] };
+        store.save_item_detail(&detail).unwrap();
+        let ar = store.begin_run("todo",None,RunTrigger::Manual,Some("a"),1).unwrap();
+        let br = store.begin_run("todo",None,RunTrigger::Manual,Some("b"),1).unwrap();
+        store.upsert_items(ar, &[a.clone()], 1).unwrap();
+        store.upsert_items(br, &[b.clone()], 1).unwrap();
+        for bad in [r#"{"kind":"node"}"#, r#"{"kind":"none","node_name":null,"node_state_key":null,"start_state_key_name":null}"#] {
+            store.conn.lock().unwrap().execute("UPDATE work_item_source SET personal_flow_json=?1 WHERE source_id='a'", [bad]).unwrap();
+            let row = store.query_items(&ItemFilter::default()).unwrap().remove(0);
+            assert_eq!(row.personal_cache_errors["a"], vec!["flow"]);
+            assert!(!row.personal_flows.contains_key("a"));
+            assert_eq!(row.personal_flows["b"], b.flow);
+            assert_eq!(store.upsert_items(ar, &[a.clone()], 2).unwrap().updated, 0);
+            assert!(store.query_items(&ItemFilter::default()).unwrap()[0].personal_cache_errors.is_empty());
+        }
+        let mut cleared = detail.clone();
+        cleared.data["work_item_fields"] = serde_json::json!([]);
+        store.save_item_detail(&cleared).unwrap();
+        assert_eq!(store.upsert_items(ar, &[a], 3).unwrap().updated, 0);
+        assert_eq!(store.query_items(&ItemFilter::default()).unwrap()[0].item.schedule, Schedule::default());
+    }
+    #[test]
     fn v14_does_not_copy_unattributed_node_schedule_between_personal_sources() {
         let store=Store::in_memory().unwrap();
         let raw=serde_json::json!({"project_key":"p","work_item_info":{
@@ -2291,7 +2517,7 @@ mod additive_migration_tests {
             "schedule":{"start_time":"2026-10-19","end_time":"2026-10-23"}});
         let personal=work_item_from_summary(raw).unwrap();
         let detail=crate::detail::ItemDetail { id:personal.id.clone(),fetched_at_ms:1,
-            data:serde_json::json!({"work_item_attribute":{},"work_item_fields":[]}),pages:vec![] };
+            data:serde_json::json!({"work_item_attribute":{"owned_project":{"key":"p"},"work_item_type":{"key":"story"},"work_item_id":"1"},"work_item_fields":[]}),pages:vec![] };
         store.save_item_detail(&detail).unwrap();
         let run=store.begin_run("todo",None,RunTrigger::Manual,Some("personal"),1).unwrap();
         store.upsert_items(run,&[personal.clone()],1).unwrap();
@@ -2313,6 +2539,25 @@ mod additive_migration_tests {
         assert_eq!(rows[0].personal_schedules["personal"],personal.schedule);
         assert_eq!(rows[0].personal_schedules["another-personal"],another.schedule);
         assert_eq!(rows[0].item.schedule,Schedule::default());
+    }
+    #[test]
+    fn v14_damaged_detail_preserves_shared_schedule_and_requests_refresh() {
+      for data in [serde_json::Value::Null,
+          serde_json::json!({"work_item_attribute":{},"work_item_fields":[]}),
+          serde_json::json!({"work_item_attribute":{"owned_project":{"key":"p"},"work_item_type":{"key":"other"},"work_item_id":"1"},"work_item_fields":[]})] {
+        let store = Store::in_memory().unwrap();
+        let item = work_item_from_summary(serde_json::json!({"project_key":"p","work_item_info":{"work_item_id":"1","work_item_type_key":"story"},"node_info":{"node_name":"saved-node"},"schedule":{"start_time":"saved"}})).unwrap();
+        let run = store.begin_run("work_item_type",None,RunTrigger::Manual,None,1).unwrap();
+        store.upsert_items(run, &[item.clone()], 1).unwrap();
+        let detail = crate::detail::ItemDetail { id:item.id.clone(), fetched_at_ms:1, data, pages:vec![] };
+        store.save_item_detail(&detail).unwrap();
+        store.conn.lock().unwrap().execute_batch("PRAGMA user_version=14;").unwrap();
+        store.init().unwrap();
+        assert_eq!(store.query_items(&ItemFilter::default()).unwrap()[0].item.schedule, item.schedule);
+        assert_eq!(store.query_items(&ItemFilter::default()).unwrap()[0].item.flow, item.flow);
+        let refresh: i64 = store.conn.lock().unwrap().query_row("SELECT refresh_required FROM item_detail", [], |r| r.get(0)).unwrap();
+        assert_eq!(refresh, 1);
+      }
     }
     #[test]
     fn v13_cache_backfills_projects_without_changing_identity_or_snapshot() {
