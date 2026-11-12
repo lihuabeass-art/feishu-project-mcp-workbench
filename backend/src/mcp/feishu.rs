@@ -359,6 +359,7 @@ impl TodoSource for FeishuMcp {
             let client = self.clone();
             let owned_tool = tool.to_owned();
             let arguments = arguments.clone();
+            super::record_schedule_rpc();
             // 调用方取消后，已发请求仍由独立任务持有名额，直到响应或有界超时清理完成。
             let (result, throttle, execution_ms) = crate::diagnostics::spawn(async move {
                 let tool = owned_tool.as_str();
@@ -872,8 +873,11 @@ mod tests {
                 "content":[],"isError":true,"structuredContent":{"code":429,"message":"Too many requests","retry_after":2}
             }), calls.clone()).await));
             let started = tokio::time::Instant::now();
-            let result = client.call_tool(tool, &Map::new()).await.unwrap();
+            let rpc_count = Arc::new(AtomicUsize::new(0));
+            let args = Map::new();
+            let result = crate::mcp::count_schedule_rpcs(rpc_count.clone(), client.call_tool(tool, &args)).await.unwrap();
             assert_eq!(calls.load(Ordering::SeqCst), expected);
+            assert_eq!(rpc_count.load(Ordering::SeqCst), expected);
             assert_eq!(result.is_error, expected == 1);
             if expected == 2 {
                 assert!(started.elapsed() >= Duration::from_secs(2));

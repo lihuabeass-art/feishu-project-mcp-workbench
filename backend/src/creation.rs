@@ -150,12 +150,18 @@ fn current_user(session: &Session) -> Result<CurrentUser, BackendError> {
     Ok(CurrentUser { key, name })
 }
 fn account_context(session: &Session, user: &CurrentUser) -> String {
+    account_context_for_key(session, &user.key).expect("current user identity was validated")
+}
+pub(crate) fn account_context_for_key(session: &Session, key: &str) -> Option<String> {
+    if key.trim().is_empty() {
+        return None;
+    }
     // 同一账号轮换 Token 不丢待核验记录；本机数据库分别保存草稿与动作台账。
-    digest(&(
+    Some(digest(&(
         session.config.endpoint.as_str(),
-        &user.key,
+        key,
         &session.config.db_path,
-    ))
+    )))
 }
 pub(crate) fn account(session: &Session) -> Result<String, BackendError> {
     Ok(account_context(session, &current_user(session)?))

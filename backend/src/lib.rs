@@ -31,6 +31,7 @@ pub mod field_images;
 pub mod link_metadata;
 pub mod source_query;
 pub mod related_defects;
+pub mod schedule;
 pub mod config;
 pub mod credentials;
 pub mod creation;

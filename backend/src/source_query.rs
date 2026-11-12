@@ -460,6 +460,20 @@ impl TodoSource for SourceReader<'_> {
 }
 
 impl SourceReader<'_> {
+    /// 只取本轮来源原始页，不使用详情缓存，也不更新共享缓存。
+    pub(crate) async fn schedule_page(&self, args: &Map<String, Value>) -> Result<(Vec<Value>, Option<i64>), BackendError> {
+        let payload = self.measured_check().call_list_todo(args).await?;
+        let value = parse_tool_json("list_todo", &payload)?;
+        let rows = if let Some(rows) = value.as_array() { rows.clone() } else {
+            value["list"].as_array().ok_or_else(|| BackendError::parse("个人待办", "缺少 list 数组"))?.clone()
+        };
+        let total = match value.get("total") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_i64().or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+                .filter(|number| *number >= 0).ok_or_else(|| BackendError::parse("个人待办", "分页总数无效"))?),
+        };
+        Ok((rows, total))
+    }
     async fn query_page(&self, args: &Map<String, Value>) -> Result<RawPage, BackendError> {
         let page = args.get("page_num").and_then(Value::as_u64).unwrap_or(1) as u32;
         let _query_timer = self.metrics.phase(true);

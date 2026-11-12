@@ -27,6 +27,14 @@ mod http;
 
 pub use parse::{parse_todo_page, parse_tool_json};
 
+tokio::task_local! { static SCHEDULE_RPC_COUNT: std::sync::Arc<std::sync::atomic::AtomicUsize>; }
+pub(crate) async fn count_schedule_rpcs<F: std::future::Future>(count: std::sync::Arc<std::sync::atomic::AtomicUsize>, future: F) -> F::Output {
+    SCHEDULE_RPC_COUNT.scope(count, future).await
+}
+pub(crate) fn record_schedule_rpc() {
+    let _ = SCHEDULE_RPC_COUNT.try_with(|count| { count.fetch_add(1, std::sync::atomic::Ordering::Relaxed); });
+}
+
 /// `tools/call` 返回载荷的 SDK 无关表示。
 ///
 /// MCP 允许工具把结果放在 `structuredContent` 或 `content[]` 文本块里，

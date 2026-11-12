@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { AppVersion } from "./AppVersion";
 import { AppUpdateDialog, AppUpdateSettings } from "./AppUpdater";
 import { useAppUpdater } from "./useAppUpdater";
+import { SchedulePage } from "./SchedulePage";
 import { prepareUpdateInstallation } from "./appUpdateSafety";
 import { workspaceActionBlocked, type WorkspaceActivity } from "./operationPolicy";
 import {
@@ -10,6 +11,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bug,
+  CalendarDays,
   Check,
   ChevronRight,
   CircleHelp,
@@ -109,7 +111,7 @@ import {
   saveSyncPolicies,
 } from "./syncPolicy";
 
-type View = "work" | "sources" | "settings";
+type View = "work" | "sources" | "schedule" | "settings";
 type Notice = { tone: "success" | "warning"; text: string };
 type WorkflowReport = { item: string; action: string; message: string; error?: AppError };
 function WorkflowSuccessToast({ id, report, dismiss }: { id: string; report: WorkflowReport; dismiss: (id: string, report: WorkflowReport) => void }) {
@@ -286,6 +288,46 @@ function Workspace() {
   const desktopSettings = useDesktopSettings();
   const [data, setData] = useState<Snapshot | null>(null);
   const [view, setView] = useState<View>("work");
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const [scheduleGuard, setScheduleGuard] = useState({ dirty: false, busy: false, uncertain: false });
+  const scheduleGuardRef = useRef(scheduleGuard);
+  const [scheduleExit, setScheduleExit] = useState<{ action?: () => void } | null>(null);
+  const updateScheduleGuard = useCallback((guard: typeof scheduleGuard) => { scheduleGuardRef.current = guard; setScheduleGuard(guard); }, []);
+  const requestScheduleExit = useCallback((action: () => void) => {
+    const guard = scheduleGuardRef.current;
+    if (guard.busy) { setScheduleExit({}); return; }
+    if (guard.dirty || guard.uncertain) { setScheduleExit({ action }); return; }
+    action();
+  }, []);
+  const navigate = (next: View, after?: () => void) => {
+    const action = () => { if (view === "schedule" && next !== "schedule") updateScheduleGuard({ dirty: false, busy: false, uncertain: false }); setView(next); after?.(); };
+    if (view === "schedule" && next !== "schedule") requestScheduleExit(action); else action();
+  };
+  useEffect(() => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      const guard = scheduleGuardRef.current;
+      if (guard.busy || guard.dirty || guard.uncertain) { event.preventDefault(); event.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    if (!desktop) return () => window.removeEventListener("beforeunload", beforeUnload);
+    let disposed = false;
+    let unlisten: (() => void | Promise<void>) | undefined;
+    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      const appWindow = getCurrentWindow();
+      const stop = await appWindow.onCloseRequested((event) => {
+        // Tauri's helper otherwise calls window.destroy(), which needs an extra
+        // capability. Remove this listener before the existing close command.
+        event.preventDefault();
+        const guard = scheduleGuardRef.current;
+        const close = () => { void (async () => { await unlisten?.(); unlisten = undefined; await invoke("window_action", { action: "close" }); })(); };
+        if (!guard.busy && !guard.dirty && !guard.uncertain) close();
+        else requestScheduleExit(close);
+      });
+      if (disposed) stop(); else unlisten = stop;
+    }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); window.removeEventListener("beforeunload", beforeUnload); };
+  }, [requestScheduleExit]);
   const [loading, setLoading] = useState(true);
   const [contextOperation, setContextOperation] = useState<
     "save" | "settings" | "update" | null
@@ -362,14 +404,16 @@ function Workspace() {
   const orderRef = useRef(false);
   const workflowRef = useRef(false);
   const creationRef = useRef(false);
-  const activity: WorkspaceActivity = { context: !!contextOperation, sync: syncBusy, check: checkBusy,
+  const activity: WorkspaceActivity = { context: !!contextOperation || scheduleGuard.busy, sync: syncBusy, check: checkBusy,
     discovery: discoveryBusy, order: orderBusy, workflow: workflowBusy, creation: creationBusy };
-  const currentActivity = (): WorkspaceActivity => ({ context: contextRef.current, sync: syncRef.current,
+  const currentActivity = (): WorkspaceActivity => ({ context: contextRef.current || scheduleGuardRef.current.busy, sync: syncRef.current,
     check: checkRef.current, discovery: discoveryRef.current, order: orderRef.current,
     workflow: workflowRef.current, creation: creationRef.current });
   const contextChangeDisabled = workspaceActionBlocked("context", activity) || loading;
   const creationDisabled = workspaceActionBlocked("creation", activity) || loading;
   const updater = useAppUpdater({ prepareInstall: () => {
+    if (scheduleGuardRef.current.busy || scheduleGuardRef.current.dirty || scheduleGuardRef.current.uncertain)
+      throw new Error(scheduleGuardRef.current.busy ? "排期正在同步，请等待本次结果。" : "事项安排有未同步的编辑，请先处理后再安装更新。");
     if (workspaceActionBlocked("context", currentActivity()))
       throw new Error("当前操作尚未结束，请先关闭新建窗口，并等待同步、保存或流程提交完成后再安装。");
     return prepareUpdateInstallation({
@@ -610,13 +654,14 @@ function Workspace() {
       if (event.key === "Escape") setSelectedKey(null);
       if ((event.ctrlKey || event.metaKey) && event.key === "k" && !compactRef.current) {
         event.preventDefault();
-        setView("work");
-        setSearchFocusRequest((value) => value + 1);
+        if (scheduleGuardRef.current.busy || scheduleGuardRef.current.dirty || scheduleGuardRef.current.uncertain)
+          requestScheduleExit(() => { setView("work"); setSearchFocusRequest((value) => value + 1); });
+        else { setView("work"); setSearchFocusRequest((value) => value + 1); }
       }
     };
     window.addEventListener("keydown", handle);
     return () => window.removeEventListener("keydown", handle);
-  }, []);
+  }, [requestScheduleExit]);
   useEffect(() => {
     if (searchFocusRequest) searchRef.current?.focus();
   }, [searchFocusRequest]);
@@ -672,6 +717,7 @@ function Workspace() {
   }, [policies]);
   const automaticReady =
     desktop &&
+    view !== "schedule" &&
     !!data?.credential_ready &&
     !!data?.sources.some((s) => (incremental || s.id === sourceId || (sourceId === "*" && data.capabilities?.source_queries)) && s.executable) &&
     !loading;
@@ -802,6 +848,7 @@ function Workspace() {
   }
 
   async function run(action: "sync" | "check", automatic = false, requestedIds?: string[], afterWrite = false): Promise<AppError | null | undefined> {
+    if (automatic && viewRef.current === "schedule") return;
     const ids = requestedIds || (incremental
       ? sourceId === "*" ? enabledIds : enabledIds.filter((id) => id === sourceId)
       : [sourceId]);
@@ -1334,9 +1381,7 @@ function Workspace() {
   const source = sourceId === "*" && data?.capabilities?.source_queries ? {id:"*",kind:"all_sources",enabled:true,executable:data.sources.some(s=>s.executable),reason:null,action:null,todo_scope:null} : data?.sources.find((s) => s.id === sourceId);
   const changeType = (nextType: string) => {
     if (view !== "work") {
-      setPendingType(null);
-      setType(nextType ? [nextType] : []);
-      setView("work");
+      navigate("work", () => { setPendingType(null); setType(nextType ? [nextType] : []); });
     } else {
       setPendingType(nextType);
     }
@@ -1475,6 +1520,7 @@ function Workspace() {
         <WorkflowSuccessToast key={id} id={id} report={result} dismiss={dismissWorkflowReport} />
       ))}
     </div>
+    {scheduleExit && <div className="schedule-dialog-backdrop"><div className="schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="schedule-exit-title" onKeyDown={(event) => { if (event.key === "Escape") setScheduleExit(null); }}><h2 id="schedule-exit-title">{!scheduleExit.action || scheduleGuard.busy ? "排期同步" : "未同步的编辑内容即将丢失"}</h2><p>{scheduleGuard.busy ? "排期正在同步，请等待本次结果。" : !scheduleExit.action ? "同步已结束，请关闭提示后重新操作。" : "离开后将丢弃本次会话中的编辑。"}</p>{scheduleGuard.uncertain && <p>部分排期可能已保存，请在飞书核对。</p>}<div><button autoFocus className="secondary" onClick={() => setScheduleExit(null)}>{!scheduleExit.action || scheduleGuard.busy ? "知道了" : "继续编辑"}</button>{scheduleExit.action && !scheduleGuard.busy && <button className="primary" onClick={() => { if (scheduleGuardRef.current.busy) return; const action = scheduleExit.action; setScheduleExit(null); updateScheduleGuard({ dirty: false, busy: false, uncertain: false }); action?.(); }}>放弃并继续</button>}</div></div></div>}
     {compact && (
       <CompactWorkspace
         items={compactItems}
@@ -1546,8 +1592,7 @@ function Workspace() {
           <button
             className={view === "work" ? "nav-item active" : "nav-item"}
             onClick={() => {
-              setView("work");
-              resetWorkFilters();
+              navigate("work", resetWorkFilters);
             }}
           >
             <Inbox size={18} />
@@ -1555,11 +1600,12 @@ function Workspace() {
           </button>
           <button
             className={view === "sources" ? "nav-item active" : "nav-item"}
-            onClick={() => setView("sources")}
+            onClick={() => navigate("sources")}
           >
             <Layers3 size={18} />
             工作来源
           </button>
+          <button className={view === "schedule" ? "nav-item active" : "nav-item"} disabled={view !== "schedule" && (syncBusy || checkBusy || workflowBusy || creationBusy || !!contextOperation)} onClick={() => navigate("schedule")}><CalendarDays size={18} />事项安排</button>
         </nav>
         <div className="sidebar-divider" />
         <div className="workspace-label" id="type-nav-label">
@@ -1604,7 +1650,7 @@ function Workspace() {
         <div className="sidebar-bottom">
           <button
             className={view === "settings" ? "nav-item active" : "nav-item"}
-            onClick={() => setView("settings")}
+            onClick={() => navigate("settings")}
           >
             <Settings2 size={17} />
             连接与配置
@@ -1623,6 +1669,8 @@ function Workspace() {
               ? "我的工作"
               : view === "sources"
                 ? "工作来源"
+                : view === "schedule"
+                  ? "事项安排"
                 : "连接与配置"}
           </span>
           <div className="topbar-actions">
@@ -1638,8 +1686,8 @@ function Workspace() {
               title="切换到清单模式"
               disabled={displayMode.busy}
               onClick={() => {
-                setSelectedKey(null);
-                displayMode.change("compact");
+                const action = () => { setSelectedKey(null); displayMode.change("compact"); setView("work"); };
+                if (view === "schedule") requestScheduleExit(action); else action();
               }}
             >
               <PictureInPicture2 size={16} />
@@ -1654,6 +1702,8 @@ function Workspace() {
             </div>
           )}
           {!compact && alerts}
+
+          {view === "schedule" && !compact && <SchedulePage snapshot={data} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit} />}
 
           {view === "work" && (
             <>

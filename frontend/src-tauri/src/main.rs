@@ -21,10 +21,66 @@ use fstodo_backend::workflow::{self, WorkflowOptions, WorkflowRequest, WorkflowR
 use serde::Serialize;
 use tauri::{Manager, Emitter};
 
+// 排期基线与不确定写保护只存本进程；锁同时阻止重新读取覆盖在途写入。
+static SCHEDULE_SESSION: std::sync::Mutex<Option<fstodo_backend::schedule::ScheduleSession>> = std::sync::Mutex::new(None);
+
+fn lock_schedule<T>(mutex: &std::sync::Mutex<Option<T>>) -> Result<std::sync::MutexGuard<'_, Option<T>>, BackendError> {
+    match mutex.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(std::sync::TryLockError::WouldBlock) => Err(BackendError::conflict("排期正在同步或读取，请稍候")),
+        Err(std::sync::TryLockError::Poisoned(_)) => Err(BackendError::conflict("上次排期任务中断，结果可能不确定，请先在飞书核对并结束当前会话")),
+    }
+}
+
+fn close_schedule<T>(mutex: &std::sync::Mutex<Option<T>>, matches: impl FnOnce(&T) -> bool) -> Result<(), BackendError> {
+    let mut guard = match mutex.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => return Err(BackendError::conflict("排期正在同步，请等待本次结果")),
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+    };
+    if guard.as_ref().is_some_and(|s| !matches(s)) {
+        return Err(BackendError::conflict("排期会话已变化，请重新读取"));
+    }
+    *guard = None;
+    mutex.clear_poison();
+    Ok(())
+}
+
+#[tauri::command]
+async fn load_schedule_session() -> Result<fstodo_backend::schedule::LoadResult, UiError> {
+    blocking(|| {
+        let mut guard = lock_schedule(&SCHEDULE_SESSION)?;
+        if guard.is_some() { return Err(BackendError::conflict("请先结束当前排期会话，再重新读取")); }
+        let session = open_session()?;
+        let schedule = fstodo_backend::schedule::ScheduleSession::load(&session)?;
+        let view = schedule.view.clone();
+        *guard = Some(schedule);
+        Ok(view)
+    }).await
+}
+
+#[tauri::command]
+async fn sync_schedule_session(session_id: String, changes: Vec<fstodo_backend::schedule::Change>) -> Result<fstodo_backend::schedule::SyncResult, UiError> {
+    blocking_schedule_sync(move || {
+        let mut guard = lock_schedule(&SCHEDULE_SESSION)?;
+        let schedule = guard.as_mut().ok_or_else(|| BackendError::conflict("排期会话已结束，请重新读取"))?;
+        schedule.sync(&open_session()?, &session_id, changes)
+    }).await
+}
+
+#[tauri::command]
+async fn close_schedule_session(session_id: String) -> Result<(), UiError> {
+    blocking(move || {
+        close_schedule(&SCHEDULE_SESSION, |s| s.view.session_id == session_id)
+    }).await
+}
+
 #[derive(Serialize)]
 struct UiError {
     kind: String,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schedule_not_sent: Option<bool>,
 }
 
 impl From<BackendError> for UiError {
@@ -36,6 +92,7 @@ impl From<BackendError> for UiError {
         Self {
             kind: error.kind().as_str().to_string(),
             message: error.safe_message(secret.as_ref().map(|c| c.token().expose())),
+            schedule_not_sent: None,
         }
     }
 }
@@ -165,7 +222,22 @@ async fn blocking<T: Send + 'static>(
         .map_err(|_| UiError {
             kind: "internal".into(),
             message: "本地任务中断，请重试".into(),
+            schedule_not_sent: None,
         })?
+}
+
+// sync 的 Err 只会在发出任何写请求前返回；在途结果由 SyncResult 表达。
+// 任务崩溃可能发生在发送后，因此不能给 JoinError 添加未发送标记。
+async fn blocking_schedule_sync<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, BackendError> + Send + 'static,
+) -> Result<T, UiError> {
+    tauri::async_runtime::spawn_blocking(move || work().map_err(|error| {
+        let mut error = UiError::from(error);
+        error.schedule_not_sent = Some(true);
+        error
+    }))
+    .await
+    .map_err(|_| UiError { kind: "internal".into(), message: "本地任务中断，请先在飞书核对".into(), schedule_not_sent: None })?
 }
 
 #[tauri::command]
@@ -681,7 +753,10 @@ fn main() {
             create_work_item,
             verify_work_item_creation,
             acknowledge_creation_recovery,
-            execute_workflow_action
+            execute_workflow_action,
+            load_schedule_session,
+            sync_schedule_session,
+            close_schedule_session
         ])
         .run(tauri::generate_context!())
         .expect("无法启动 FSTODO 桌面窗口");
@@ -690,6 +765,46 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poisoned_schedule_requires_explicit_matching_close_before_reuse() {
+        let mutex = std::sync::Arc::new(std::sync::Mutex::new(Some("old".to_string())));
+        let worker = mutex.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = worker.lock().unwrap();
+            panic!("模拟同步发出后崩溃");
+        }).join().is_err());
+        assert!(lock_schedule(&mutex).is_err());
+        assert!(close_schedule(&mutex, |id| id == "other").is_err());
+        assert!(lock_schedule(&mutex).is_err());
+        close_schedule(&mutex, |id| id == "old").unwrap();
+        assert!(lock_schedule(&mutex).unwrap().is_none());
+        *lock_schedule(&mutex).unwrap() = Some("new".into());
+        assert_eq!(lock_schedule(&mutex).unwrap().as_deref(), Some("new"));
+        let guard = lock_schedule(&mutex).unwrap();
+        assert!(close_schedule(&mutex, |_| true).is_err());
+        drop(guard);
+    }
+
+    #[test]
+    fn schedule_sync_marks_only_returned_pre_send_errors() {
+        for error in [
+            BackendError::Config { message: "配置不可用".into() },
+            BackendError::Credential { message: "凭证不可用".into() },
+            BackendError::validation("排期无效"),
+            BackendError::conflict("会话已变化"),
+        ] {
+            let error = tauri::async_runtime::block_on(blocking_schedule_sync::<()>(move || Err(error))).err().unwrap();
+            assert_eq!(serde_json::to_value(error).unwrap()["schedule_not_sent"], true);
+        }
+        let (sent, observed) = std::sync::mpsc::channel();
+        let error = tauri::async_runtime::block_on(blocking_schedule_sync::<()>(move || {
+            sent.send(()).unwrap();
+            panic!("模拟发送后任务崩溃");
+        })).err().unwrap();
+        observed.recv().unwrap();
+        assert!(serde_json::to_value(error).unwrap().get("schedule_not_sent").is_none());
+    }
 
     fn cached_types() -> Vec<CachedType> {
         vec![
