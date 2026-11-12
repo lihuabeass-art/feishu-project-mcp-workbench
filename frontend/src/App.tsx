@@ -1835,7 +1835,6 @@ function Workspace() {
                   <ArrowDownToLine size={16} />
                   {syncBusy ? "正在同步…" : "立即刷新"}
                 </button>
-                <span>不会更改飞书上的事项</span>
               </div>
               {source && source.id !== "*" ? <SourceTypes
                 key={source?.id || "unselected"}
