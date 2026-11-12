@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowUpRight, Check, ChevronRight, RefreshCw } from "lucide-react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { ArrowUpRight, Check, ChevronDown, ChevronRight, Plus, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import { asError, itemKey, localTime } from "./model";
 import { readFailureMessage } from "./readFeedback";
@@ -7,6 +7,7 @@ import type { CachedItem, ItemDetail } from "./types";
 import { BusinessField } from "./BusinessField";
 import { ExternalLink } from "./ExternalLink";
 import { useDetailDisplay } from "./useDetailDisplay";
+import { useDetailFieldIdentity } from "./useDetailFieldIdentity";
 import {
   classifyFields,
   extraAttributes,
@@ -15,6 +16,8 @@ import {
   isoTime,
   readable,
 } from "./detailFields";
+import "./creation.css";
+import "./detail-display.css";
 
 const roleName = (role: unknown): string => {
   if (role === null || typeof role !== "object") return String(role ?? "");
@@ -146,15 +149,23 @@ function NodeOverview({ item, detail, mergedStatusNode }: { item: CachedItem; de
   </section>;
 }
 
-function DetailBody({ detail, item, display, children }: { detail: ItemDetail; item: CachedItem;
+function DetailBody({ detail, item, display, verified, children }: { detail: ItemDetail; item: CachedItem; verified: boolean;
   display: ReturnType<typeof useDetailDisplay>; children?: ReactNode }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [configure, setConfigure] = useState(false);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "selected" | "other">("all");
+  const settingsId = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const attribute = detail.data.work_item_attribute;
-  const { summary, description, pinned, inline, block, empty, system } = classifyFields(
-    detail.data.work_item_fields, display.keys, attribute,
+  const identities = useDetailFieldIdentity(detail.data.work_item_fields, display.account, detail.id.project_key, detail.id.work_item_type_key, verified);
+  const defaults = identities.versions;
+  const keys = [...new Set([...identities.documents, ...display.keys, ...defaults.filter((key) => !display.excluded.includes(key))])];
+  const { summary, descriptions, pinned, inline, block, empty, system } = classifyFields(
+    detail.data.work_item_fields, keys, attribute, identities.descriptions,
   );
-  const descriptionTitle = description?.name?.trim() || (
+  const descriptionTitle = (
     detail.id.work_item_type_key === "story" ? "需求说明" :
       detail.id.work_item_type_key === "issue" ? "缺陷描述" : "事项说明"
   );
@@ -166,6 +177,11 @@ function DetailBody({ detail, item, display, children }: { detail: ItemDetail; i
     JSON.stringify(statusNode.owners) !== JSON.stringify(summary.operators?.value) ? statusNode.owners : undefined;
   const extras = extraAttributes(attribute);
   const more = [...system, ...extras];
+  const choices = detail.data.work_item_fields.filter((f) => !descriptions.includes(f) && !identities.documents.includes(f.key) &&
+    !["priority", "current_status_operator"].includes(f.key));
+  const selectedCount = choices.filter((f) => keys.includes(f.key)).length;
+  const matches = choices.filter((f) => fieldName(f).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) &&
+    (filter === "all" || (filter === "selected") === keys.includes(f.key)));
   const field = (f: (typeof inline)[number], i: number) => (
     <div key={`${f.key}-${i}`}>
       <dt>{fieldName(f)}</dt>
@@ -212,29 +228,54 @@ function DetailBody({ detail, item, display, children }: { detail: ItemDetail; i
           </>
         )}
       </dl>
-      <section className="detail-description" aria-label={descriptionTitle}>
-        <h4>{descriptionTitle}</h4>
-        {description ? (
-          isEmpty(description.value) ? <p className="hint">暂无{descriptionTitle}</p> :
-            <BusinessField value={description.value} itemId={detail.id} fieldKey={description.key} />
-        ) : (
-          <p className="hint">暂无{descriptionTitle}</p>
-        )}
-      </section>
+      {descriptions.length ? descriptions.map((description, index) => {
+        const title = description.name?.trim() || descriptionTitle;
+        return <section className="detail-description" aria-label={title} key={`${description.key}-${index}`}>
+          <h4>{title}</h4>
+          {description.value === undefined ? <p className="hint">详情未返回该字段的内容，可在飞书中查看。</p> :
+            isEmpty(description.value) ? <p className="hint">该字段为空，其他说明可在更多信息或飞书中查看。</p> :
+            <BusinessField value={description.value} itemId={detail.id} fieldKey={description.key} />}
+        </section>;
+      }) : <section className="detail-description" aria-label={descriptionTitle}>
+        <h4>{descriptionTitle}</h4><p className="hint">详情未返回已识别的说明字段，可在更多信息或飞书中查看。</p>
+      </section>}
       <NodeOverview item={item} detail={detail} mergedStatusNode={!!statusNode} />
       {pinned.length > 0 && <dl className="business-fields detail-pinned-fields">{pinned.map(field)}</dl>}
-      <div className="detail-display-settings">
-        <button type="button" className="text-button" aria-expanded={configure}
-          onClick={() => setConfigure((value) => !value)}>设置常显字段</button>
-        {configure && <div>
-          <p className="hint">选择代码版本、设计文档等需要直接查看的字段，按当前账号、空间和事项类型保存。</p>
+      <div className="detail-display-settings creation-field-visibility">
+        <button type="button" className="creation-field-toggle" ref={triggerRef} aria-expanded={configure} aria-controls={settingsId}
+          onClick={() => setConfigure((value) => !value)}>
+          <span className="creation-field-toggle-icon" aria-hidden="true"><SlidersHorizontal size={18} /></span>
+          <span className="creation-field-toggle-copy"><strong>设置常显字段</strong><small>选择需要直接查看的字段</small></span>
+          <span className="creation-field-count">{selectedCount}<span> / {choices.length}</span></span>
+          <ChevronDown size={16} className="creation-field-chevron" aria-hidden="true" />
+        </button>
+        {configure && <div id={settingsId} className="creation-field-choices" role="region" aria-label="常显字段配置"
+          onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setConfigure(false); triggerRef.current?.focus(); } }}>
+          <div className="creation-field-search">
+            <Search size={16} aria-hidden="true" />
+            <input ref={searchRef} aria-label="搜索常显字段" placeholder="搜索字段" value={query} onChange={(event) => setQuery(event.target.value)} />
+            {query && <button type="button" className="icon-button" aria-label="清空常显字段搜索"
+              onClick={() => { setQuery(""); searchRef.current?.focus(); }}><X size={14} /></button>}
+          </div>
+          <div className="creation-field-categories" role="group" aria-label="常显字段筛选">
+            {([ ["all", "全部"], ["selected", "已显示"], ["other", "未显示"] ] as const).map(([value, label]) =>
+              <button type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>)}
+          </div>
           {display.busy && <p className="hint" role="status">正在处理常显设置…</p>}
-          {display.available && <div className="detail-field-choices">{detail.data.work_item_fields
-            .filter((f) => !["description", "priority", "current_status_operator"].includes(f.key))
-            .map((f) => <button key={f.key} type="button" className="secondary" aria-pressed={display.keys.includes(f.key)}
-              disabled={display.busy} title={f.key} onClick={() => void display.toggle(f.key)}>
-              {display.keys.includes(f.key) && <Check size={13} aria-hidden="true" />}{fieldName(f)}</button>)}</div>}
+          {!verified && <p className="hint" role="status">详情检查完成后可调整常显字段。</p>}
+          {display.available && <div className="creation-field-cards" role="group" aria-label="可选常显字段">{matches.map((f) => {
+            const selected = keys.includes(f.key);
+            return <button key={f.key} type="button" className="creation-field-card" aria-pressed={selected}
+              aria-label={`${selected ? "取消常显" : "设为常显"}${fieldName(f)}`} disabled={display.busy || !verified}
+              title={f.key} onClick={() => void display.toggle(f.key, defaults)}>
+              <SlidersHorizontal size={16} className="creation-field-card-icon" aria-hidden="true" />
+              <span className="creation-field-card-copy"><span>{fieldName(f)}</span><small>{selected ? "已显示" : "点击添加"}</small></span>
+              <span className="creation-field-card-state" aria-hidden="true">{selected ? <Check size={14} /> : <Plus size={14} />}</span>
+            </button>;
+          })}{!matches.length && <p className="creation-field-empty" role="status">没有找到匹配的字段。</p>}</div>}
           {!display.available && !display.busy && !display.error && <p className="hint">当前连接暂不能保存常显设置。</p>}
+          <div className="creation-field-config-note"><span><Check size={13} aria-hidden="true" />本机保存 · 升级保留</span>
+            <p>选择仅用于当前账号、空间和事项类型。</p></div>
         </div>}
         {display.error && <p className="error-text" role="alert">{display.error}<button className="text-button" onClick={display.retry}>重新读取设置</button></p>}
       </div>
@@ -285,25 +326,32 @@ function DetailBody({ detail, item, display, children }: { detail: ItemDetail; i
   );
 }
 
-export function WorkItemDetails({
-  item,
-  enabled,
-  onRefreshed,
-  children,
-  displaySettingsEnabled = false,
-  displayContext = "",
-}: {
+type WorkItemDetailsProps = {
   item: CachedItem;
   enabled: boolean;
   onRefreshed?: () => Promise<void>;
   children?: ReactNode;
   displaySettingsEnabled?: boolean;
   displayContext?: string;
-}) {
+};
+
+export function WorkItemDetails(props: WorkItemDetailsProps) {
+  return <WorkItemDetailsInner key={props.displayContext ?? ""} {...props} />;
+}
+
+function WorkItemDetailsInner({
+  item,
+  enabled,
+  onRefreshed,
+  children,
+  displaySettingsEnabled = false,
+  displayContext = "",
+}: WorkItemDetailsProps) {
   const display = useDetailDisplay(displaySettingsEnabled && enabled, displayContext, item.id.project_key, item.id.work_item_type_key);
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [hasChecked, setHasChecked] = useState(false);
+  const [hasVerifiedDetail, setHasVerifiedDetail] = useState(false);
   const [error, setError] = useState("");
   const [cacheError, setCacheError] = useState("");
   const [summaryError, setSummaryError] = useState("");
@@ -318,6 +366,7 @@ export function WorkItemDetails({
       displayedIdentity.current = identity;
       setDetail(null);
       setHasChecked(false);
+      setHasVerifiedDetail(false);
       setCacheError("");
     }
     if (!enabled) return;
@@ -346,6 +395,7 @@ export function WorkItemDetails({
     setError("");
     setSummaryError("");
     if (!enabled) return;
+    setHasVerifiedDetail(false);
     setLoading(true);
     void (async () => {
       let refreshed = false;
@@ -367,6 +417,7 @@ export function WorkItemDetails({
           setHasChecked(true);
           if (request === cacheRead.current && current) {
             setDetail(current);
+            setHasVerifiedDetail(true);
             setCacheError("");
           }
           setError("");
@@ -436,7 +487,7 @@ export function WorkItemDetails({
           详情已检查，清单摘要读取失败：{summaryError}
         </p>
       )}
-      {detail && <DetailBody key={identity} detail={detail} item={item} display={display}>{children}</DetailBody>}
+      {detail && <DetailBody key={identity} detail={detail} item={item} display={display} verified={hasVerifiedDetail}>{children}</DetailBody>}
       {!detail && <NodeOverview item={item} />}
       {!detail && !loading && !error && <p className="hint">尚未取得详情。</p>}
       {!detail && children}

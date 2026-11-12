@@ -74,8 +74,10 @@ function isSystemField(field: Field) {
   return SYSTEM_FIELD_KEYS.has(field.key);
 }
 
-export function classifyFields(fields: Field[], pinnedKeys: string[] = [], attribute: Record<string, unknown> = {}) {
-  const description = fields.find((field) => field.key === "description");
+export function classifyFields(fields: Field[], pinnedKeys: string[] = [], attribute: Record<string, unknown> = {}, descriptionKeys: string[] = []) {
+  // 保留所有同名说明字段，避免不同字段同名时掩盖任何实际内容。
+  const descriptions = fields.filter((field) => descriptionKeys.includes(field.key) || field.key === "description" ||
+    ["需求说明", "缺陷描述", "事项说明"].includes(field.name?.trim() ?? ""));
   const pinned: Field[] = [];
   const summary: Partial<Record<keyof typeof SUMMARY_FIELD_KEYS, Field>> = {};
   const inline: Field[] = [];
@@ -83,11 +85,11 @@ export function classifyFields(fields: Field[], pinnedKeys: string[] = [], attri
   const empty: Field[] = [];
   const system: Field[] = [];
   for (const field of fields) {
-    if (field === description) continue;
+    if (descriptions.includes(field)) continue;
     // 仅按协议中明确的同义 key 与原值消除摘要重复，不按名称或跨语义的相同文本去重。
     const alias = ({ created_by: "create_by", created_at: "create_time", updated_by: "updated_by", updated_at: "update_time",
       work_item_status: "work_item_status" } as Record<string, string>)[field.key];
-    if (alias && !isEmpty(attribute[alias]) && JSON.stringify(attribute[alias]) === JSON.stringify(field.value)) continue;
+    if (!pinnedKeys.includes(field.key) && alias && !isEmpty(attribute[alias]) && JSON.stringify(attribute[alias]) === JSON.stringify(field.value)) continue;
     if (summaryKeys.has(field.key) && !isEmpty(field.value)) {
       const slot = field.key === SUMMARY_FIELD_KEYS.priority ? "priority" : "operators";
       summary[slot] ??= field;
@@ -98,7 +100,17 @@ export function classifyFields(fields: Field[], pinnedKeys: string[] = [], attri
     } else if (isEmpty(field.value)) empty.push(field);
     else (isInline(field.value) ? inline : block).push(field);
   }
-  return { summary, description, pinned, inline, block, empty, system };
+  return { summary, descriptions, pinned, inline, block, empty, system };
+}
+
+export function defaultPinnedKeys(fields: Field[]) {
+  return fields.filter((field) => ["代码版本号", "代码版本", "版本号", "规划版本"]
+    .includes(field.name?.trim() ?? "")).map((field) => field.key);
+}
+
+export function fixedDocumentKeys(fields: Field[]) {
+  return fields.filter((field) => ["产品设计文档", "后端设计文档", "前端设计文档"]
+    .includes(field.name?.trim() ?? "")).map((field) => field.key);
 }
 
 // 基础属性中已由标题、概要、角色或技术信息展示的部分。

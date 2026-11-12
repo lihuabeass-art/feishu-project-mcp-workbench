@@ -1,0 +1,15 @@
+.detail-display-settings .creation-field-search > input {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  padding: 10px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+}
+
+.detail-display-settings .creation-field-cards {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+}
