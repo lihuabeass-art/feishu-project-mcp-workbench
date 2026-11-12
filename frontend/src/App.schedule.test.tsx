@@ -12,7 +12,7 @@ vi.mock("./SchedulePage", () => ({ SchedulePage: ({ onGuardChange }: { onGuardCh
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 it("导航离开前保留编辑，明确放弃后才能离开", async () => {
-  render(<App />); const entry = await screen.findByText("事项安排"); expect(entry.hidden).toBe(false); expect(getComputedStyle(entry).display).not.toBe("none"); fireEvent.click(entry);
+  render(<App />); const entry = await screen.findByText("事项安排"); expect(entry.hidden).toBe(true); expect(getComputedStyle(entry).display).toBe("none"); fireEvent.click(entry);
   await screen.findByText("排期页面内容"); fireEvent.click(screen.getByText("模拟编辑"));
   fireEvent.click(screen.getByRole("button", { name: /工作来源/ }));
   expect(screen.getByRole("dialog").textContent).toContain("未同步的编辑内容即将丢失");
@@ -23,7 +23,7 @@ it("导航离开前保留编辑，明确放弃后才能离开", async () => {
   await waitFor(() => expect(screen.queryByText("排期页面内容")).toBeNull());
 });
 it("同步在途时阻止导航和关闭", async () => {
-  render(<App />); const entry = await screen.findByText("事项安排"); expect(entry.hidden).toBe(false); expect(getComputedStyle(entry).display).not.toBe("none"); fireEvent.click(entry);
+  render(<App />); const entry = await screen.findByText("事项安排"); expect(entry.hidden).toBe(true); expect(getComputedStyle(entry).display).toBe("none"); fireEvent.click(entry);
   await screen.findByText("排期页面内容"); fireEvent.click(screen.getByText("模拟同步"));
   const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); expect(event.defaultPrevented).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: /工作来源/ }));
@@ -32,7 +32,7 @@ it("同步在途时阻止导航和关闭", async () => {
 });
 
 it("同步期间的提示在结束后不能变成空的放弃操作并清除保护", async () => {
-  render(<App />); const entry = await screen.findByText("事项安排"); expect(entry.hidden).toBe(false); expect(getComputedStyle(entry).display).not.toBe("none"); fireEvent.click(entry);
+  render(<App />); const entry = await screen.findByText("事项安排"); expect(entry.hidden).toBe(true); expect(getComputedStyle(entry).display).toBe("none"); fireEvent.click(entry);
   fireEvent.click(await screen.findByText("模拟同步"));
   fireEvent.click(screen.getByRole("button", { name: /工作来源/ }));
   fireEvent.click(screen.getByText("模拟不确定结果"));

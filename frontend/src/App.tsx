@@ -241,7 +241,6 @@ function Detail({
               <dt>结束</dt>
               <dd>{item.schedule.end_raw || "未提供"}</dd>
             </dl>
-            <p className="hint">时间单位尚未确认，保留飞书返回值。</p>
           </div>
         )}
         {linked && <CachedDefectDetails item={item} />}
@@ -1605,7 +1604,7 @@ function Workspace() {
             <Layers3 size={18} />
             工作来源
           </button>
-          <button className={view === "schedule" ? "nav-item active" : "nav-item"} disabled={view !== "schedule" && (syncBusy || checkBusy || workflowBusy || creationBusy || !!contextOperation)} onClick={() => navigate("schedule")}><CalendarDays size={18} />事项安排</button>
+          <button hidden style={{ display: "none" }} className={view === "schedule" ? "nav-item active" : "nav-item"} disabled={view !== "schedule" && (syncBusy || checkBusy || workflowBusy || creationBusy || !!contextOperation)} onClick={() => navigate("schedule")}><CalendarDays size={18} />事项安排</button>
         </nav>
         <div className="sidebar-divider" />
         <div className="workspace-label" id="type-nav-label">

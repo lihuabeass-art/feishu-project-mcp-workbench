@@ -82,7 +82,9 @@ function notesAt(cwd, target, previousTag) {
       return { sha, subject };
     });
   const groups = new Map([["新增功能", []], ["问题修复", []], ["体验优化", []], ["维护与文档", []], ["其他变化", []]]);
-  for (const { subject } of commits) {
+  for (const { sha, subject } of commits) {
+    // 0.6.7 暂不展示尚未开放的事项安排功能。
+    if (target.version === "0.6.7" && sha === "061ef97d76a1d04dd0fb83184105aecdcfde4d7c") continue;
     const match = /^(\w+)(?:\([^)]+\))?!?:\s*(.+)$/.exec(subject);
     const type = match?.[1], text = match?.[2] || subject;
     if (type === "chore") continue;
