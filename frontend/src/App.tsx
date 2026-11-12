@@ -67,6 +67,8 @@ import { creationLocations, getPendingCreations, type CreationForm, type Creatio
 import { WorkSources } from "./WorkSources";
 import { sourceName, sourceProjects } from "./sourcePresets";
 import { WorkItemDetails } from "./WorkItemDetails";
+import { RelatedDefects } from "./RelatedDefects";
+import { CachedDefectDetails } from "./CachedDefectDetails";
 import { readFailureMessage, readFailureNeedsAction } from "./readFeedback";
 import { Select } from "./Select";
 import { LinkSettings } from "./LinkSettings";
@@ -163,7 +165,7 @@ function Flow({ item }: { item: CachedItem }) {
 }
 
 function Detail({
-  item,
+  item: sourceItem,
   close,
   label,
   workflowAvailable,
@@ -174,6 +176,10 @@ function Detail({
   compact = false,
   displayContext,
   displaySettingsEnabled,
+  canCreateDefect,
+  createDefect,
+  defectRevision,
+  cachedItems,
 }: {
   item: CachedItem;
   close: () => void;
@@ -186,19 +192,28 @@ function Detail({
   compact?: boolean;
   displayContext: string;
   displaySettingsEnabled: boolean;
+  canCreateDefect: boolean;
+  createDefect: (item: CachedItem, fieldKey: string) => void;
+  defectRevision: string;
+  cachedItems: CachedItem[];
 }) {
+  const [linked, setLinked] = useState<CachedItem | null>(null);
+  const detailElement = useRef<HTMLElement>(null);
+  useEffect(() => { setLinked(null); }, [displayContext]);
+  useEffect(() => { if (detailElement.current) detailElement.current.scrollTop = 0; }, [linked]);
+  const item = linked ? cachedItems.find((entry) => itemKey(entry) === itemKey(linked)) || linked : sourceItem;
   return (
-    <aside className="detail" aria-label="事项详情">
+    <aside ref={detailElement} className="detail" aria-label="事项详情">
       {compact ? (
         <div className="detail-top">
-          <button className="icon-button" aria-label="返回清单" title="返回清单（Esc）" onClick={close}>
+          <button className="icon-button" aria-label={linked ? "返回需求详情" : "返回清单"} title={linked ? "返回需求详情" : "返回清单（Esc）"} onClick={linked ? () => setLinked(null) : close}>
             <ArrowLeft size={17} />
           </button>
-          <span>事项详情</span>
+          <span>{linked ? "缺陷详情" : "事项详情"}</span>
         </div>
       ) : (
         <div className="detail-top">
-          <span>事项详情</span>
+          {linked ? <button className="text-button" onClick={() => setLinked(null)}>‹ 返回需求详情</button> : <span>事项详情</span>}
           <button className="icon-button" aria-label="关闭详情" onClick={close}>
             <X size={18} />
           </button>
@@ -209,7 +224,7 @@ function Detail({
           className="type-tag"
           style={typeColorStyle(item.id.work_item_type_key)}
         >
-          {label}
+          {linked ? "缺陷跟踪" : label}
         </span>
         <h2>{item.name || "名称未提供"}</h2>
         <p className="item-id">
@@ -227,29 +242,32 @@ function Detail({
             <p className="hint">时间单位尚未确认，保留飞书返回值。</p>
           </div>
         )}
-        <WorkItemDetails item={item} enabled={detailsAvailable} onRefreshed={onDetailRefreshed}
+        {linked && <CachedDefectDetails item={item} />}
+        <div hidden={!!linked}><WorkItemDetails item={sourceItem} enabled={detailsAvailable} onRefreshed={onDetailRefreshed}
           displayContext={displayContext} displaySettingsEnabled={displaySettingsEnabled}>
           <details className="tech-info">
             <summary>技术信息</summary>
             <dl>
               <dt>空间标识</dt>
-              <dd>{item.id.project_key || "未提供"}</dd>
+              <dd>{sourceItem.id.project_key || "未提供"}</dd>
               <dt>类型标识</dt>
-              <dd>{item.id.work_item_type_key || "未提供"}</dd>
+              <dd>{sourceItem.id.work_item_type_key || "未提供"}</dd>
               <dt>流程模型</dt>
-              <dd>{flowLabel[item.flow.kind]}</dd>
-              {item.flow.node_state_key && <><dt>节点标识</dt><dd>{item.flow.node_state_key}</dd></>}
+              <dd>{flowLabel[sourceItem.flow.kind]}</dd>
+              {sourceItem.flow.node_state_key && <><dt>节点标识</dt><dd>{sourceItem.flow.node_state_key}</dd></>}
               <dt>最近取得</dt>
-              <dd>{localTime(item.last_seen_at_ms)}</dd>
+              <dd>{localTime(sourceItem.last_seen_at_ms)}</dd>
             </dl>
           </details>
         </WorkItemDetails>
+        {desktop && sourceItem.id.work_item_type_key === "story" && sourceItem.id.project_key && detailsAvailable && <RelatedDefects key={`${itemKey(sourceItem)}:${displayContext}`} item={sourceItem} canCreate={canCreateDefect} open={setLinked} create={(field) => createDefect(sourceItem, field)} revision={defectRevision} />}
         <Workflow
-          item={item}
+          item={sourceItem}
           available={workflowAvailable}
           busy={busy}
           submit={submit}
         />
+        </div>
         {item.identity_missing_flags.length > 0 && (
           <p className="hint">
             部分身份字段未提供：{item.identity_missing_flags.join("、")}
@@ -290,6 +308,8 @@ function Workspace() {
   const [creationOpen, setCreationOpen] = useState(false);
   const [creationBusy, setCreationBusy] = useState(false);
   const [creationRecovery, setCreationRecovery] = useState(false);
+  const [defectCreation, setDefectCreation] = useState<{ target: CreationLocation; relation: { projectKey: string; typeKey: string; itemId: string; name: string; fieldKey: string } } | null>(null);
+  const [defectRevision, setDefectRevision] = useState(0);
   const [creationRecords, setCreationRecords] = useState<{ context: string; forms: CreationForm[]; failed: boolean }>({ context: "", forms: [], failed: false });
   const [creationRecordFeedback, setCreationRecordFeedback] = useState<CreationRecordFeedback | null>(null);
   const [tokenDraft, setTokenDraft] = useState("");
@@ -1167,12 +1187,26 @@ function Workspace() {
     creationRef.current = false;
     setCreationBusy(false);
     setCreationOpen(false);
+    setDefectCreation(null);
   }
   function openCreation() {
     if (!canCreate || loading || workspaceActionBlocked("creation", currentActivity())) return;
     creationRef.current = true;
     setCreationBusy(true);
     setCreationRecovery(false);
+    setDefectCreation(null);
+    setCreationOpen(true);
+  }
+  function defectTarget(item: CachedItem) {
+    return creationLocations(data?.sources || [], sourcePreferences, { types: ["issue"], spaces: item.id.project_key ? [item.id.project_key] : [] }).find((location) => location.project_key === item.id.project_key && location.type_key === "issue");
+  }
+  function openDefectCreation(item: CachedItem, fieldKey: string) {
+    const target = defectTarget(item);
+    if (!target || !item.id.project_key || item.id.work_item_type_key !== "story" || !item.id.work_item_id || !desktop || loading || workspaceActionBlocked("creation", currentActivity())) return;
+    creationRef.current = true;
+    setCreationBusy(true);
+    setCreationRecovery(false);
+    setDefectCreation({ target, relation: { projectKey: item.id.project_key, typeKey: item.id.work_item_type_key, itemId: item.id.work_item_id, name: item.name || item.id.work_item_id, fieldKey } });
     setCreationOpen(true);
   }
   async function openCreationRecovery() {
@@ -1424,6 +1458,10 @@ function Workspace() {
       compact={inCompact}
       displayContext={JSON.stringify([credentialRevision, data?.settings?.endpoint, data?.db_path])}
       displaySettingsEnabled={desktop && !!data?.capabilities?.detail_display}
+      canCreateDefect={!!data?.capabilities?.creation && !!defectTarget(item) && !creationDisabled}
+      createDefect={openDefectCreation}
+      defectRevision={JSON.stringify([defectRevision, (data?.items || []).filter((entry) => entry.id.project_key === item.id.project_key && entry.id.work_item_type_key === "issue").map((entry) => [entry.id.work_item_id, entry.name, entry.detail_revision, entry.source_ids]), (data?.sources || []).map((source) => [source.id, source.kind, source.enabled, source.association_rule])])}
+      cachedItems={data?.items || []}
     />
   );
 
@@ -1942,8 +1980,8 @@ function Workspace() {
     {creationOpen && desktop && data?.capabilities?.creation && <CreateWorkItem key={`${creationContext}:${creationRecovery}`}
       entryIntent={creationRecovery ? "recovery" : "create"}
       recordsChanged={() => { void getPendingCreations().then((forms) => setCreationRecords({ context: creationContext, forms, failed: false })).catch(() => setCreationRecords((current) => ({ ...current, failed: true }))); }}
-      locations={creationRecovery ? pendingLocations : creationTargets} initialType={!creationRecovery && type.length === 1 ? type[0] : undefined}
-      initialSpace={!creationRecovery && project.length === 1 ? project[0] : undefined} close={closeCreation} created={refreshAfterWrite} />}
+      locations={creationRecovery ? pendingLocations : defectCreation ? [defectCreation.target] : creationTargets} initialType={defectCreation?.target.type_key || (!creationRecovery && type.length === 1 ? type[0] : undefined)}
+      initialSpace={defectCreation?.target.project_key || (!creationRecovery && project.length === 1 ? project[0] : undefined)} initialRelation={defectCreation?.relation} close={closeCreation} created={async () => { try { await refreshAfterWrite(); } finally { if (defectCreation) setDefectRevision((v) => v + 1); } }} />}
     </>
   );
 }

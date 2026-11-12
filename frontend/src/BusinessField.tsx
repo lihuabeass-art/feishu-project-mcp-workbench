@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { ImagePreview } from "./ImagePreview";
 import { ExternalLink } from "./ExternalLink";
 import { MetadataLink } from "./MetadataLink";
@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { loadFieldImage } from "./api";
+import { invoke } from "@tauri-apps/api/core";
 import { asError, itemKey } from "./model";
 import { readable } from "./detailFields";
 import type { CachedItem } from "./types";
@@ -15,8 +16,13 @@ interface ImageContext {
   itemId: CachedItem["id"];
   fieldKey?: string;
   loadImage?: (url: string) => Promise<string>;
+  cacheOnly?: boolean;
 }
 const Images = createContext<ImageContext | null>(null);
+function BusinessLink({ href, children }: { href: string; children: ReactNode }) {
+  const context = useContext(Images);
+  return context?.cacheOnly ? <ExternalLink href={href}>{children}</ExternalLink> : <MetadataLink href={href}>{children}</MetadataLink>;
+}
 const localImage = (url: unknown): url is string => typeof url === "string" && /^fstodo-image:[a-f0-9]{64}$/.test(url);
 const draftImageSchema = { ...defaultSchema, protocols: { ...defaultSchema.protocols, src: [...(defaultSchema.protocols?.src || []), "fstodo-image"] } };
 
@@ -70,7 +76,10 @@ function FieldImage({ url, alt = "" }: { url: string; alt?: string }) {
     let active = true;
     setSrc("");
     setError("");
-    void (context.loadImage ? context.loadImage(url) : loadFieldImage(context.itemId, context.fieldKey, url, attempt > 0))
+    void (context.cacheOnly ? invoke<string | null>("cached_field_image", { itemId: context.itemId, fieldKey: context.fieldKey, url }).then((data) => {
+      if (!data) throw new Error("本机尚未缓存图片，可在飞书中查看。");
+      return data;
+    }) : context.loadImage ? context.loadImage(url) : loadFieldImage(context.itemId, context.fieldKey, url, attempt > 0))
       .then((data) => {
         if (active) setSrc(data);
       })
@@ -140,7 +149,7 @@ const markdownComponents: Components = {
     ),
   a: ({ href, children }) =>
     httpUrl(href) ? (
-      <MetadataLink href={href}>{children}</MetadataLink>
+      <BusinessLink href={href}>{children}</BusinessLink>
     ) : (
       <span>{children}</span>
     ),
@@ -203,7 +212,7 @@ function RichValue({ value }: { value: unknown }) {
         ? object.alt
         : "";
   if (httpUrl(url) && kind.includes("/") && !kind.startsWith("image/"))
-    return <MetadataLink href={url}>{name || url}</MetadataLink>;
+    return <BusinessLink href={url}>{name || url}</BusinessLink>;
   if (
     httpUrl(url) &&
     (kind === "image" ||
@@ -217,7 +226,7 @@ function RichValue({ value }: { value: unknown }) {
     const label = [object.text, object.label, object.name, object.title].find(
       (v): v is string => typeof v === "string" && !!v.trim(),
     );
-    return <MetadataLink href={url}>{label || url}</MetadataLink>;
+    return <BusinessLink href={url}>{label || url}</BusinessLink>;
   }
   if (
     [
@@ -267,16 +276,17 @@ export function BusinessField({
   itemId,
   fieldKey,
   loadImage,
+  cacheOnly,
 }: ImageContext & { value: unknown }) {
   // 复合身份/字段改变时整个媒体子树重建，避免旧图和预览串到其他事项。
   const identity = `${itemKey({ id: itemId } as CachedItem)}:${fieldKey}`;
-  const context = useRef<ImageContext>({ itemId, fieldKey, loadImage });
+  const context = useRef<ImageContext>({ itemId, fieldKey, loadImage, cacheOnly });
   if (
     itemKey({ id: context.current.itemId } as CachedItem) !==
       itemKey({ id: itemId } as CachedItem) ||
-    context.current.fieldKey !== fieldKey || context.current.loadImage !== loadImage
+    context.current.fieldKey !== fieldKey || context.current.loadImage !== loadImage || context.current.cacheOnly !== cacheOnly
   )
-    context.current = { itemId, fieldKey, loadImage };
+    context.current = { itemId, fieldKey, loadImage, cacheOnly };
   return (
     <Images.Provider value={context.current}>
       <div key={identity} className="business-field-content">

@@ -54,6 +54,7 @@ type Draft = {
 };
 const draftKey = (form: CreationForm) =>
   `fstodo.creation.v1:${form.context}:${creationTargetKey(form.target)}`;
+type InitialRelation = { projectKey: string; typeKey: string; itemId: string; name: string; fieldKey: string };
 export const creationContinuousKey = "fstodo.creation-continuous.v1";
 function requiredCreationKeys(form: CreationForm, ...groups: (string[] | undefined)[]) {
   return [...new Set(groups.flatMap((keys) => keys || []))].filter((key) => form.fields.some((field) => field.key === key));
@@ -77,6 +78,7 @@ export function CreateWorkItem({
   locations: providedLocations,
   initialType,
   initialSpace,
+  initialRelation,
   entryIntent = "recovery",
   recordsChanged,
   close,
@@ -85,11 +87,22 @@ export function CreateWorkItem({
   locations: CreationLocation[];
   initialType?: string;
   initialSpace?: string;
+  initialRelation?: InitialRelation;
   entryIntent?: "create" | "recovery";
   recordsChanged?: () => void;
   close: () => void;
   created: () => Promise<void>;
 }) {
+  const recoveredDraft = useRef<{ base: string; key: string; relation?: InitialRelation } | null>(null);
+  const keyForDraft = (form: CreationForm) => recoveredDraft.current?.base === draftKey(form) ? recoveredDraft.current.key : draftKey(form) + (initialRelation && form.target.project_key === initialRelation.projectKey && form.target.type_key === "issue"
+    ? `:relation:${JSON.stringify([initialRelation.projectKey, initialRelation.typeKey, initialRelation.itemId, initialRelation.fieldKey])}` : "");
+  const applyInitialRelation = (form: CreationForm, draft: Draft): Draft => {
+    const relation = recoveredDraft.current?.base === draftKey(form) ? recoveredDraft.current.relation : initialRelation;
+    if (!relation || form.target.project_key !== relation.projectKey || form.target.type_key !== "issue") return draft;
+    const field = form.fields.find((f) => f.key === relation.fieldKey && f.kind === "relation" && f.related?.some((r) => r.project_key === relation.projectKey && r.type_key === relation.typeKey));
+    if (!field) throw new Error("关联需求的飞书字段配置已变化，请重新打开需求详情。");
+    return { ...draft, values: { ...draft.values, [field.key]: field.multiple ? [relation.itemId] : relation.itemId }, labels: { ...draft.labels, [`${field.key}:${relation.itemId}`]: relation.name } };
+  };
   const [recoveryEntries] = useState(providedLocations);
   const locations = entryIntent === "recovery" && recoveryEntries.some((entry) => entry.pending_form?.pending) ? recoveryEntries : providedLocations;
   const [locationKey, setLocationKey] = useState(() =>
@@ -242,6 +255,7 @@ export function CreateWorkItem({
   const sourceId = location?.source_id;
   useEffect(() => {
     let cancelled = false;
+    recoveredDraft.current = null;
     setLoading(true);
     setError("");
     setItemNumber("");
@@ -263,8 +277,28 @@ export function CreateWorkItem({
         if (cancelled) return;
         let saved: Draft | null = null;
         try {
+          if (next.pending) {
+            const base = draftKey(next);
+            const pendingKey = `${base}:pending:${next.pending.request.request_id}`;
+            const matches = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).filter((key): key is string => !!key && (key === base || key === pendingKey || key.startsWith(`${base}:relation:`))).filter((key) => {
+              try { return (JSON.parse(localStorage.getItem(key) || "null") as Draft | null)?.request?.request_id === next.pending?.request.request_id; } catch { return false; }
+            });
+            if (matches.length === 1) {
+              const key = matches[0];
+              let relation: InitialRelation | undefined;
+              if (key.startsWith(`${base}:relation:`)) {
+                const parts: unknown = JSON.parse(key.slice(`${base}:relation:`.length));
+                if (Array.isArray(parts) && parts.length === 4 && parts.every((part) => typeof part === "string")) {
+                  const [projectKey, typeKey, itemId, fieldKey] = parts as string[];
+                  const old = JSON.parse(localStorage.getItem(key) || "null") as Draft | null;
+                  relation = { projectKey, typeKey, itemId, fieldKey, name: old?.labels?.[`${fieldKey}:${itemId}`] || itemId };
+                }
+              }
+              recoveredDraft.current = { base, key, relation };
+            } else recoveredDraft.current = { base, key: matches.length === 0 && !initialRelation ? base : pendingKey };
+          }
           saved = JSON.parse(
-            localStorage.getItem(draftKey(next)) || "null",
+            localStorage.getItem(keyForDraft(next)) || "null",
           ) as Draft | null;
         } catch {
           /* 草稿读取失败不影响远端台账恢复 */
@@ -298,12 +332,16 @@ export function CreateWorkItem({
                 : {}),
               continueCreating: saved?.continueCreating,
             };
+        if (!next.pending) {
+          const prefilled = applyInitialRelation(next, restored);
+          if (!saved) restored = prefilled;
+        }
         if (restored.result?.outcome === "not_submitted" && saved?.recoveredRequestId === restored.request?.request_id) {
           const recoveredRequestId = restored.request!.request_id;
           setError(requiredCreationKeys(next, restored.result.rejected_field_keys).length ? "" : restored.result.message);
           restored = { values: saved?.recoveredRequestId === recoveredRequestId ? saved.values : restored.values, labels: saved?.recoveredRequestId === recoveredRequestId ? saved.labels : restored.labels, requiredFieldKeys: restored.requiredFieldKeys, reviewFieldKeys: restored.reviewFieldKeys, continueCreating: restored.continueCreating, recoveredRequestId };
           try {
-            localStorage.setItem(draftKey(next), JSON.stringify(restored));
+            localStorage.setItem(keyForDraft(next), JSON.stringify(restored));
             includeRequiredVisibility(next, restored.requiredFieldKeys || []);
             await acknowledgeCreationRecovery(recoveredRequestId);
             setRecoveredRecords((ids) => [...ids, recoveredRequestId]);
@@ -335,7 +373,7 @@ export function CreateWorkItem({
   function save(next: Draft, keepInMemory = false): boolean {
     if (!form) return false;
     try {
-      localStorage.setItem(draftKey(form), JSON.stringify(next));
+      localStorage.setItem(keyForDraft(form), JSON.stringify(next));
       draftRef.current = next;
       setDraft(next);
       return true;
@@ -500,7 +538,7 @@ export function CreateWorkItem({
           "创建位置或账号已变化，或仍有其他待核验记录，请重新核对。",
         );
       const localDefaults = loadLocalCreationDefaults(next);
-      const nextDraft: Draft = {
+      let nextDraft: Draft = {
         values: Object.fromEntries(
           next.fields.map((field) => [
             field.key,
@@ -516,8 +554,9 @@ export function CreateWorkItem({
         ),
         labels: {},
       };
+      nextDraft = applyInitialRelation(next, nextDraft);
       // 同一稳定键一次替换旧请求与草稿，写入失败仍保留已确认的成功记录。
-      localStorage.setItem(draftKey(next), JSON.stringify(nextDraft));
+      localStorage.setItem(keyForDraft(next), JSON.stringify(nextDraft));
       draftRef.current = nextDraft;
       setDraft(nextDraft);
       setForm(next);
@@ -1185,7 +1224,7 @@ export function CreateWorkItem({
                 disabled={busy}
                 onClick={() => {
                   try {
-                    if (form) localStorage.removeItem(draftKey(form));
+                    if (form) localStorage.removeItem(keyForDraft(form));
                     close();
                   } catch {
                     setError(

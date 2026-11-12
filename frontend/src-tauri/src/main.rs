@@ -544,6 +544,16 @@ async fn upload_creation_image(target: fstodo_backend::creation::Target, context
 }
 
 #[tauri::command]
+async fn cached_field_image(item_id: WorkItemId, field_key: String, url: String) -> Result<Option<String>, UiError> {
+    blocking(move || fstodo_backend::field_images::cached(&open_session()?, &item_id, &field_key, &url)).await
+}
+
+#[tauri::command]
+async fn list_related_defects(item_id: WorkItemId) -> Result<fstodo_backend::related_defects::RelatedDefects, UiError> {
+    blocking(move || fstodo_backend::related_defects::list(&open_session()?, &item_id)).await
+}
+
+#[tauri::command]
 async fn create_work_item(request: fstodo_backend::creation::Request) -> Result<fstodo_backend::creation::ResultView, serde_json::Value> {
     // execute 发出写请求之后始终返回 ResultView；仅校验和登记前失败可恢复编辑。
     // 线程中断不具备该保证，不能标记为 before_write。
@@ -627,6 +637,7 @@ fn main() {
             update_download::download_update,
             update_download::install_verified_update,
             cached_item_detail,
+            cached_field_image,
             refresh_item_detail,
             load_field_image,
             resolve_link_metadata,
@@ -656,6 +667,7 @@ fn main() {
             get_workflow_editor_context,
             upload_workflow_image,
             get_pending_creations,
+            list_related_defects,
             get_creation_form,
             lookup_creation_field,
             resolve_creation_relation_labels,

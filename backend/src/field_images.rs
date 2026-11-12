@@ -259,6 +259,24 @@ async fn download(
     Err(failure("图片重定向次数过多"))
 }
 
+fn validate_cached_reference(session: &Session, id: &WorkItemId, field_key: &str, raw_url: &str) -> Result<(Url, PathBuf), BackendError> {
+    if !id.missing_parts().is_empty() { return Err(failure("图片需要完整的工作项身份")); }
+    let url = checked_url(raw_url)?;
+    let detail = session.cached_item_detail(id)?.ok_or_else(|| failure("请先刷新工作项详情"))?;
+    let belongs = detail.data.get("work_item_fields").and_then(Value::as_array).into_iter().flatten().any(|field| {
+        field.get("key").and_then(Value::as_str) == Some(field_key)
+            && field.get("value").is_some_and(|v| contains_reference(v, raw_url))
+    });
+    if !belongs { return Err(failure("图片不属于当前业务字段，请刷新详情")); }
+    Ok((url, cache_path(session, id, field_key, raw_url)))
+}
+
+/// 只读本机图片，不申请下载地址，也不访问网络。
+pub fn cached(session: &Session, id: &WorkItemId, field_key: &str, raw_url: &str) -> Result<Option<String>, BackendError> {
+    let (_, path) = validate_cached_reference(session, id, field_key, raw_url)?;
+    Ok(read_cache(&path).or_else(|| read_cache(&legacy_cache_path(session, id, field_key, raw_url))))
+}
+
 pub fn load(
     session: &Session,
     id: &WorkItemId,
@@ -266,29 +284,7 @@ pub fn load(
     raw_url: &str,
     refresh: bool,
 ) -> Result<String, BackendError> {
-    if !id.missing_parts().is_empty() {
-        return Err(failure("图片需要完整的工作项身份"));
-    }
-    let url = checked_url(raw_url)?;
-    let detail = session
-        .cached_item_detail(id)?
-        .ok_or_else(|| failure("请先刷新工作项详情"))?;
-    let belongs = detail
-        .data
-        .get("work_item_fields")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .any(|field| {
-            field.get("key").and_then(Value::as_str) == Some(field_key)
-                && field
-                    .get("value")
-                    .is_some_and(|v| contains_reference(v, raw_url))
-        });
-    if !belongs {
-        return Err(failure("图片不属于当前业务字段，请刷新详情"));
-    }
-    let path = cache_path(session, id, field_key, raw_url);
+    let (url, path) = validate_cached_reference(session, id, field_key, raw_url)?;
     if !refresh {
         if let Some(data) = read_cache(&path) {
             return Ok(data);
@@ -359,8 +355,12 @@ mod tests {
         session.store.save_item_detail(&crate::detail::ItemDetail { id: id.clone(), fetched_at_ms: 0, data: json!({"work_item_fields":[{"key":"description","value":format!("![]({url})")},{"key":"other","value":"other text"}]}), pages: vec![] }).unwrap();
         let path = cache_path(&session, &id, "description", url);
         let legacy = legacy_cache_path(&session, &id, "description", url);
+        assert!(cached(&session, &id, "description", url).unwrap().is_none());
         std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         std::fs::write(&legacy, b"\x89PNG\r\n\x1a\nexample").unwrap();
+        assert!(cached(&session, &id, "description", url).unwrap().unwrap().starts_with("data:image/png;base64,"));
+        assert!(!path.exists(), "只读本机图片不能迁移或下载");
+        assert!(cached(&session, &id, "other", url).is_err());
         assert!(load(&session, &id, "description", url, false)
             .unwrap()
             .starts_with("data:image/png;base64,"));

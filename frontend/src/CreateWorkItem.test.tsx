@@ -157,6 +157,59 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
+
+it("从需求新建时按飞书关联配置预填，且不同需求保留独立草稿", async () => {
+  const next = form();
+  next.target = locations[1];
+  next.fields.push({ key: "parent", label: "所属需求", kind: "relation", required: false, multiple: false, initial: null, options: [], related: [{ project_key: "space", type_key: "story" }] });
+  vi.mocked(getCreationForm).mockResolvedValue(next);
+  const props = { locations: [locations[1]], entryIntent: "create" as const, close: vi.fn(), created: vi.fn(), initialRelation: { projectKey: "space", typeKey: "story", itemId: "123", name: "需求甲", fieldKey: "parent" } };
+  const view = render(<CreateWorkItem {...props} />);
+  await screen.findByText("需求甲");
+  await userEvent.type(screen.getByRole("textbox", { name: "标题" }), "甲的草稿");
+  view.unmount();
+  const second = render(<CreateWorkItem {...props} initialRelation={{ ...props.initialRelation, itemId: "456", name: "需求乙" }} />);
+  await screen.findByText("需求乙");
+  expect((screen.getByRole("textbox", { name: "标题" }) as HTMLInputElement).value).toBe("");
+  second.unmount();
+  render(<CreateWorkItem {...props} />);
+  await screen.findByText("需求甲");
+  expect((screen.getByRole("textbox", { name: "标题" }) as HTMLInputElement).value).toBe("甲的草稿");
+});
+
+it("从需求新建时核对页和创建请求包含该需求编号", async () => {
+  const next = form();
+  next.target = locations[1];
+  next.fields.push({ key: "parent", label: "所属需求", kind: "relation", required: false, multiple: false, initial: null, options: [], related: [{ project_key: "space", type_key: "story" }] });
+  vi.mocked(getCreationForm).mockResolvedValue(next);
+  const user = userEvent.setup();
+  render(<CreateWorkItem locations={[locations[1]]} entryIntent="create" initialRelation={{ projectKey: "space", typeKey: "story", itemId: "123", name: "需求甲", fieldKey: "parent" }} close={vi.fn()} created={vi.fn()} />);
+  await fill(user);
+  await user.click(screen.getByRole("button", { name: "核对内容" }));
+  expect(within(document.querySelector<HTMLElement>(".creation-review")!).getByText("需求甲")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "确认创建" }));
+  await waitFor(() => expect(createWorkItem).toHaveBeenCalledOnce());
+  expect(vi.mocked(createWorkItem).mock.calls[0][0].fields.parent).toBe("123");
+});
+
+it.each(["recovery", "create"] as const)("待核验记录从 %s 入口找回对应需求的草稿和名称", async (entryIntent) => {
+  const next = form();
+  next.target = locations[1];
+  next.fields.push({ key: "parent", label: "所属需求", kind: "relation", required: false, multiple: false, initial: null, options: [], related: [{ project_key: "space", type_key: "story" }] });
+  const request = { target: next.target, version: next.version, request_id: "related-request", fields: { name: "待核验缺陷", parent: "123" } };
+  next.pending = { request, result: { ...result("unknown"), request_id: request.request_id } };
+  const base = `fstodo.creation.v1:${next.context}:${creationTargetKey(next.target)}`;
+  const scoped = `${base}:relation:${JSON.stringify(["space", "story", "123", "parent"])}`;
+  localStorage.setItem(scoped, JSON.stringify({ values: request.fields, labels: { "parent:123": "需求甲" }, request, result: next.pending.result }));
+  vi.mocked(getCreationForm).mockResolvedValue(next);
+  render(<CreateWorkItem locations={entryIntent === "recovery" ? [{ ...locations[1], pending_form: next }] : [locations[1]]} entryIntent={entryIntent}
+    initialRelation={entryIntent === "create" ? { projectKey: "space", typeKey: "story", itemId: "456", name: "需求乙", fieldKey: "parent" } : undefined}
+    close={vi.fn()} created={vi.fn()} />);
+  await userEvent.click(await screen.findByRole("button", { name: "返回草稿" }));
+  expect(await screen.findByText("需求甲")).toBeTruthy();
+  expect(screen.getByText("待核验缺陷")).toBeTruthy();
+  expect(vi.mocked(createWorkItem)).not.toHaveBeenCalled();
+});
 async function fill(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByRole("textbox", { name: "标题" });
   await user.type(screen.getByRole("textbox", { name: "标题" }), "示例事项");

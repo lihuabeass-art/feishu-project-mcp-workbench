@@ -27,6 +27,7 @@ export type CreationField = {
   multiple: boolean;
   initial: unknown;
   options: CreationOption[];
+  related?: { project_key: string; type_key: string }[];
   role_id?: string | null;
   reporter_self?: boolean;
 };

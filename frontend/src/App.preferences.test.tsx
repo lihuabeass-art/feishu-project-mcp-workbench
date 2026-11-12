@@ -4,7 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
-import { loadSnapshot, refreshSourceTypes } from "./api";
+import { cachedItemDetail, loadSnapshot, refreshItemDetail, refreshSourceTypes } from "./api";
 import { flushSourceTypePreferences } from "./preferences";
 import type { Snapshot } from "./types";
 
@@ -12,6 +12,8 @@ vi.mock("./api", () => ({
   desktop: true,
   loadSnapshot: vi.fn(),
   refreshSourceTypes: vi.fn(),
+  cachedItemDetail: vi.fn(),
+  refreshItemDetail: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...(await original<typeof import("@tauri-apps/api/core")>()),
@@ -72,6 +74,47 @@ async function openTypes() {
   await user.click(await screen.findByRole("button", { name: "工作来源" }));
   return user;
 }
+
+it("需求研发详情可打开关联缺陷并携带当前需求新建，需求反馈不显示入口", async () => {
+  const data = snapshot();
+  data.capabilities = { workflow: false, details: true, creation: true, source_type_preferences: true };
+  data.credential_ready = true;
+  data.source_type_preferences = { a: { story: { enabled: true, alias: "" }, issue: { enabled: true, alias: "", create_enabled: true }, feedback: { enabled: true, alias: "" } } };
+  data.sources[0].type_scope!.types.push(
+    { project_key: "space", project_name: "空间", type_key: "issue", type_name: "缺陷跟踪", selected: true },
+    { project_key: "space", project_name: "空间", type_key: "feedback", type_name: "需求反馈", selected: true },
+  );
+  const makeItem = (kind: string, name: string, id: string) => ({ id: { project_key: "space", work_item_type_key: kind, work_item_id: id }, name, project_name: "空间", flow: { kind: "none" as const, node_name: null, node_state_key: null, start_state_key_name: null, end_state_key_name: null }, schedule: { start_raw: null, end_raw: null }, raw_json: "{}", identity_missing_flags: [], first_seen_at_ms: 1, last_seen_at_ms: 1, seen_count: 1 });
+  data.items = [makeItem("story", "需求甲", "123"), makeItem("feedback", "反馈乙", "456")];
+  data.total = 2;
+  vi.mocked(loadSnapshot).mockResolvedValue(data);
+  vi.mocked(cachedItemDetail).mockResolvedValue(null);
+  vi.mocked(refreshItemDetail).mockImplementation(async (id) => ({ id, fetched_at_ms: 1, data: { work_item_attribute: {}, work_item_fields: [] }, pages: [] }));
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "get_pending_creations") return [];
+    if (command === "list_related_defects") return { relation_field: "parent", mine_available: true, incomplete_details: 0, items: [{ item: makeItem("issue", "已有缺陷", "789"), status: "处理中", operators: [], mine: true }] };
+    if (command === "get_creation_form") return { target: (args as { target: unknown }).target, context: "account", version: "v1", pending: null, fields: [{ key: "name", label: "缺陷名称", kind: "text", required: true, multiple: false, initial: null, options: [] }, { key: "parent", label: "所属需求", kind: "relation", required: false, multiple: false, initial: null, options: [], related: [{ project_key: "space", type_key: "story" }] }] };
+    if (command === "lookup_creation_field") return { options: [], warning: null };
+    return undefined;
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByText("需求甲"));
+  await waitFor(() => expect(vi.mocked(refreshItemDetail).mock.calls.some(([id]) => id.work_item_id === "123")).toBe(true));
+  const requirementReads = vi.mocked(refreshItemDetail).mock.calls.filter(([id]) => id.work_item_id === "123").length;
+  await user.click(await screen.findByRole("button", { name: /已有缺陷/ }));
+  expect(await screen.findByRole("button", { name: /返回需求详情/ })).toBeTruthy();
+  expect(vi.mocked(refreshItemDetail).mock.calls.some(([id]) => id.work_item_id === "789")).toBe(false);
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "get_workflow_actions" || command === "load_field_image" || command === "resolve_link_metadata")).toBe(false);
+  await user.click(screen.getByRole("button", { name: /返回需求详情/ }));
+  expect(vi.mocked(refreshItemDetail).mock.calls.filter(([id]) => id.work_item_id === "123")).toHaveLength(requirementReads);
+  await user.click(await screen.findByRole("button", { name: "＋ 新建缺陷" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(await within(dialog).findByText("需求甲")).toBeTruthy();
+  await user.click(within(dialog).getByRole("button", { name: "关闭新建" }));
+  await user.click(screen.getByText("反馈乙"));
+  expect(screen.queryByRole("region", { name: "关联缺陷" })).toBeNull();
+});
 
 it("只在当前已开启新建的类型显示入口，关闭的类型不能借用其他类型开关", async () => {
   const data=snapshot();data.capabilities!.creation=true;
