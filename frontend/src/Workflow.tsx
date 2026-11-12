@@ -1385,6 +1385,7 @@ export function Workflow({
                       <Select
                         ariaLabel="回滚节点"
                         triggerLabel="回滚节点"
+                        className="workflow-action-select"
                         value=""
                         disabled={navigationLocked}
                         options={rollbackActions.map((candidate) => ({

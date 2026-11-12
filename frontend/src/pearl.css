@@ -263,7 +263,7 @@
   }
 }
 
-:root[data-appearance="pearl"] :is(.primary, .secondary) {
+:root[data-appearance="pearl"] :is(.primary, .secondary, :where(.workflow-action-select > .select-trigger)) {
   border-radius: 11px;
   transition:
     background 150ms ease, border-color 150ms ease, color 150ms ease,
@@ -271,7 +271,7 @@
 }
 
 /* 小按钮融入面板，按下时只收深表面，不额外叠加玻璃厚度。 */
-:root[data-appearance="pearl"] :is(.primary, .secondary):active:not(:disabled) {
+:root[data-appearance="pearl"] :is(.primary, .secondary, :where(.workflow-action-select > .select-trigger)):active:not(:disabled) {
   transform: none;
   box-shadow: none;
 }
@@ -280,7 +280,7 @@
   background: var(--button-primary-active-bg);
 }
 
-:root[data-appearance="pearl"] .secondary:active:not(:disabled) {
+:root[data-appearance="pearl"] :is(.secondary, :where(.workflow-action-select > .select-trigger)):active:not(:disabled) {
   background: var(--button-secondary-active-bg);
 }
 

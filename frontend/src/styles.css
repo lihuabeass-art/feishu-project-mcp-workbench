@@ -546,6 +546,31 @@ input {
 .workflow-option {
   margin-bottom: 12px;
 }
+.workflow-action-select > .select-trigger {
+  min-height: 0;
+  gap: 8px;
+  padding: 10px 14px;
+  border-color: var(--button-secondary-border);
+  border-radius: 8px;
+  background: var(--button-secondary-bg);
+  color: var(--button-secondary-text);
+  font-size: 11px;
+  box-shadow: var(--button-secondary-shadow);
+}
+.workflow-action-select > .select-trigger .placeholder,
+.workflow-action-select > .select-trigger .select-chevron {
+  color: inherit;
+}
+.workflow-action-select > .select-trigger .select-chevron {
+  width: 14px;
+  height: 14px;
+}
+.workflow-action-select > .select-trigger:hover:not(:disabled, :focus-visible, [aria-expanded="true"]) {
+  border-color: var(--button-secondary-hover-border);
+  background: var(--button-secondary-hover-bg);
+  box-shadow: var(--button-secondary-hover-shadow);
+  filter: none;
+}
 .workflow-manual-fill {
   display: flex;
   flex-wrap: wrap;
