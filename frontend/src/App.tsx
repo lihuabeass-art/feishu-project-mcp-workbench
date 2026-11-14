@@ -4,6 +4,7 @@ import { AppVersion } from "./AppVersion";
 import { AppUpdateDialog, AppUpdateSettings } from "./AppUpdater";
 import { useAppUpdater } from "./useAppUpdater";
 import { SchedulePage } from "./SchedulePage";
+import { useScrollIsolation } from "./useScrollIsolation";
 import { prepareUpdateInstallation } from "./appUpdateSafety";
 import { workspaceActionBlocked, type WorkspaceActivity } from "./operationPolicy";
 import {
@@ -292,6 +293,7 @@ function Workspace() {
   const [scheduleGuard, setScheduleGuard] = useState({ dirty: false, busy: false, uncertain: false });
   const scheduleGuardRef = useRef(scheduleGuard);
   const [scheduleExit, setScheduleExit] = useState<{ action?: () => void } | null>(null);
+  const scheduleExitScrollRef = useScrollIsolation();
   const updateScheduleGuard = useCallback((guard: typeof scheduleGuard) => { scheduleGuardRef.current = guard; setScheduleGuard(guard); }, []);
   const requestScheduleExit = useCallback((action: () => void) => {
     const guard = scheduleGuardRef.current;
@@ -1519,7 +1521,7 @@ function Workspace() {
         <WorkflowSuccessToast key={id} id={id} report={result} dismiss={dismissWorkflowReport} />
       ))}
     </div>
-    {scheduleExit && <div className="schedule-dialog-backdrop"><div className="schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="schedule-exit-title" onKeyDown={(event) => { if (event.key === "Escape") setScheduleExit(null); }}><h2 id="schedule-exit-title">{!scheduleExit.action || scheduleGuard.busy ? "排期同步" : "未同步的编辑内容即将丢失"}</h2><p>{scheduleGuard.busy ? "排期正在同步，请等待本次结果。" : !scheduleExit.action ? "同步已结束，请关闭提示后重新操作。" : "离开后将丢弃本次会话中的编辑。"}</p>{scheduleGuard.uncertain && <p>部分排期可能已保存，请在飞书核对。</p>}<div><button autoFocus className="secondary" onClick={() => setScheduleExit(null)}>{!scheduleExit.action || scheduleGuard.busy ? "知道了" : "继续编辑"}</button>{scheduleExit.action && !scheduleGuard.busy && <button className="primary" onClick={() => { if (scheduleGuardRef.current.busy) return; const action = scheduleExit.action; setScheduleExit(null); updateScheduleGuard({ dirty: false, busy: false, uncertain: false }); action?.(); }}>放弃并继续</button>}</div></div></div>}
+    {scheduleExit && <div ref={scheduleExitScrollRef} className="schedule-dialog-backdrop scroll-isolation-boundary"><div className="schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="schedule-exit-title" onKeyDown={(event) => { if (event.key === "Escape") setScheduleExit(null); }}><h2 id="schedule-exit-title">{!scheduleExit.action || scheduleGuard.busy ? "排期同步" : "未同步的编辑内容即将丢失"}</h2><p>{scheduleGuard.busy ? "排期正在同步，请等待本次结果。" : !scheduleExit.action ? "同步已结束，请关闭提示后重新操作。" : "离开后将丢弃本次会话中的编辑。"}</p>{scheduleGuard.uncertain && <p>部分排期可能已保存，请在飞书核对。</p>}<div><button autoFocus className="secondary" onClick={() => setScheduleExit(null)}>{!scheduleExit.action || scheduleGuard.busy ? "知道了" : "继续编辑"}</button>{scheduleExit.action && !scheduleGuard.busy && <button className="primary" onClick={() => { if (scheduleGuardRef.current.busy) return; const action = scheduleExit.action; setScheduleExit(null); updateScheduleGuard({ dirty: false, busy: false, uncertain: false }); action?.(); }}>放弃并继续</button>}</div></div></div>}
     {compact && (
       <CompactWorkspace
         items={compactItems}
@@ -1604,7 +1606,7 @@ function Workspace() {
             <Layers3 size={18} />
             工作来源
           </button>
-          <button hidden style={{ display: "none" }} className={view === "schedule" ? "nav-item active" : "nav-item"} disabled={view !== "schedule" && (syncBusy || checkBusy || workflowBusy || creationBusy || !!contextOperation)} onClick={() => navigate("schedule")}><CalendarDays size={18} />事项安排</button>
+          <button className={view === "schedule" ? "nav-item active" : "nav-item"} disabled={view !== "schedule" && (syncBusy || checkBusy || workflowBusy || creationBusy || !!contextOperation)} onClick={() => navigate("schedule")}><CalendarDays size={18} />事项安排</button>
         </nav>
         <div className="sidebar-divider" />
         <div className="workspace-label" id="type-nav-label">
