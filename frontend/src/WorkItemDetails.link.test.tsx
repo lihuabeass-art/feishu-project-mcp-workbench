@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { WorkItemDetails } from "./WorkItemDetails";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import type { CachedItem, ItemDetail } from "./types";
@@ -38,4 +40,26 @@ it("同一事项的缓存更新不丢失刚核实的飞书入口", async () => {
   view.rerender(<WorkItemDetails item={{ ...item, detail_revision: "2" }} enabled />);
   await waitFor(() => expect(cachedItemDetail).toHaveBeenCalledTimes(2));
   expect(screen.getByRole("link", { name: "打开飞书事项" }).getAttribute("href")).toBe(url);
+});
+
+it("检查状态与打开飞书事项、刷新按钮保持同一行不换行", async () => {
+  const styles = readFileSync(resolve(__dirname, "./styles.css"), "utf8");
+  const styleEl = document.createElement("style");
+  styleEl.textContent = styles;
+  document.head.appendChild(styleEl);
+  try {
+    vi.mocked(cachedItemDetail).mockResolvedValue(detail);
+    vi.mocked(refreshItemDetail).mockResolvedValue(detail);
+    render(<WorkItemDetails item={item} enabled />);
+    const link = await screen.findByRole("link", { name: "打开飞书事项" });
+    const freshness = link.closest(".detail-freshness") as HTMLElement;
+    const status = freshness.querySelector(".detail-check-status") as HTMLElement;
+    const actions = freshness.querySelector(".detail-freshness-actions") as HTMLElement;
+    expect(getComputedStyle(freshness).flexWrap).toBe("nowrap");
+    expect(getComputedStyle(status).whiteSpace).toBe("nowrap");
+    expect(getComputedStyle(actions).flexShrink).toBe("0");
+    expect(getComputedStyle(actions).whiteSpace).toBe("nowrap");
+  } finally {
+    styleEl.remove();
+  }
 });

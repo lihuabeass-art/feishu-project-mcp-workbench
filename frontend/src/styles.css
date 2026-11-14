@@ -28,9 +28,9 @@
 .rule-options { display: grid; gap: 8px; }
 .rule-options label { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 .remote-details, .remote-details dd { min-width: 0; overflow-wrap: anywhere; }
-.detail-freshness { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
-.detail-freshness-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; }
-.hint.detail-check-status { flex: 1 0 auto; min-width: 0; max-width: 100%; margin: 0; }
+.detail-freshness { display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.detail-freshness-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; flex-shrink: 0; white-space: nowrap; }
+.detail-freshness > .hint, .hint.detail-check-status { flex: 1 1 auto; min-width: 0; margin: 0; white-space: nowrap; }
 .detail-refresh { color: var(--text-secondary); }
 .business-fields > div, .field-object dl > div { padding-block: 10px; border-bottom: 1px solid var(--line); }
 .field-text { white-space: pre-wrap; }
@@ -1873,7 +1873,7 @@ input {
   background: var(--surface-hover);
 }
 .detail {
-  width: clamp(280px, 28vw, 420px);
+  width: clamp(292px, 28vw, 420px);
   flex-shrink: 0;
   background: var(--surface-raised);
   border-left: 1px solid var(--line);
@@ -1928,6 +1928,10 @@ input {
 }
 .detail-item-link {
   margin: 0;
+  flex-wrap: nowrap;
+}
+.detail-item-link a {
+  white-space: nowrap;
 }
 .detail h3 {
   font-size: 11px;
