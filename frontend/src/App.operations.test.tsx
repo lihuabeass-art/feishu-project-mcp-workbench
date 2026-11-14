@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
-import { checkConnection, executeWorkflowAction, getWorkflowActions, loadSnapshot, refreshSourceTypes, saveConnectionSettings, saveToken, saveTypeOrder, syncTodos } from "./api";
+import { checkConnection, discoverSpaces, executeWorkflowAction, getWorkflowActions, loadSnapshot, refreshSourceTypes, saveConnectionSettings, saveToken, saveTypeOrder, syncTodos } from "./api";
 import type { CreationForm } from "./creation";
 import type { ConnectionInfo, Snapshot, WorkflowResult } from "./types";
 
@@ -15,6 +15,7 @@ vi.mock("./useAppUpdater", () => ({ useAppUpdater: (options: typeof updater) => 
   return {};
 } }));
 vi.mock("./AppUpdater", () => ({ AppUpdateDialog: () => null, AppUpdateSettings: () => null }));
+vi.mock("./SchedulePage", () => ({ SchedulePage: () => <div>排期页面内容</div> }));
 // This suite verifies the workspace's operation boundaries, independently of form submission.
 vi.mock("./CreateWorkItem", () => ({ CreateWorkItem: (props: { close: () => void }) => {
   creationEntry(props);
@@ -22,7 +23,7 @@ vi.mock("./CreateWorkItem", () => ({ CreateWorkItem: (props: { close: () => void
 } }));
 vi.mock("./api", () => ({
   desktop: true,
-  loadSnapshot: vi.fn(), syncTodos: vi.fn(), checkConnection: vi.fn(),
+  loadSnapshot: vi.fn(), syncTodos: vi.fn(), checkConnection: vi.fn(), discoverSpaces: vi.fn(),
   saveToken: vi.fn(), saveConnectionSettings: vi.fn(), saveTypeOrder: vi.fn(),
   refreshSourceTypes: vi.fn(), refreshWorkspaceCatalog: vi.fn(),
   getWorkflowActions: vi.fn(), executeWorkflowAction: vi.fn(),
@@ -540,4 +541,100 @@ it("安装准备持锁期间两种布局的新建与核验一致禁用，失败�
   await act(async () => preparation.reject(new Error("持久化失败")));
   await failure;
   expect(button("新建工作事项").disabled).toBe(false);
+});
+
+it("刷新、连接检查、流程提交、新建窗口与上下文保存在途时，侧栏事项安排入口始终可点击进入", async () => {
+  enableWorkflow("verified");
+  const sync = deferred<typeof report>();
+  const check = deferred<ConnectionInfo>();
+  const workflow = deferred<WorkflowResult>();
+  const save = deferred<string>();
+  vi.mocked(syncTodos).mockReturnValueOnce(sync.promise).mockResolvedValue(report);
+  vi.mocked(checkConnection).mockReturnValueOnce(check.promise);
+  vi.mocked(executeWorkflowAction).mockReturnValueOnce(workflow.promise);
+  vi.mocked(saveToken).mockReturnValueOnce(save.promise);
+  await ready();
+
+  click("立即刷新");
+  expect(button("事项安排").disabled).toBe(false);
+  click("事项安排");
+  expect(screen.getByText("排期页面内容")).toBeTruthy();
+
+  click("连接与配置");
+  click("检查连接");
+  expect(button("事项安排").disabled).toBe(false);
+  click("事项安排");
+  expect(screen.getByText("排期页面内容")).toBeTruthy();
+
+  click(/我的工作/);
+  selectStory("full");
+  await submitWorkflow();
+  expect(button("事项安排").disabled).toBe(false);
+  click("事项安排");
+  expect(screen.getByText("排期页面内容")).toBeTruthy();
+
+  click(/我的工作/);
+  selectStory("full");
+  click("新建工作事项");
+  expect(screen.getByRole("dialog", { name: "新建窗口" })).toBeTruthy();
+  expect(button("事项安排").disabled).toBe(false);
+  click("事项安排");
+  expect(screen.getByText("排期页面内容")).toBeTruthy();
+  click("关闭新建窗口");
+
+  await act(async () => {
+    sync.resolve(report);
+    check.resolve(connected);
+    workflow.resolve({ outcome: "verified", verified: true, request_id: "r", action_id: "confirm", resynced: true, message: "流程推进已核验" });
+  });
+
+  click("连接与配置");
+  await waitFor(() => expect((screen.getByLabelText("MCP Token") as HTMLInputElement).disabled).toBe(false));
+  fireEvent.change(screen.getByLabelText("MCP Token"), { target: { value: "next-token" } });
+  click("保存 Token");
+  expect(button("事项安排").disabled).toBe(false);
+  click("事项安排");
+  expect(screen.getByText("排期页面内容")).toBeTruthy();
+  await act(async () => save.resolve("已保存"));
+});
+
+it("清单刷新在途时，工作来源中添加或编辑自定义来源仍可正常触发发现空间", async () => {
+  const data = snapshot();
+  data.capabilities!.source_queries = true;
+  data.sources.push({
+    id: "custom-story",
+    display_name: "专项需求",
+    kind: "work_item_type",
+    project_key: "space",
+    work_item_type_key: "story",
+    enabled: true,
+    executable: true,
+    reason: null,
+    action: null,
+    todo_scope: null,
+  });
+  vi.mocked(loadSnapshot).mockResolvedValue(data);
+  const sync = deferred<typeof report>();
+  vi.mocked(syncTodos).mockReturnValue(sync.promise);
+  vi.mocked(discoverSpaces).mockResolvedValue({
+    spaces: [{ project_key: "space-new", name: "新发现空间", simple_name: "new", projects: [] }],
+    has_remote_spaces: true,
+  });
+  await ready();
+  click("立即刷新");
+  expect(syncTodos).toHaveBeenCalledOnce();
+
+  click("工作来源");
+  click("添加自定义来源");
+  expect(button("发现空间").disabled).toBe(false);
+  click("发现空间");
+  await waitFor(() => expect(discoverSpaces).toHaveBeenCalledOnce());
+
+  click("取消");
+  click(/编辑专项需求/);
+  expect(button("发现空间").disabled).toBe(false);
+  click("发现空间");
+  await waitFor(() => expect(discoverSpaces).toHaveBeenCalledTimes(2));
+
+  await act(async () => sync.resolve(report));
 });

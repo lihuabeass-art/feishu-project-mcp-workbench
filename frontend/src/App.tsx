@@ -1055,7 +1055,7 @@ function Workspace() {
   }
 
   async function discoverSourceSpaces() {
-    if (!desktop || !data || loading || workspaceActionBlocked("sync", currentActivity()))
+    if (!desktop || !data || loading || currentActivity().context)
       throw new Error("当前正在读取或保存，请等待完成后再发现空间。");
     const request = ++catalogRequest.current;
     catalogInFlight.current = null;
@@ -1606,7 +1606,7 @@ function Workspace() {
             <Layers3 size={18} />
             工作来源
           </button>
-          <button className={view === "schedule" ? "nav-item active" : "nav-item"} disabled={view !== "schedule" && (syncBusy || checkBusy || workflowBusy || creationBusy || !!contextOperation)} onClick={() => navigate("schedule")}><CalendarDays size={18} />事项安排</button>
+          <button className={view === "schedule" ? "nav-item active" : "nav-item"} onClick={() => navigate("schedule")}><CalendarDays size={18} />事项安排</button>
         </nav>
         <div className="sidebar-divider" />
         <div className="workspace-label" id="type-nav-label">
@@ -1909,7 +1909,7 @@ function Workspace() {
               <WorkSources sources={data?.sources || []} items={data?.items || []}
                 workspaceCatalog={data?.workspace_catalog}
                 discoverSpaces={discoverSourceSpaces}
-                spaceDiscoveryDisabled={loading || workspaceActionBlocked("sync", activity)}
+                spaceDiscoveryDisabled={loading || activity.context}
                 spaceDiscoveryWarning={catalogWarning}
                 selectedId={sourceId} select={changeSource}
                 disabled={!desktop || loading || !!contextOperation}
