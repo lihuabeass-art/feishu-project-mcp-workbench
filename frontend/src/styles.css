@@ -61,7 +61,7 @@
 .field-values { display: grid; gap: 8px; }
 .field-object summary { cursor: pointer; color: var(--green); }
 .field-object dl { padding-left: 12px; }
-.remote-details h4 { margin-bottom: 10px; }
+.remote-details h4, .detail-description h4 { font-size: 14px; line-height: normal; margin-bottom: 10px; }
 .error-text { color: var(--error-text); white-space: pre-wrap; overflow-wrap: anywhere; }
 * {
   box-sizing: border-box;
