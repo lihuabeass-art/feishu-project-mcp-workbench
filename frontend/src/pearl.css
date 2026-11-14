@@ -236,6 +236,10 @@
   backdrop-filter: blur(20px);
 }
 
+:root[data-appearance="pearl"] .list-footer {
+  border-radius: 0 0 18px 18px;
+}
+
 :root[data-appearance="pearl"] .tab.active::after {
   height: 3px;
   background: var(--pearl-spectrum);
