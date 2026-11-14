@@ -1,33 +1,118 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { CalendarDays, ChevronLeft, ChevronRight, UserRound } from "lucide-react";
+import { createPortal } from "react-dom";
+import {
+  CalendarDays,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Lock,
+  PanelLeftClose,
+  PanelLeftOpen,
+  RefreshCw,
+  RotateCcw,
+  UserRound,
+  X,
+} from "lucide-react";
 import { DateRangePicker } from "./DateRangePicker";
 import { Select } from "./Select";
 import { ExternalLink } from "./ExternalLink";
+import { useScrollIsolation } from "./useScrollIsolation";
 import type { Snapshot } from "./types";
 import { asError } from "./model";
 import { readFailureMessage } from "./readFeedback";
-import { closeScheduleSession, loadScheduleSession, submitScheduleTargets, type SchedulePerson, type ScheduleRead, type ScheduleRecord } from "./scheduleApi";
-import { cancelSchedule, editSchedule, resizeSchedule, scheduleChanged, scheduleValidation, settleSchedule, shiftSchedule, validSchedule, type ScheduleTarget } from "./scheduleSession";
+import {
+  closeScheduleSession,
+  loadScheduleSession,
+  submitScheduleTargets,
+  type SchedulePerson,
+  type ScheduleRead,
+  type ScheduleRecord,
+} from "./scheduleApi";
+import {
+  applyQuickSchedulePreset,
+  classifyScheduleReview,
+  editSchedule,
+  hasBaselineSchedule,
+  resizeSchedule,
+  revertSchedule,
+  scheduleChanged,
+  scheduleSpanDays,
+  scheduleValidation,
+  settleSchedule,
+  shiftSchedule,
+  validSchedule,
+  type ScheduleQuickPreset,
+  type ScheduleTarget,
+} from "./scheduleSession";
 import "./schedule.css";
 
 type Entry = ScheduleTarget & { record: ScheduleRecord; resultMessage?: string | null };
 type Guard = { dirty: boolean; busy: boolean; uncertain: boolean };
 type Drag = { id: string; kind: "new" | "move" | "start" | "end"; grabbed: string };
+
 const addDays = (value: string, days: number) => {
-  const date = new Date(`${value}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10);
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 };
-const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-const monday = (value: string) => addDays(value, -((new Date(`${value}T00:00:00Z`).getUTCDay() + 6) % 7));
-const initials = (name: string) => /[\u3400-\u9fff]/.test(name) ? Array.from(name)[0] : name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
-const resultLabel = { accepted: "上次提交：收到成功回执", failed: "上次提交：失败", uncertain: "上次提交：结果不确定", unsent: "上次提交：未发送" } as const;
+const today = () =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+const monday = (value: string) =>
+  addDays(value, -((new Date(`${value}T00:00:00Z`).getUTCDay() + 6) % 7));
+const initials = (name: string) =>
+  /[\u3400-\u9fff]/.test(name)
+    ? Array.from(name)[0]
+    : name
+        .trim()
+        .split(/\s+/)
+        .slice(0, 2)
+        .map((part) => part[0])
+        .join("")
+        .toUpperCase();
+const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
+const resultLabel = {
+  accepted: "上次提交：收到成功回执",
+  failed: "上次提交：失败",
+  uncertain: "上次提交：结果不确定",
+  unsent: "上次提交：未发送",
+} as const;
+
 function Avatar({ person }: { person?: SchedulePerson }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [person?.avatar]);
-  const color = Array.from(person?.id || "").reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) >>> 0, 0) % 4;
-  return <span className={`schedule-avatar schedule-avatar-${color}`} aria-hidden="true">{person?.avatar && !failed ? <img src={person.avatar} alt="" onError={() => setFailed(true)} /> : person?.name ? initials(person.name) : <UserRound size={16} />}</span>;
+  const color =
+    Array.from(person?.id || "").reduce(
+      (hash, char) => ((hash * 31 + char.charCodeAt(0)) >>> 0),
+      0,
+    ) % 4;
+  return (
+    <span className={`schedule-avatar schedule-avatar-${color}`} aria-hidden="true">
+      {person?.avatar && !failed ? (
+        <img src={person.avatar} alt="" onError={() => setFailed(true)} />
+      ) : person?.name ? (
+        initials(person.name)
+      ) : (
+        <UserRound size={16} />
+      )}
+    </span>
+  );
 }
 
-export function SchedulePage({ onGuardChange, requestReload, snapshot }: { onGuardChange: (guard: Guard) => void; requestReload: (reload: () => void) => void; snapshot?: Snapshot | null }) {
+export function SchedulePage({
+  onGuardChange,
+  requestReload,
+  snapshot,
+}: {
+  onGuardChange: (guard: Guard) => void;
+  requestReload: (reload: () => void) => void;
+  snapshot?: Snapshot | null;
+}) {
   const [epoch, setEpoch] = useState(0);
   const [read, setRead] = useState<ScheduleRead | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -38,151 +123,1627 @@ export function SchedulePage({ onGuardChange, requestReload, snapshot }: { onGua
   const [report, setReport] = useState("");
   const [selected, setSelected] = useState("");
   const [week, setWeek] = useState(() => monday(today()));
+  const [daySpan, setDaySpan] = useState<7 | 14>(7);
   const [view, setView] = useState<"mine" | "people">("mine");
   const [source, setSource] = useState("");
   const [project, setProject] = useState("");
   const [type, setType] = useState("");
   const [person, setPerson] = useState("");
   const [personQuery, setPersonQuery] = useState("");
+  const [editableOnly, setEditableOnly] = useState(false);
+  const [poolCollapsed, setPoolCollapsed] = useState(false);
+  const [poolTab, setPoolTab] = useState<"pending" | "outside">("pending");
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [preview, setPreview] = useState<{ id: string; start: string; end: string } | null>(null);
   const drag = useRef<Drag | null>(null);
+  const reviewBackdropRef = useRef<HTMLDivElement>(null);
+  const reviewScrollRef = useScrollIsolation(reviewBackdropRef);
+
+  const currentToday = today();
   const dirty = entries.some(scheduleChanged);
   const uncertain = entries.some((entry) => entry.result === "uncertain");
-  const nodeKey = (entry: Entry) => JSON.stringify([entry.identity.connection, entry.identity.project, entry.identity.type, entry.identity.item, entry.identity.node]);
+  const nodeKey = (entry: Entry) =>
+    JSON.stringify([
+      entry.identity.connection,
+      entry.identity.project,
+      entry.identity.type,
+      entry.identity.item,
+      entry.identity.node,
+    ]);
   const frozenNodes = new Set(entries.filter((entry) => entry.result === "uncertain").map(nodeKey));
-  useEffect(() => { onGuardChange({ dirty, busy, uncertain }); }, [dirty, busy, uncertain, onGuardChange]);
+
+  useEffect(() => {
+    onGuardChange({ dirty, busy, uncertain });
+  }, [dirty, busy, uncertain, onGuardChange]);
+
   useEffect(() => {
     let active = true;
-    setLoading(true); setError(""); setRead(null); setEntries([]); setSelected(""); setReport("");
+    setLoading(true);
+    setError("");
+    setRead(null);
+    setEntries([]);
+    setSelected("");
+    setReport("");
+    setReviewOpen(false);
     const request = loadScheduleSession();
-    request.then((result) => {
-      if (!active) return;
-      setRead(result);
-      setEntries(result.targets.map((record) => ({ id: record.id, nodeId: record.identity.node, identity: record.identity, baseline: { ...record.dates }, dates: { ...record.dates }, cancel: false, readOnlyReason: record.readOnlyReason || (!record.identity.owner && !record.ownerIds.some(Boolean) ? "未能确认负责人，排期仅供查看" : undefined), record })));
-    }).catch((failure: unknown) => { if (active) setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`); }).finally(() => { if (active) setLoading(false); });
-    return () => { active = false; void closeScheduleSession(request).catch(() => {}); };
+    request
+      .then((result) => {
+        if (!active) return;
+        setRead(result);
+        setEntries(
+          result.targets.map((record) => ({
+            id: record.id,
+            nodeId: record.identity.node,
+            identity: record.identity,
+            baseline: { ...record.dates },
+            dates: { ...record.dates },
+            cancel: false,
+            readOnlyReason:
+              record.readOnlyReason ||
+              (!record.identity.owner && !record.ownerIds.some(Boolean)
+                ? "未能确认负责人，排期仅供查看"
+                : undefined),
+            record,
+          })),
+        );
+      })
+      .catch((failure: unknown) => {
+        if (active) setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+      void closeScheduleSession(request).catch(() => {});
+    };
   }, [epoch]);
-  const people = useMemo(() => new Map(read?.people.map((item) => [JSON.stringify([item.connection || null, item.project || null, item.id]), item]) || []), [read]);
-  const personFor = (entry: Entry, id: string) => people.get(JSON.stringify([entry.identity.connection, entry.identity.project, id])) || people.get(JSON.stringify([null, null, id]));
+
+  const people = useMemo(
+    () =>
+      new Map(
+        read?.people.map((item) => [
+          JSON.stringify([item.connection || null, item.project || null, item.id]),
+          item,
+        ]) || [],
+      ),
+    [read],
+  );
+  const personFor = (entry: Entry, id: string) =>
+    people.get(JSON.stringify([entry.identity.connection, entry.identity.project, id])) ||
+    people.get(JSON.stringify([null, null, id]));
   const displayPerson = (entry: Entry, id: string) => {
     const name = personFor(entry, id)?.name || id;
-    const peers = (read?.people || []).filter((item) => item.connection === entry.identity.connection && item.project === entry.identity.project && item.name === name && item.id !== id);
+    const peers = (read?.people || []).filter(
+      (item) =>
+        item.connection === entry.identity.connection &&
+        item.project === entry.identity.project &&
+        item.name === name &&
+        item.id !== id,
+    );
     if (!peers.length) return name;
     const chars = Array.from(id);
     let length = Math.min(6, chars.length);
-    while (length < chars.length && peers.some((peer) => Array.from(peer.id).slice(-length).join("") === chars.slice(-length).join(""))) length++;
+    while (
+      length < chars.length &&
+      peers.some(
+        (peer) => Array.from(peer.id).slice(-length).join("") === chars.slice(-length).join(""),
+      )
+    )
+      length++;
     return `${name} (${chars.slice(-length).join("")})`;
   };
-  const groupKey = (entry: Entry, id: string) => JSON.stringify([entry.identity.connection, entry.identity.project, id]);
-  const projectNames = new Map((snapshot?.workspace_catalog || []).map((item) => [item.project_key, item.name || item.simple_name || item.project_key]));
-  const typeNames = new Map((snapshot?.sources || []).flatMap((item) => (item.type_scope?.types || []).map((type) => [JSON.stringify([type.project_key, type.type_key]), type.type_name] as const)));
-  const days = Array.from({ length: 7 }, (_, index) => addDays(week, index));
-  const visible = entries.filter((entry) => (!source || entry.record.sourceIds.includes(source)) && (!project || entry.identity.project === project) && (!type || JSON.stringify([entry.identity.project, entry.identity.type]) === type) && (view !== "people" || !person || entry.record.ownerIds.includes(person)) && (view === "people" || !!read?.accountError || entry.record.mine || entry.record.sourceAggregate || entry.record.unknownOwner || (!entry.identity.owner && !entry.record.ownerIds.some(Boolean))));
+  const groupKey = (entry: Entry, id: string) =>
+    JSON.stringify([entry.identity.connection, entry.identity.project, id]);
+  const projectNames = new Map(
+    (snapshot?.workspace_catalog || []).map((item) => [
+      item.project_key,
+      item.name || item.simple_name || item.project_key,
+    ]),
+  );
+  const typeNames = new Map(
+    (snapshot?.sources || []).flatMap((item) =>
+      (item.type_scope?.types || []).map(
+        (typeItem) => [JSON.stringify([typeItem.project_key, typeItem.type_key]), typeItem.type_name] as const,
+      ),
+    ),
+  );
+
+  const isEditableTarget = (entry: Entry) =>
+    !read?.accountError &&
+    !entry.record.sourceAggregate &&
+    entry.record.mine &&
+    !entry.readOnlyReason &&
+    !frozenNodes.has(nodeKey(entry));
+  const canEdit = (entry: Entry) => view === "mine" && isEditableTarget(entry) && !busy;
+
+  const days = Array.from({ length: daySpan }, (_, index) => addDays(week, index));
+  const windowStart = days[0];
+  const windowEnd = days[days.length - 1];
+
+  const visible = entries.filter(
+    (entry) =>
+      (!source || entry.record.sourceIds.includes(source)) &&
+      (!project || entry.identity.project === project) &&
+      (!type || JSON.stringify([entry.identity.project, entry.identity.type]) === type) &&
+      (view !== "people" || !person || entry.record.ownerIds.includes(person)) &&
+      (view === "people" ||
+        !!read?.accountError ||
+        entry.record.mine ||
+        entry.record.sourceAggregate ||
+        entry.record.unknownOwner ||
+        (!entry.identity.owner && !entry.record.ownerIds.some(Boolean))) &&
+      (view !== "mine" || !editableOnly || isEditableTarget(entry)),
+  );
+
   const personOptions = new Map<string, Set<string>>();
   for (const item of read?.people || []) {
     if (project && item.project && item.project !== project) continue;
     if (!`${item.name} ${item.id}`.toLowerCase().includes(personQuery.toLowerCase())) continue;
-    const names = personOptions.get(item.id) || new Set<string>(); names.add(item.name || item.id); personOptions.set(item.id, names);
+    const names = personOptions.get(item.id) || new Set<string>();
+    names.add(item.name || item.id);
+    personOptions.set(item.id, names);
   }
-  const scopeSources = source ? read?.sources.filter((item) => item.id === source) || [] : read?.sources || [];
-  const scopeErrors = read?.itemErrors?.filter((item) => !source || item.sources.includes(source)) || [];
-  const scopeComplete = source ? scopeSources.length > 0 && scopeSources.every((item) => item.complete) && scopeErrors.length === 0 : read?.complete;
-  const personRows = (items: Entry[]) => items.flatMap((entry) => (entry.record.ownerIds.length ? entry.record.ownerIds : [""]).filter((id) => !person || id === person).map((owner) => ({ entry, owner }))).sort((a, b) => (personFor(a.entry, a.owner)?.name || a.owner).localeCompare(personFor(b.entry, b.owner)?.name || b.owner) || groupKey(a.entry, a.owner).localeCompare(groupKey(b.entry, b.owner)));
-  const scheduled = visible.filter((entry) => validSchedule(entry.dates) && entry.dates.start <= days[6] && entry.dates.end >= days[0]);
-  const rows = view === "people" ? personRows(scheduled) : scheduled.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
+
+  const scopeSources = source
+    ? read?.sources.filter((item) => item.id === source) || []
+    : read?.sources || [];
+  const scopeErrors =
+    read?.itemErrors?.filter((item) => !source || item.sources.includes(source)) || [];
+  const scopeComplete = source
+    ? scopeSources.length > 0 && scopeSources.every((item) => item.complete) && scopeErrors.length === 0
+    : read?.complete;
+
+  const personRows = (items: Entry[]) =>
+    items
+      .flatMap((entry) =>
+        (entry.record.ownerIds.length ? entry.record.ownerIds : [""])
+          .filter((id) => !person || id === person)
+          .map((owner) => ({ entry, owner })),
+      )
+      .sort(
+        (a, b) =>
+          (personFor(a.entry, a.owner)?.name || a.owner).localeCompare(
+            personFor(b.entry, b.owner)?.name || b.owner,
+          ) || groupKey(a.entry, a.owner).localeCompare(groupKey(b.entry, b.owner)),
+      );
+
+  const scheduled = visible.filter(
+    (entry) =>
+      validSchedule(entry.dates) &&
+      entry.dates.start <= windowEnd &&
+      entry.dates.end >= windowStart,
+  );
+  const rows =
+    view === "people"
+      ? personRows(scheduled)
+      : scheduled.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
+
   const pending = visible.filter((entry) => !validSchedule(entry.dates));
-  const pendingRows = view === "people" ? personRows(pending) : pending.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
+  const pendingRows =
+    view === "people"
+      ? personRows(pending)
+      : pending.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
+
+  const outside = visible.filter(
+    (entry) =>
+      validSchedule(entry.dates) &&
+      (entry.dates.end < windowStart || entry.dates.start > windowEnd),
+  );
+  const outsideRows =
+    view === "people"
+      ? personRows(outside)
+      : outside.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
+
   const selectedEntry = visible.find((entry) => entry.id === selected);
-  const canEdit = (entry: Entry) => view === "mine" && !read?.accountError && !entry.record.sourceAggregate && entry.record.mine && !entry.readOnlyReason && !frozenNodes.has(nodeKey(entry)) && !busy;
+
+  const changedEntries = entries.filter(
+    (entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)),
+  );
+  const reviewScope = entries.filter(
+    (entry) => isEditableTarget(entry) || (scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry))),
+  );
+  const addedEntries = changedEntries.filter(
+    (entry) => classifyScheduleReview(entry) === "added",
+  );
+  const modifiedEntries = changedEntries.filter(
+    (entry) => classifyScheduleReview(entry) === "modified",
+  );
+  const unchangedEntries = reviewScope.filter((entry) => !scheduleChanged(entry));
+
+  useEffect(() => {
+    if (reviewOpen && changedEntries.length === 0) setReviewOpen(false);
+  }, [reviewOpen, changedEntries.length]);
+
+  useEffect(() => {
+    if (!reviewOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busyRef.current) {
+        event.preventDefault();
+        setReviewOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [reviewOpen]);
+
   const ownerLabel = (entry: Entry, owner: string) => {
-    const ids = entry.identity.scope === "node" ? entry.record.ownerIds.filter(Boolean) : [owner || entry.identity.owner || ""].filter(Boolean);
+    const ids =
+      entry.identity.scope === "node"
+        ? entry.record.ownerIds.filter(Boolean)
+        : [owner || entry.identity.owner || ""].filter(Boolean);
     const labels = Array.from(new Set(ids)).map((id) => displayPerson(entry, id));
     if (entry.record.unknownOwner) labels.push("尚有负责人身份不明");
     return labels.join("、") || "负责人不明";
   };
-  const targetLabel = (entry: Entry, owner: string) => `${entry.record.cacheKind === "detail_node" ? "事项详情缓存节点 · " : entry.record.sourceAggregate ? "来源聚合日期 · " : entry.identity.scope === "node" ? "节点共同排期 · " : ""}${ownerLabel(entry, owner)}`;
+  const targetLabel = (entry: Entry, owner: string) =>
+    `${
+      entry.record.cacheKind === "detail_node"
+        ? "事项详情缓存节点 · "
+        : entry.record.sourceAggregate
+          ? "来源聚合日期 · "
+          : entry.identity.scope === "node"
+            ? "节点共同排期 · "
+            : ""
+    }${ownerLabel(entry, owner)}`;
   const dateStatus = (entry: Entry) => {
-    if ((!entry.record.cacheKind || entry.record.cacheKind === "node") && !entry.record.sourceAggregate) return entry.dates.start || entry.dates.end ? "日期待补齐" : "待安排";
-    const label = (state?: string) => ({ empty: "明确为空", missing: "字段缺失", invalid: "日期无效", unknown: "未知", value: "有值" }[state || "unknown"] || "未知");
+    if ((!entry.record.cacheKind || entry.record.cacheKind === "node") && !entry.record.sourceAggregate) {
+      if (validSchedule(entry.dates))
+        return `已排期：${entry.dates.start} ~ ${entry.dates.end}（共 ${scheduleSpanDays(entry.dates)} 个自然日）`;
+      return entry.dates.start || entry.dates.end ? "日期待补齐" : "待安排";
+    }
+    const label = (state?: string) =>
+      ({
+        empty: "明确为空",
+        missing: "字段缺失",
+        invalid: "日期无效",
+        unknown: "未知",
+        value: "有值",
+      }[state || "unknown"] || "未知");
     return `开始：${entry.dates.start || label(entry.record.startState)}；结束：${entry.dates.end || label(entry.record.endState)}`;
   };
-  const update = (id: string, fn: (entry: Entry) => ScheduleTarget) => setEntries((current) => current.map((entry) => entry.id === id ? { ...entry, ...fn(entry) } : entry));
-  const options = (values: Array<[string, string]>, all: string) => [{ value: "", label: all }, ...Array.from(new Map(values)).map(([value, label]) => ({ value, label }))];
+  const projectLabel = (entry: Entry) =>
+    projectNames.get(entry.identity.project) || entry.record.projectName || entry.identity.project;
+  const typeLabel = (entry: Entry) =>
+    typeNames.get(JSON.stringify([entry.identity.project, entry.identity.type])) ||
+    entry.record.typeName ||
+    entry.identity.type;
+  const formatBaselineRange = (dates: { start: string; end: string }) => {
+    const s = dates.start.trim();
+    const e = dates.end.trim();
+    return s && e ? `${s} ~ ${e}` : s || e;
+  };
+
+  const update = (id: string, fn: (entry: Entry) => ScheduleTarget) =>
+    setEntries((current) =>
+      current.map((entry) => (entry.id === id ? { ...entry, ...fn(entry) } : entry)),
+    );
+  const options = (values: Array<[string, string]>, all: string) => [
+    { value: "", label: all },
+    ...Array.from(new Map(values)).map(([value, label]) => ({ value, label })),
+  ];
+
+  const applyQuickPreset = (id: string, preset: ScheduleQuickPreset) => {
+    setSelected(id);
+    const target = entries.find((item) => item.id === id);
+    const planned =
+      target && canEdit(target)
+        ? applyQuickSchedulePreset(target.dates, preset, currentToday)
+        : null;
+    update(id, (entry) => {
+      if (!canEdit(entry)) return entry;
+      const nextDates = applyQuickSchedulePreset(entry.dates, preset, currentToday);
+      return nextDates ? editSchedule(entry, nextDates) : entry;
+    });
+    if (planned && (planned.end < windowStart || planned.start > windowEnd)) {
+      setWeek(monday(planned.start));
+    }
+  };
+
+  const revertAll = () => {
+    if (busyRef.current) return;
+    setEntries((current) =>
+      current.map((entry) =>
+        frozenNodes.has(nodeKey(entry)) ? entry : { ...entry, ...revertSchedule(entry) },
+      ),
+    );
+    setReviewOpen(false);
+  };
+
   const startDrag = (event: DragEvent, entry: Entry, kind: Drag["kind"], grabbed: string) => {
-    if (!canEdit(entry)) { event.preventDefault(); return; }
-    drag.current = { id: entry.id, kind, grabbed }; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", entry.id); setSelected(entry.id);
+    if (!canEdit(entry)) {
+      event.preventDefault();
+      return;
+    }
+    drag.current = { id: entry.id, kind, grabbed };
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", entry.id);
+    setSelected(entry.id);
   };
+
   const previewDay = (day: string) => {
-    const current = drag.current; const entry = entries.find((item) => item.id === current?.id);
+    const current = drag.current;
+    const entry = entries.find((item) => item.id === current?.id);
     if (!current || !entry) return;
-    const dates = current.kind === "new" ? { start: day, end: day } : current.kind === "move" ? shiftSchedule(entry.dates, current.grabbed, day) : resizeSchedule(entry.dates, current.kind, day);
-    if (dates) setPreview((old) => old?.id === entry.id && old.start === dates.start && old.end === dates.end ? old : { id: entry.id, ...dates });
+    const dates =
+      current.kind === "new"
+        ? { start: day, end: day }
+        : current.kind === "move"
+          ? shiftSchedule(entry.dates, current.grabbed, day)
+          : resizeSchedule(entry.dates, current.kind, day);
+    if (dates)
+      setPreview((old) =>
+        old?.id === entry.id && old.start === dates.start && old.end === dates.end
+          ? old
+          : { id: entry.id, ...dates },
+      );
   };
+
   const dropDay = (event: DragEvent, day: string) => {
-    event.preventDefault(); const current = drag.current; drag.current = null; setPreview(null); if (!current || busyRef.current) return;
+    event.preventDefault();
+    const current = drag.current;
+    drag.current = null;
+    setPreview(null);
+    if (!current || busyRef.current) return;
     update(current.id, (entry) => {
       if (!canEdit(entry)) return entry;
-      const dates = current.kind === "new" ? { start: day, end: day } : current.kind === "move" ? shiftSchedule(entry.dates, current.grabbed, day) : resizeSchedule(entry.dates, current.kind, day);
+      const dates =
+        current.kind === "new"
+          ? { start: day, end: day }
+          : current.kind === "move"
+            ? shiftSchedule(entry.dates, current.grabbed, day)
+            : resizeSchedule(entry.dates, current.kind, day);
       return dates ? editSchedule(entry, dates) : entry;
     });
   };
-  const cancelDrop = (event: DragEvent) => { event.preventDefault(); const current = drag.current; drag.current = null; setPreview(null); if (current && current.kind !== "new" && !busyRef.current) update(current.id, cancelSchedule); };
+
+  const poolDrop = (event: DragEvent) => {
+    event.preventDefault();
+    const current = drag.current;
+    drag.current = null;
+    setPreview(null);
+    if (!current || current.kind === "new" || busyRef.current) return;
+    update(current.id, (entry) =>
+      !hasBaselineSchedule(entry.baseline) ? revertSchedule(entry) : entry,
+    );
+  };
+
+  function openReviewOrValidate() {
+    if (busyRef.current) return;
+    const changed = entries.filter(
+      (entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)),
+    );
+    const invalid = changed
+      .map((entry) => ({ entry, message: scheduleValidation(entry) }))
+      .filter((entry) => entry.message);
+    if (!changed.length) return;
+    if (invalid.length) {
+      setSelected(invalid[0].entry.id);
+      setReport(`无法同步：${invalid[0].entry.record.title}：${invalid[0].message}`);
+      return;
+    }
+    setReviewOpen(true);
+  }
+
   async function submit() {
     if (busyRef.current) return;
-    const changed = entries.filter((entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)));
-    const invalid = changed.map((entry) => ({ entry, message: scheduleValidation(entry) })).filter((entry) => entry.message);
+    const changed = entries.filter(
+      (entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)),
+    );
+    const invalid = changed
+      .map((entry) => ({ entry, message: scheduleValidation(entry) }))
+      .filter((entry) => entry.message);
     if (!changed.length) return;
-    if (invalid.length) { setSelected(invalid[0].entry.id); setReport(`无法同步：${invalid[0].entry.record.title}：${invalid[0].message}`); return; }
-    const frozen = changed.map((entry) => ({ id: entry.id, identity: entry.identity, dates: { ...entry.dates }, cancel: entry.cancel }));
-    busyRef.current = true; onGuardChange({ dirty: true, busy: true, uncertain }); setBusy(true); setReport("");
+    if (invalid.length) {
+      setReviewOpen(false);
+      setSelected(invalid[0].entry.id);
+      setReport(`无法同步：${invalid[0].entry.record.title}：${invalid[0].message}`);
+      return;
+    }
+    const frozen = changed.map((entry) => ({
+      id: entry.id,
+      identity: entry.identity,
+      dates: { ...entry.dates },
+      cancel: entry.cancel,
+    }));
+    setReviewOpen(false);
+    busyRef.current = true;
+    onGuardChange({ dirty: true, busy: true, uncertain });
+    setBusy(true);
+    setReport("");
     try {
       if (!read) throw new Error("排期会话已结束");
       const response = await submitScheduleTargets(read.sessionId, frozen);
       const results = new Map(response.results.map((result) => [result.id, result]));
-      setEntries((current) => current.map((entry) => {
-        const submission = frozen.find((item) => item.id === entry.id); if (!submission) return entry;
-        return { ...entry, ...settleSchedule(entry, submission.dates, results.get(entry.id)?.result || "uncertain"), resultMessage: results.get(entry.id)?.message };
-      }));
-      const count = (result: string) => frozen.filter((item) => (results.get(item.id)?.result || "uncertain") === result).length;
-      setReport(`本次同步：收到成功回执 ${count("accepted")} 项，失败 ${count("failed")} 项，结果不确定 ${count("uncertain")} 项，未发送 ${count("unsent")} 项；实际写请求 ${response.writeRequests} 次。成功回执未回读核验。`);
+      setEntries((current) =>
+        current.map((entry) => {
+          const submission = frozen.find((item) => item.id === entry.id);
+          if (!submission) return entry;
+          return {
+            ...entry,
+            ...settleSchedule(
+              entry,
+              submission.dates,
+              results.get(entry.id)?.result || "uncertain",
+            ),
+            resultMessage: results.get(entry.id)?.message,
+          };
+        }),
+      );
+      const count = (result: string) =>
+        frozen.filter((item) => (results.get(item.id)?.result || "uncertain") === result).length;
+      setReport(
+        `本次同步：收到成功回执 ${count("accepted")} 项，失败 ${count("failed")} 项，结果不确定 ${count("uncertain")} 项，未发送 ${count("unsent")} 项；实际写请求 ${response.writeRequests} 次。成功回执未回读核验。`,
+      );
     } catch (failure) {
       // 只有桌面命令明确标记发送前失败时才能安全重试。
-      const error = failure as { schedule_not_sent?: boolean; message?: string } | null;
-      const unsent = error?.schedule_not_sent === true;
-      setEntries((current) => current.map((entry) => { const item = frozen.find((value) => value.id === entry.id); return item ? { ...entry, ...settleSchedule(entry, item.dates, unsent ? "unsent" : "uncertain"), resultMessage: unsent ? error?.message : undefined } : entry; }));
-      setReport(`本次同步：收到成功回执 0 项，失败 0 项，结果不确定 ${unsent ? 0 : frozen.length} 项，未发送 ${unsent ? frozen.length : 0} 项。${unsent ? error?.message || "会话校验未通过" : "请先在飞书核对；本次不会自动重发。"}`);
-    } finally { busyRef.current = false; setBusy(false); }
+      const err = failure as { schedule_not_sent?: boolean; message?: string } | null;
+      const unsent = err?.schedule_not_sent === true;
+      setEntries((current) =>
+        current.map((entry) => {
+          const item = frozen.find((value) => value.id === entry.id);
+          return item
+            ? {
+                ...entry,
+                ...settleSchedule(entry, item.dates, unsent ? "unsent" : "uncertain"),
+                resultMessage: unsent ? err?.message : undefined,
+              }
+            : entry;
+        }),
+      );
+      setReport(
+        `本次同步：收到成功回执 0 项，失败 0 项，结果不确定 ${unsent ? 0 : frozen.length} 项，未发送 ${unsent ? frozen.length : 0} 项。${unsent ? err?.message || "会话校验未通过" : "请先在飞书核对；本次不会自动重发。"}`,
+      );
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   }
-  return <section className="schedule-page" aria-label="事项安排">
-    <div className="schedule-heading"><div><h1>事项安排</h1><p>当前个人待办覆盖事项的节点安排</p></div><button className="primary" disabled={!entries.some((entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry))) || busy || loading} onClick={() => void submit()}>{busy ? "正在同步…" : "同步排期"}</button></div>
-    {loading ? <p role="status">正在读取个人待办及节点排期…</p> : error ? <div className="banner warning" role="alert">{error} <button className="secondary" onClick={() => setEpoch((value) => value + 1)}>重新读取</button></div> : read && <>
-      <div className="schedule-scope">来源：{scopeSources.map((item) => item.name).join("、") || "无可执行来源"}{scopeSources.length > 0 && ` · ${scopeComplete ? "完整读取" : "部分读取失败"}`} · 读取时间 {read.readAt}{read.readRequests !== undefined && ` · 读取请求 ${read.readRequests} 次`}<p>来源筛选按事项归属；节点不一定都出现在该来源的待办中。</p>{scopeSources.filter((item) => item.error).map((item) => <p key={item.id}>{item.name}：{item.error}</p>)}</div>
-      {read.accountError && <div className="banner warning" role="alert">{read.accountError}；以下显示当前来源中可读取的安排，均为只读。</div>}
-      {!!scopeErrors.length && <div className="banner warning">部分事项读取不完整，已保留本次成功读取的内容。{scopeErrors.map((item, index) => <p key={index}>{item.project} / {item.type} / {item.item} · {item.sources.map((id) => read.sources.find((source) => source.id === id)?.name || id).join("、")}：{item.message}</p>)}</div>}
-      {report && <div className="banner warning" role="status">{report}</div>}
-      {uncertain && <div className="banner warning">部分排期可能已保存，请在飞书核对。<button className="secondary" disabled={busy} onClick={() => requestReload(() => setEpoch((value) => value + 1))}>放弃本次编辑并重新读取</button></div>}
-      <div className="schedule-toolbar"><div className="schedule-tabs" role="group" aria-label="排期视角"><button className={view === "mine" ? "active" : ""} onClick={() => setView("mine")}>我的排期</button><button className={view === "people" ? "active" : ""} onClick={() => setView("people")}>按人查看</button></div>
-        <Select ariaLabel="筛选来源" value={source} onChange={setSource} options={options(read.sources.map((item) => [item.id, item.name]), "全部来源")} />
-        <Select ariaLabel="筛选空间" value={project} onChange={(value) => { setProject(value); setType(""); }} options={options(entries.map((item) => [item.identity.project, projectNames.get(item.identity.project) || item.record.projectName || item.identity.project]), "全部空间")} />
-        <Select ariaLabel="筛选类型" value={type} onChange={setType} options={options(entries.filter((item) => !project || item.identity.project === project).map((item) => [JSON.stringify([item.identity.project, item.identity.type]), `${projectNames.get(item.identity.project) || item.record.projectName || item.identity.project} · ${typeNames.get(JSON.stringify([item.identity.project, item.identity.type])) || item.record.typeName || item.identity.type}`]), "全部类型")} />
-        {view === "people" && <><input aria-label="搜索人员" placeholder="搜索人员" value={personQuery} onChange={(event) => setPersonQuery(event.target.value)} /><Select ariaLabel="筛选人员" value={person} onChange={setPerson} options={options(Array.from(personOptions, ([id, names]) => [id, `${Array.from(names).join(" / ")} · ${id}`]), "全部人员")} /></>}
-      </div>
-      <div className="schedule-layout"><aside className="schedule-pending" onDragOver={(event) => { if (drag.current && drag.current.kind !== "new") { event.preventDefault(); setPreview(null); } }} onDrop={cancelDrop}><h2>日期未完整</h2><p>拖到日历安排日期，拖回此处取消排期。</p>{pendingRows.map(({ entry, owner }, index) => <Fragment key={`${entry.id}:${owner}`} >{view === "people" && (index === 0 || groupKey(pendingRows[index - 1].entry, pendingRows[index - 1].owner) !== groupKey(entry, owner)) && <div className="schedule-group"><Avatar person={personFor(entry, owner)} />{personFor(entry, owner)?.name || owner || "负责人不明"}{owner && <small>{owner}</small>}</div>}<button className="schedule-pending-item" draggable={canEdit(entry) && !entry.dates.start && !entry.dates.end} onDragStart={(event) => startDrag(event, entry, "new", "")} onDragEnd={() => { drag.current = null; setPreview(null); }} onClick={() => setSelected(entry.id)}><strong>{entry.record.title}</strong><span>{entry.record.nodeName} · {view === "people" ? <>{personFor(entry, owner)?.name || owner || "负责人不明"}{owner && ` (${owner})`} · {entry.record.cacheKind === "detail_node" ? "事项详情缓存节点 · " : entry.identity.scope === "node" && !entry.record.sourceAggregate && "节点共同排期 · "}{entry.record.sourceAggregate && "来源聚合日期 · "}{entry.record.unknownOwner && "尚有负责人身份不明 · "}</> : <>{targetLabel(entry, owner)} · </>}{dateStatus(entry)}</span>{entry.result && <span className="schedule-result">{resultLabel[entry.result]}</span>}{entry.readOnlyReason && <small>{entry.readOnlyReason}</small>}</button></Fragment>)}</aside>
-        <div className="schedule-main"><div className="schedule-week-nav"><button className="icon-button" aria-label="上一周" onClick={() => setWeek(addDays(week, -7))}><ChevronLeft size={18} /></button><strong>{days[0]} — {days[6]}</strong><button className="icon-button" aria-label="下一周" onClick={() => setWeek(addDays(week, 7))}><ChevronRight size={18} /></button><button className="secondary" onClick={() => setWeek(monday(today()))}>本周</button></div>
-          <div className="schedule-calendar"><div className="schedule-days">{days.map((day, index) => <div key={day} className={index > 4 ? "weekend" : ""} onDragOver={(event) => { if (drag.current) { event.preventDefault(); previewDay(day); } }} onDrop={(event) => dropDay(event, day)}><span>周{["一", "二", "三", "四", "五", "六", "日"][index]}</span><strong>{day.slice(5)}</strong></div>)}</div>
-            {preview && preview.start <= days[6] && preview.end >= days[0] && <div className="schedule-preview"><span style={{ gridColumn: `${Math.max(0, days.findIndex((day) => day >= preview.start)) + 1} / ${days.reduce((value, day, index) => day <= preview.end ? index : value, 0) + 2}` }}>{preview.start} → {preview.end}</span></div>}
-            {rows.map(({ entry, owner }, rowIndex) => {
-              const start = Math.max(0, days.findIndex((day) => day >= entry.dates.start)); const last = days.reduce((value, day, index) => day <= entry.dates.end ? index : value, 0);
-              const weekendAt = Math.max(0, (5 - start) / (last - start + 1) * 100);
-              return <Fragment key={`${entry.id}:${owner}`}>{view === "people" && (rowIndex === 0 || groupKey(rows[rowIndex - 1].entry, rows[rowIndex - 1].owner) !== groupKey(entry, owner)) && <div className="schedule-group"><Avatar person={personFor(entry, owner)} />{personFor(entry, owner)?.name || owner || "负责人不明"}{owner && <small>{owner}</small>}</div>}<div className="schedule-row"><div className="schedule-row-label"><Avatar person={personFor(entry, owner)} /><span>{entry.record.title}<small>{entry.record.nodeName} · {targetLabel(entry, owner)}</small>{entry.result && <small className="schedule-result">{resultLabel[entry.result]}</small>}</span></div><div className="schedule-row-grid" onDragOver={(event) => { if (drag.current) { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); previewDay(days[Math.max(0, Math.min(6, Math.floor((event.clientX - rect.left) / rect.width * 7)))]); } }} onDrop={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const index = Math.max(0, Math.min(6, Math.floor((event.clientX - rect.left) / rect.width * 7))); dropDay(event, days[index]); }}>{days.map((day, index) => <div key={day} className={index > 4 ? "weekend" : ""} />)}<button type="button" className={`schedule-bar ${entry.id === selected ? "selected" : ""}`} style={{ gridColumn: `${start + 1} / ${last + 2}`, gridRow: 1, ...(last >= 5 ? { background: `linear-gradient(to right, var(--surface-selected) ${weekendAt}%, var(--surface-soft) ${weekendAt}%)` } : {}) }} draggable={canEdit(entry)} onDragStart={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const width = rect.width / (last - start + 1); const index = Math.max(start, Math.min(last, start + Math.floor((event.clientX - rect.left) / width))); startDrag(event, entry, "move", days[index]); }} onDragEnd={() => { drag.current = null; setPreview(null); }} onClick={() => setSelected(entry.id)} title={`${entry.record.title} · ${entry.record.nodeName}`}>
-                {entry.dates.start < days[0] ? "‹ " : canEdit(entry) && <span className="schedule-handle start" draggable onDragStart={(event) => { event.stopPropagation(); startDrag(event, entry, "start", entry.dates.start); }} aria-hidden="true" />}{entry.record.title}{entry.result && ` · ${resultLabel[entry.result]}`}{entry.dates.end > days[6] ? " ›" : canEdit(entry) && <span className="schedule-handle end" draggable onDragStart={(event) => { event.stopPropagation(); startDrag(event, entry, "end", entry.dates.end); }} aria-hidden="true" />}</button></div></div></Fragment>;
-            })}
-            {rows.length === 0 && <div className="schedule-empty-body"><div className="schedule-empty-grid" onDragOver={(event) => { if (drag.current) { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); previewDay(days[Math.max(0, Math.min(6, Math.floor((event.clientX - rect.left) / rect.width * 7)))]); } }} onDrop={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const index = Math.max(0, Math.min(6, Math.floor((event.clientX - rect.left) / rect.width * 7))); dropDay(event, days[index]); }}>{days.map((day, index) => <div key={day} className={index > 4 ? "weekend" : ""} />)}</div><p className="schedule-empty">{view === "people" && person && visible.length === 0 ? "当前范围未包含该人员的安排" : "本周暂无可显示的安排"}</p></div>}
+
+  const activeTodayCount = scheduled.filter(
+    (entry) => entry.dates.start <= currentToday && entry.dates.end >= currentToday,
+  ).length;
+  const dailyLoads = days.map(
+    (day) =>
+      scheduled.filter((entry) => entry.dates.start <= day && entry.dates.end >= day).length,
+  );
+
+  return (
+    <section className="schedule-page" aria-label="事项安排">
+      {loading ? (
+        <div className="overview schedule-overview">
+          <div className="schedule-overview-metrics">
+            <span className="overview-icon">
+              <CalendarDays size={20} />
+            </span>
+            <div>
+              <span>事项安排</span>
+              <p role="status">正在读取个人待办及节点排期…</p>
+            </div>
           </div>
-          {selectedEntry && <div className="schedule-editor"><div><h3>{selectedEntry.record.title}</h3><p>{selectedEntry.record.nodeName} · {targetLabel(selectedEntry, selectedEntry.record.ownerId || "")} {scheduleChanged(selectedEntry) && "· 未同步"}</p></div>{view === "mine" && <><DateRangePicker start={selectedEntry.dates.start} end={selectedEntry.dates.end} startLabel="开始日期" endLabel="结束日期" disabled={!canEdit(selectedEntry)} onChange={(start, end) => update(selectedEntry.id, (entry) => editSchedule(entry, { start, end }))} /><button className="secondary" disabled={!canEdit(selectedEntry) || (!selectedEntry.dates.start && !selectedEntry.dates.end)} onClick={() => update(selectedEntry.id, cancelSchedule)}>取消排期</button></>}<p>{dateStatus(selectedEntry)}</p>{selectedEntry.record.fetchedAt && <p>事项详情抓取时间 {selectedEntry.record.fetchedAt}</p>}{selectedEntry.readOnlyReason && <p>{selectedEntry.readOnlyReason}</p>}{selectedEntry.resultMessage && <p>{selectedEntry.resultMessage}</p>}{frozenNodes.has(nodeKey(selectedEntry)) && <p>该节点存在结果不确定的排期，请先在飞书核对并重新读取。</p>}{selectedEntry.record.itemUrl ? <ExternalLink href={selectedEntry.record.itemUrl}>在飞书查看</ExternalLink> : frozenNodes.has(nodeKey(selectedEntry)) && <p>无法确认飞书事项链接，请在飞书中按事项名称查找并核对。</p>}{scheduleChanged(selectedEntry) && scheduleValidation(selectedEntry) && <p role="alert">{scheduleValidation(selectedEntry)}</p>}</div>}
-        </div></div>
-      {view === "mine" && <div className="schedule-person"><Avatar person={people.get(JSON.stringify([null, null, read.currentUserId || ""]))} />{people.get(JSON.stringify([null, null, read.currentUserId || ""]))?.name || read.currentUserId || "当前用户"}</div>}
-    </>}
-    <span className="sr-only"><CalendarDays size={1} /></span>
-  </section>;
+          <div className="overview-actions schedule-overview-actions">
+            <button type="button" className="primary" disabled>
+              同步排期
+            </button>
+          </div>
+        </div>
+      ) : error ? (
+        <div className="banner warning" role="alert">
+          <span>{error}</span>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setEpoch((value) => value + 1)}
+          >
+            重新读取
+          </button>
+        </div>
+      ) : (
+        read && (
+          <>
+            <div className="overview schedule-overview">
+              <div className="schedule-overview-metrics">
+                <span className="overview-icon">
+                  <CalendarDays size={20} />
+                </span>
+                <div className="schedule-metric">
+                  <span>待排期节点</span>
+                  <strong>
+                    {pending.length}
+                    <small>{pending.filter(canEdit).length} 项可排期</small>
+                  </strong>
+                </div>
+                <div className="overview-divider" />
+                <div className="schedule-metric">
+                  <span>视窗内已排</span>
+                  <strong>
+                    {scheduled.length}
+                    <small>今日进行 {activeTodayCount}</small>
+                  </strong>
+                </div>
+                <div className="overview-divider" />
+                <div className="schedule-metric">
+                  <span>本地排期草稿</span>
+                  <strong>
+                    {changedEntries.length}
+                    <small>
+                      {changedEntries.length > 0
+                        ? `新增 ${addedEntries.length} · 修改 ${modifiedEntries.length}`
+                        : "尚无改动"}
+                    </small>
+                  </strong>
+                </div>
+              </div>
+
+              <div className="overview-actions schedule-overview-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => requestReload(() => setEpoch((value) => value + 1))}
+                >
+                  <RefreshCw size={14} aria-hidden="true" />
+                  重新读取
+                </button>
+                {changedEntries.length > 0 && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={revertAll}
+                  >
+                    <RotateCcw size={14} aria-hidden="true" />
+                    全部还原
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={changedEntries.length === 0 || busy || loading}
+                  onClick={openReviewOrValidate}
+                >
+                  <Check size={14} aria-hidden="true" />
+                  {busy
+                    ? "正在同步…"
+                    : changedEntries.length > 0
+                      ? `核对并同步 (${changedEntries.length})`
+                      : "同步排期"}
+                </button>
+              </div>
+            </div>
+
+            <div className="schedule-scope">
+              <div className="schedule-scope-summary">
+                <span
+                  className={`schedule-scope-dot ${scopeSources.length === 0 ? "is-idle" : scopeComplete ? "is-ok" : "is-warn"}`}
+                  aria-hidden="true"
+                />
+                <span className="schedule-scope-text">
+                  来源：{scopeSources.map((item) => item.name).join("、") || "无可执行来源"}
+                  {scopeSources.length > 0 && ` · ${scopeComplete ? "完整读取" : "部分读取失败"}`} · 读取时间{" "}
+                  {read.readAt}
+                  {read.readRequests !== undefined && ` · 读取请求 ${read.readRequests} 次`}
+                </span>
+                {view === "mine" && (
+                  <span className="schedule-person">
+                    <Avatar
+                      person={people.get(JSON.stringify([null, null, read.currentUserId || ""]))}
+                    />
+                    {people.get(JSON.stringify([null, null, read.currentUserId || ""]))?.name ||
+                      read.currentUserId ||
+                      "当前用户"}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="secondary schedule-diagnostics-toggle"
+                  aria-expanded={diagnosticsOpen}
+                  onClick={() => setDiagnosticsOpen((open) => !open)}
+                >
+                  {diagnosticsOpen ? "收起诊断" : "读取说明"}
+                  <ChevronDown size={13} aria-hidden="true" />
+                </button>
+              </div>
+              {diagnosticsOpen && (
+                <div className="schedule-diagnostics-drawer">
+                  <p>来源筛选按事项归属；节点不一定都出现在该来源的待办中。</p>
+                </div>
+              )}
+              {scopeSources
+                .filter((item) => item.error)
+                .map((item) => (
+                  <p key={item.id} className="schedule-source-error">
+                    {item.name}：{item.error}
+                  </p>
+                ))}
+            </div>
+
+            {read.accountError && (
+              <div className="banner warning" role="alert">
+                {read.accountError}；以下显示当前来源中可读取的安排，均为只读。
+              </div>
+            )}
+            {!!scopeErrors.length && (
+              <div className="banner warning">
+                <div>
+                  <strong>部分事项读取不完整，已保留本次成功读取的内容。</strong>
+                  {scopeErrors.map((item, index) => (
+                    <p key={index}>
+                      {item.project} / {item.type} / {item.item} ·{" "}
+                      {item.sources
+                        .map((id) => read.sources.find((src) => src.id === id)?.name || id)
+                        .join("、")}
+                      ：{item.message}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
+            {report && (
+              <div className="banner warning" role="status">
+                {report}
+              </div>
+            )}
+            {uncertain && (
+              <div className="banner warning">
+                <span>部分排期可能已保存，请在飞书核对。</span>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => requestReload(() => setEpoch((value) => value + 1))}
+                >
+                  放弃本次编辑并重新读取
+                </button>
+              </div>
+            )}
+
+            <div className="work-panel schedule-panel">
+              <div className="schedule-toolbar">
+                <div className="schedule-toolbar-left">
+                  <div className="schedule-tabs" role="group" aria-label="排期视角">
+                    <button
+                      type="button"
+                      className={view === "mine" ? "active" : ""}
+                      onClick={() => setView("mine")}
+                    >
+                      我的排期
+                    </button>
+                    <button
+                      type="button"
+                      className={view === "people" ? "active" : ""}
+                      onClick={() => setView("people")}
+                    >
+                      按人查看
+                    </button>
+                  </div>
+                  <Select
+                    ariaLabel="筛选来源"
+                    value={source}
+                    onChange={setSource}
+                    options={options(
+                      read.sources.map((item) => [item.id, item.name]),
+                      "全部来源",
+                    )}
+                  />
+                  <Select
+                    ariaLabel="筛选空间"
+                    value={project}
+                    onChange={(value) => {
+                      setProject(value);
+                      setType("");
+                    }}
+                    options={options(
+                      entries.map((item) => [item.identity.project, projectLabel(item)]),
+                      "全部空间",
+                    )}
+                  />
+                  <Select
+                    ariaLabel="筛选类型"
+                    value={type}
+                    onChange={setType}
+                    options={options(
+                      entries
+                        .filter((item) => !project || item.identity.project === project)
+                        .map((item) => [
+                          JSON.stringify([item.identity.project, item.identity.type]),
+                          `${projectLabel(item)} · ${typeLabel(item)}`,
+                        ]),
+                      "全部类型",
+                    )}
+                  />
+                  {view === "people" && (
+                    <>
+                      <input
+                        className="schedule-person-search"
+                        aria-label="搜索人员"
+                        placeholder="搜索人员"
+                        value={personQuery}
+                        onChange={(event) => setPersonQuery(event.target.value)}
+                      />
+                      <Select
+                        ariaLabel="筛选人员"
+                        value={person}
+                        onChange={setPerson}
+                        options={options(
+                          Array.from(personOptions, ([id, names]) => [
+                            id,
+                            `${Array.from(names).join(" / ")} · ${id}`,
+                          ]),
+                          "全部人员",
+                        )}
+                      />
+                    </>
+                  )}
+                  {view === "mine" && (
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={editableOnly}
+                      className="schedule-switch"
+                      onClick={() => setEditableOnly((current) => !current)}
+                    >
+                      <span className="schedule-switch-track" aria-hidden="true">
+                        <span className="schedule-switch-thumb" />
+                      </span>
+                      <span>仅看可排期</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="schedule-toolbar-right">
+                  <button
+                    type="button"
+                    className="secondary schedule-pool-toggle"
+                    aria-expanded={!poolCollapsed}
+                    onClick={() => setPoolCollapsed((current) => !current)}
+                  >
+                    {poolCollapsed ? (
+                      <PanelLeftOpen size={14} aria-hidden="true" />
+                    ) : (
+                      <PanelLeftClose size={14} aria-hidden="true" />
+                    )}
+                    {poolCollapsed ? "展开待排池" : "收起待排池"}
+                  </button>
+
+                  <div className="schedule-tabs" role="group" aria-label="时间跨度">
+                    <button
+                      type="button"
+                      className={daySpan === 7 ? "active" : ""}
+                      aria-pressed={daySpan === 7}
+                      onClick={() => setDaySpan(7)}
+                    >
+                      单周 7天
+                    </button>
+                    <button
+                      type="button"
+                      className={daySpan === 14 ? "active" : ""}
+                      aria-pressed={daySpan === 14}
+                      onClick={() => setDaySpan(14)}
+                    >
+                      双周 14天
+                    </button>
+                  </div>
+
+                  <div className="schedule-week-nav">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="上一周"
+                      onClick={() => setWeek(addDays(week, -7))}
+                    >
+                      <ChevronLeft size={16} />
+                    </button>
+                    <strong>
+                      {windowStart} — {windowEnd}
+                    </strong>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="下一周"
+                      onClick={() => setWeek(addDays(week, 7))}
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => setWeek(monday(today()))}
+                    >
+                      本周
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`schedule-layout ${poolCollapsed ? "is-pool-collapsed" : ""}`}>
+                {!poolCollapsed && (
+                  <aside
+                    className="schedule-pending"
+                    onDragOver={(event) => {
+                      const dragged = entries.find((item) => item.id === drag.current?.id);
+                      if (
+                        drag.current &&
+                        drag.current.kind !== "new" &&
+                        dragged &&
+                        !hasBaselineSchedule(dragged.baseline)
+                      ) {
+                        event.preventDefault();
+                        setPreview(null);
+                      }
+                    }}
+                    onDrop={poolDrop}
+                  >
+                    <div className="schedule-pool-tabs" role="tablist" aria-label="待排与非当前视窗切换">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={poolTab === "pending"}
+                        className={poolTab === "pending" ? "active" : ""}
+                        onClick={() => setPoolTab("pending")}
+                      >
+                        待排期 ({pendingRows.length})
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={poolTab === "outside"}
+                        className={poolTab === "outside" ? "active" : ""}
+                        onClick={() => setPoolTab("outside")}
+                      >
+                        其他周已排 ({outsideRows.length})
+                      </button>
+                    </div>
+
+                    {poolTab === "pending" ? (
+                      <>
+                        <p className="schedule-pool-hint">
+                          点快捷胶囊一键排期，或拖入右侧日历设期；新增草稿可拖回此处撤回。
+                        </p>
+                        <div className="schedule-pool-list">
+                          {pendingRows.map(({ entry, owner }, index) => (
+                            <Fragment key={`${entry.id}:${owner}`}>
+                              {view === "people" &&
+                                (index === 0 ||
+                                  groupKey(pendingRows[index - 1].entry, pendingRows[index - 1].owner) !==
+                                    groupKey(entry, owner)) && (
+                                  <div className="schedule-group">
+                                    <Avatar person={personFor(entry, owner)} />
+                                    {personFor(entry, owner)?.name || owner || "负责人不明"}
+                                    {owner && <small>{owner}</small>}
+                                  </div>
+                                )}
+                              <div
+                                className={`schedule-pending-card ${entry.id === selected ? "selected" : ""}`}
+                              >
+                                <button
+                                  type="button"
+                                  className="schedule-pending-item"
+                                  draggable={canEdit(entry)}
+                                  onDragStart={(event) => startDrag(event, entry, "new", "")}
+                                  onDragEnd={() => {
+                                    drag.current = null;
+                                    setPreview(null);
+                                  }}
+                                  onClick={() => setSelected(entry.id)}
+                                >
+                                  <span className="schedule-pending-head">
+                                    <strong>{entry.record.title}</strong>
+                                    {!canEdit(entry) && (
+                                      <span className="schedule-readonly-pill" aria-hidden="true">
+                                        只读
+                                      </span>
+                                    )}
+                                  </span>
+                                  <span>
+                                    {entry.record.nodeName} ·{" "}
+                                    {view === "people" ? (
+                                      <>
+                                        {personFor(entry, owner)?.name || owner || "负责人不明"}
+                                        {owner && ` (${owner})`} ·{" "}
+                                        {entry.record.cacheKind === "detail_node"
+                                          ? "事项详情缓存节点 · "
+                                          : entry.identity.scope === "node" &&
+                                            !entry.record.sourceAggregate &&
+                                            "节点共同排期 · "}
+                                        {entry.record.sourceAggregate && "来源聚合日期 · "}
+                                        {entry.record.unknownOwner && "尚有负责人身份不明 · "}
+                                      </>
+                                    ) : (
+                                      <>{targetLabel(entry, owner)} · </>
+                                    )}
+                                    {dateStatus(entry)}
+                                  </span>
+                                  {entry.result && (
+                                    <span className="schedule-result">
+                                      {resultLabel[entry.result]}
+                                    </span>
+                                  )}
+                                  {entry.readOnlyReason && <small>{entry.readOnlyReason}</small>}
+                                </button>
+                                {canEdit(entry) && (
+                                  <div
+                                    className="schedule-pending-quick"
+                                    aria-label={`${entry.record.title}快捷排期`}
+                                  >
+                                    <span>快捷落位：</span>
+                                    <button
+                                      type="button"
+                                      className="schedule-quick-chip"
+                                      onClick={() => applyQuickPreset(entry.id, "today")}
+                                    >
+                                      今天
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="schedule-quick-chip"
+                                      onClick={() => applyQuickPreset(entry.id, "twoDays")}
+                                    >
+                                      今明
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="schedule-quick-chip"
+                                      onClick={() => applyQuickPreset(entry.id, "thisWeek")}
+                                    >
+                                      本周
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </Fragment>
+                          ))}
+                          {pendingRows.length === 0 && (
+                            <p className="schedule-pool-empty">当前筛选下暂无待排期事项</p>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="schedule-pool-hint">
+                          不在当前日历视窗内的已排事项，点击跳转至对应周并选中。
+                        </p>
+                        <div className="schedule-pool-list">
+                          {outsideRows.map(({ entry, owner }, index) => (
+                            <Fragment key={`${entry.id}:${owner}`}>
+                              {view === "people" &&
+                                (index === 0 ||
+                                  groupKey(outsideRows[index - 1].entry, outsideRows[index - 1].owner) !==
+                                    groupKey(entry, owner)) && (
+                                  <div className="schedule-group">
+                                    <Avatar person={personFor(entry, owner)} />
+                                    {personFor(entry, owner)?.name || owner || "负责人不明"}
+                                    {owner && <small>{owner}</small>}
+                                  </div>
+                                )}
+                              <button
+                                type="button"
+                                className={`schedule-outside-item ${entry.id === selected ? "selected" : ""}`}
+                                onClick={() => {
+                                  setWeek(monday(entry.dates.start));
+                                  setSelected(entry.id);
+                                }}
+                              >
+                                <strong>{entry.record.title}</strong>
+                                <span>
+                                  {entry.record.nodeName} · {targetLabel(entry, owner)}
+                                </span>
+                                <span className="schedule-outside-range">
+                                  {entry.dates.start} ~ {entry.dates.end} ↗
+                                </span>
+                              </button>
+                            </Fragment>
+                          ))}
+                          {outsideRows.length === 0 && (
+                            <p className="schedule-pool-empty">没有散落在其他周的已排事项</p>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </aside>
+                )}
+
+                <div className="schedule-main">
+                  <div
+                    className="schedule-calendar"
+                    style={{ "--schedule-cols": days.length } as React.CSSProperties}
+                  >
+                    <div className="schedule-calendar-header">
+                      <div className="schedule-corner-cell">
+                        <span>事项 / 节点归属</span>
+                        <small>共 {rows.length} 项</small>
+                      </div>
+                      <div className="schedule-days">
+                        {days.map((day, index) => {
+                          const weekdayIndex =
+                            (new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7;
+                          const isWeekend = weekdayIndex >= 5;
+                          const isToday = day === currentToday;
+                          const load = dailyLoads[index];
+                          return (
+                            <div
+                              key={day}
+                              className={[
+                                isWeekend && "weekend",
+                                isToday && "today",
+                              ]
+                                .filter(Boolean)
+                                .join(" ")}
+                              onDragOver={(event) => {
+                                if (drag.current) {
+                                  event.preventDefault();
+                                  previewDay(day);
+                                }
+                              }}
+                              onDrop={(event) => dropDay(event, day)}
+                            >
+                              <span>
+                                {isToday ? "今天" : `周${weekdays[weekdayIndex]}`}
+                              </span>
+                              <strong>{day.slice(5)}</strong>
+                              {(view === "people" ? load > 0 : load >= 3) && (
+                                <small className="schedule-day-load" aria-hidden="true">
+                                  {load}项
+                                </small>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {preview && preview.start <= windowEnd && preview.end >= windowStart && (
+                      <div className="schedule-preview">
+                        <span
+                          style={{
+                            gridColumn: `${Math.max(0, days.findIndex((day) => day >= preview.start)) + 1} / ${days.reduce((value, day, index) => (day <= preview.end ? index : value), 0) + 2}`,
+                          }}
+                        >
+                          {preview.start} → {preview.end}
+                        </span>
+                      </div>
+                    )}
+
+                    {rows.map(({ entry, owner }, rowIndex) => {
+                      const start = Math.max(
+                        0,
+                        days.findIndex((day) => day >= entry.dates.start),
+                      );
+                      const last = days.reduce(
+                        (value, day, index) => (day <= entry.dates.end ? index : value),
+                        0,
+                      );
+                      const editable = canEdit(entry);
+                      const changed = scheduleChanged(entry);
+                      const isFrozen = frozenNodes.has(nodeKey(entry)) || entry.result === "uncertain";
+                      const barStateClass = isFrozen
+                        ? "is-uncertain"
+                        : !editable
+                          ? "is-readonly"
+                          : changed
+                            ? "is-draft"
+                            : entry.result
+                              ? `is-${entry.result}`
+                              : "is-cloud";
+                      return (
+                        <Fragment key={`${entry.id}:${owner}`}>
+                          {view === "people" &&
+                            (rowIndex === 0 ||
+                              groupKey(rows[rowIndex - 1].entry, rows[rowIndex - 1].owner) !==
+                                groupKey(entry, owner)) && (
+                              <div className="schedule-group">
+                                <Avatar person={personFor(entry, owner)} />
+                                {personFor(entry, owner)?.name || owner || "负责人不明"}
+                                {owner && <small>{owner}</small>}
+                              </div>
+                            )}
+                          <div className={`schedule-row ${entry.id === selected ? "selected" : ""}`}>
+                            <div
+                              className="schedule-row-label"
+                              onClick={() => setSelected(entry.id)}
+                            >
+                              <Avatar person={personFor(entry, owner)} />
+                              <span>
+                                <strong>{entry.record.title}</strong>
+                                <small>
+                                  {entry.record.nodeName} · {targetLabel(entry, owner)}
+                                </small>
+                                {entry.result && (
+                                  <small className="schedule-result">
+                                    {resultLabel[entry.result]}
+                                  </small>
+                                )}
+                              </span>
+                            </div>
+                            <div
+                              className="schedule-row-grid"
+                              onDragOver={(event) => {
+                                if (drag.current) {
+                                  event.preventDefault();
+                                  const rect = event.currentTarget.getBoundingClientRect();
+                                  const col = Math.max(
+                                    0,
+                                    Math.min(
+                                      days.length - 1,
+                                      Math.floor(
+                                        ((event.clientX - rect.left) / rect.width) * days.length,
+                                      ),
+                                    ),
+                                  );
+                                  previewDay(days[col]);
+                                }
+                              }}
+                              onDrop={(event) => {
+                                const rect = event.currentTarget.getBoundingClientRect();
+                                const index = Math.max(
+                                  0,
+                                  Math.min(
+                                    days.length - 1,
+                                    Math.floor(
+                                      ((event.clientX - rect.left) / rect.width) * days.length,
+                                    ),
+                                  ),
+                                );
+                                dropDay(event, days[index]);
+                              }}
+                            >
+                              {days.map((day) => {
+                                const weekdayIndex =
+                                  (new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7;
+                                return (
+                                  <div
+                                    key={day}
+                                    className={[
+                                      weekdayIndex >= 5 && "weekend",
+                                      day === currentToday && "today",
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" ")}
+                                  />
+                                );
+                              })}
+                              <button
+                                type="button"
+                                className={`schedule-bar ${barStateClass} ${entry.id === selected ? "selected" : ""}`}
+                                style={{
+                                  gridColumn: `${start + 1} / ${last + 2}`,
+                                  gridRow: 1,
+                                }}
+                                draggable={editable}
+                                onDragStart={(event) => {
+                                  const rect = event.currentTarget.getBoundingClientRect();
+                                  const width = rect.width / (last - start + 1);
+                                  const index = Math.max(
+                                    start,
+                                    Math.min(
+                                      last,
+                                      start + Math.floor((event.clientX - rect.left) / width),
+                                    ),
+                                  );
+                                  startDrag(event, entry, "move", days[index]);
+                                }}
+                                onDragEnd={() => {
+                                  drag.current = null;
+                                  setPreview(null);
+                                }}
+                                onClick={() => setSelected(entry.id)}
+                                title={`${entry.record.title} · ${entry.record.nodeName}`}
+                              >
+                                {entry.dates.start < windowStart ? (
+                                  <span aria-hidden="true">‹ </span>
+                                ) : (
+                                  editable && (
+                                    <span
+                                      className="schedule-handle start"
+                                      draggable
+                                      onDragStart={(event) => {
+                                        event.stopPropagation();
+                                        startDrag(event, entry, "start", entry.dates.start);
+                                      }}
+                                      aria-hidden="true"
+                                    />
+                                  )
+                                )}
+                                <span className="schedule-bar-title">
+                                  {entry.record.title}
+                                  {entry.result && ` · ${resultLabel[entry.result]}`}
+                                </span>
+                                <span className="schedule-bar-badges" aria-hidden="true">
+                                  <span className="schedule-bar-days">
+                                    {scheduleSpanDays(entry.dates)}d
+                                  </span>
+                                  {changed && (
+                                    <span className="schedule-bar-badge is-draft">
+                                      {classifyScheduleReview(entry) === "added" ? "新增" : "已改"}
+                                    </span>
+                                  )}
+                                  {!editable && !isFrozen && (
+                                    <span className="schedule-bar-badge is-readonly">
+                                      <Lock size={11} />
+                                    </span>
+                                  )}
+                                </span>
+                                {entry.dates.end > windowEnd ? (
+                                  <span aria-hidden="true"> ›</span>
+                                ) : (
+                                  editable && (
+                                    <span
+                                      className="schedule-handle end"
+                                      draggable
+                                      onDragStart={(event) => {
+                                        event.stopPropagation();
+                                        startDrag(event, entry, "end", entry.dates.end);
+                                      }}
+                                      aria-hidden="true"
+                                    />
+                                  )
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        </Fragment>
+                      );
+                    })}
+
+                    {rows.length === 0 && (
+                      <div className="schedule-empty-body">
+                        <div
+                          className="schedule-empty-grid"
+                          onDragOver={(event) => {
+                            if (drag.current) {
+                              event.preventDefault();
+                              const rect = event.currentTarget.getBoundingClientRect();
+                              const col = Math.max(
+                                0,
+                                Math.min(
+                                  days.length - 1,
+                                  Math.floor(
+                                    ((event.clientX - rect.left) / rect.width) * days.length,
+                                  ),
+                                ),
+                              );
+                              previewDay(days[col]);
+                            }
+                          }}
+                          onDrop={(event) => {
+                            const rect = event.currentTarget.getBoundingClientRect();
+                            const index = Math.max(
+                              0,
+                              Math.min(
+                                days.length - 1,
+                                Math.floor(
+                                  ((event.clientX - rect.left) / rect.width) * days.length,
+                                ),
+                              ),
+                            );
+                            dropDay(event, days[index]);
+                          }}
+                        >
+                          {days.map((day) => {
+                            const weekdayIndex =
+                              (new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7;
+                            return (
+                              <div
+                                key={day}
+                                className={[
+                                  weekdayIndex >= 5 && "weekend",
+                                  day === currentToday && "today",
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")}
+                              />
+                            );
+                          })}
+                        </div>
+                        <p className="schedule-empty">
+                          {view === "people" && person && visible.length === 0
+                            ? "当前范围未包含该人员的安排"
+                            : "本周暂无可显示的安排"}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <aside className="schedule-inspector" aria-label="排期检查器">
+                  <div className="schedule-inspector-head">
+                    <strong>排期检查器</strong>
+                    {selectedEntry && scheduleChanged(selectedEntry) && (
+                      <span className="schedule-inspector-dirty">本地草稿</span>
+                    )}
+                  </div>
+                  {selectedEntry ? (
+                    <div className="schedule-editor">
+                      <div className="schedule-editor-meta">
+                        <span className="schedule-editor-tag">
+                          {projectLabel(selectedEntry)} · {typeLabel(selectedEntry)}
+                        </span>
+                        {selectedEntry.record.itemUrl && (
+                          <ExternalLink href={selectedEntry.record.itemUrl}>
+                            在飞书查看
+                          </ExternalLink>
+                        )}
+                      </div>
+                      <div>
+                        <h3>{selectedEntry.record.title}</h3>
+                        <p>
+                          {selectedEntry.record.nodeName} ·{" "}
+                          {targetLabel(selectedEntry, selectedEntry.record.ownerId || "")}{" "}
+                          {scheduleChanged(selectedEntry) && "· 未同步"}
+                        </p>
+                      </div>
+                      {view === "mine" && (
+                        <>
+                          {canEdit(selectedEntry) && (
+                            <div
+                              className="schedule-inspector-presets"
+                              role="group"
+                              aria-label="快捷排期预设"
+                            >
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => applyQuickPreset(selectedEntry.id, "today")}
+                              >
+                                今天
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => applyQuickPreset(selectedEntry.id, "twoDays")}
+                              >
+                                今明两天
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => applyQuickPreset(selectedEntry.id, "thisWeek")}
+                              >
+                                本周内
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => applyQuickPreset(selectedEntry.id, "nextWeek")}
+                              >
+                                排到下周
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={!validSchedule(selectedEntry.dates)}
+                                onClick={() => applyQuickPreset(selectedEntry.id, "plus1")}
+                              >
+                                顺延 +1 天
+                              </button>
+                            </div>
+                          )}
+                          <DateRangePicker
+                            start={selectedEntry.dates.start}
+                            end={selectedEntry.dates.end}
+                            startLabel="开始日期"
+                            endLabel="结束日期"
+                            disabled={!canEdit(selectedEntry)}
+                            onChange={(start, end) =>
+                              update(selectedEntry.id, (entry) =>
+                                editSchedule(entry, { start, end }),
+                              )
+                            }
+                          />
+                          {validSchedule(selectedEntry.dates) && (
+                            <p className="schedule-span-info">
+                              共 {scheduleSpanDays(selectedEntry.dates)} 个自然日
+                            </p>
+                          )}
+                          {scheduleChanged(selectedEntry) &&
+                            hasBaselineSchedule(selectedEntry.baseline) && (
+                              <div className="schedule-cloud-baseline">
+                                <span>云端当前值：</span>
+                                <strong>{formatBaselineRange(selectedEntry.baseline)}</strong>
+                              </div>
+                            )}
+                          {canEdit(selectedEntry) && scheduleChanged(selectedEntry) && (
+                            <button
+                              type="button"
+                              className="secondary schedule-revert-btn"
+                              onClick={() => update(selectedEntry.id, revertSchedule)}
+                            >
+                              <RotateCcw size={13} aria-hidden="true" />
+                              {hasBaselineSchedule(selectedEntry.baseline)
+                                ? "还原云端日期"
+                                : "撤回待排期"}
+                            </button>
+                          )}
+                          {hasBaselineSchedule(selectedEntry.baseline) && (
+                            <p className="schedule-clear-note">
+                              当前飞书连接暂未验证清空排期接口；如需清空已有排期，请在飞书中修改。
+                            </p>
+                          )}
+                        </>
+                      )}
+                      <p>{dateStatus(selectedEntry)}</p>
+                      {selectedEntry.record.fetchedAt && (
+                        <p>事项详情抓取时间 {selectedEntry.record.fetchedAt}</p>
+                      )}
+                      {selectedEntry.readOnlyReason && <p>{selectedEntry.readOnlyReason}</p>}
+                      {selectedEntry.resultMessage && <p>{selectedEntry.resultMessage}</p>}
+                      {frozenNodes.has(nodeKey(selectedEntry)) && (
+                        <p>该节点存在结果不确定的排期，请先在飞书核对并重新读取。</p>
+                      )}
+                      {!selectedEntry.record.itemUrl &&
+                        frozenNodes.has(nodeKey(selectedEntry)) && (
+                          <p>无法确认飞书事项链接，请在飞书中按事项名称查找并核对。</p>
+                        )}
+                      {scheduleChanged(selectedEntry) && scheduleValidation(selectedEntry) && (
+                        <p role="alert">{scheduleValidation(selectedEntry)}</p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="schedule-inspector-empty">
+                      <p>点击左侧待排卡片或日历中的排期长条，在此查看和调整节点日期。</p>
+                    </div>
+                  )}
+                </aside>
+              </div>
+            </div>
+
+            {reviewOpen &&
+              createPortal(
+                <div
+                  ref={reviewScrollRef}
+                  className="schedule-dialog-backdrop scroll-isolation-boundary"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="schedule-review-title"
+                  onClick={(event) => {
+                    if (event.target === event.currentTarget && !busy) setReviewOpen(false);
+                  }}
+                >
+                  <div className="schedule-dialog schedule-review-dialog">
+                    <div className="schedule-review-header">
+                      <div>
+                        <h2 id="schedule-review-title">核对排期变更并同步</h2>
+                        <p>
+                          完整核对当前节点排期生效值；实际请求仅提交本次新增或修改的差异节点。
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label="关闭核对弹窗"
+                        disabled={busy}
+                        onClick={() => setReviewOpen(false)}
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+
+                    <div className="schedule-review-summary" aria-label="排期变更统计">
+                      <span className="schedule-review-pill is-added">
+                        本次新增 {addedEntries.length} 项
+                      </span>
+                      <span className="schedule-review-pill is-modified">
+                        本次修改 {modifiedEntries.length} 项
+                      </span>
+                      <span className="schedule-review-pill is-unchanged">
+                        沿用云端 {unchangedEntries.length} 项
+                      </span>
+                    </div>
+
+                    <div className="schedule-review-body">
+                      {[...addedEntries, ...modifiedEntries].map((entry) => {
+                        const kind = classifyScheduleReview(entry);
+                        const isAdded = kind === "added";
+                        return (
+                          <div key={entry.id} className="schedule-review-card">
+                            <div className="schedule-review-card-top">
+                              <div>
+                                <div className="schedule-review-card-title">
+                                  <span
+                                    className={`schedule-review-badge ${isAdded ? "is-added" : "is-modified"}`}
+                                  >
+                                    {isAdded ? "本次新增" : "本次修改"}
+                                  </span>
+                                  <strong>{entry.record.title}</strong>
+                                </div>
+                                <small>
+                                  {projectLabel(entry)} · {entry.record.nodeName} ·{" "}
+                                  {targetLabel(entry, entry.record.ownerId || "")}
+                                </small>
+                              </div>
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={busy}
+                                onClick={() => update(entry.id, revertSchedule)}
+                              >
+                                还原此项
+                              </button>
+                            </div>
+                            {isAdded ? (
+                              <div className="schedule-review-value is-added">
+                                <span>本次提交值</span>
+                                <strong>
+                                  {entry.dates.start} ~ {entry.dates.end}（共{" "}
+                                  {scheduleSpanDays(entry.dates)} 天）
+                                </strong>
+                              </div>
+                            ) : (
+                              <div className="schedule-review-value is-modified">
+                                <span className="schedule-review-cloud">
+                                  云端当前值：{formatBaselineRange(entry.baseline)}
+                                </span>
+                                <span className="schedule-review-arrow" aria-hidden="true">
+                                  →
+                                </span>
+                                <strong className="schedule-review-next">
+                                  本次提交值：{entry.dates.start} ~ {entry.dates.end}（共{" "}
+                                  {scheduleSpanDays(entry.dates)} 天）
+                                </strong>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {unchangedEntries.length > 0 && (
+                        <div className="schedule-review-unchanged">
+                          <h3>沿用云端（{unchangedEntries.length} 项 · 本次不发送写请求）</h3>
+                          {unchangedEntries.map((entry) => (
+                            <div key={entry.id} className="schedule-review-unchanged-row">
+                              <div>
+                                <span className="schedule-review-badge is-unchanged">
+                                  沿用云端
+                                </span>
+                                <strong>{entry.record.title}</strong>
+                                <small>
+                                  {entry.record.nodeName} ·{" "}
+                                  {targetLabel(entry, entry.record.ownerId || "")}
+                                </small>
+                              </div>
+                              <span className="schedule-review-unchanged-val">
+                                {validSchedule(entry.baseline)
+                                  ? `${entry.baseline.start} ~ ${entry.baseline.end}`
+                                  : hasBaselineSchedule(entry.baseline)
+                                    ? formatBaselineRange(entry.baseline)
+                                    : "未排期"}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="schedule-review-footer">
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy}
+                        onClick={() => setReviewOpen(false)}
+                      >
+                        返回继续调整
+                      </button>
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={busy}
+                        onClick={() => void submit()}
+                      >
+                        <Check size={14} aria-hidden="true" />
+                        确认同步
+                      </button>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )}
+          </>
+        )
+      )}
+      <span className="sr-only">
+        <CalendarDays size={1} />
+      </span>
+    </section>
+  );
 }
