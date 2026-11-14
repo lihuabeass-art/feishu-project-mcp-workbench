@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { cancelSchedule, editSchedule, resizeSchedule, scheduleChanged, scheduleValidation, settleSchedule, shiftSchedule, validSchedule, type ScheduleTarget } from "./scheduleSession";
+import {
+  applyQuickSchedulePreset,
+  cancelSchedule,
+  classifyScheduleReview,
+  editSchedule,
+  hasBaselineSchedule,
+  resizeSchedule,
+  revertSchedule,
+  scheduleChanged,
+  scheduleSpanDays,
+  scheduleValidation,
+  settleSchedule,
+  shiftSchedule,
+  validSchedule,
+  type ScheduleTarget,
+} from "./scheduleSession";
 
 const target = (): ScheduleTarget => ({ id: "connection/space/type/item/node/owner", nodeId: "node", identity: { connection: "connection", project: "space", type: "type", item: "item", node: "node", scope: "personal", owner: "owner" }, baseline: { start: "2026-11-13", end: "2026-11-16" }, dates: { start: "2026-11-13", end: "2026-11-16" }, cancel: false });
 
@@ -15,10 +30,13 @@ describe("事项安排会话", () => {
     expect(validSchedule({ start: "2026-02-29", end: "2026-03-01" })).toBe(false);
     expect(scheduleValidation(editSchedule(target(), { start: "", end: "2026-11-16" }))).toContain("有效");
   });
-  it("取消意图不能发送，恢复原值后不再有变化", () => {
+  it("取消意图不能发送，恢复原值后不再有变化，纯空白基线取消不视为变更", () => {
     const cancelled = cancelSchedule(target());
     expect(scheduleValidation(cancelled)).toContain("尚未验证取消日期");
     expect(scheduleChanged(editSchedule(cancelled, target().baseline))).toBe(false);
+    const wsCancelled = cancelSchedule({ ...target(), baseline: { start: "   ", end: "\t" }, dates: { start: "   ", end: "\t" } });
+    expect(hasBaselineSchedule(wsCancelled.baseline)).toBe(false);
+    expect(scheduleChanged(wsCancelled)).toBe(false);
   });
   it("成功只推进冻结值，不确定结果禁止编辑和解除", () => {
     const edited = editSchedule(target(), { start: "2026-11-14", end: "2026-11-17" });
@@ -28,13 +46,15 @@ describe("事项安排会话", () => {
     const uncertain = settleSchedule(edited, submitted, "uncertain");
     expect(editSchedule(uncertain, target().baseline)).toBe(uncertain);
     expect(cancelSchedule(uncertain)).toBe(uncertain);
+    expect(revertSchedule(uncertain)).toBe(uncertain);
     expect(settleSchedule(uncertain, submitted, "accepted")).toBe(uncertain);
     expect(scheduleValidation(uncertain)).toContain("无法确认");
   });
-  it("只读目标不能通过日期或取消入口修改", () => {
+  it("只读目标不能通过日期、还原或取消入口修改", () => {
     const readonly = { ...target(), readOnlyReason: "当前连接尚未验证此状态的排期写入" };
     expect(editSchedule(readonly, { start: "2026-11-14", end: "2026-11-17" })).toBe(readonly);
     expect(cancelSchedule(readonly)).toBe(readonly);
+    expect(revertSchedule(readonly)).toBe(readonly);
   });
   it("不接受缺失的目标身份或超出四位年份的移动", () => {
     const changed = editSchedule(target(), { start: "2026-11-14", end: "2026-11-17" });
@@ -66,5 +86,37 @@ describe("事项安排会话", () => {
     const settled = settleSchedule(current, submitted, "accepted");
     expect(settled.baseline).toEqual(submitted);
     expect(scheduleChanged(settled)).toBe(true);
+  });
+  it("区分本次新增、本次修改与沿用云端，还原操作不产生未验证取消意图", () => {
+    const emptyBase: ScheduleTarget = { ...target(), baseline: { start: "", end: "" }, dates: { start: "", end: "" } };
+    expect(hasBaselineSchedule(emptyBase.baseline)).toBe(false);
+    expect(classifyScheduleReview(emptyBase)).toBe("unchanged");
+    const added = editSchedule(emptyBase, { start: "2026-11-14", end: "2026-11-15" });
+    expect(classifyScheduleReview(added)).toBe("added");
+    expect(scheduleSpanDays(added.dates)).toBe(2);
+    const revertedEmpty = revertSchedule(added);
+    expect(revertedEmpty.dates).toEqual({ start: "", end: "" });
+    expect(revertedEmpty.cancel).toBe(false);
+    expect(scheduleChanged(revertedEmpty)).toBe(false);
+    expect(scheduleValidation(revertedEmpty)).toBeNull();
+
+    const cloudItem = target();
+    expect(hasBaselineSchedule(cloudItem.baseline)).toBe(true);
+    const modified = editSchedule(cloudItem, { start: "2026-11-14", end: "2026-11-18" });
+    expect(classifyScheduleReview(modified)).toBe("modified");
+    expect(scheduleSpanDays(modified.dates)).toBe(5);
+    const revertedCloud = revertSchedule(modified);
+    expect(revertedCloud.dates).toEqual(cloudItem.baseline);
+    expect(revertedCloud.cancel).toBe(false);
+    expect(scheduleChanged(revertedCloud)).toBe(false);
+  });
+  it("计算快捷排期预设与顺延天数", () => {
+    expect(applyQuickSchedulePreset({ start: "", end: "" }, "today", "2026-11-11")).toEqual({ start: "2026-11-11", end: "2026-11-11" });
+    expect(applyQuickSchedulePreset({ start: "", end: "" }, "twoDays", "2026-11-11")).toEqual({ start: "2026-11-11", end: "2026-11-12" });
+    expect(applyQuickSchedulePreset({ start: "", end: "" }, "thisWeek", "2026-11-11")).toEqual({ start: "2026-11-11", end: "2026-11-13" });
+    expect(applyQuickSchedulePreset({ start: "", end: "" }, "thisWeek", "2026-11-14")).toEqual({ start: "2026-11-14", end: "2026-11-15" });
+    expect(applyQuickSchedulePreset({ start: "", end: "" }, "nextWeek", "2026-11-14")).toEqual({ start: "2026-11-16", end: "2026-11-20" });
+    expect(applyQuickSchedulePreset({ start: "2026-11-12", end: "2026-11-14" }, "plus1", "2026-11-14")).toEqual({ start: "2026-11-12", end: "2026-11-15" });
+    expect(applyQuickSchedulePreset({ start: "", end: "" }, "plus1", "2026-11-14")).toBeNull();
   });
 });

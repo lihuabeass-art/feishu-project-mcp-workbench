@@ -5,6 +5,8 @@ export interface ScheduleDates {
 }
 
 export type ScheduleResult = "accepted" | "failed" | "uncertain" | "unsent";
+export type ScheduleReviewKind = "added" | "modified" | "unchanged";
+export type ScheduleQuickPreset = "today" | "twoDays" | "thisWeek" | "nextWeek" | "plus1";
 export interface ScheduleIdentity {
   connection: string;
   project: string;
@@ -51,6 +53,17 @@ export function validSchedule(dates: ScheduleDates): boolean {
   return start !== null && end !== null && start <= end;
 }
 
+export function scheduleSpanDays(dates: ScheduleDates): number {
+  const start = dayNumber(dates.start);
+  const end = dayNumber(dates.end);
+  if (start === null || end === null || start > end) return 0;
+  return end - start + 1;
+}
+
+export function hasBaselineSchedule(dates: ScheduleDates): boolean {
+  return Boolean(dates.start.trim() || dates.end.trim());
+}
+
 export function shiftSchedule(dates: ScheduleDates, grabbed: string, dropped: string): ScheduleDates | null {
   const start = dayNumber(dates.start), end = dayNumber(dates.end);
   const from = dayNumber(grabbed), to = dayNumber(dropped);
@@ -67,14 +80,55 @@ export function resizeSchedule(dates: ScheduleDates, edge: "start" | "end", drop
     : { start: dates.start, end: dayString(Math.max(target, start)) };
 }
 
+export function applyQuickSchedulePreset(
+  dates: ScheduleDates,
+  preset: ScheduleQuickPreset,
+  today: string,
+): ScheduleDates | null {
+  const todayNum = dayNumber(today);
+  if (todayNum === null) return null;
+  const mondayOffset = (new Date(todayNum * dayMs).getUTCDay() + 6) % 7;
+  const monNum = todayNum - mondayOffset;
+  if (preset === "today") return { start: today, end: today };
+  if (preset === "twoDays") {
+    const end = dayString(todayNum + 1);
+    return validSchedule({ start: today, end }) ? { start: today, end } : null;
+  }
+  if (preset === "thisWeek") {
+    const friNum = monNum + 4;
+    const end = dayString(todayNum <= friNum ? friNum : monNum + 6);
+    return validSchedule({ start: today, end }) ? { start: today, end } : null;
+  }
+  if (preset === "nextWeek") {
+    const start = dayString(monNum + 7);
+    const end = dayString(monNum + 11);
+    return validSchedule({ start, end }) ? { start, end } : null;
+  }
+  const start = dayNumber(dates.start);
+  const end = dayNumber(dates.end);
+  if (start === null || end === null || start > end) return null;
+  const nextEnd = dayString(end + 1);
+  return validSchedule({ start: dates.start, end: nextEnd }) ? { start: dates.start, end: nextEnd } : null;
+}
+
 export function scheduleChanged(target: ScheduleTarget): boolean {
-  if (target.cancel) return Boolean(target.baseline.start || target.baseline.end);
+  if (target.cancel) return hasBaselineSchedule(target.baseline);
   return target.dates.start !== target.baseline.start || target.dates.end !== target.baseline.end;
+}
+
+export function classifyScheduleReview(target: ScheduleTarget): ScheduleReviewKind {
+  if (!scheduleChanged(target)) return "unchanged";
+  return hasBaselineSchedule(target.baseline) ? "modified" : "added";
 }
 
 export function editSchedule(target: ScheduleTarget, dates: ScheduleDates): ScheduleTarget {
   if (target.readOnlyReason || target.result === "uncertain") return target;
   return { ...target, dates, cancel: false };
+}
+
+export function revertSchedule(target: ScheduleTarget): ScheduleTarget {
+  if (target.readOnlyReason || target.result === "uncertain") return target;
+  return { ...target, dates: { ...target.baseline }, cancel: false };
 }
 
 export function cancelSchedule(target: ScheduleTarget): ScheduleTarget {
