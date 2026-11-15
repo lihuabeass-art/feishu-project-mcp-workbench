@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SchedulePage, type ScheduleSessionController } from "./SchedulePage";
 import { closeScheduleSession, loadSchedulePeople, loadScheduleSession, submitScheduleTargets, type ScheduleRead } from "./scheduleApi";
@@ -126,7 +126,11 @@ it("单次读取后筛选和编辑不触发请求，经二次确认后同步差�
   expect(submitScheduleTargets).not.toHaveBeenCalled();
   vi.mocked(submitScheduleTargets).mockResolvedValue({ results: [{ id: "one", result: "accepted", message: "收到成功回执，未回读核验" }], writeRequests: 1 });
   confirmSync();
-  await screen.findByText(/收到成功回执 1 项/);
+  await screen.findByText("排期已同步");
+  expect(screen.getByText("已保存 1 项节点排期")).toBeTruthy();
+  const successBanner = screen.getByRole("status");
+  expect(successBanner.className).toContain("success");
+  expect(successBanner.className).toContain("workflow-toast");
   expect(submitScheduleTargets).toHaveBeenCalledWith("session", [{ id: "one", identity, dates: { start: "2026-11-13", end: "2026-11-16" }, cancel: false }]);
   await waitFor(() => expect(guard).toHaveBeenLastCalledWith({ dirty: false, busy: false, uncertain: false }));
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
@@ -186,7 +190,8 @@ it.each(["config", "credential", "validation", "conflict"])("发送前 %s 错误
   await waitFor(() => expect(guard).toHaveBeenLastCalledWith({ dirty: true, busy: false, uncertain: false }));
   expect(submitScheduleTargets).toHaveBeenCalledTimes(1);
   confirmSync();
-  await screen.findByText(/收到成功回执 1 项/);
+  await screen.findByText("排期已同步");
+  expect(screen.getByText("已保存 1 项节点排期")).toBeTruthy();
   expect(submitScheduleTargets).toHaveBeenCalledTimes(2);
 });
 
@@ -215,14 +220,16 @@ it("明确权限拒绝保留编辑，成功目标不再重发", async () => {
   vi.mocked(submitScheduleTargets).mockResolvedValueOnce({ results: [{ id: "one", result: "failed" }, { id: "two", result: "accepted" }], writeRequests: 2 }).mockResolvedValueOnce({ results: [{ id: "one", result: "accepted" }], writeRequests: 1 });
   confirmSync();
   await screen.findByText(/失败 1 项/);
-  const statusBanner = screen.getByRole("status");
-  expect(statusBanner.className).toContain("warning");
-  expect(statusBanner.className).not.toContain("success");
+  const warningBanner = screen.getByRole("alert");
+  expect(warningBanner.className).toContain("warning");
+  expect(warningBanner.className).not.toContain("success");
   confirmSync();
   await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledTimes(2));
   expect(vi.mocked(submitScheduleTargets).mock.calls[1][1].map((item) => item.id)).toEqual(["one"]);
-  expect(screen.getByRole("status").className).toContain("warning");
-  expect(screen.getByRole("status").className).not.toContain("success");
+  const successToast = await screen.findByRole("status");
+  expect(successToast.className).toContain("success");
+  expect(successToast.className).toContain("workflow-toast");
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 it("待安排拖到日期后可拉伸，再拖回待排池直接撤回新增草稿且不报错", async () => {
@@ -1139,11 +1146,23 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
     },
     {
       ...base,
-      id: "node-merge-doing",
+      id: "node-stage-doing",
+      title: "核心架构演进专项",
+      nodeName: "灰度联调验收",
+      nodeStatus: "doing",
+      nodeOrder: 3,
+      scheduleRequired: true,
+      identity: { ...identity, item: "story-multi", node: "n-stage" },
+      dates: { start: "", end: "" },
+    },
+    {
+      ...base,
+      id: "node-merge-doing-noreq",
       title: "核心架构演进专项",
       nodeName: "后端代码合入",
       nodeStatus: "doing",
-      nodeOrder: 3,
+      nodeOrder: 4,
+      scheduleRequired: false,
       identity: { ...identity, item: "story-multi", node: "n-merge" },
       dates: { start: "", end: "" },
     },
@@ -1153,7 +1172,7 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
       title: "核心架构演进专项",
       nodeName: "灰度和上线",
       nodeStatus: "not_started",
-      nodeOrder: 4,
+      nodeOrder: 5,
       identity: { ...identity, item: "story-multi", node: "n-future" },
       dates: { start: "", end: "" },
     },
@@ -1161,11 +1180,12 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
 
-  // 1. 左侧待排期与其他周已排只收纳当前活跃 doing 节点，不混入已流转完成或未开始的节点
+  // 1. 左侧待排期与其他周已排只收纳当前活跃且需要排期的 doing 节点，排除 scheduleRequired === false、已流转完成或未开始的节点
   expect(screen.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
   expect(screen.getByRole("tab", { name: "其他周已排 (0)" })).toBeTruthy();
   const pendingPool = document.querySelector(".schedule-pending")!;
-  expect(pendingPool.textContent).toContain("后端代码合入");
+  expect(pendingPool.textContent).toContain("灰度联调验收");
+  expect(pendingPool.textContent).not.toContain("后端代码合入");
   expect(pendingPool.textContent).not.toContain("后端方案设计");
   expect(pendingPool.textContent).not.toContain("灰度和上线");
 
@@ -1188,16 +1208,195 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
   const siblingGroup = screen.getByRole("group", { name: "同事项节点" });
   expect(siblingGroup.textContent).toContain("后端方案设计");
-  expect(siblingGroup.textContent).toContain("后端代码合入");
-  fireEvent.click(within(siblingGroup).getByRole("button", { name: /后端代码合入/ }));
+  expect(siblingGroup.textContent).toContain("灰度联调验收");
+  expect(siblingGroup.textContent).not.toContain("后端代码合入");
+  expect(siblingGroup.textContent).not.toContain("灰度和上线");
+  fireEvent.click(within(siblingGroup).getByRole("button", { name: /灰度联调验收/ }));
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
 
-  // 4. 将当前可编辑的『后端代码合入』排到本周（day 3 ~ day 4），与前序节点共享同一横排且无重叠时复用第 1 轨
+  // 4. 将当前可编辑的『灰度联调验收』排到本周（day 3 ~ day 4），与前序节点共享同一横排且无重叠时复用第 1 轨
   fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(3) } });
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(4) } });
   expect(document.querySelectorAll(".schedule-row")).toHaveLength(1);
-  const mergeBar = screen.getByRole("button", { name: /核心架构演进专项 · 后端代码合入/ });
-  expect(mergeBar.querySelector(".schedule-bar-title")?.textContent).toBe("后端代码合入");
-  expect(mergeBar.getAttribute("draggable")).toBe("true");
-  expect(mergeBar.style.gridRow).toBe("1");
+  const stageBar = screen.getByRole("button", { name: /核心架构演进专项 · 灰度联调验收/ });
+  expect(stageBar.querySelector(".schedule-bar-title")?.textContent).toBe("灰度联调验收");
+  expect(stageBar.getAttribute("draggable")).toBe("true");
+  expect(stageBar.style.gridRow).toBe("1");
+});
+
+it("纯成功同步展示悬浮绿色 Toast 并在 3 秒后自动消失，含失败或不确定结果时保持持久警告横幅不自动消失", async () => {
+  const read = data();
+  read.targets = [
+    { ...read.targets[0], id: "ok-target", title: "正常排期事项", identity: { ...identity, node: "n-ok" }, dates: { start: currentWeekDay(1), end: currentWeekDay(2) } },
+    { ...read.targets[0], id: "fail-target", title: "失败排期事项", identity: { ...identity, node: "n-fail" }, dates: { start: currentWeekDay(1), end: currentWeekDay(2) } },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  vi.useFakeTimers();
+  try {
+    // 1. 纯成功同步：展示 .banner.success.workflow-toast，3 秒后自动消失
+    fireEvent.click(screen.getByRole("button", { name: /正常排期事项/ }));
+    fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(3) } });
+    vi.mocked(submitScheduleTargets).mockResolvedValueOnce({
+      results: [{ id: "ok-target", result: "accepted" }],
+      writeRequests: 1,
+    });
+    confirmSync();
+    await act(async () => {});
+    const toast = screen.getByRole("status");
+    expect(toast.className).toContain("banner");
+    expect(toast.className).toContain("success");
+    expect(toast.className).toContain("workflow-toast");
+    expect(toast.textContent).toContain("排期已同步");
+    expect(toast.textContent).toContain("已保存 1 项节点排期");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    await act(async () => {
+      vi.advanceTimersByTime(2999);
+    });
+    expect(screen.queryByRole("status")).toBeTruthy();
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.queryByRole("status")).toBeNull();
+
+    // 2. 存在失败结果：展示持久 .banner.warning（role="alert"），3 秒后仍不消失
+    fireEvent.click(screen.getByRole("button", { name: /失败排期事项/ }));
+    fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(4) } });
+    vi.mocked(submitScheduleTargets).mockResolvedValueOnce({
+      results: [{ id: "fail-target", result: "failed", message: "无权限修改" }],
+      writeRequests: 1,
+    });
+    confirmSync();
+    await act(async () => {});
+    const alertBanner = screen.getByRole("alert");
+    expect(alertBanner.className).toContain("banner");
+    expect(alertBanner.className).toContain("warning");
+    expect(alertBanner.textContent).toContain("失败 1 项");
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(screen.getByRole("alert").textContent).toContain("失败 1 项");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("同事项节点过滤无关无排期节点、按节点去重多人记录、并按最新时间在最上方倒序排列", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.people.push({ id: "peer-1", name: "同事甲" }, { id: "peer-2", name: "同事乙" });
+  read.targets = [
+    // 早期已排期历史节点（11-01 ~ 11-03）
+    {
+      ...base,
+      id: "hist-early",
+      title: "多阶段研发需求",
+      nodeName: "产品方案评审",
+      nodeStatus: "done",
+      nodeOrder: 0,
+      scheduleRequired: false,
+      identity: { ...identity, item: "story-order", node: "n-prd" },
+      dates: { start: "2026-11-01", end: "2026-11-03" },
+    },
+    // 无排期的历史已流转节点（应被过滤）
+    {
+      ...base,
+      id: "hist-empty",
+      title: "多阶段研发需求",
+      nodeName: "架构初审",
+      nodeStatus: "done",
+      nodeOrder: 1,
+      scheduleRequired: false,
+      identity: { ...identity, item: "story-order", node: "n-arch" },
+      dates: { start: "", end: "" },
+    },
+    // 多人共同参与的历史节点（11-10 ~ 11-16）：同一 node "n-dev" 存在多条记录，应去重为 1 条且排在 11-03 之上
+    {
+      ...base,
+      id: "hist-dev-peer",
+      title: "多阶段研发需求",
+      nodeName: "后端设计开发",
+      nodeStatus: "done",
+      nodeOrder: 2,
+      scheduleRequired: false,
+      ownerId: "peer-1",
+      ownerIds: ["peer-1"],
+      mine: false,
+      identity: { ...identity, item: "story-order", node: "n-dev", owner: "peer-1" },
+      dates: { start: "2026-11-08", end: "2026-11-12" },
+    },
+    {
+      ...base,
+      id: "hist-dev-me",
+      title: "多阶段研发需求",
+      nodeName: "后端设计开发",
+      nodeStatus: "done",
+      nodeOrder: 2,
+      scheduleRequired: false,
+      ownerId: "me",
+      ownerIds: ["me"],
+      mine: true,
+      identity: { ...identity, item: "story-order", node: "n-dev", owner: "me" },
+      dates: { start: "2026-11-10", end: "2026-11-16" },
+    },
+    // 当前进行中且需要排期但尚未填日期的节点（应置顶排在第 1 位）
+    {
+      ...base,
+      id: "curr-qa-doing",
+      title: "多阶段研发需求",
+      nodeName: "集成测试",
+      nodeStatus: "doing",
+      nodeOrder: 3,
+      scheduleRequired: true,
+      identity: { ...identity, item: "story-order", node: "n-qa" },
+      dates: { start: "", end: "" },
+    },
+    // 当前进行中但不需要排期的节点（scheduleRequired: false 且无日期，应被过滤）
+    {
+      ...base,
+      id: "curr-merge-noreq",
+      title: "多阶段研发需求",
+      nodeName: "代码合入",
+      nodeStatus: "doing",
+      nodeOrder: 4,
+      scheduleRequired: false,
+      identity: { ...identity, item: "story-order", node: "n-merge" },
+      dates: { start: "", end: "" },
+    },
+    // 未开始无日期节点（应被过滤）
+    {
+      ...base,
+      id: "future-release",
+      title: "多阶段研发需求",
+      nodeName: "正式发布",
+      nodeStatus: "not_started",
+      nodeOrder: 5,
+      scheduleRequired: false,
+      identity: { ...identity, item: "story-order", node: "n-rel" },
+      dates: { start: "", end: "" },
+    },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+
+  // 选中当前待排节点『集成测试』
+  fireEvent.click(screen.getByRole("button", { name: /多阶段研发需求集成测试/ }));
+  const siblingGroup = screen.getByRole("group", { name: "同事项节点" });
+  expect(siblingGroup.querySelector(".schedule-sibling-label")?.textContent).toBe("同事项节点（3）");
+
+  const chips = Array.from(siblingGroup.querySelectorAll(".schedule-sibling-chip"));
+  expect(chips).toHaveLength(3);
+  // 排序核验：1. 当前待排『集成测试』置顶 -> 2. 较新历史节点『后端设计开发 (11-10~11-16)』 -> 3. 较早历史节点『产品方案评审 (11-01~11-03)』
+  expect(chips.map((chip) => chip.querySelector("strong")?.textContent)).toEqual([
+    "集成测试",
+    "后端设计开发",
+    "产品方案评审",
+  ]);
+  expect(chips[1].textContent).toContain("11-10~11-16");
+  expect(chips[2].textContent).toContain("11-01~11-03");
+  // 被过滤的无关节点绝不出现
+  expect(siblingGroup.textContent).not.toContain("架构初审");
+  expect(siblingGroup.textContent).not.toContain("代码合入");
+  expect(siblingGroup.textContent).not.toContain("正式发布");
 });

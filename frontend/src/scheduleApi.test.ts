@@ -96,6 +96,7 @@ it("支持分层预加载参数与按需加载团队成员排期，并用当前�
     item_errors: [{ project: "p", type: "t", item: "i2", title: "登录异常", sources: ["s"], message: "读取未完成" }],
     targets: [
       { id: "1", identity, title: "我的节点", node_name: "开发", node_status: "doing", node_order: 2, owners: [{ id: "1000000000000123456", name: "123456" }], unknown_owner: false, sources: ["s"], baseline: { start: "", end: "" }, source_aggregate: false },
+      { id: "no-req", identity: { ...identity, node: "n-merge" }, title: "我的节点", node_name: "代码合入", node_status: "doing", node_order: 3, schedule_required: false, owners: [{ id: "1000000000000123456", name: "123456" }], unknown_owner: false, sources: ["s"], baseline: { start: "", end: "" }, source_aggregate: false },
     ],
   });
   const mineRead = await loadScheduleSession({ includePeople: false });
@@ -105,6 +106,8 @@ it("支持分层预加载参数与按需加载团队成员排期，并用当前�
   expect(mineRead.itemErrors?.[0].title).toBe("登录异常");
   expect(mineRead.targets[0].nodeStatus).toBe("doing");
   expect(mineRead.targets[0].nodeOrder).toBe(2);
+  expect(mineRead.targets[0].scheduleRequired).toBe(true);
+  expect(mineRead.targets[1].scheduleRequired).toBe(false);
   expect(mineRead.people).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ id: "1000000000000123456", project: "p", name: "张晓明", avatar: "https://example.com/me.png" }),

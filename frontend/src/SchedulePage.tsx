@@ -183,6 +183,7 @@ export function SchedulePage({
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [report, setReport] = useState("");
+  const [successToast, setSuccessToast] = useState<{ id: number; accepted: number } | null>(null);
   const [selected, setSelected] = useState("");
   const [week, setWeek] = useState(() => monday(today()));
   const [daySpan, setDaySpan] = useState<7 | 14>(7);
@@ -222,9 +223,18 @@ export function SchedulePage({
   }, [dirty, busy, uncertain, onGuardChange]);
 
   useEffect(() => {
+    if (!successToast) return;
+    const timer = window.setTimeout(() => {
+      setSuccessToast(null);
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [successToast]);
+
+  useEffect(() => {
     let active = true;
     setSelected("");
     setReport("");
+    setSuccessToast(null);
     setReviewOpen(false);
     setPeopleError("");
     peopleLoadingRef.current = false;
@@ -511,7 +521,10 @@ export function SchedulePage({
   );
 
   const isCurrentSchedulablePoolNode = (entry: Entry) =>
-    isCurrentSchedulableStatus(entry.record.nodeStatus);
+    isCurrentSchedulableStatus(entry.record.nodeStatus) &&
+    (entry.record.scheduleRequired !== false ||
+      validSchedule(entry.dates) ||
+      scheduleChanged(entry));
   const isPastTransitionedNode = (entry: Entry) =>
     isPastTransitionedStatus(entry.record.nodeStatus);
 
@@ -728,22 +741,74 @@ export function SchedulePage({
       : outside.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
   const selectedEntry = visible.find((entry) => entry.id === selected);
-  const siblingNodes = selectedEntry
-    ? visible
-        .filter((item) => itemIdentityKey(item) === itemIdentityKey(selectedEntry))
-        .sort(
-          (a, b) =>
-            (a.record.nodeOrder ?? 0) - (b.record.nodeOrder ?? 0) ||
-            a.dates.start.localeCompare(b.dates.start) ||
-            a.id.localeCompare(b.id),
-        )
-    : [];
+  const siblingNodes = (() => {
+    if (!selectedEntry) return [];
+    const targetItemKey = itemIdentityKey(selectedEntry);
+    const candidates = visible.filter(
+      (item) =>
+        itemIdentityKey(item) === targetItemKey &&
+        (item.id === selectedEntry.id ||
+          validSchedule(item.dates) ||
+          isCurrentSchedulablePoolNode(item)),
+    );
+    const comparePreference = (a: Entry, b: Entry): number => {
+      if ((a.id === selectedEntry.id) !== (b.id === selectedEntry.id)) {
+        return a.id === selectedEntry.id ? -1 : 1;
+      }
+      if (view === "mine") {
+        const aEditable = canEdit(a);
+        const bEditable = canEdit(b);
+        if (aEditable !== bEditable) return aEditable ? -1 : 1;
+        if (a.record.mine !== b.record.mine) return a.record.mine ? -1 : 1;
+      } else if (person) {
+        const aMatch = a.record.ownerIds.includes(person);
+        const bMatch = b.record.ownerIds.includes(person);
+        if (aMatch !== bMatch) return aMatch ? -1 : 1;
+      }
+      const aValid = validSchedule(a.dates);
+      const bValid = validSchedule(b.dates);
+      if (aValid !== bValid) return aValid ? -1 : 1;
+      if (aValid && bValid) {
+        const endCmp = b.dates.end.localeCompare(a.dates.end);
+        if (endCmp !== 0) return endCmp;
+        const startCmp = b.dates.start.localeCompare(a.dates.start);
+        if (startCmp !== 0) return startCmp;
+      }
+      return a.id.localeCompare(b.id);
+    };
+    const dedupedByNode = new Map<string, Entry>();
+    for (const item of candidates) {
+      const key = item.identity.node || item.record.nodeName || item.id;
+      const prev = dedupedByNode.get(key);
+      if (!prev || comparePreference(item, prev) < 0) {
+        dedupedByNode.set(key, item);
+      }
+    }
+    return Array.from(dedupedByNode.values()).sort((a, b) => {
+      const aPendingActive = !validSchedule(a.dates) && isCurrentSchedulablePoolNode(a);
+      const bPendingActive = !validSchedule(b.dates) && isCurrentSchedulablePoolNode(b);
+      if (aPendingActive !== bPendingActive) {
+        return aPendingActive ? -1 : 1;
+      }
+      if (!aPendingActive && !bPendingActive) {
+        const endCmp = b.dates.end.localeCompare(a.dates.end);
+        if (endCmp !== 0) return endCmp;
+        const startCmp = b.dates.start.localeCompare(a.dates.start);
+        if (startCmp !== 0) return startCmp;
+      }
+      const orderCmp = (b.record.nodeOrder ?? 0) - (a.record.nodeOrder ?? 0);
+      if (orderCmp !== 0) return orderCmp;
+      return a.id.localeCompare(b.id);
+    });
+  })();
 
   const changedEntries = entries.filter(
     (entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)),
   );
   const reviewScope = entries.filter(
-    (entry) => isEditableTarget(entry) || (scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry))),
+    (entry) =>
+      (isEditableTarget(entry) && isCurrentSchedulablePoolNode(entry)) ||
+      (scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry))),
   );
   const addedEntries = changedEntries.filter(
     (entry) => classifyScheduleReview(entry) === "added",
@@ -1034,6 +1099,7 @@ export function SchedulePage({
     if (!changed.length) return;
     if (invalid.length) {
       setSelected(invalid[0].entry.id);
+      setSuccessToast(null);
       setReport(`无法同步：${invalid[0].entry.record.title}：${invalid[0].message}`);
       return;
     }
@@ -1052,6 +1118,7 @@ export function SchedulePage({
     if (invalid.length) {
       setReviewOpen(false);
       setSelected(invalid[0].entry.id);
+      setSuccessToast(null);
       setReport(`无法同步：${invalid[0].entry.record.title}：${invalid[0].message}`);
       return;
     }
@@ -1065,6 +1132,7 @@ export function SchedulePage({
     busyRef.current = true;
     onGuardChange({ dirty: true, busy: true, uncertain });
     setBusy(true);
+    setSuccessToast(null);
     setReport("");
     try {
       if (!read) throw new Error("排期会话已结束");
@@ -1114,9 +1182,19 @@ export function SchedulePage({
       }
       const count = (result: string) =>
         frozen.filter((item) => (results.get(item.id)?.result || "uncertain") === result).length;
-      setReport(
-        `本次同步：收到成功回执 ${count("accepted")} 项，失败 ${count("failed")} 项，结果不确定 ${count("uncertain")} 项，未发送 ${count("unsent")} 项；实际写请求 ${response.writeRequests} 次。成功回执未回读核验。`,
-      );
+      const accepted = count("accepted");
+      const failed = count("failed");
+      const uncertainCount = count("uncertain");
+      const unsent = count("unsent");
+      if (accepted > 0 && failed === 0 && uncertainCount === 0 && unsent === 0) {
+        setReport("");
+        setSuccessToast({ id: Date.now(), accepted });
+      } else {
+        setSuccessToast(null);
+        setReport(
+          `本次同步：收到成功回执 ${accepted} 项，失败 ${failed} 项，结果不确定 ${uncertainCount} 项，未发送 ${unsent} 项；实际写请求 ${response.writeRequests} 次。成功回执未回读核验。`,
+        );
+      }
     } catch (failure) {
       // 只有桌面命令明确标记发送前失败时才能安全重试。
       const err = failure as { schedule_not_sent?: boolean; message?: string } | null;
@@ -1146,6 +1224,7 @@ export function SchedulePage({
         setRead(nextRead);
         preloadedSession.updateRead(nextRead);
       }
+      setSuccessToast(null);
       setReport(
         `本次同步：收到成功回执 0 项，失败 0 项，结果不确定 ${unsent ? 0 : frozen.length} 项，未发送 ${unsent ? frozen.length : 0} 项。${unsent ? err?.message || "会话校验未通过" : "请先在飞书核对；本次不会自动重发。"}`,
       );
@@ -1342,8 +1421,27 @@ export function SchedulePage({
               </div>
             )}
             {report && (
-              <div className="banner warning" role="status">
+              <div className="banner warning" role="alert">
                 {report}
+              </div>
+            )}
+            {successToast && (
+              <div className="workflow-toasts">
+                <div className="banner success workflow-toast" role="status">
+                  <Check size={17} aria-hidden="true" />
+                  <div>
+                    <strong>排期已同步</strong>
+                    <p>已保存 {successToast.accepted} 项节点排期</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="关闭排期同步提示"
+                    onClick={() => setSuccessToast(null)}
+                  >
+                    <X size={16} aria-hidden="true" />
+                  </button>
+                </div>
               </div>
             )}
             {uncertain && (
