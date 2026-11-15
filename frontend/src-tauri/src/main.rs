@@ -47,15 +47,29 @@ fn close_schedule<T>(mutex: &std::sync::Mutex<Option<T>>, matches: impl FnOnce(&
 }
 
 #[tauri::command]
-async fn load_schedule_session() -> Result<fstodo_backend::schedule::LoadResult, UiError> {
-    blocking(|| {
+async fn load_schedule_session(include_people: Option<bool>) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
+    blocking(move || {
         let mut guard = lock_schedule(&SCHEDULE_SESSION)?;
         if guard.is_some() { return Err(BackendError::conflict("请先结束当前排期会话，再重新读取")); }
         let session = open_session()?;
-        let schedule = fstodo_backend::schedule::ScheduleSession::load(&session)?;
+        let schedule = if include_people == Some(true) {
+            fstodo_backend::schedule::ScheduleSession::load_all(&session)?
+        } else {
+            fstodo_backend::schedule::ScheduleSession::load_mine(&session)?
+        };
         let view = schedule.view.clone();
         *guard = Some(schedule);
         Ok(view)
+    }).await
+}
+
+#[tauri::command]
+async fn load_schedule_people(session_id: String) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
+    blocking(move || {
+        let mut guard = lock_schedule(&SCHEDULE_SESSION)?;
+        let schedule = guard.as_mut().ok_or_else(|| BackendError::conflict("排期会话已结束，请重新读取"))?;
+        schedule.load_people(&open_session()?, &session_id)?;
+        Ok(schedule.view.clone())
     }).await
 }
 
@@ -755,6 +769,7 @@ fn main() {
             acknowledge_creation_recovery,
             execute_workflow_action,
             load_schedule_session,
+            load_schedule_people,
             sync_schedule_session,
             close_schedule_session
         ])

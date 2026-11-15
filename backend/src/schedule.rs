@@ -7,10 +7,11 @@ use crate::{
     model::domain::WorkItemId,
 };
 use chrono::{DateTime, FixedOffset, NaiveDate, TimeZone};
+use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -34,6 +35,8 @@ pub struct Identity {
 pub struct Person {
     pub id: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Target {
@@ -69,6 +72,8 @@ pub struct FailedItem {
     pub project: String,
     pub r#type: String,
     pub item: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
     pub sources: Vec<String>,
     pub message: String,
 }
@@ -77,6 +82,9 @@ pub struct LoadResult {
     pub session_id: String,
     pub current_user: String,
     pub current_user_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_user_avatar: Option<String>,
+    pub people_loaded: bool,
     pub account_error: Option<String>,
     pub read_at_ms: i64,
     pub sources: Vec<SourceStatus>,
@@ -105,11 +113,25 @@ pub struct SyncResult {
     pub write_requests: usize,
 }
 
+#[derive(Default)]
+struct LoadState {
+    processed_items: HashSet<(String, String, String)>,
+    schedule_configs: BTreeMap<(String, String), Result<bool, ()>>,
+    detail_names: BTreeMap<(String, String), String>,
+    detail_avatars: BTreeMap<(String, String), String>,
+}
+
 pub struct ScheduleSession {
     pub view: LoadResult,
     fingerprint: String,
     frozen: HashSet<String>,
     frozen_nodes: HashSet<(String, String, String, String)>,
+    deferred_targets: Vec<Target>,
+    processed_items: HashSet<(String, String, String)>,
+    schedule_configs: BTreeMap<(String, String), Result<bool, ()>>,
+    detail_names: BTreeMap<(String, String), String>,
+    detail_avatars: BTreeMap<(String, String), String>,
+    next_target_seq: usize,
 }
 
 fn fingerprint(session: &Session) -> Result<String, BackendError> {
@@ -130,12 +152,33 @@ fn txt(v: &Value) -> String {
     detail::text(v).unwrap_or_default()
 }
 fn date(v: &Value) -> Option<String> {
-    if v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()) {
+    if v.is_null() {
         return Some(String::new());
     }
-    let ms = v
-        .as_i64()
-        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))?;
+    if let Some(s) = v.as_str() {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed == "0" {
+            return Some(String::new());
+        }
+        if date_ms(trimmed).is_some() {
+            return Some(trimmed.to_owned());
+        }
+        let ms = trimmed.parse::<i64>().ok()?;
+        if ms <= 0 {
+            return (ms == 0).then(String::new);
+        }
+        let offset = FixedOffset::east_opt(8 * 3600).unwrap();
+        return Some(
+            DateTime::from_timestamp_millis(ms)?
+                .with_timezone(&offset)
+                .format("%Y-%m-%d")
+                .to_string(),
+        );
+    }
+    let ms = v.as_i64()?;
+    if ms <= 0 {
+        return (ms == 0).then(String::new);
+    }
     let offset = FixedOffset::east_opt(8 * 3600).unwrap();
     Some(
         DateTime::from_timestamp_millis(ms)?
@@ -145,13 +188,22 @@ fn date(v: &Value) -> Option<String> {
     )
 }
 fn dates(v: &Value) -> Option<Dates> {
-    if !v.is_object() {
-        return None;
+    if v.is_null() {
+        return Some(Dates {
+            start: String::new(),
+            end: String::new(),
+        });
     }
-    Some(Dates {
-        start: date(v.get("estimate_start_time")?)?,
-        end: date(v.get("estimate_finish_time")?)?,
-    })
+    let obj = v.as_object()?;
+    let start = match obj.get("estimate_start_time") {
+        Some(val) => date(val)?,
+        None => String::new(),
+    };
+    let end = match obj.get("estimate_finish_time") {
+        Some(val) => date(val)?,
+        None => String::new(),
+    };
+    Some(Dates { start, end })
 }
 fn date_ms(s: &str) -> Option<i64> {
     let d = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
@@ -167,15 +219,33 @@ fn date_ms(s: &str) -> Option<i64> {
 }
 fn user_name(v: &Value) -> String {
     let key = txt(&v["user_key"]);
-    let names = ["name", "name_cn"]
+    let names = ["name", "name_cn", "username"]
         .iter()
         .map(|k| txt(&v[*k]))
         .filter(|s| !s.trim().is_empty())
         .collect::<Vec<_>>();
-    names.iter().find(|name| **name != key)
+    names
+        .iter()
+        .find(|name| !needs_real_name(&key, name))
+        .or_else(|| names.iter().find(|name| **name != key))
         .or_else(|| names.first())
         .cloned()
         .unwrap_or_default()
+}
+fn user_avatar(v: &Value) -> Option<String> {
+    [
+        v.get("avatar_url"),
+        v.pointer("/avatar/avatar_72"),
+        v.pointer("/avatar/avatar_240"),
+        v.pointer("/avatar/avatar_origin"),
+        v.get("avatar"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    .map(str::trim)
+    .find(|s| s.starts_with("http://") || s.starts_with("https://"))
+    .map(str::to_owned)
 }
 
 // Observed list_todo schedule is a node aggregate, never a personal or item date.
@@ -288,6 +358,25 @@ fn schedule_receipt_accepted(payload: &crate::mcp::ToolResultPayload) -> bool {
 
 impl ScheduleSession {
     pub fn load(session: &Session) -> Result<Self, BackendError> {
+        Self::load_internal(session, false)
+    }
+
+    pub fn load_mine(session: &Session) -> Result<Self, BackendError> {
+        Self::load_internal(session, true)
+    }
+
+    pub fn load_all(session: &Session) -> Result<Self, BackendError> {
+        let mut schedule = Self::load_mine(session)?;
+        if session.credential().is_ok() {
+            let sid = schedule.view.session_id.clone();
+            schedule.load_people(session, &sid)?;
+        } else {
+            schedule.view.people_loaded = true;
+        }
+        Ok(schedule)
+    }
+
+    fn load_internal(session: &Session, filter_mine: bool) -> Result<Self, BackendError> {
         let fingerprint = fingerprint(session).unwrap_or_default();
         let sid = format!("{}-{}", crate::sync::now_ms(), NEXT.fetch_add(1, Ordering::Relaxed));
         let tables = session.config.source_tables()?;
@@ -297,25 +386,196 @@ impl ScheduleSession {
                 name: tables.iter().find(|table| table.id == source.id)
                     .and_then(|table| table.display_name.clone()).unwrap_or_else(|| source.id.clone()),
                 complete: false, error: None, pages: 0 }).collect();
-        let mut view = LoadResult { session_id: sid, current_user: String::new(), current_user_name: String::new(),
-            account_error: None, read_at_ms: crate::sync::now_ms(), sources: Vec::new(), targets: Vec::new(),
-            failed_items: 0, item_errors: Vec::new(), read_requests: 0 };
+        let mut view = LoadResult {
+            session_id: sid,
+            current_user: String::new(),
+            current_user_name: String::new(),
+            current_user_avatar: None,
+            people_loaded: !filter_mine,
+            account_error: None,
+            read_at_ms: crate::sync::now_ms(),
+            sources: Vec::new(),
+            targets: Vec::new(),
+            failed_items: 0,
+            item_errors: Vec::new(),
+            read_requests: 0,
+        };
+        let mut state = LoadState::default();
+        let mut deferred_targets = Vec::new();
+        let mut failed_extra_sources = BTreeMap::new();
         match session.credential() {
             Ok(credential) => {
                 let client = crate::remote::shared(&session.config, &credential);
                 let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                crate::remote::runtime()?.block_on(crate::mcp::count_schedule_rpcs(count.clone(),
-                    load_remote(session, client.as_ref(), &fingerprint, &mut view, &mut sources)))?;
+                crate::remote::runtime()?.block_on(crate::mcp::count_schedule_rpcs(
+                    count.clone(),
+                    async {
+                        load_remote(
+                            session,
+                            client.as_ref(),
+                            &fingerprint,
+                            &mut view,
+                            &mut sources,
+                            &mut state,
+                        )
+                        .await?;
+                        if filter_mine {
+                            if !view.current_user.trim().is_empty() {
+                                let mut extra = Vec::new();
+                                expand_cached_non_todo_items(
+                                    session,
+                                    client.clone(),
+                                    &fingerprint,
+                                    &view.session_id,
+                                    &view.current_user,
+                                    true,
+                                    &mut state.processed_items,
+                                    &mut state.schedule_configs,
+                                    &mut state.detail_names,
+                                    &mut state.detail_avatars,
+                                    &mut view.item_errors,
+                                    &mut failed_extra_sources,
+                                    &mut extra,
+                                )
+                                .await;
+                                view.failed_items = view.item_errors.len();
+                                if !extra.is_empty() {
+                                    view.targets.extend(extra);
+                                    finish_person_names_with_details(
+                                        session,
+                                        &view.current_user,
+                                        &view.current_user_name,
+                                        view.current_user_avatar.as_deref(),
+                                        &state.detail_names,
+                                        &state.detail_avatars,
+                                        &mut view.targets,
+                                    );
+                                }
+                            }
+                            let all = std::mem::take(&mut view.targets);
+                            for mut target in all {
+                                if is_mine_target(&target, &view.current_user) {
+                                    target.id = format!("{}:{}", view.session_id, view.targets.len());
+                                    view.targets.push(target);
+                                } else {
+                                    deferred_targets.push(target);
+                                }
+                            }
+                            backfill_missing_people_remote(
+                                session,
+                                client.as_ref(),
+                                &mut view,
+                                &mut state.detail_names,
+                                &mut state.detail_avatars,
+                            )
+                            .await;
+                        }
+                        Ok::<(), BackendError>(())
+                    },
+                ))?;
                 view.read_requests = count.load(Ordering::Relaxed);
             }
             Err(_) => {
                 view.account_error = Some("未能确认当前飞书账号，请检查连接后重试".into());
-                for source in &mut sources { source.error = Some("无法读取个人待办，请检查连接后重试".into()); }
+                for source in &mut sources {
+                    source.error = Some("无法读取个人待办，请检查连接后重试".into());
+                }
             }
         }
         view.sources = sources;
+        if filter_mine {
+            ensure_target_sources_in_view(
+                session,
+                &mut view.sources,
+                &view.targets,
+                &failed_extra_sources,
+            );
+        }
         view.read_at_ms = crate::sync::now_ms();
-        Ok(Self { view, fingerprint, frozen: HashSet::new(), frozen_nodes: HashSet::new() })
+        let next_target_seq = view.targets.len();
+        Ok(Self {
+            view,
+            fingerprint,
+            frozen: HashSet::new(),
+            frozen_nodes: HashSet::new(),
+            deferred_targets,
+            processed_items: state.processed_items,
+            schedule_configs: state.schedule_configs,
+            detail_names: state.detail_names,
+            detail_avatars: state.detail_avatars,
+            next_target_seq,
+        })
+    }
+
+    pub fn load_people(&mut self, session: &Session, session_id: &str) -> Result<(), BackendError> {
+        if self.view.session_id != session_id || fingerprint(session)? != self.fingerprint {
+            return Err(BackendError::conflict("排期会话或连接已变化，请重新读取"));
+        }
+        if self.view.people_loaded {
+            return Ok(());
+        }
+        let credential = session.credential()?;
+        let client = crate::remote::shared(&session.config, &credential);
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        crate::remote::runtime()?.block_on(crate::mcp::count_schedule_rpcs(count.clone(), async {
+            for mut target in std::mem::take(&mut self.deferred_targets) {
+                target.id = format!("{}:{}", self.view.session_id, self.next_target_seq);
+                self.next_target_seq += 1;
+                self.view.targets.push(target);
+            }
+            let mut extra_targets = Vec::new();
+            let mut failed_extra_sources = BTreeMap::new();
+            expand_cached_non_todo_items(
+                session,
+                client.clone(),
+                &self.fingerprint,
+                &self.view.session_id,
+                &self.view.current_user,
+                false,
+                &mut self.processed_items,
+                &mut self.schedule_configs,
+                &mut self.detail_names,
+                &mut self.detail_avatars,
+                &mut self.view.item_errors,
+                &mut failed_extra_sources,
+                &mut extra_targets,
+            )
+            .await;
+            self.view.failed_items = self.view.item_errors.len();
+            for mut target in extra_targets {
+                target.id = format!("{}:{}", self.view.session_id, self.next_target_seq);
+                self.next_target_seq += 1;
+                self.view.targets.push(target);
+            }
+            ensure_target_sources_in_view(
+                session,
+                &mut self.view.sources,
+                &self.view.targets,
+                &failed_extra_sources,
+            );
+            finish_person_names_with_details(
+                session,
+                &self.view.current_user,
+                &self.view.current_user_name,
+                self.view.current_user_avatar.as_deref(),
+                &self.detail_names,
+                &self.detail_avatars,
+                &mut self.view.targets,
+            );
+            backfill_missing_people_remote(
+                session,
+                client.as_ref(),
+                &mut self.view,
+                &mut self.detail_names,
+                &mut self.detail_avatars,
+            )
+            .await;
+            Ok::<(), BackendError>(())
+        }))?;
+        self.view.people_loaded = true;
+        self.view.read_requests += count.load(Ordering::Relaxed);
+        self.view.read_at_ms = crate::sync::now_ms();
+        Ok(())
     }
 
     pub fn sync(
@@ -413,9 +673,12 @@ impl ScheduleSession {
                     result.targets.push(TargetResult { id: change.id, result: "unsent", message: "本地登记失败，本次未发送" });
                     continue;
                 }
-                let mut patch = json!({"clear_schedule":false,"is_auto":false});
-                if target.baseline.start != change.start { patch["estimate_start_date"] = json!(start); }
-                if target.baseline.end != change.end { patch["estimate_end_date"] = json!(end); }
+                let mut patch = json!({
+                    "clear_schedule": false,
+                    "is_auto": false,
+                    "estimate_start_date": start,
+                    "estimate_end_date": end,
+                });
                 let mut args = json!({"project_key":target.identity.project,"work_item_id":target.identity.item,"node_id":target.identity.node});
                 if target.identity.scope == "personal" { patch["owners"] = json!([target.identity.owner]); args["schedules"] = json!([patch]); } else { args["node_schedule"] = patch; }
                 let before_write = rpc_count.load(Ordering::Relaxed);
@@ -448,14 +711,59 @@ impl ScheduleSession {
     }
 }
 
-async fn load_remote(session: &Session, client: &dyn TodoSource, fingerprint: &str,
-    view: &mut LoadResult, statuses: &mut [SourceStatus]) -> Result<(), BackendError> {
+fn is_state_flow_row(row: &Value) -> bool {
+    row.get("state_info").is_some_and(Value::is_object)
+        && row.get("node_info").is_none_or(Value::is_null)
+}
+
+fn is_state_flow_detail(data: &Value) -> bool {
+    data["work_item_attribute"]["work_item_mod"].as_str() == Some("状态流")
+        || data["flow_kind"].as_str() == Some("state")
+        || data["work_item_attribute"]["flow_kind"].as_str() == Some("state")
+}
+
+fn is_completed_or_aborted_detail(data: &Value) -> bool {
+    let attr = &data["work_item_attribute"];
+    if attr["is_aborted"].as_bool() == Some(true)
+        || attr["abort_reason"].as_str().is_some_and(|s| !s.trim().is_empty())
+        || attr["finish_status"].as_bool() == Some(true)
+        || attr["finish_status"].as_str() == Some("true")
+    {
+        return true;
+    }
+    data["work_item_fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|f| {
+            f["key"] == "finish_status"
+                && (f["value"].as_bool() == Some(true) || f["value"].as_str() == Some("true"))
+        })
+}
+
+fn is_mine_target(target: &Target, current_user: &str) -> bool {
+    current_user.is_empty()
+        || target.source_aggregate
+        || target.unknown_owner
+        || target.identity.owner.as_deref() == Some(current_user)
+        || target.owners.iter().any(|p| p.id == current_user)
+}
+
+async fn load_remote(
+    session: &Session,
+    client: &dyn TodoSource,
+    fingerprint: &str,
+    view: &mut LoadResult,
+    statuses: &mut [SourceStatus],
+    state: &mut LoadState,
+) -> Result<(), BackendError> {
     let account = client.call_tool("search_user_info", json!({"user_keys":["current_login_user()"]}).as_object().unwrap()).await
         .and_then(|payload| parse_tool_json("search_user_info", &payload));
     if let Ok(value) = account {
         if let Some(users) = value.as_array().filter(|users| users.len() == 1) {
             view.current_user = txt(&users[0]["user_key"]);
             view.current_user_name = user_name(&users[0]);
+            view.current_user_avatar = user_avatar(&users[0]);
         }
     }
     if view.current_user.trim().is_empty() {
@@ -513,7 +821,10 @@ async fn load_remote(session: &Session, client: &dyn TodoSource, fingerprint: &s
                 }
                 if scope.as_ref().is_some_and(|scope| !scope.allows(&project, &kind)) { continue; }
                 let title = txt(&row["work_item_info"]["work_item_name"]);
-                let entry = items.entry((project, kind, item)).or_insert_with(|| (id, title, BTreeSet::new(), Vec::new()));
+                let entry = items.entry((project, kind, item)).or_insert_with(|| (id, title.clone(), BTreeSet::new(), Vec::new()));
+                if entry.1.is_empty() && !title.is_empty() {
+                    entry.1 = title;
+                }
                 entry.2.insert(source.id.clone());
                 entry.3.push((source.id.clone(), row));
             }
@@ -533,39 +844,115 @@ async fn load_remote(session: &Session, client: &dyn TodoSource, fingerprint: &s
             if page == session.config.max_pages { status.error = Some("个人待办分页达到上限，读取未完成".into()); }
         }
     }
-    let mut schedule_configs = BTreeMap::new();
-    for (_, (id, title, sources, rows)) in items {
-        match fetch_nodes(client, &id, session.config.max_pages).await {
+    let cached_flow_kinds: HashMap<(String, String, String), crate::model::domain::FlowKind> = session
+        .store
+        .query_items(&crate::store::ItemFilter {
+            limit: Some(i64::MAX),
+            ..Default::default()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| (row.item.id.key_tuple(), row.item.flow.kind))
+        .collect();
+    let mut todo_items = Vec::new();
+    for (key_tuple, (id, title, sources, rows)) in items {
+        state.processed_items.insert(key_tuple.clone());
+        let cached_detail = session.store.item_detail(&id).ok().flatten();
+        if rows
+            .iter()
+            .any(|(_, row)| is_state_flow_row(row) || row["is_completed"].as_bool() == Some(true))
+            || cached_detail
+                .as_ref()
+                .is_some_and(|d| is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data))
+            || cached_flow_kinds.get(&key_tuple) == Some(&crate::model::domain::FlowKind::State)
+        {
+            continue;
+        }
+        todo_items.push((id, title, sources, rows, cached_detail));
+    }
+    let fetched = stream::iter(todo_items)
+        .map(|(id, title, sources, rows, cached_detail)| async move {
+            let nodes = fetch_nodes(client, &id, session.config.max_pages).await;
+            (id, title, sources, rows, cached_detail, nodes)
+        })
+        .buffered(4)
+        .collect::<Vec<_>>()
+        .await;
+    for (id, mut title, sources, rows, cached_detail, nodes_result) in fetched {
+        if let Some(detail) = cached_detail.as_ref() {
+            if title.trim().is_empty() {
+                title = txt(&detail.data["work_item_attribute"]["work_item_name"]);
+            }
+        }
+        match nodes_result {
             Ok(nodes) => {
                 if nodes.is_empty() {
+                    let detail = match cached_detail {
+                        Some(detail) => Some(detail),
+                        None => crate::detail::fetch(client, &id, session.config.max_pages).await.ok(),
+                    };
+                    if detail.as_ref().is_some_and(|d| {
+                        is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data)
+                    }) {
+                        continue;
+                    }
+                    if let Some(d) = &detail {
+                        if title.trim().is_empty() {
+                            title = txt(&d.data["work_item_attribute"]["work_item_name"]);
+                        }
+                    }
                     for status in statuses.iter_mut().filter(|status| sources.contains(&status.id)) {
                         status.complete = false;
                         status.error = Some("未取得该待办的节点排期，请重试".into());
                     }
                     build_aggregate_targets(&mut view.targets, &view.session_id, &id, &rows, "节点详情为空，来源排期仅供查看");
-                    view.item_errors.push(FailedItem { project: id.project_key.clone().unwrap_or_default(),
-                        r#type: id.work_item_type_key.clone().unwrap_or_default(), item: id.work_item_id.clone(),
-                        sources: sources.iter().cloned().collect(), message: "未取得该待办的节点排期，请重试".into() });
+                    view.item_errors.push(FailedItem {
+                        project: id.project_key.clone().unwrap_or_default(),
+                        r#type: id.work_item_type_key.clone().unwrap_or_default(),
+                        item: id.work_item_id.clone(),
+                        title: title.clone(),
+                        sources: sources.iter().cloned().collect(),
+                        message: "未取得该待办的节点排期，请重试".into(),
+                    });
                     continue;
                 }
                 let project = id.project_key.as_deref().unwrap_or_default();
                 let kind = id.work_item_type_key.as_deref().unwrap_or_default();
                 let config_key = (project.to_owned(), kind.to_owned());
-                if !schedule_configs.contains_key(&config_key) {
+                if !state.schedule_configs.contains_key(&config_key) {
                     let config = crate::source_query::metadata(client, "list_node_field_config", project, kind, session.config.max_pages).await;
-                    schedule_configs.insert(config_key.clone(), config.map(|fields| fields.iter().any(|field| field["field_key"] == "schedule")));
+                    state.schedule_configs.insert(
+                        config_key.clone(),
+                        config
+                            .map(|fields| fields.iter().any(|field| field["field_key"] == "schedule"))
+                            .map_err(|_| ()),
+                    );
                 }
-                let config = schedule_configs.get(&config_key).unwrap();
+                let config = *state.schedule_configs.get(&config_key).unwrap();
                 if config.is_err() {
                     for status in statuses.iter_mut().filter(|status| sources.contains(&status.id)) {
                         status.complete = false;
                         status.error = Some("节点排期字段配置读取未完成，请重试".into());
                     }
                 }
-                let item_url = match crate::detail::fetch(client, &id, session.config.max_pages).await {
-                    Ok(detail) => crate::workflow::item_url(&session.config.endpoint, &id, &detail.data),
-                    Err(_) => None,
+                let detail = match cached_detail {
+                    Some(detail) => Some(detail),
+                    None => crate::detail::fetch(client, &id, session.config.max_pages).await.ok(),
                 };
+                if let Some(detail) = &detail {
+                    if title.trim().is_empty() {
+                        title = txt(&detail.data["work_item_attribute"]["work_item_name"]);
+                    }
+                    record_detail_people(
+                        project,
+                        &detail.data,
+                        &mut state.detail_names,
+                        &mut state.detail_avatars,
+                    );
+                }
+                let item_url = detail
+                    .as_ref()
+                    .and_then(|d| crate::workflow::item_url(&session.config.endpoint, &id, &d.data));
                 let first = view.targets.len();
                 let nodes_incomplete = nodes.iter().any(node_data_incomplete);
                 for node in nodes {
@@ -583,25 +970,508 @@ async fn load_remote(session: &Session, client: &dyn TodoSource, fingerprint: &s
                         status.complete = false;
                         status.error = Some("部分节点身份或排期数据不完整，请重试".into());
                     }
-                    view.item_errors.push(FailedItem { project: id.project_key.clone().unwrap_or_default(),
-                        r#type: id.work_item_type_key.clone().unwrap_or_default(), item: id.work_item_id.clone(),
-                        sources: sources.iter().cloned().collect(), message: "部分节点身份或排期数据不完整，仅显示可确认内容".into() });
+                    view.item_errors.push(FailedItem {
+                        project: id.project_key.clone().unwrap_or_default(),
+                        r#type: id.work_item_type_key.clone().unwrap_or_default(),
+                        item: id.work_item_id.clone(),
+                        title: title.clone(),
+                        sources: sources.iter().cloned().collect(),
+                        message: "部分节点身份或排期数据不完整，仅显示可确认内容".into(),
+                    });
                 }
             },
-            Err(_) => {
+            Err(err) => {
+                if cached_detail.as_ref().is_some_and(|d| {
+                    is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data)
+                }) {
+                    continue;
+                }
+                if matches!(err.kind(), ErrorKind::Tool | ErrorKind::Parse) {
+                    let detail = match cached_detail {
+                        Some(detail) => Some(detail),
+                        None => crate::detail::fetch(client, &id, session.config.max_pages).await.ok(),
+                    };
+                    if detail.as_ref().is_some_and(|d| {
+                        is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data)
+                    }) {
+                        continue;
+                    }
+                    if let Some(d) = &detail {
+                        if title.trim().is_empty() {
+                            title = txt(&d.data["work_item_attribute"]["work_item_name"]);
+                        }
+                    }
+                } else if let Some(d) = &cached_detail {
+                    if title.trim().is_empty() {
+                        title = txt(&d.data["work_item_attribute"]["work_item_name"]);
+                    }
+                }
                 for status in statuses.iter_mut().filter(|status| sources.contains(&status.id)) {
                     status.complete = false;
                     status.error = Some("部分事项节点读取未完成，请重试".into());
                 }
                 build_aggregate_targets(&mut view.targets, &view.session_id, &id, &rows, "节点读取未完成，来源排期仅供查看");
-                view.item_errors.push(FailedItem { project: id.project_key.unwrap_or_default(), r#type: id.work_item_type_key.unwrap_or_default(),
-                    item: id.work_item_id, sources: sources.into_iter().collect(), message: "节点读取未完成，请重试".into() });
+                view.item_errors.push(FailedItem {
+                    project: id.project_key.unwrap_or_default(),
+                    r#type: id.work_item_type_key.unwrap_or_default(),
+                    item: id.work_item_id,
+                    title,
+                    sources: sources.into_iter().collect(),
+                    message: "节点读取未完成，请重试".into(),
+                });
             }
         }
     }
     view.failed_items = view.item_errors.len();
-    finish_person_names(session, &view.current_user, &mut view.targets);
+    finish_person_names_with_details(
+        session,
+        &view.current_user,
+        &view.current_user_name,
+        view.current_user_avatar.as_deref(),
+        &state.detail_names,
+        &state.detail_avatars,
+        &mut view.targets,
+    );
     Ok(())
+}
+
+async fn expand_cached_non_todo_items(
+    session: &Session,
+    client: std::sync::Arc<crate::remote::Remote>,
+    fingerprint: &str,
+    session_id: &str,
+    current_user: &str,
+    only_mine_related: bool,
+    processed_items: &mut HashSet<(String, String, String)>,
+    schedule_configs: &mut BTreeMap<(String, String), Result<bool, ()>>,
+    detail_names: &mut BTreeMap<(String, String), String>,
+    detail_avatars: &mut BTreeMap<(String, String), String>,
+    item_errors: &mut Vec<FailedItem>,
+    failed_sources: &mut BTreeMap<String, String>,
+    out_targets: &mut Vec<Target>,
+) {
+    let mut allowed_sources: BTreeMap<String, Option<crate::store::TypeScope>> = BTreeMap::new();
+    for source in &session.config.sources {
+        if source.enabled
+            && !matches!(source.kind, crate::model::source::SourceKind::PersonalTodo)
+            && source.ensure_executable().is_ok()
+        {
+            if let Ok(scope) = session.source_type_scope(&source.id) {
+                allowed_sources.insert(source.id.clone(), scope);
+            }
+        }
+    }
+    if allowed_sources.is_empty() {
+        return;
+    }
+    let cached_items = session
+        .store
+        .query_items(&crate::store::ItemFilter {
+            limit: Some(i64::MAX),
+            ..Default::default()
+        })
+        .unwrap_or_default();
+    let mut extra_items = Vec::new();
+    for cached in cached_items {
+        let id = cached.item.id.clone();
+        let (project, kind, item_num) = id.key_tuple();
+        if project.trim().is_empty() || kind.trim().is_empty() || item_num.trim().is_empty() {
+            continue;
+        }
+        let sources: BTreeSet<String> = cached
+            .source_ids
+            .iter()
+            .filter(|sid| {
+                allowed_sources
+                    .get(*sid)
+                    .is_some_and(|scope| scope.as_ref().is_none_or(|s| s.allows(&project, &kind)))
+            })
+            .cloned()
+            .collect();
+        if sources.is_empty() {
+            continue;
+        }
+        if processed_items.contains(&(project.clone(), kind.clone(), item_num.clone())) {
+            continue;
+        }
+        if cached.is_completed == Some(true)
+            || cached.item.flow.kind == crate::model::domain::FlowKind::State
+        {
+            processed_items.insert((project, kind, item_num));
+            continue;
+        }
+        let cached_detail = session.store.item_detail(&id).ok().flatten();
+        if cached_detail.as_ref().is_some_and(|d| {
+            is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data)
+        }) {
+            processed_items.insert((project, kind, item_num));
+            continue;
+        }
+        if only_mine_related {
+            let related = !current_user.trim().is_empty()
+                && (cached.item.raw_json.contains(current_user)
+                    || cached_detail
+                        .as_ref()
+                        .is_some_and(|d| d.data.to_string().contains(current_user)));
+            if !related {
+                continue;
+            }
+        }
+        processed_items.insert((project, kind, item_num));
+        extra_items.push((
+            id,
+            cached.item.name.unwrap_or_default(),
+            sources,
+            cached_detail,
+        ));
+    }
+    let max_pages = session.config.max_pages;
+    let fetched_extra = stream::iter(extra_items)
+        .map(|(id, title, sources, cached_detail)| {
+            let client = client.clone();
+            async move {
+                let nodes = fetch_nodes(client.as_ref(), &id, max_pages).await;
+                (id, title, sources, cached_detail, nodes)
+            }
+        })
+        .buffered(4)
+        .collect::<Vec<_>>()
+        .await;
+    for (id, mut title, sources, cached_detail, nodes_result) in fetched_extra {
+        let nodes = match nodes_result {
+            Ok(nodes) if !nodes.is_empty() => nodes,
+            empty_or_err => {
+                let should_check_detail = match &empty_or_err {
+                    Ok(_) => true,
+                    Err(err) => matches!(err.kind(), ErrorKind::Tool | ErrorKind::Parse),
+                };
+                let detail = match cached_detail {
+                    Some(d) => Some(d),
+                    None if should_check_detail => {
+                        crate::detail::fetch(client.as_ref(), &id, session.config.max_pages)
+                            .await
+                            .ok()
+                    }
+                    None => None,
+                };
+                if detail.as_ref().is_some_and(|d| {
+                    is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data)
+                }) {
+                    continue;
+                }
+                if let Some(d) = &detail {
+                    if title.trim().is_empty() {
+                        title = txt(&d.data["work_item_attribute"]["work_item_name"]);
+                    }
+                }
+                for sid in &sources {
+                    failed_sources
+                        .insert(sid.clone(), "部分事项节点读取未完成，请重试".into());
+                }
+                let message = if empty_or_err.is_ok() {
+                    "未取得该事项的节点排期，请重试"
+                } else {
+                    "节点读取未完成，请重试"
+                };
+                item_errors.push(FailedItem {
+                    project: id.project_key.unwrap_or_default(),
+                    r#type: id.work_item_type_key.unwrap_or_default(),
+                    item: id.work_item_id,
+                    title,
+                    sources: sources.into_iter().collect(),
+                    message: message.into(),
+                });
+                continue;
+            }
+        };
+        let project = id.project_key.as_deref().unwrap_or_default();
+        let kind = id.work_item_type_key.as_deref().unwrap_or_default();
+        let config_key = (project.to_owned(), kind.to_owned());
+        if !schedule_configs.contains_key(&config_key) {
+            let config = crate::source_query::metadata(
+                client.as_ref(),
+                "list_node_field_config",
+                project,
+                kind,
+                session.config.max_pages,
+            )
+            .await;
+            schedule_configs.insert(
+                config_key.clone(),
+                config
+                    .map(|fields| fields.iter().any(|field| field["field_key"] == "schedule"))
+                    .map_err(|_| ()),
+            );
+        }
+        let config = *schedule_configs.get(&config_key).unwrap();
+        if config.is_err() {
+            for sid in &sources {
+                failed_sources
+                    .insert(sid.clone(), "节点排期字段配置读取未完成，请重试".into());
+            }
+        }
+        let detail = match cached_detail {
+            Some(d) => Some(d),
+            None => crate::detail::fetch(client.as_ref(), &id, session.config.max_pages)
+                .await
+                .ok(),
+        };
+        if let Some(detail) = &detail {
+            if title.trim().is_empty() {
+                title = txt(&detail.data["work_item_attribute"]["work_item_name"]);
+            }
+            record_detail_people(project, &detail.data, detail_names, detail_avatars);
+        }
+        let item_url = detail
+            .as_ref()
+            .and_then(|d| crate::workflow::item_url(&session.config.endpoint, &id, &d.data));
+        let nodes_incomplete = nodes.iter().any(node_data_incomplete);
+        let mut temp = Vec::new();
+        for node in nodes {
+            build_targets(
+                &mut temp,
+                session_id,
+                fingerprint,
+                current_user,
+                &id,
+                if title.is_empty() {
+                    &id.work_item_id
+                } else {
+                    &title
+                },
+                &sources,
+                &node,
+            );
+        }
+        let has_incomplete_target = temp.iter().any(incomplete_target);
+        for mut target in temp {
+            target.item_url = item_url.clone();
+            if target.read_only_reason.is_none() && !matches!(config, Ok(true)) {
+                target.read_only_reason = Some(
+                    if config.is_err() {
+                        "节点排期配置读取失败，仅供查看"
+                    } else {
+                        "未找到节点排期字段配置，仅供查看"
+                    }
+                    .into(),
+                );
+            }
+            out_targets.push(target);
+        }
+        if nodes_incomplete || has_incomplete_target {
+            for sid in &sources {
+                failed_sources
+                    .insert(sid.clone(), "部分节点身份或排期数据不完整，请重试".into());
+            }
+            item_errors.push(FailedItem {
+                project: id.project_key.clone().unwrap_or_default(),
+                r#type: id.work_item_type_key.clone().unwrap_or_default(),
+                item: id.work_item_id.clone(),
+                title: title.clone(),
+                sources: sources.iter().cloned().collect(),
+                message: "部分节点身份或排期数据不完整，仅显示可确认内容".into(),
+            });
+        }
+    }
+}
+
+fn ensure_target_sources_in_view(
+    session: &Session,
+    view_sources: &mut Vec<SourceStatus>,
+    targets: &[Target],
+    failed_sources: &BTreeMap<String, String>,
+) {
+    let tables = session.config.source_tables().unwrap_or_default();
+    let mut seen: BTreeSet<String> = view_sources.iter().map(|s| s.id.clone()).collect();
+    let all_sids = targets
+        .iter()
+        .flat_map(|t| t.sources.iter())
+        .chain(failed_sources.keys());
+    for sid in all_sids {
+        if !seen.insert(sid.clone()) {
+            continue;
+        }
+        let name = tables
+            .iter()
+            .find(|t| &t.id == sid)
+            .and_then(|t| t.display_name.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| sid.clone());
+        view_sources.push(SourceStatus {
+            id: sid.clone(),
+            name,
+            complete: true,
+            error: None,
+            pages: 1,
+        });
+    }
+    for source in view_sources.iter_mut() {
+        if let Some(err) = failed_sources.get(&source.id) {
+            source.complete = false;
+            source.error = Some(err.clone());
+        }
+    }
+}
+
+async fn backfill_missing_people_remote(
+    session: &Session,
+    client: &dyn TodoSource,
+    view: &mut LoadResult,
+    detail_names: &mut BTreeMap<(String, String), String>,
+    detail_avatars: &mut BTreeMap<(String, String), String>,
+) {
+    let current_known = !view.current_user.trim().is_empty()
+        && !needs_real_name(&view.current_user, &view.current_user_name);
+    let mut missing_keys = BTreeSet::new();
+    for target in &view.targets {
+        if let Some(owner) = target
+            .identity
+            .owner
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if owner == view.current_user {
+                if !current_known {
+                    missing_keys.insert(owner.to_owned());
+                }
+            } else {
+                let owner_has_avatar = target
+                    .owners
+                    .iter()
+                    .any(|p| p.id == owner && p.avatar.is_some());
+                if needs_real_name(owner, &target.owner_name) || !owner_has_avatar {
+                    missing_keys.insert(owner.to_owned());
+                }
+            }
+        }
+        for person in &target.owners {
+            let id = person.id.trim();
+            if id.is_empty() {
+                continue;
+            }
+            if id == view.current_user {
+                if !current_known {
+                    missing_keys.insert(id.to_owned());
+                }
+                continue;
+            }
+            if needs_real_name(id, &person.name) || person.avatar.is_none() {
+                missing_keys.insert(id.to_owned());
+            }
+        }
+    }
+    if missing_keys.is_empty() {
+        return;
+    }
+    let keys_vec: Vec<String> = missing_keys.into_iter().collect();
+    let mut learned_names = BTreeMap::new();
+    let mut learned_avatars = BTreeMap::new();
+    for chunk in keys_vec.chunks(50) {
+        let args = json!({ "user_keys": chunk });
+        if let Ok(payload) = client
+            .call_tool("search_user_info", args.as_object().unwrap())
+            .await
+        {
+            if let Ok(value) = parse_tool_json("search_user_info", &payload) {
+                if let Some(users) = value.as_array() {
+                    for u in users {
+                        let key = txt(&u["user_key"]);
+                        if key.trim().is_empty() {
+                            continue;
+                        }
+                        let name = user_name(u);
+                        if !needs_real_name(&key, &name) {
+                            learned_names.insert(key.clone(), name);
+                        }
+                        if let Some(av) = user_avatar(u) {
+                            learned_avatars.insert(key, av);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !view.current_user.is_empty() {
+        if needs_real_name(&view.current_user, &view.current_user_name) {
+            if let Some(name) = learned_names.get(&view.current_user) {
+                view.current_user_name = name.clone();
+            }
+        }
+        if view.current_user_avatar.is_none() {
+            if let Some(av) = learned_avatars.get(&view.current_user) {
+                view.current_user_avatar = Some(av.clone());
+            }
+        }
+    }
+    let mut per_project_learned: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for target in &mut view.targets {
+        let project = target.identity.project.trim().to_owned();
+        let owner_id = target
+            .identity
+            .owner
+            .as_deref()
+            .or_else(|| target.owners.first().map(|p| p.id.as_str()))
+            .map(str::to_owned);
+        if let Some(oid) = owner_id {
+            if needs_real_name(&oid, &target.owner_name) {
+                if let Some(real_name) = learned_names.get(&oid) {
+                    target.owner_name = real_name.clone();
+                }
+            }
+            if !project.is_empty() {
+                if let Some(real_name) = learned_names.get(&oid) {
+                    detail_names.insert((project.clone(), oid.clone()), real_name.clone());
+                    per_project_learned
+                        .entry(project.clone())
+                        .or_default()
+                        .insert(oid.clone(), real_name.clone());
+                }
+                if let Some(av) = learned_avatars.get(&oid) {
+                    detail_avatars.insert((project.clone(), oid), av.clone());
+                }
+            }
+        }
+        for person in &mut target.owners {
+            if needs_real_name(&person.id, &person.name) {
+                if let Some(real_name) = learned_names.get(&person.id) {
+                    person.name = real_name.clone();
+                }
+            }
+            if person.avatar.is_none() {
+                if let Some(av) = learned_avatars.get(&person.id) {
+                    person.avatar = Some(av.clone());
+                }
+            }
+            if !project.is_empty() {
+                if let Some(real_name) = learned_names.get(&person.id) {
+                    detail_names.insert((project.clone(), person.id.clone()), real_name.clone());
+                    per_project_learned
+                        .entry(project.clone())
+                        .or_default()
+                        .insert(person.id.clone(), real_name.clone());
+                }
+                if let Some(av) = learned_avatars.get(&person.id) {
+                    detail_avatars.insert((project.clone(), person.id.clone()), av.clone());
+                }
+            }
+        }
+    }
+    if let Some(context) = crate::creation::account_context_for_key(session, &view.current_user) {
+        for (project, learned) in per_project_learned {
+            if learned.is_empty() {
+                continue;
+            }
+            let mut existing = session
+                .store
+                .creation_people(&context, &project)
+                .unwrap_or_default();
+            for (uid, real_name) in learned {
+                existing.insert(uid, real_name);
+            }
+            let _ = session.store.save_creation_people(&context, &project, &existing);
+        }
+    }
 }
 
 fn incomplete_target(target: &Target) -> bool {
@@ -642,45 +1512,214 @@ fn short_id(id: &str) -> String {
         .collect()
 }
 
+fn needs_real_name(id: &str, name: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.is_empty()
+        || trimmed == id
+        || (id.chars().count() >= 6 && trimmed == short_id(id))
+        || (trimmed.len() >= 6 && trimmed.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn collect_detail_people(
+    value: &Value,
+    names: &mut BTreeMap<String, String>,
+    avatars: &mut BTreeMap<String, String>,
+) {
+    fn visit(
+        value: &Value,
+        names: &mut BTreeMap<String, String>,
+        avatars: &mut BTreeMap<String, String>,
+        person: bool,
+        role: bool,
+    ) {
+        match value {
+            Value::Array(values) => {
+                for v in values {
+                    visit(v, names, avatars, person, role);
+                }
+            }
+            Value::Object(object) => {
+                let id = object
+                    .get("user_key")
+                    .or_else(|| {
+                        (person || object.contains_key("email"))
+                            .then(|| object.get("key"))
+                            .flatten()
+                    })
+                    .map(txt)
+                    .unwrap_or_default();
+                if !id.trim().is_empty() {
+                    let name = ["name_cn", "name", "username"]
+                        .iter()
+                        .filter_map(|k| object.get(*k))
+                        .map(txt)
+                        .find(|s| !needs_real_name(&id, s))
+                        .unwrap_or_default();
+                    if !name.is_empty() {
+                        names.entry(id.clone()).or_insert(name);
+                    }
+                    if let Some(avatar) = user_avatar(value) {
+                        avatars.entry(id).or_insert(avatar);
+                    }
+                }
+                for (key, child) in object {
+                    visit(
+                        child,
+                        names,
+                        avatars,
+                        key == "owners" || key == "user_details" || (role && key == "members"),
+                        key == "role_members",
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    visit(value, names, avatars, false, false);
+}
+
+fn record_detail_people(
+    project: &str,
+    data: &Value,
+    detail_names: &mut BTreeMap<(String, String), String>,
+    detail_avatars: &mut BTreeMap<(String, String), String>,
+) {
+    if project.trim().is_empty() {
+        return;
+    }
+    let mut names = BTreeMap::new();
+    let mut avatars = BTreeMap::new();
+    collect_detail_people(data, &mut names, &mut avatars);
+    for (uid, name) in names {
+        detail_names
+            .entry((project.to_owned(), uid))
+            .or_insert(name);
+    }
+    for (uid, avatar) in avatars {
+        detail_avatars
+            .entry((project.to_owned(), uid))
+            .or_insert(avatar);
+    }
+}
+
+#[cfg(test)]
 fn finish_person_names(session: &Session, current: &str, targets: &mut [Target]) {
+    finish_person_names_with_details(
+        session,
+        current,
+        "",
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        targets,
+    );
+}
+
+fn finish_person_names_with_details(
+    session: &Session,
+    current: &str,
+    current_user_name: &str,
+    current_user_avatar: Option<&str>,
+    detail_names: &BTreeMap<(String, String), String>,
+    detail_avatars: &BTreeMap<(String, String), String>,
+    targets: &mut [Target],
+) {
     let context = crate::creation::account_context_for_key(session, current);
     let mut observed: BTreeMap<(String, String), String> = BTreeMap::new();
+    let mut observed_avatars: BTreeMap<(String, String), String> = BTreeMap::new();
     for target in targets.iter() {
         if let Some(owner) = target.identity.owner.as_deref() {
-            if !target.owner_name.trim().is_empty() && target.owner_name != owner {
-                observed.entry((target.identity.project.clone(), owner.to_owned()))
+            if !needs_real_name(owner, &target.owner_name) {
+                observed
+                    .entry((target.identity.project.clone(), owner.to_owned()))
                     .or_insert_with(|| target.owner_name.clone());
             }
         }
         for person in &target.owners {
-            if !person.name.trim().is_empty() && person.name != person.id {
-                observed.entry((target.identity.project.clone(), person.id.clone()))
+            if !needs_real_name(&person.id, &person.name) {
+                observed
+                    .entry((target.identity.project.clone(), person.id.clone()))
                     .or_insert_with(|| person.name.clone());
+            }
+            if let Some(av) = person.avatar.as_ref().filter(|s| !s.trim().is_empty()) {
+                observed_avatars
+                    .entry((target.identity.project.clone(), person.id.clone()))
+                    .or_insert_with(|| av.clone());
             }
         }
     }
-    let mut cached = BTreeMap::new();
+    for (k, v) in detail_names {
+        observed.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    for (k, v) in detail_avatars {
+        observed_avatars.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    let db_matches = session
+        .store
+        .path
+        .as_ref()
+        .is_none_or(|p| p == &session.config.db_path);
+    let mut cached: BTreeMap<String, (BTreeMap<String, String>, BTreeMap<String, String>)> =
+        BTreeMap::new();
     for target in targets {
-        let people = cached.entry(target.identity.project.clone()).or_insert_with(|| {
-            context.as_ref().and_then(|context| {
-                session.store.creation_people(context, &target.identity.project).ok()
-            }).unwrap_or_default()
-        });
-        let resolve = |id: &str, name: &mut String| {
-            if name.trim().is_empty() || name == id {
-                *name = observed.get(&(target.identity.project.clone(), id.to_owned()))
-                    .or_else(|| people.get(id))
-                    .filter(|cached| !cached.trim().is_empty() && cached.as_str() != id)
-                    .cloned()
-                    .unwrap_or_else(|| short_id(id));
+        let (people_names, people_avatars) = cached
+            .entry(target.identity.project.clone())
+            .or_insert_with(|| {
+                let mut names = context
+                    .as_ref()
+                    .and_then(|ctx| session.store.creation_people(ctx, &target.identity.project).ok())
+                    .unwrap_or_default();
+                let mut avatars = BTreeMap::new();
+                if context.is_some() && db_matches && !target.identity.project.trim().is_empty() {
+                    if let Ok(snapshots) =
+                        session.store.creation_people_snapshots(&target.identity.project)
+                    {
+                        for snapshot in snapshots {
+                            collect_detail_people(&snapshot, &mut names, &mut avatars);
+                        }
+                    }
+                }
+                (names, avatars)
+            });
+        let project = target.identity.project.clone();
+        let resolve_name = |id: &str, name: &mut String| {
+            if needs_real_name(id, name) {
+                if !current.trim().is_empty()
+                    && id == current
+                    && !needs_real_name(current, current_user_name)
+                {
+                    *name = current_user_name.to_owned();
+                } else if let Some(found) = observed
+                    .get(&(project.clone(), id.to_owned()))
+                    .or_else(|| people_names.get(id))
+                    .filter(|cached| !needs_real_name(id, cached))
+                {
+                    *name = found.clone();
+                } else {
+                    *name = short_id(id);
+                }
             }
         };
-        if let Some(owner) = target.identity.owner.as_deref()
-            .or_else(|| target.owners.first().map(|person| person.id.as_str())) {
-            resolve(owner, &mut target.owner_name);
+        if let Some(owner) = target
+            .identity
+            .owner
+            .as_deref()
+            .or_else(|| target.owners.first().map(|person| person.id.as_str()))
+        {
+            resolve_name(owner, &mut target.owner_name);
         }
         for person in &mut target.owners {
-            resolve(&person.id, &mut person.name);
+            resolve_name(&person.id, &mut person.name);
+            if person.avatar.is_none() {
+                if !current.trim().is_empty() && person.id == current && current_user_avatar.is_some() {
+                    person.avatar = current_user_avatar.map(str::to_owned);
+                } else if let Some(av) = observed_avatars
+                    .get(&(project.clone(), person.id.clone()))
+                    .or_else(|| people_avatars.get(&person.id))
+                {
+                    person.avatar = Some(av.clone());
+                }
+            }
         }
     }
 }
@@ -771,7 +1810,7 @@ fn build_targets(
     let invalid_personal = node
         .get("assignee_schedule_list")
         .is_some_and(|v| !v.is_null() && !v.is_array());
-    let rows: Vec<(Option<String>, String, &Value)> = match personal {
+    let mut rows: Vec<(Option<String>, String, Option<String>, &Value)> = match personal {
         Some(rows) if !rows.is_empty() => rows
             .iter()
             .enumerate()
@@ -780,18 +1819,30 @@ fn build_targets(
             .map(|r| {
                 let owner = detail::text(&r["assignee"]["user_key"]);
                 let mut name = user_name(&r["assignee"]);
-                if name.is_empty() || owner.as_deref() == Some(name.as_str()) {
-                    if let Some(key) = owner.as_ref() {
-                        name = owners.iter()
+                let mut avatar = user_avatar(&r["assignee"]);
+                if let Some(key) = owner.as_ref() {
+                    if needs_real_name(key, &name) {
+                        if let Some(real_name) = owners
+                            .iter()
                             .filter(|candidate| detail::text(&candidate["user_key"]).as_ref() == Some(key))
                             .map(user_name)
-                            .find(|name| !name.is_empty() && name != key)
-                            .unwrap_or_default();
+                            .find(|candidate| !needs_real_name(key, candidate))
+                        {
+                            name = real_name;
+                        } else if name == *key {
+                            name.clear();
+                        }
+                    }
+                    if avatar.is_none() {
+                        avatar = owners.iter()
+                            .filter(|candidate| detail::text(&candidate["user_key"]).as_ref() == Some(key))
+                            .find_map(user_avatar);
                     }
                 }
                 (
                     owner,
                     name,
+                    avatar,
                     &r["schedule_info"],
                 )
             })
@@ -800,17 +1851,33 @@ fn build_targets(
             None,
             owners.iter().find(|o| detail::text(&o["user_key"]).is_some())
                 .map(user_name).unwrap_or_default(),
+            owners.iter().find(|o| detail::text(&o["user_key"]).is_some())
+                .and_then(user_avatar),
             &node["schedule"],
         )],
     };
+    if personal.is_some_and(|p| !p.is_empty()) && !invalid_personal && !node_data_incomplete(node) {
+        for owner_obj in &owners {
+            if let Some(owner_key) = detail::text(&owner_obj["user_key"]).filter(|k| !k.trim().is_empty()) {
+                if !rows.iter().any(|(existing, _, _, _)| existing.as_deref() == Some(owner_key.as_str())) {
+                    rows.push((
+                        Some(owner_key),
+                        user_name(owner_obj),
+                        user_avatar(owner_obj),
+                        &Value::Null,
+                    ));
+                }
+            }
+        }
+    }
     let mut owner_counts = BTreeMap::new();
-    for (owner, _, _) in &rows {
+    for (owner, _, _, _) in &rows {
         if let Some(owner) = owner {
             *owner_counts.entry(owner.clone()).or_insert(0usize) += 1;
         }
     }
     let mut emitted_owners = HashSet::new();
-    for (owner, name, value) in rows {
+    for (owner, name, avatar, value) in rows {
         if owner.as_ref().is_some_and(|owner| !emitted_owners.insert(owner.clone())) { continue; }
         let parsed = dates(value);
         let baseline = parsed.clone().unwrap_or_else(|| Dates {
@@ -876,6 +1943,7 @@ fn build_targets(
                         } else {
                             name.clone()
                         },
+                        avatar: avatar.clone(),
                     }]
                 })
                 .unwrap_or_default()
@@ -888,6 +1956,7 @@ fn build_targets(
                     Some(Person {
                         name: if name.is_empty() { key.clone() } else { name },
                         id: key,
+                        avatar: user_avatar(o),
                     })
                 })
                 .collect()
@@ -1750,9 +2819,38 @@ mod tests {
             &node,
         );
         assert!(!out[0].baseline.start.is_empty());
-        assert!(out[0].read_only_reason.is_some());
-        assert!(dates(&json!({})).is_none());
+        assert_eq!(out[0].baseline.end, "");
+        assert!(out[0].read_only_reason.is_none());
+        assert_eq!(
+            dates(&json!({})),
+            Some(Dates {
+                start: String::new(),
+                end: String::new()
+            })
+        );
+        assert_eq!(
+            dates(&Value::Null),
+            Some(Dates {
+                start: String::new(),
+                end: String::new()
+            })
+        );
         assert!(dates(&json!({"estimate_start_time":null,"estimate_finish_time":null})).is_some());
+        assert!(dates(&json!("invalid")).is_none());
+        assert!(dates(&json!({"estimate_start_time":"invalid"})).is_none());
+        node["schedule"] = json!({"estimate_start_time":"invalid"});
+        out.clear();
+        build_targets(
+            &mut out,
+            "s",
+            "c",
+            "me",
+            &id,
+            "title",
+            &BTreeSet::new(),
+            &node,
+        );
+        assert!(out[0].read_only_reason.is_some());
     }
 
     struct NodePages(Vec<Value>);
@@ -2084,5 +3182,606 @@ mod tests {
         let retry = plan.sync_with_lock_timeout(&session, &sid, vec![change(&first.id)], std::time::Duration::from_secs(1)).unwrap();
         assert_eq!(retry.targets[0].result, "accepted");
         drop(installed); drop(session); std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn omitempty_dates_and_multi_owner_doing_node_synthesize_personal_slots() {
+        assert_eq!(date(&json!(0)), Some(String::new()));
+        assert_eq!(date(&json!("0")), Some(String::new()));
+        assert_eq!(date(&json!("   ")), Some(String::new()));
+        assert_eq!(date(&Value::Null), Some(String::new()));
+
+        let id = WorkItemId {
+            project_key: Some("p".into()),
+            work_item_type_key: Some("story".into()),
+            work_item_id: "10".into(),
+        };
+        let node = json!({
+            "basic": { "node_key": "n_multi", "name": "联调节点", "status": "doing" },
+            "assignees": {
+                "owners": [
+                    { "user_key": "peer_a", "name": "同事甲", "avatar_url": "https://example.com/a.png" },
+                    { "user_key": "me", "name": "测试本人", "avatar": { "avatar_72": "https://example.com/me.png" } }
+                ]
+            },
+            "assignee_schedule_list": [
+                {
+                    "assignee": { "user_key": "peer_a", "name": "同事甲" },
+                    "schedule_info": { "estimate_start_time": 1794499200000i64 }
+                }
+            ],
+            "schedule": { "estimate_start_time": 1794499200000i64 }
+        });
+        let mut out = Vec::new();
+        build_targets(
+            &mut out,
+            "sid",
+            "conn",
+            "me",
+            &id,
+            "多人联调事项",
+            &BTreeSet::from(["a".into()]),
+            &node,
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].identity.scope, "personal");
+        assert_eq!(out[0].identity.owner.as_deref(), Some("peer_a"));
+        assert_eq!(out[0].baseline.start, "2026-11-13");
+        assert_eq!(out[0].baseline.end, "");
+        assert!(out[0].read_only_reason.is_some());
+        assert_eq!(out[0].owners[0].avatar.as_deref(), Some("https://example.com/a.png"));
+
+        assert_eq!(out[1].identity.scope, "personal");
+        assert_eq!(out[1].identity.owner.as_deref(), Some("me"));
+        assert_eq!(
+            out[1].baseline,
+            Dates {
+                start: String::new(),
+                end: String::new()
+            }
+        );
+        assert!(out[1].read_only_reason.is_none());
+        assert_eq!(out[1].owners[0].avatar.as_deref(), Some("https://example.com/me.png"));
+    }
+
+    #[test]
+    fn sync_writes_both_start_and_end_dates_when_updating_single_endpoint() {
+        let (session, dir) = fixture();
+        let fake = Arc::new(Fake {
+            calls: Mutex::new(vec![]),
+            fail_detail: AtomicBool::new(false),
+            partial_page: AtomicBool::new(false),
+            receipts: Mutex::new(vec![ToolResultPayload::from_text("success")]),
+        });
+        let installed = crate::remote::install_test_client(
+            &session.config,
+            &session.credential().unwrap(),
+            Box::new(fake.clone()),
+        );
+        let mut plan = writable_plan(&session);
+        plan.view.targets[0].baseline = Dates {
+            start: "2026-11-13".into(),
+            end: "2026-11-14".into(),
+        };
+        let target_id = plan.view.targets[0].id.clone();
+        let sid = plan.view.session_id.clone();
+        let res = plan
+            .sync(
+                &session,
+                &sid,
+                vec![Change {
+                    id: target_id,
+                    start: "2026-11-13".into(),
+                    end: "2026-11-20".into(),
+                    cancel: false,
+                }],
+            )
+            .unwrap();
+        assert_eq!(res.targets[0].result, "accepted");
+        let calls = fake.calls.lock().unwrap();
+        let (_, args) = calls
+            .iter()
+            .find(|(tool, _)| tool == "update_node")
+            .expect("update_node called");
+        let sched = &args["schedules"][0];
+        assert_eq!(sched["owners"], json!(["me"]));
+        assert_eq!(
+            sched["estimate_start_date"],
+            json!(date_ms("2026-11-13").unwrap())
+        );
+        assert_eq!(
+            sched["estimate_end_date"],
+            json!(date_ms("2026-11-20").unwrap())
+        );
+        assert_eq!(sched["clear_schedule"], false);
+        assert_eq!(sched["is_auto"], false);
+        drop(calls);
+        drop(installed);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    struct StateFlowScenario {
+        calls: Mutex<Vec<(String, Value)>>,
+    }
+    #[async_trait]
+    impl TodoSource for Arc<StateFlowScenario> {
+        async fn describe(&self) -> Result<ConnectionInfo, BackendError> {
+            unreachable!()
+        }
+        async fn close(&mut self) {}
+        async fn call_tool(
+            &self,
+            tool: &str,
+            args: &Map<String, Value>,
+        ) -> Result<ToolResultPayload, BackendError> {
+            crate::mcp::record_schedule_rpc();
+            self.calls
+                .lock()
+                .unwrap()
+                .push((tool.into(), Value::Object(args.clone())));
+            let v = match tool {
+                "search_user_info" => json!([{"user_key":"me","name_cn":"测试本人"}]),
+                "list_todo" => json!({
+                    "list": [
+                        {
+                            "project_key": "p",
+                            "work_item_info": { "work_item_id": "1", "work_item_type_key": "story", "work_item_name": "节点流需求" },
+                            "node_info": { "node_name": "开发" }
+                        },
+                        {
+                            "project_key": "p",
+                            "work_item_info": { "work_item_id": "2", "work_item_type_key": "issue", "work_item_name": "前置过滤缺陷" },
+                            "state_info": { "state_key": "state_open", "state_name": "待处理" }
+                        },
+                        {
+                            "project_key": "p",
+                            "work_item_info": { "work_item_id": "3", "work_item_type_key": "issue", "work_item_name": "兜底过滤缺陷" }
+                        }
+                    ],
+                    "total": 3
+                }),
+                "get_node_detail" => {
+                    let wid = args["work_item_id"].as_str().unwrap_or_default();
+                    if wid == "3" {
+                        return Err(BackendError::Tool {
+                            tool: "get_node_detail".into(),
+                            code: Some(-32000),
+                            message: "flow_absent: state flow item has no nodes".into(),
+                        });
+                    }
+                    json!({
+                        "list": [
+                            {
+                                "basic": { "node_key": "n1", "name": "开发", "status": "doing" },
+                                "assignees": { "owners": [{ "user_key": "me", "name": "测试本人" }] },
+                                "schedule": {}
+                            }
+                        ],
+                        "pagination": { "has_more": false }
+                    })
+                }
+                "get_workitem_brief" => {
+                    let wid = args["work_item_id"].as_str().unwrap_or_default();
+                    let (type_key, work_item_mod, name) = if wid == "1" {
+                        ("story", "节点流", "节点流需求")
+                    } else {
+                        ("issue", "状态流", "兜底过滤缺陷")
+                    };
+                    json!({
+                        "work_item_attribute": {
+                            "work_item_id": wid,
+                            "owned_project": { "key": "p", "simple_name": "example" },
+                            "work_item_type": { "key": type_key },
+                            "work_item_mod": work_item_mod,
+                            "work_item_name": name
+                        },
+                        "work_item_fields": [],
+                        "pagination": { "has_more": false }
+                    })
+                }
+                "list_node_field_config" => json!({
+                    "list": [{ "field_key": "schedule", "field_type": "schedule" }],
+                    "pagination": { "has_more": false }
+                }),
+                _ => panic!("unexpected tool {tool}"),
+            };
+            Ok(ToolResultPayload::from_json(v))
+        }
+    }
+
+    #[test]
+    fn state_flow_items_are_skipped_without_node_detail_errors() {
+        let (session, dir) = fixture();
+        let fake = Arc::new(StateFlowScenario {
+            calls: Mutex::new(vec![]),
+        });
+        let installed = crate::remote::install_test_client(
+            &session.config,
+            &session.credential().unwrap(),
+            Box::new(fake.clone()),
+        );
+        let plan = ScheduleSession::load(&session).unwrap();
+        assert_eq!(plan.view.failed_items, 0);
+        assert!(plan.view.item_errors.is_empty());
+        assert!(plan.view.sources.iter().all(|s| s.complete && s.error.is_none()));
+        assert_eq!(plan.view.targets.len(), 1);
+        assert_eq!(plan.view.targets[0].identity.item, "1");
+        assert!(plan.view.targets[0].read_only_reason.is_none());
+        let calls = fake.calls.lock().unwrap();
+        // Item 2 was pre-filtered via state_info, so get_node_detail was only called for items 1 and 3.
+        let mut node_calls: Vec<_> = calls
+            .iter()
+            .filter(|(t, _)| t == "get_node_detail")
+            .map(|(_, a)| a["work_item_id"].as_str().unwrap_or_default().to_string())
+            .collect();
+        node_calls.sort();
+        assert_eq!(node_calls, vec!["1".to_string(), "3".to_string()]);
+        drop(calls);
+        drop(installed);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    struct TieredPeopleScenario {
+        calls: Mutex<Vec<(String, Value)>>,
+    }
+    #[async_trait]
+    impl TodoSource for Arc<TieredPeopleScenario> {
+        async fn describe(&self) -> Result<ConnectionInfo, BackendError> {
+            unreachable!()
+        }
+        async fn close(&mut self) {}
+        async fn call_tool(
+            &self,
+            tool: &str,
+            args: &Map<String, Value>,
+        ) -> Result<ToolResultPayload, BackendError> {
+            crate::mcp::record_schedule_rpc();
+            self.calls
+                .lock()
+                .unwrap()
+                .push((tool.into(), Value::Object(args.clone())));
+            let v = match tool {
+                "search_user_info" => {
+                    if let Some(keys) = args.get("user_keys").and_then(Value::as_array) {
+                        let mut out = Vec::new();
+                        for key in keys.iter().filter_map(Value::as_str) {
+                            match key {
+                                "current_login_user()" => out.push(json!({
+                                    "user_key": "me",
+                                    "name_cn": "测试本人",
+                                    "avatar_url": "https://example.com/me.png"
+                                })),
+                                "u_peer1" => out.push(json!({
+                                    "user_key": "u_peer1",
+                                    "name_cn": "缓存同事甲",
+                                    "avatar_url": "https://example.com/p1.png"
+                                })),
+                                "u_peer2" => out.push(json!({
+                                    "user_key": "u_peer2",
+                                    "name_cn": "远端同事乙",
+                                    "avatar_url": "https://example.com/p2.png"
+                                })),
+                                "u_peer3" => out.push(json!({
+                                    "user_key": "u_peer3",
+                                    "name_cn": "远端同事丙",
+                                    "avatar": { "avatar_72": "https://example.com/p3.png" }
+                                })),
+                                _ => {}
+                            }
+                        }
+                        json!(out)
+                    } else {
+                        json!([{
+                            "user_key": "me",
+                            "name_cn": "测试本人",
+                            "avatar_url": "https://example.com/me.png"
+                        }])
+                    }
+                }
+                "list_todo" => json!({
+                    "list": [
+                        {
+                            "project_key": "p",
+                            "work_item_info": { "work_item_id": "1", "work_item_type_key": "story", "work_item_name": "核心事项" },
+                            "node_info": { "node_name": "开发" }
+                        }
+                    ],
+                    "total": 1
+                }),
+                "get_node_detail" => {
+                    let wid = args["work_item_id"].as_str().unwrap_or_default();
+                    if wid == "1" {
+                        json!({
+                            "list": [
+                                {
+                                    "basic": { "node_key": "n1", "name": "开发", "status": "doing" },
+                                    "assignees": {
+                                        "owners": [
+                                            { "user_key": "me" },
+                                            { "user_key": "u_peer1" }
+                                        ]
+                                    },
+                                    "assignee_schedule_list": [
+                                        {
+                                            "assignee": { "user_key": "me" },
+                                            "schedule_info": { "estimate_start_time": 1794499200000i64, "estimate_finish_time": 1794585600000i64 }
+                                        },
+                                        {
+                                            "assignee": { "user_key": "u_peer1" },
+                                            "schedule_info": { "estimate_start_time": 1794499200000i64, "estimate_finish_time": 1794585600000i64 }
+                                        }
+                                    ],
+                                    "schedule": {}
+                                },
+                                {
+                                    "basic": { "node_key": "n2", "name": "测试", "status": "not_started" },
+                                    "assignees": { "owners": [{ "user_key": "u_peer2" }] },
+                                    "schedule": {}
+                                }
+                            ],
+                            "pagination": { "has_more": false }
+                        })
+                    } else if wid == "2" {
+                        json!({
+                            "list": [
+                                {
+                                    "basic": { "node_key": "n_team", "name": "设计", "status": "doing" },
+                                    "assignees": { "owners": [{ "user_key": "u_peer3" }] },
+                                    "schedule": { "estimate_start_time": 1794499200000i64, "estimate_finish_time": 1794585600000i64 }
+                                }
+                            ],
+                            "pagination": { "has_more": false }
+                        })
+                    } else {
+                        panic!("unexpected work_item_id {wid}")
+                    }
+                }
+                "get_workitem_brief" => {
+                    let wid = args["work_item_id"].as_str().unwrap_or_default();
+                    json!({
+                        "work_item_attribute": {
+                            "work_item_id": wid,
+                            "owned_project": { "key": "p", "simple_name": "example" },
+                            "work_item_type": { "key": "story" },
+                            "work_item_mod": "节点流",
+                            "work_item_name": if wid == "1" { "核心事项" } else { "团队事项" }
+                        },
+                        "work_item_fields": [],
+                        "pagination": { "has_more": false }
+                    })
+                }
+                "list_node_field_config" => json!({
+                    "list": [{ "field_key": "schedule", "field_type": "schedule" }],
+                    "pagination": { "has_more": false }
+                }),
+                "update_node" => json!("success"),
+                _ => panic!("unexpected tool {tool}"),
+            };
+            Ok(ToolResultPayload::from_json(v))
+        }
+    }
+
+    #[test]
+    fn tiered_load_mine_and_load_people_preserve_baselines_and_backfill_names_and_avatars() {
+        let (mut session, dir) = fixture();
+        session.config.sources.push(crate::model::source::WorkSource {
+            id: "team_stories".into(),
+            kind: crate::model::source::SourceKind::WorkItemType {
+                project_key: Some("p".into()),
+                type_key: Some("story".into()),
+            },
+            enabled: true,
+            todo: None,
+            association_rule: None,
+        });
+        let run = session
+            .store
+            .begin_run("work_item_type", Some("p"), crate::store::RunTrigger::Manual, Some("team_stories"), 10)
+            .unwrap();
+        let team_item = crate::model::domain::WorkItem {
+            id: WorkItemId {
+                project_key: Some("p".into()),
+                work_item_type_key: Some("story".into()),
+                work_item_id: "2".into(),
+            },
+            project_name: Some("示例空间".into()),
+            name: Some("团队事项".into()),
+            flow: crate::model::domain::FlowInfo {
+                kind: crate::model::domain::FlowKind::Node,
+                node_name: Some("设计".into()),
+                node_state_key: None,
+                start_state_key_name: None,
+                end_state_key_name: None,
+            },
+            schedule: crate::model::domain::Schedule::default(),
+            raw_json: "{}".into(),
+        };
+        let state_item = crate::model::domain::WorkItem {
+            id: WorkItemId {
+                project_key: Some("p".into()),
+                work_item_type_key: Some("issue".into()),
+                work_item_id: "3".into(),
+            },
+            project_name: Some("示例空间".into()),
+            name: Some("缺陷状态流".into()),
+            flow: crate::model::domain::FlowInfo {
+                kind: crate::model::domain::FlowKind::State,
+                node_name: None,
+                node_state_key: Some("open".into()),
+                start_state_key_name: None,
+                end_state_key_name: None,
+            },
+            schedule: crate::model::domain::Schedule::default(),
+            raw_json: "{}".into(),
+        };
+        session
+            .store
+            .upsert_items(run, &[team_item, state_item], 10)
+            .unwrap();
+        let ctx = crate::creation::account_context_for_key(&session, "me").unwrap();
+        session
+            .store
+            .save_creation_people(
+                &ctx,
+                "p",
+                &BTreeMap::from([("u_peer1".to_string(), "缓存同事甲".to_string())]),
+            )
+            .unwrap();
+
+        let fake = Arc::new(TieredPeopleScenario {
+            calls: Mutex::new(vec![]),
+        });
+        let installed = crate::remote::install_test_client(
+            &session.config,
+            &session.credential().unwrap(),
+            Box::new(fake.clone()),
+        );
+
+        let mut plan = ScheduleSession::load_mine(&session).unwrap();
+        assert!(!plan.view.people_loaded);
+        assert_eq!(plan.view.current_user, "me");
+        assert_eq!(plan.view.current_user_name, "测试本人");
+        assert_eq!(
+            plan.view.current_user_avatar.as_deref(),
+            Some("https://example.com/me.png")
+        );
+        assert_eq!(plan.view.targets.len(), 1);
+        let my_target_before = plan.view.targets[0].clone();
+        assert_eq!(my_target_before.identity.owner.as_deref(), Some("me"));
+        assert_eq!(my_target_before.owners[0].name, "测试本人");
+        assert_eq!(
+            my_target_before.owners[0].avatar.as_deref(),
+            Some("https://example.com/me.png")
+        );
+
+        let sid = plan.view.session_id.clone();
+        plan.load_people(&session, &sid).unwrap();
+        assert!(plan.view.people_loaded);
+        assert_eq!(plan.view.targets[0].id, my_target_before.id);
+        assert_eq!(plan.view.targets[0].baseline, my_target_before.baseline);
+        assert_eq!(plan.view.targets.len(), 4);
+
+        let peer1 = plan
+            .view
+            .targets
+            .iter()
+            .find(|t| t.identity.owner.as_deref() == Some("u_peer1"))
+            .expect("peer1 target");
+        assert_eq!(peer1.owners[0].name, "缓存同事甲");
+        assert_eq!(
+            peer1.owners[0].avatar.as_deref(),
+            Some("https://example.com/p1.png")
+        );
+
+        let peer2 = plan
+            .view
+            .targets
+            .iter()
+            .find(|t| t.identity.node == "n2")
+            .expect("peer2 target");
+        assert_eq!(peer2.owners[0].name, "远端同事乙");
+        assert_eq!(
+            peer2.owners[0].avatar.as_deref(),
+            Some("https://example.com/p2.png")
+        );
+
+        let peer3 = plan
+            .view
+            .targets
+            .iter()
+            .find(|t| t.identity.item == "2")
+            .expect("peer3 target");
+        assert_eq!(peer3.owners[0].name, "远端同事丙");
+        assert_eq!(
+            peer3.owners[0].avatar.as_deref(),
+            Some("https://example.com/p3.png")
+        );
+
+        let cached_people = session.store.creation_people(&ctx, "p").unwrap();
+        assert_eq!(cached_people.get("u_peer2").map(String::as_str), Some("远端同事乙"));
+        assert_eq!(cached_people.get("u_peer3").map(String::as_str), Some("远端同事丙"));
+
+        // Verify idempotency of load_people
+        let calls_before_repeat = fake.calls.lock().unwrap().len();
+        plan.load_people(&session, &sid).unwrap();
+        assert_eq!(fake.calls.lock().unwrap().len(), calls_before_repeat);
+        assert!(plan.view.sources.iter().any(|s| s.id == "team_stories" && s.complete));
+
+        drop(installed);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn load_mine_includes_related_non_todo_items_and_backfills_coowner_and_numeric_names() {
+        assert!(needs_real_name("u_any", "123456"));
+        assert!(needs_real_name("1000000000000123456", "1000000000000123456"));
+        assert!(!needs_real_name("u_any", "张工"));
+        assert_eq!(
+            user_name(&json!({"user_key": "u_any", "name": "123456", "name_cn": "真实同事"})),
+            "真实同事"
+        );
+
+        let (mut session, dir) = fixture();
+        session.config.sources.push(crate::model::source::WorkSource {
+            id: "my_participated".into(),
+            kind: crate::model::source::SourceKind::WorkItemType {
+                project_key: Some("p".into()),
+                type_key: Some("story".into()),
+            },
+            enabled: true,
+            todo: None,
+            association_rule: None,
+        });
+        let run = session
+            .store
+            .begin_run(
+                "work_item_type",
+                Some("p"),
+                crate::store::RunTrigger::Manual,
+                Some("my_participated"),
+                20,
+            )
+            .unwrap();
+        let related_item = crate::model::domain::WorkItem {
+            id: WorkItemId {
+                project_key: Some("p".into()),
+                work_item_type_key: Some("story".into()),
+                work_item_id: "2".into(),
+            },
+            project_name: Some("示例空间".into()),
+            name: Some("我参与的需求".into()),
+            flow: crate::model::domain::FlowInfo {
+                kind: crate::model::domain::FlowKind::Node,
+                node_name: Some("设计".into()),
+                node_state_key: None,
+                start_state_key_name: None,
+                end_state_key_name: None,
+            },
+            schedule: crate::model::domain::Schedule::default(),
+            raw_json: r#"{"owners":["me","u_peer3"]}"#.into(),
+        };
+        session
+            .store
+            .upsert_items(run, &[related_item], 20)
+            .unwrap();
+
+        let fake = Arc::new(TieredPeopleScenario {
+            calls: Mutex::new(vec![]),
+        });
+        let installed = crate::remote::install_test_client(
+            &session.config,
+            &session.credential().unwrap(),
+            Box::new(fake.clone()),
+        );
+
+        let plan = ScheduleSession::load_mine(&session).unwrap();
+        assert!(!plan.view.people_loaded);
+        assert!(plan.view.sources.iter().any(|s| s.id == "a" && s.complete));
+        drop(installed);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
