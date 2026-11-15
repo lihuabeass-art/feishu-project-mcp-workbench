@@ -221,6 +221,7 @@ impl TodoSource for Arc<Fake> {
                 value["list"].as_array_mut().unwrap().extend([
                     json!({"role_id":"reporter","role_name":"报告人"}),
                     json!({"role_id":"custom_reporter_role","role_name":"报告人"}),
+                    json!({"role_id":"role_dd8a11","role_name":"产品经理"}),
                 ]);
             }
         }
@@ -616,6 +617,19 @@ fn reporter_prefill_matches_system_identity_and_current_token_user_only() {
         assert_eq!(other.fields.iter().find(|field| field.key == key).unwrap().options[0].value, "ou_other_token_user");
         assert_eq!(h.fake.writes.load(Ordering::SeqCst), 0);
     }
+    let h = Harness::new("reporter-prefill");
+    let source = &h.session.config.sources[0].id;
+    h.session.store.save_source_types(source, &[CachedType {
+        project_key: "space".into(),
+        type_key: "custom-key".into(),
+        type_name: "需求反馈".into(),
+        ..Default::default()
+    }], 2).unwrap();
+    let feedback = discover(&h.session, &h.target()).unwrap();
+    let pm = feedback.fields.iter().find(|field| field.key == "role:role_dd8a11").unwrap();
+    assert!(pm.reporter_self);
+    assert_eq!(pm.initial, json!(["ou_person"]));
+    assert_eq!(pm.options[0].label, "测试用户");
 }
 
 #[test]

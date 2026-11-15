@@ -901,6 +901,16 @@ describe("通用创建表单", () => {
       multiple: true,
       initial: null,
       options: [],
+    }, {
+      key: "role:role_dd8a11",
+      label: "产品经理",
+      kind: "people",
+      required: false,
+      multiple: true,
+      role_id: "role_dd8a11",
+      reporter_self: true,
+      initial: ["token-user"],
+      options: [{ value: "token-user", label: "Token本人" }],
     });
     vi.mocked(getCreationForm).mockResolvedValue(next);
     const user = userEvent.setup();
@@ -909,14 +919,24 @@ describe("通用创建表单", () => {
     expect(
       (await screen.findByRole("combobox", { name: "报告人" })).textContent,
     ).toContain("Token本人");
+    expect(
+      screen.getByRole("combobox", { name: "产品经理" }).textContent,
+    ).toContain("Token本人");
     expect(screen.queryByRole("combobox", { name: "修复人" })).toBeNull();
     await user.click(screen.getByRole("button", { name: /显示字段/ }));
+    expect(within(screen.getByRole("group", { name: "固定显示的字段" })).getByText("产品经理")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "显示修复人" }));
     await user.keyboard("{Escape}");
     expect(
       screen.getByRole("combobox", { name: "修复人" }).textContent,
     ).not.toContain("Token本人");
     expect(lookupCreationField).toHaveBeenCalledWith(target, "role:reporter", "");
+    await user.click(
+      screen.getByRole("button", { name: "从产品经理移除Token本人" }),
+    );
+    expect(
+      screen.getByRole("combobox", { name: "产品经理" }).textContent,
+    ).not.toContain("Token本人");
     await user.click(
       screen.getByRole("button", { name: "从报告人移除Token本人" }),
     );

@@ -24,7 +24,7 @@ export function CreationFieldTip() {
   </div>;
 }
 export const fixedCreationField = (field: CreationField) =>
-  field.required ||
+  field.required || Boolean(field.reporter_self) ||
   ["name", "template", "description"].includes(field.key);
 export function loadCreationVisibility(form: CreationForm): string[] {
   try {

@@ -172,23 +172,21 @@ fn ledger_key(target: &Target, account: &str) -> String {
         digest(&(&target.project_key, &target.type_key, account))
     )
 }
-fn permitted(session: &Session, target: &Target) -> Result<(), BackendError> {
+fn permitted(session: &Session, target: &Target) -> Result<crate::store::CachedType, BackendError> {
     let source = session
         .config
         .sources
         .iter()
         .find(|s| s.id == target.source_id && s.enabled)
         .ok_or_else(|| BackendError::validation("当前工作来源已停用或不存在"))?;
-    if !session
+    let discovered = session
         .store
         .source_types(&source.id)?
-        .iter()
-        .any(|t| t.project_key == target.project_key && t.type_key == target.type_key)
-    {
-        return Err(BackendError::validation(
-            "未在当前来源发现此类型，请重新发现类型",
-        ));
-    }
+        .into_iter()
+        .find(|t| t.project_key == target.project_key && t.type_key == target.type_key)
+        .ok_or_else(|| {
+            BackendError::validation("未在当前来源发现此类型，请重新发现类型")
+        })?;
     match &source.kind {
         crate::SourceKind::WorkItemType {
             project_key,
@@ -221,7 +219,7 @@ fn permitted(session: &Session, target: &Target) -> Result<(), BackendError> {
             "此类型尚未开启新建，请在工作类型设置中开启",
         ));
     }
-    Ok(())
+    Ok(discovered)
 }
 fn field_options(config: &Value) -> Vec<OptionValue> {
     config["option"]
@@ -375,7 +373,9 @@ pub fn discover(session: &Session, target: &Target) -> Result<Form, BackendError
 }
 
 fn discover_fresh(session: &Session, target: &Target) -> Result<Form, BackendError> {
-    permitted(session, target)?;
+    let discovered = permitted(session, target)?;
+    let is_feedback = discovered.type_name.trim() == "需求反馈"
+        || target.type_key == "6a439303edb1124045d1335d";
     let args = json!({"project_key":target.project_key,"work_item_type":target.type_key});
     let meta = session.call_read_tool("get_workitem_field_meta", args.as_object().unwrap())?;
     let required = meta["FieldConfList"]
@@ -460,9 +460,13 @@ fn discover_fresh(session: &Session, target: &Target) -> Result<Form, BackendErr
     let user = current_user(session)?;
     let context = account_context(session, &user);
     for field in &mut fields {
-        // 系统角色/字段 Key 才能确认报告人，中文同名字段不能触发此默认。
+        // 内置报告人及需求反馈的产品经理预填为当前登录用户。
+        let feedback_pm = is_feedback
+            && (field.label.trim() == "产品经理"
+                || matches!(field.role_id.as_deref(), Some("pm" | "role_dd8a11")));
         let reporter = field.role_id.as_deref() == Some("reporter")
-            || (field.role_id.is_none() && field.key == "issue_reporter");
+            || (field.role_id.is_none() && field.key == "issue_reporter")
+            || feedback_pm;
         if field.kind == "people" && reporter {
             field.reporter_self = true;
             field.initial = if field.multiple {
