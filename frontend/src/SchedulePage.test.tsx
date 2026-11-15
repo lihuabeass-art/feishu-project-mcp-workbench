@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -1399,4 +1401,156 @@ it("同事项节点过滤无关无排期节点、按节点去重多人记录、�
   expect(siblingGroup.textContent).not.toContain("架构初审");
   expect(siblingGroup.textContent).not.toContain("代码合入");
   expect(siblingGroup.textContent).not.toContain("正式发布");
+});
+
+it("排期主面板在 styles.css 后加载时仍保持 overflow: hidden 以裁切圆角", async () => {
+  const scheduleStyleEl = document.createElement("style");
+  scheduleStyleEl.textContent = readFileSync(resolve(__dirname, "./schedule.css"), "utf8");
+  const stylesStyleEl = document.createElement("style");
+  stylesStyleEl.textContent = readFileSync(resolve(__dirname, "./styles.css"), "utf8");
+  // 按 main.tsx 的模块求值顺序注入（App -> schedule.css 在 styles.css 之前）
+  document.head.append(scheduleStyleEl, stylesStyleEl);
+  try {
+    await setup();
+    const panel = document.querySelector(".work-panel.schedule-panel") as HTMLElement;
+    expect(panel).toBeTruthy();
+    expect(getComputedStyle(panel).overflow).toBe("hidden");
+  } finally {
+    scheduleStyleEl.remove();
+    stylesStyleEl.remove();
+  }
+});
+
+it("多节点子轨道左右对齐、短排期条相邻空白格延伸标签（左右自动避让）及悬停聚焦原位浮层卡片联动", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.targets = [
+    // 第 1 轨（周日 col 6，右侧贴边无空位、左侧有空位 -> 延伸标签自动翻转到左侧 is-left）
+    {
+      ...base,
+      id: "n-prd",
+      title: "排期节点辨识专项",
+      nodeName: "产品方案评审",
+      nodeStatus: "done",
+      nodeOrder: 0,
+      identity: { ...identity, item: "story-visual", node: "node-1" },
+      dates: { start: currentWeekDay(6), end: currentWeekDay(6) },
+    },
+    // 第 2 轨（周三 col 2，右侧有充足空白列 -> 延伸标签在右侧 is-right）
+    {
+      ...base,
+      id: "n-tech",
+      title: "排期节点辨识专项",
+      nodeName: "技术架构设计",
+      nodeStatus: "completed",
+      nodeOrder: 1,
+      identity: { ...identity, item: "story-visual", node: "node-2" },
+      dates: { start: currentWeekDay(2), end: currentWeekDay(2) },
+    },
+    // 第 1 轨前段：周一 col 0 + 周二~周三 col 1~2 紧挨着（col 0 左右均无空位不强塞外部标签，col 1~2 右侧 col 3~5 有空位显示右侧延伸标签）
+    {
+      ...base,
+      id: "n-env",
+      title: "排期节点辨识专项",
+      nodeName: "前端环境准备",
+      nodeStatus: "done",
+      nodeOrder: 2,
+      identity: { ...identity, item: "story-visual", node: "node-3" },
+      dates: { start: currentWeekDay(0), end: currentWeekDay(0) },
+    },
+    {
+      ...base,
+      id: "n-fe-dev",
+      title: "排期节点辨识专项",
+      nodeName: "前端代码开发",
+      nodeStatus: "doing",
+      nodeOrder: 3,
+      scheduleRequired: true,
+      identity: { ...identity, item: "story-visual", node: "node-4" },
+      dates: { start: currentWeekDay(1), end: currentWeekDay(2) },
+    },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+
+  // 1. 左侧事项栏按子轨道逐行对齐展示节点序号、名称与状态标识
+  const rowEl = document.querySelector(".schedule-row.is-multi-node") as HTMLElement;
+  expect(rowEl).toBeTruthy();
+  const laneRows = rowEl.querySelectorAll(".schedule-row-lane");
+  expect(laneRows).toHaveLength(2);
+  const laneNodes = Array.from(rowEl.querySelectorAll(".schedule-lane-node"));
+  expect(laneNodes).toHaveLength(4);
+  expect(laneNodes.map((el) => el.querySelector(".schedule-lane-node-name")?.textContent)).toEqual([
+    "1. 产品方案评审",
+    "3. 前端环境准备",
+    "4. 前端代码开发",
+    "2. 技术架构设计",
+  ]);
+  expect(laneNodes[0].classList.contains("is-past")).toBe(true);
+  expect(laneNodes[3].classList.contains("is-past")).toBe(true);
+  expect(laneNodes[2].classList.contains("is-editable")).toBe(true);
+
+  // 2. 点击左侧子轨道节点直接选中对应节点到右侧检查器
+  fireEvent.click(laneNodes[3]);
+  expect(laneNodes[3].classList.contains("is-selected")).toBe(true);
+  expect(document.querySelector(".schedule-editor")?.textContent).toContain("技术架构设计");
+
+  // 3. 短条（1d/2d）精简角标类名与历史节点已完成徽标区分
+  const prdBar = screen.getByRole("button", { name: /排期节点辨识专项 · 产品方案评审/ });
+  const techBar = screen.getByRole("button", { name: /排期节点辨识专项 · 技术架构设计/ });
+  const envBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端环境准备/ });
+  const feBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
+  expect(prdBar.classList.contains("is-single-day-bar")).toBe(true);
+  expect(feBar.classList.contains("is-narrow-bar")).toBe(true);
+  expect(prdBar.querySelector(".schedule-bar-badge.is-past")).toBeTruthy();
+  expect(prdBar.querySelector(".schedule-bar-badge.is-readonly")).toBeNull();
+  expect(feBar.querySelector(".schedule-bar-state-icon.is-editable")).toBeTruthy();
+
+  // 4. 相邻空白日期格延伸标签：右侧有空位用 is-right，贴近右边缘无空位但左侧有空位用 is-left，左右紧挨无空位不强塞碰撞标签
+  const sideLabels = Array.from(rowEl.querySelectorAll(".schedule-bar-side-label"));
+  const sideTexts = sideLabels.map((el) => ({
+    text: el.textContent,
+    right: el.classList.contains("is-right"),
+    left: el.classList.contains("is-left"),
+  }));
+  // 周三『技术架构设计』右侧有空白列 -> is-right
+  expect(sideTexts.some((item) => item.text?.includes("2. 技术架构设计 · 1d") && item.right)).toBe(true);
+  // 周二~周三『前端代码开发』右侧 col 3~5 有空白列 -> is-right
+  expect(sideTexts.some((item) => item.text?.includes("4. 前端代码开发 · 2d") && item.right)).toBe(true);
+  // 周一『前端环境准备』左侧为第 0 列边界、右侧紧挨『前端代码开发』-> 不生成碰撞外部标签
+  expect(sideTexts.some((item) => item.text?.includes("前端环境准备"))).toBe(false);
+
+  // 单独测试贴右边界且左侧完全空闲时的左侧翻转标签（is-left）
+  const leftFlipRead = data();
+  leftFlipRead.targets = [
+    {
+      ...base,
+      id: "sunday-only",
+      title: "周末收尾事项",
+      nodeName: "上线验证回归",
+      nodeStatus: "doing",
+      scheduleRequired: true,
+      identity: { ...identity, item: "story-sun", node: "node-sun" },
+      dates: { start: currentWeekDay(6), end: currentWeekDay(6) },
+    },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(leftFlipRead);
+  cleanup();
+  await setup();
+  const leftSideLabel = document.querySelector(".schedule-bar-side-label") as HTMLElement;
+  expect(leftSideLabel).toBeTruthy();
+  expect(leftSideLabel.classList.contains("is-left")).toBe(true);
+  expect(leftSideLabel.textContent).toContain("上线验证回归 · 1d");
+
+  // 5. 悬停与键盘聚焦排期条时触发原位上浮完整卡片（靠近右边缘自动右对齐防溢出）
+  const sunBar = screen.getByRole("button", { name: /周末收尾事项 · 上线验证回归/ });
+  fireEvent.mouseEnter(sunBar);
+  const popover = document.querySelector(".schedule-bar-popover") as HTMLElement;
+  expect(popover).toBeTruthy();
+  expect(popover.classList.contains("is-align-right")).toBe(true);
+  expect(popover.textContent).toContain("当前可排");
+  expect(popover.textContent).toContain("上线验证回归");
+  expect(popover.textContent).toContain("(1d)");
+  fireEvent.mouseLeave(sunBar);
+  expect(document.querySelector(".schedule-bar-popover")).toBeNull();
 });

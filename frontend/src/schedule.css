@@ -119,6 +119,8 @@
   font-size: 11px;
 }
 
+/* 提高优先级以覆盖 styles.css 中后加载的 .work-panel { overflow: visible; }，确保顶部工具栏和三栏底角按面板圆角裁切。 */
+.work-panel.schedule-panel,
 .schedule-panel {
   overflow: hidden;
 }
@@ -511,7 +513,7 @@
 
 .schedule-calendar {
   --schedule-cols: 7;
-  --schedule-label-width: 236px;
+  --schedule-label-width: 248px;
   min-width: calc(var(--schedule-label-width) + var(--schedule-cols) * 40px);
   flex: 1;
   display: flex;
@@ -655,14 +657,36 @@
 .schedule-row-label {
   display: flex;
   align-items: center;
-  gap: 9px;
   min-width: 0;
   padding: 8px 12px;
   border-right: 1px solid var(--line);
   cursor: pointer;
 }
 
-.schedule-row-label > span:not(.schedule-avatar) {
+.schedule-row-label.is-multi-node {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 0;
+}
+
+.schedule-row-item-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  width: 100%;
+}
+
+.schedule-row-label.is-multi-node .schedule-row-item-head {
+  height: 44px;
+  padding: 4px 12px;
+  border-bottom: 1px dashed var(--line);
+  background: color-mix(in srgb, var(--surface-soft) 55%, transparent);
+  flex-shrink: 0;
+}
+
+.schedule-row-item-head > span:not(.schedule-avatar) {
   min-width: 0;
   flex: 1;
   display: grid;
@@ -687,14 +711,139 @@
   white-space: nowrap;
 }
 
+.schedule-row-lanes {
+  display: grid;
+  grid-template-rows: repeat(var(--schedule-lanes, 1), 40px);
+}
+
+.schedule-row-lane {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 0 12px;
+  min-width: 0;
+  overflow: hidden;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
+}
+
+.schedule-row-lane:last-child {
+  border-bottom: 0;
+}
+
+.schedule-lane-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 4px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface-solid);
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.schedule-lane-node.is-past {
+  border-left: 2.5px solid var(--option-count-blue);
+  background: color-mix(in srgb, var(--option-blue) 50%, var(--surface-solid));
+}
+
+.schedule-lane-node.is-editable {
+  border-left: 2.5px solid var(--green);
+  background: var(--surface-selected);
+}
+
+.schedule-lane-node.is-readonly {
+  border-left: 2.5px solid var(--border-strong);
+  background: var(--surface-soft);
+  color: var(--text-secondary);
+}
+
+.schedule-lane-node:hover,
+.schedule-lane-node.is-hovered,
+.schedule-lane-node.is-selected {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 1px var(--focus);
+  background: var(--surface-selected);
+}
+
+.schedule-lane-node-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.schedule-lane-node.is-past .schedule-lane-node-icon {
+  color: var(--option-count-blue);
+}
+
+.schedule-lane-node.is-editable .schedule-lane-node-icon {
+  color: var(--green);
+}
+
+.schedule-node-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+}
+
+.schedule-lane-node-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--heading);
+  font-weight: 500;
+}
+
+.schedule-lane-node-date {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .schedule-row-grid {
   position: relative;
+}
+
+.schedule-row-grid.is-multi-node {
+  padding-top: 44px;
+}
+
+.schedule-row-grid.is-multi-node::before {
+  content: "";
+  position: absolute;
+  top: 43px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  border-bottom: 1px dashed var(--line);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .schedule-row-grid > div:not(.schedule-bar) {
   grid-row: 1;
   min-height: 56px;
   border-right: 1px solid var(--line);
+}
+
+.schedule-row-grid.is-multi-node > div:not(.schedule-bar) {
+  margin-top: -44px;
+  min-height: calc(44px + var(--schedule-lanes, 1) * 40px);
 }
 
 .schedule-row-grid > div:not(.schedule-bar):last-of-type {
@@ -712,17 +861,35 @@
   justify-content: space-between;
   gap: 6px;
   text-align: left;
-  margin: 6px 3px;
-  padding: 7px 11px;
+  margin: 4px 3px;
+  padding: 6px 10px;
   overflow: hidden;
   white-space: nowrap;
   color: var(--heading);
   background: var(--surface-selected);
   border: 1px solid var(--border-strong);
-  border-left: 3px solid var(--green);
+  border-left: 3.5px solid var(--green);
   border-radius: 8px;
   font-size: 12px;
   cursor: pointer;
+}
+
+.schedule-bar.is-narrow-bar {
+  padding: 6px 6px;
+  gap: 3px;
+}
+
+.schedule-bar.is-narrow-bar .schedule-bar-days {
+  display: none;
+}
+
+.schedule-bar.is-single-day-bar {
+  padding: 6px 5px;
+  gap: 2px;
+}
+
+.schedule-bar.is-single-day-bar .schedule-bar-badges {
+  display: none;
 }
 
 .schedule-bar[draggable="true"] {
@@ -736,11 +903,13 @@
 .schedule-bar.is-draft {
   background: var(--surface-tint);
   border: 1.5px dashed var(--green);
+  border-left: 3.5px solid var(--green);
 }
 
 .schedule-bar.is-readonly {
   color: var(--text-secondary);
   border: 1px solid var(--line);
+  border-left: 3px solid var(--border-strong);
   background: repeating-linear-gradient(
     -45deg,
     var(--surface-soft),
@@ -751,15 +920,18 @@
 }
 
 .schedule-bar.is-past-node {
-  border-left: 3px solid var(--border-strong);
-  opacity: 0.88;
+  color: var(--text);
+  background: color-mix(in srgb, var(--option-blue) 60%, var(--surface-solid));
+  border: 1px solid color-mix(in srgb, var(--option-count-blue) 30%, var(--line));
+  border-left: 3.5px solid var(--option-count-blue);
+  opacity: 0.94;
 }
 
 .schedule-bar.is-uncertain {
   color: var(--warning-text);
   background: var(--warning-bg);
   border: 1px solid var(--warning-border);
-  border-left: 3px solid var(--warning-text);
+  border-left: 3.5px solid var(--warning-text);
 }
 
 .schedule-bar.is-failed,
@@ -767,9 +939,30 @@
   border-color: var(--error-border);
 }
 
+.schedule-bar.is-hovered {
+  z-index: 4;
+  border-color: var(--focus);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
 .schedule-bar.selected {
+  z-index: 3;
   outline: 2px solid var(--focus);
   outline-offset: 1px;
+}
+
+.schedule-bar-state-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.schedule-bar-state-icon.is-past {
+  color: var(--option-count-blue);
+}
+
+.schedule-bar-state-icon.is-editable {
+  color: var(--green);
 }
 
 .schedule-bar-title {
@@ -808,8 +1001,154 @@
   color: var(--on-primary);
 }
 
+.schedule-bar-badge.is-past {
+  color: var(--option-count-blue);
+  padding: 1px 2px;
+}
+
 .schedule-bar-badge.is-readonly {
   color: var(--muted);
+}
+
+/* 短条借用相邻空白格的延伸节点标签 */
+.schedule-bar-side-label {
+  align-self: center;
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 4px;
+  pointer-events: none;
+}
+
+.schedule-bar-side-label.is-right {
+  justify-content: flex-start;
+}
+
+.schedule-bar-side-label.is-left {
+  justify-content: flex-end;
+}
+
+.schedule-bar-side-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-solid) 92%, transparent);
+  backdrop-filter: blur(4px);
+  font-size: 11px;
+  color: var(--heading);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.schedule-bar-side-label.is-past .schedule-bar-side-pill {
+  border-left: 2.5px solid var(--option-count-blue);
+  color: var(--text);
+}
+
+.schedule-bar-side-label.is-editable .schedule-bar-side-pill {
+  border-left: 2.5px solid var(--green);
+  font-weight: 500;
+}
+
+.schedule-bar-side-label.is-readonly .schedule-bar-side-pill {
+  border-left: 2.5px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.schedule-bar-side-label.is-selected .schedule-bar-side-pill,
+.schedule-bar-side-label.is-hovered .schedule-bar-side-pill {
+  border-color: var(--focus);
+  background: var(--surface-selected);
+}
+
+.schedule-bar-side-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 悬停 / 聚焦时原位上浮展开的完整节点信息卡 */
+.schedule-bar-popover {
+  align-self: start;
+  position: relative;
+  z-index: 15;
+  display: flex;
+  height: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.schedule-bar-popover.is-align-right {
+  justify-content: flex-end;
+}
+
+.schedule-bar-popover-card {
+  position: absolute;
+  bottom: 4px;
+  left: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: 340px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-solid);
+  color: var(--heading);
+  font-size: 11px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+  white-space: nowrap;
+}
+
+.schedule-bar-popover.is-align-right .schedule-bar-popover-card {
+  left: auto;
+  right: 2px;
+}
+
+.schedule-popover-badge {
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.schedule-popover-badge.is-past {
+  background: var(--option-blue);
+  color: var(--option-count-blue);
+}
+
+.schedule-popover-badge.is-editable {
+  background: var(--option-green);
+  color: var(--option-count-green);
+}
+
+.schedule-popover-badge.is-readonly {
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.schedule-popover-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.schedule-popover-meta {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .schedule-handle {
@@ -998,7 +1337,8 @@
   filter: none;
 }
 
-.schedule-sibling-chip.active {
+.schedule-sibling-chip.active,
+.schedule-sibling-chip.is-hovered {
   border-color: var(--green);
   background: var(--surface-selected);
 }
@@ -1414,6 +1754,7 @@
   .schedule-quick-chip,
   .schedule-tabs button,
   .schedule-pool-tabs button,
+  .schedule-lane-node,
   .schedule-handle {
     transition: none;
   }

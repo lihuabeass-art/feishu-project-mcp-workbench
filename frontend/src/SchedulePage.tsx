@@ -200,6 +200,7 @@ export function SchedulePage({
   const [poolTab, setPoolTab] = useState<"pending" | "outside">("pending");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [hoveredId, setHoveredId] = useState("");
   const [preview, setPreview] = useState<{ id: string; start: string; end: string } | null>(null);
   const drag = useRef<Drag | null>(null);
   const reviewBackdropRef = useRef<HTMLDivElement>(null);
@@ -233,6 +234,7 @@ export function SchedulePage({
   useEffect(() => {
     let active = true;
     setSelected("");
+    setHoveredId("");
     setReport("");
     setSuccessToast(null);
     setReviewOpen(false);
@@ -694,7 +696,7 @@ export function SchedulePage({
         a.id.localeCompare(b.id),
     );
     const laneLastEndCol: number[] = [];
-    const bars = sorted.map((entry) => {
+    const rawBars = sorted.map((entry, idx) => {
       const startCol = Math.max(
         0,
         days.findIndex((day) => day >= entry.dates.start),
@@ -710,15 +712,75 @@ export function SchedulePage({
       } else {
         laneLastEndCol[lane] = endCol;
       }
-      return { entry, startCol, endCol, lane };
+      const visibleCols = Math.max(1, endCol - startCol + 1);
+      const barTitleText = entry.record.nodeName || entry.record.title;
+      const charCount = Array.from(barTitleText).length;
+      const isSingleCol = visibleCols === 1;
+      const isNarrowBar = daySpan === 14 ? visibleCols <= 3 : visibleCols <= 2;
+      const needsExternalLabel =
+        isSingleCol ||
+        (isNarrowBar && charCount >= (daySpan === 14 ? 3 : 4)) ||
+        charCount > visibleCols * (daySpan === 14 ? 2 : 4);
+      return {
+        entry,
+        startCol,
+        endCol,
+        lane,
+        stepIndex: idx + 1,
+        visibleCols,
+        isSingleCol,
+        isNarrowBar,
+        needsExternalLabel,
+        sideLabel: null as { side: "right" | "left"; startCol: number; endCol: number } | null,
+      };
     });
     const laneCount = Math.max(1, laneLastEndCol.length);
+    const lanes = Array.from({ length: laneCount }, (_, laneIndex) => {
+      const laneBars = rawBars
+        .filter((b) => b.lane === laneIndex)
+        .sort((a, b) => a.startCol - b.startCol || a.endCol - b.endCol);
+      let claimedUntilCol = -1;
+      for (let i = 0; i < laneBars.length; i++) {
+        const current = laneBars[i];
+        const prevBar = i > 0 ? laneBars[i - 1] : null;
+        const nextBar = i + 1 < laneBars.length ? laneBars[i + 1] : null;
+        const leftStartCol = Math.max(
+          claimedUntilCol + 1,
+          prevBar ? prevBar.endCol + 1 : 0,
+        );
+        const leftFreeCols = Math.max(0, current.startCol - leftStartCol);
+        const rightEndCol = nextBar ? nextBar.startCol - 1 : days.length - 1;
+        const rightFreeCols = Math.max(0, rightEndCol - current.endCol);
+        if (current.needsExternalLabel) {
+          if (rightFreeCols >= 2 || (rightFreeCols >= 1 && rightFreeCols >= leftFreeCols)) {
+            current.sideLabel = {
+              side: "right",
+              startCol: current.endCol + 1,
+              endCol: rightEndCol,
+            };
+            claimedUntilCol = rightEndCol;
+          } else if (leftFreeCols >= 1) {
+            current.sideLabel = {
+              side: "left",
+              startCol: leftStartCol,
+              endCol: current.startCol - 1,
+            };
+            claimedUntilCol = current.endCol;
+          } else {
+            claimedUntilCol = Math.max(claimedUntilCol, current.endCol);
+          }
+        } else {
+          claimedUntilCol = Math.max(claimedUntilCol, current.endCol);
+        }
+      }
+      return laneBars;
+    });
     const primaryEntry =
       sorted.find((item) => canEdit(item) && normalizeNodeStatus(item.record.nodeStatus) === "doing") ||
       sorted.find((item) => normalizeNodeStatus(item.record.nodeStatus) === "doing") ||
       sorted.find((item) => canEdit(item)) ||
       sorted[0];
-    return { key, owner, primaryEntry, bars, laneCount };
+    return { key, owner, primaryEntry, bars: rawBars, lanes, laneCount };
   });
 
   const pending = visible.filter(
@@ -1911,7 +1973,8 @@ export function SchedulePage({
                     )}
 
                     {rows.map((row, rowIndex) => {
-                      const { key, owner, primaryEntry, bars, laneCount } = row;
+                      const { key, owner, primaryEntry, bars, lanes, laneCount } = row;
+                      const isMultiNode = bars.length > 1;
                       const rowSelected = bars.some((b) => b.entry.id === selected);
                       const resultEntry =
                         bars.find((b) => b.entry.id === selected && b.entry.result)?.entry ||
@@ -1934,35 +1997,109 @@ export function SchedulePage({
                                 </span>
                               </div>
                             )}
-                          <div className={`schedule-row ${rowSelected ? "selected" : ""}`}>
+                          <div
+                            className={`schedule-row ${isMultiNode ? "is-multi-node" : ""} ${rowSelected ? "selected" : ""}`}
+                            style={
+                              isMultiNode || laneCount > 1
+                                ? ({ "--schedule-lanes": laneCount } as React.CSSProperties)
+                                : undefined
+                            }
+                          >
                             <div
-                              className="schedule-row-label"
+                              className={`schedule-row-label ${isMultiNode ? "is-multi-node" : ""}`}
                               onClick={() => setSelected(primaryEntry.id)}
                             >
-                              <Avatar
-                                person={personFor(
-                                  primaryEntry,
-                                  resolveOwnerId(primaryEntry, owner),
-                                )}
-                              />
-                              <span>
-                                <strong>{primaryEntry.record.title}</strong>
-                                <small>
-                                  {bars.length > 1
-                                    ? `${primaryEntry.record.nodeName}（共 ${bars.length} 个节点） · ${targetLabel(primaryEntry, owner)}`
-                                    : `${primaryEntry.record.nodeName} · ${targetLabel(primaryEntry, owner)}`}
-                                </small>
-                                {resultEntry?.result && (
-                                  <small className="schedule-result">
-                                    {resultLabel[resultEntry.result]}
+                              <div className="schedule-row-item-head">
+                                <Avatar
+                                  person={personFor(
+                                    primaryEntry,
+                                    resolveOwnerId(primaryEntry, owner),
+                                  )}
+                                />
+                                <span>
+                                  <strong>{primaryEntry.record.title}</strong>
+                                  <small>
+                                    {isMultiNode
+                                      ? `${primaryEntry.record.nodeName}（共 ${bars.length} 个节点） · ${targetLabel(primaryEntry, owner)}`
+                                      : `${primaryEntry.record.nodeName} · ${targetLabel(primaryEntry, owner)}`}
                                   </small>
-                                )}
-                              </span>
+                                  {resultEntry?.result && (
+                                    <small className="schedule-result">
+                                      {resultLabel[resultEntry.result]}
+                                    </small>
+                                  )}
+                                </span>
+                              </div>
+                              {isMultiNode && (
+                                <div className="schedule-row-lanes">
+                                  {lanes.map((laneBars, laneIndex) => (
+                                    <div key={laneIndex} className="schedule-row-lane">
+                                      {laneBars.map(({ entry, stepIndex }) => {
+                                        const pastNode = isPastTransitionedNode(entry);
+                                        const editableNode = canEdit(entry);
+                                        const isNodeSelected = entry.id === selected;
+                                        const isNodeHovered = entry.id === hoveredId;
+                                        const shortDate =
+                                          entry.dates.start === entry.dates.end
+                                            ? entry.dates.start.slice(5)
+                                            : `${entry.dates.start.slice(5)}~${entry.dates.end.slice(5)}`;
+                                        return (
+                                          <div
+                                            key={entry.id}
+                                            className={[
+                                              "schedule-lane-node",
+                                              pastNode
+                                                ? "is-past"
+                                                : editableNode
+                                                  ? "is-editable"
+                                                  : "is-readonly",
+                                              isNodeSelected && "is-selected",
+                                              isNodeHovered && "is-hovered",
+                                            ]
+                                              .filter(Boolean)
+                                              .join(" ")}
+                                            title={`${entry.record.nodeName || entry.record.title} · ${entry.dates.start} ~ ${entry.dates.end}`}
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              setSelected(entry.id);
+                                            }}
+                                            onMouseEnter={() => setHoveredId(entry.id)}
+                                            onMouseLeave={() =>
+                                              setHoveredId((curr) =>
+                                                curr === entry.id ? "" : curr,
+                                              )
+                                            }
+                                          >
+                                            <span
+                                              className="schedule-lane-node-icon"
+                                              aria-hidden="true"
+                                            >
+                                              {pastNode ? (
+                                                <Check size={11} />
+                                              ) : editableNode ? (
+                                                <span className="schedule-node-live-dot" />
+                                              ) : (
+                                                <Lock size={10} />
+                                              )}
+                                            </span>
+                                            <span className="schedule-lane-node-name">
+                                              {`${stepIndex}. ${entry.record.nodeName || entry.record.title}`}
+                                            </span>
+                                            <span className="schedule-lane-node-date">
+                                              {shortDate}
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                             <div
-                              className="schedule-row-grid"
+                              className={`schedule-row-grid ${isMultiNode ? "is-multi-node" : ""}`}
                               style={
-                                laneCount > 1
+                                isMultiNode || laneCount > 1
                                   ? ({
                                       "--schedule-lanes": laneCount,
                                       gridTemplateRows: `repeat(${laneCount}, minmax(40px, auto))`,
@@ -2010,6 +2147,7 @@ export function SchedulePage({
                                       gridRow: laneCount > 1 ? `1 / ${laneCount + 1}` : 1,
                                     }}
                                     className={[
+                                      "schedule-day-cell",
                                       weekdayIndex >= 5 && "weekend",
                                       day === currentToday && "today",
                                     ]
@@ -2018,115 +2156,238 @@ export function SchedulePage({
                                   />
                                 );
                               })}
-                              {bars.map(({ entry, startCol, endCol, lane }) => {
-                                const editable = canEdit(entry);
-                                const changed = scheduleChanged(entry);
-                                const isFrozen =
-                                  frozenNodes.has(nodeKey(entry)) || entry.result === "uncertain";
-                                const pastNode = isPastTransitionedNode(entry);
-                                const barStateClass = isFrozen
-                                  ? "is-uncertain"
-                                  : pastNode
-                                    ? "is-readonly is-past-node"
-                                    : !editable
-                                      ? "is-readonly"
-                                      : changed
-                                        ? "is-draft"
-                                        : entry.result
-                                          ? `is-${entry.result}`
-                                          : "is-cloud";
-                                const barTitleText = entry.record.nodeName || entry.record.title;
-                                const ariaName = `${entry.record.title}${
-                                  entry.record.nodeName &&
-                                  entry.record.nodeName !== entry.record.title
-                                    ? ` · ${entry.record.nodeName}`
-                                    : ""
-                                }${entry.result ? ` · ${resultLabel[entry.result]}` : ""}`;
-                                return (
-                                  <button
-                                    key={entry.id}
-                                    type="button"
-                                    aria-label={ariaName}
-                                    className={`schedule-bar ${barStateClass} ${entry.id === selected ? "selected" : ""}`}
-                                    style={{
-                                      gridColumn: `${startCol + 1} / ${endCol + 2}`,
-                                      gridRow: lane + 1,
-                                    }}
-                                    draggable={editable}
-                                    onDragStart={(event) => {
-                                      const rect = event.currentTarget.getBoundingClientRect();
-                                      const width = rect.width / (endCol - startCol + 1);
-                                      const index = Math.max(
-                                        startCol,
-                                        Math.min(
-                                          endCol,
-                                          startCol +
-                                            Math.floor((event.clientX - rect.left) / width),
-                                        ),
-                                      );
-                                      startDrag(event, entry, "move", days[index]);
-                                    }}
-                                    onDragEnd={() => {
-                                      drag.current = null;
-                                      setPreview(null);
-                                    }}
-                                    onClick={() => setSelected(entry.id)}
-                                    title={`${entry.record.title} · ${barTitleText}`}
-                                  >
-                                    {entry.dates.start < windowStart ? (
-                                      <span aria-hidden="true">‹ </span>
-                                    ) : (
-                                      editable && (
+                              {bars.map(
+                                ({
+                                  entry,
+                                  startCol,
+                                  endCol,
+                                  lane,
+                                  stepIndex,
+                                  isSingleCol,
+                                  isNarrowBar,
+                                  sideLabel,
+                                }) => {
+                                  const editable = canEdit(entry);
+                                  const changed = scheduleChanged(entry);
+                                  const isFrozen =
+                                    frozenNodes.has(nodeKey(entry)) || entry.result === "uncertain";
+                                  const pastNode = isPastTransitionedNode(entry);
+                                  const barStateClass = isFrozen
+                                    ? "is-uncertain"
+                                    : pastNode
+                                      ? "is-readonly is-past-node"
+                                      : !editable
+                                        ? "is-readonly"
+                                        : changed
+                                          ? "is-draft"
+                                          : entry.result
+                                            ? `is-${entry.result}`
+                                            : "is-cloud";
+                                  const barTitleText = entry.record.nodeName || entry.record.title;
+                                  const spanDays = scheduleSpanDays(entry.dates);
+                                  const isBarHovered = hoveredId === entry.id;
+                                  const ariaName = `${entry.record.title}${
+                                    entry.record.nodeName &&
+                                    entry.record.nodeName !== entry.record.title
+                                      ? ` · ${entry.record.nodeName}`
+                                      : ""
+                                  }${entry.result ? ` · ${resultLabel[entry.result]}` : ""}`;
+                                  return (
+                                    <Fragment key={entry.id}>
+                                      <button
+                                        type="button"
+                                        aria-label={ariaName}
+                                        className={[
+                                          "schedule-bar",
+                                          barStateClass,
+                                          isNarrowBar && "is-narrow-bar",
+                                          isSingleCol && "is-single-day-bar",
+                                          isBarHovered && "is-hovered",
+                                          entry.id === selected && "selected",
+                                        ]
+                                          .filter(Boolean)
+                                          .join(" ")}
+                                        style={{
+                                          gridColumn: `${startCol + 1} / ${endCol + 2}`,
+                                          gridRow: lane + 1,
+                                        }}
+                                        draggable={editable}
+                                        onDragStart={(event) => {
+                                          setHoveredId("");
+                                          const rect = event.currentTarget.getBoundingClientRect();
+                                          const width = rect.width / (endCol - startCol + 1);
+                                          const index = Math.max(
+                                            startCol,
+                                            Math.min(
+                                              endCol,
+                                              startCol +
+                                                Math.floor((event.clientX - rect.left) / width),
+                                            ),
+                                          );
+                                          startDrag(event, entry, "move", days[index]);
+                                        }}
+                                        onDragEnd={() => {
+                                          drag.current = null;
+                                          setPreview(null);
+                                        }}
+                                        onMouseEnter={() => setHoveredId(entry.id)}
+                                        onMouseLeave={() =>
+                                          setHoveredId((curr) =>
+                                            curr === entry.id ? "" : curr,
+                                          )
+                                        }
+                                        onFocus={() => setHoveredId(entry.id)}
+                                        onBlur={() =>
+                                          setHoveredId((curr) =>
+                                            curr === entry.id ? "" : curr,
+                                          )
+                                        }
+                                        onClick={() => setSelected(entry.id)}
+                                        title={`${entry.record.title} · ${barTitleText}（${entry.dates.start} ~ ${entry.dates.end}，共 ${spanDays} 天）`}
+                                      >
+                                        {entry.dates.start < windowStart ? (
+                                          <span aria-hidden="true">‹ </span>
+                                        ) : (
+                                          editable && (
+                                            <span
+                                              className="schedule-handle start"
+                                              draggable
+                                              onDragStart={(event) => {
+                                                event.stopPropagation();
+                                                setHoveredId("");
+                                                startDrag(event, entry, "start", entry.dates.start);
+                                              }}
+                                              aria-hidden="true"
+                                            />
+                                          )
+                                        )}
+                                        {!isSingleCol && (
+                                          <span
+                                            className={`schedule-bar-state-icon ${pastNode ? "is-past" : editable ? "is-editable" : "is-readonly"}`}
+                                            aria-hidden="true"
+                                          >
+                                            {pastNode ? (
+                                              <Check size={11} />
+                                            ) : editable ? (
+                                              <span className="schedule-node-live-dot" />
+                                            ) : null}
+                                          </span>
+                                        )}
+                                        <span className="schedule-bar-title">
+                                          {barTitleText}
+                                          {entry.result && ` · ${resultLabel[entry.result]}`}
+                                        </span>
+                                        <span className="schedule-bar-badges" aria-hidden="true">
+                                          <span className="schedule-bar-days">{spanDays}d</span>
+                                          {changed && (
+                                            <span className="schedule-bar-badge is-draft">
+                                              {classifyScheduleReview(entry) === "added"
+                                                ? "新增"
+                                                : "已改"}
+                                            </span>
+                                          )}
+                                          {!editable && !isFrozen && (
+                                            <span
+                                              className={`schedule-bar-badge ${pastNode ? "is-past" : "is-readonly"}`}
+                                            >
+                                              {pastNode ? <Check size={11} /> : <Lock size={11} />}
+                                            </span>
+                                          )}
+                                        </span>
+                                        {entry.dates.end > windowEnd ? (
+                                          <span aria-hidden="true"> ›</span>
+                                        ) : (
+                                          editable && (
+                                            <span
+                                              className="schedule-handle end"
+                                              draggable
+                                              onDragStart={(event) => {
+                                                event.stopPropagation();
+                                                setHoveredId("");
+                                                startDrag(event, entry, "end", entry.dates.end);
+                                              }}
+                                              aria-hidden="true"
+                                            />
+                                          )
+                                        )}
+                                      </button>
+                                      {sideLabel && (
                                         <span
-                                          className="schedule-handle start"
-                                          draggable
-                                          onDragStart={(event) => {
-                                            event.stopPropagation();
-                                            startDrag(event, entry, "start", entry.dates.start);
+                                          className={[
+                                            "schedule-bar-side-label",
+                                            `is-${sideLabel.side}`,
+                                            pastNode
+                                              ? "is-past"
+                                              : editable
+                                                ? "is-editable"
+                                                : "is-readonly",
+                                            entry.id === selected && "is-selected",
+                                            isBarHovered && "is-hovered",
+                                          ]
+                                            .filter(Boolean)
+                                            .join(" ")}
+                                          style={{
+                                            gridColumn: `${sideLabel.startCol + 1} / ${sideLabel.endCol + 2}`,
+                                            gridRow: lane + 1,
                                           }}
                                           aria-hidden="true"
-                                        />
-                                      )
-                                    )}
-                                    <span className="schedule-bar-title">
-                                      {barTitleText}
-                                      {entry.result && ` · ${resultLabel[entry.result]}`}
-                                    </span>
-                                    <span className="schedule-bar-badges" aria-hidden="true">
-                                      <span className="schedule-bar-days">
-                                        {scheduleSpanDays(entry.dates)}d
-                                      </span>
-                                      {changed && (
-                                        <span className="schedule-bar-badge is-draft">
-                                          {classifyScheduleReview(entry) === "added"
-                                            ? "新增"
-                                            : "已改"}
+                                        >
+                                          <span className="schedule-bar-side-pill">
+                                            {pastNode ? (
+                                              <Check size={10} />
+                                            ) : editable ? (
+                                              <span className="schedule-node-live-dot" />
+                                            ) : (
+                                              <Lock size={10} />
+                                            )}
+                                            <span className="schedule-bar-side-text">
+                                              {`${isMultiNode ? `${stepIndex}. ` : ""}${barTitleText} · ${spanDays}d`}
+                                            </span>
+                                          </span>
                                         </span>
                                       )}
-                                      {!editable && !isFrozen && (
-                                        <span className="schedule-bar-badge is-readonly">
-                                          <Lock size={11} />
-                                        </span>
-                                      )}
-                                    </span>
-                                    {entry.dates.end > windowEnd ? (
-                                      <span aria-hidden="true"> ›</span>
-                                    ) : (
-                                      editable && (
+                                      {isBarHovered && !drag.current && (
                                         <span
-                                          className="schedule-handle end"
-                                          draggable
-                                          onDragStart={(event) => {
-                                            event.stopPropagation();
-                                            startDrag(event, entry, "end", entry.dates.end);
+                                          className={[
+                                            "schedule-bar-popover",
+                                            startCol >= days.length - 2 && "is-align-right",
+                                            pastNode
+                                              ? "is-past"
+                                              : editable
+                                                ? "is-editable"
+                                                : "is-readonly",
+                                          ]
+                                            .filter(Boolean)
+                                            .join(" ")}
+                                          style={{
+                                            gridColumn: `${startCol + 1} / ${endCol + 2}`,
+                                            gridRow: lane + 1,
                                           }}
                                           aria-hidden="true"
-                                        />
-                                      )
-                                    )}
-                                  </button>
-                                );
-                              })}
+                                        >
+                                          <span className="schedule-bar-popover-card">
+                                            <span
+                                              className={`schedule-popover-badge ${pastNode ? "is-past" : editable ? "is-editable" : "is-readonly"}`}
+                                            >
+                                              {pastNode
+                                                ? "已流转"
+                                                : editable
+                                                  ? "当前可排"
+                                                  : "只读"}
+                                            </span>
+                                            <strong className="schedule-popover-title">
+                                              {`${isMultiNode ? `${stepIndex}. ` : ""}${barTitleText}`}
+                                            </strong>
+                                            <span className="schedule-popover-meta">
+                                              {`${entry.dates.start.slice(5)} ~ ${entry.dates.end.slice(5)} (${spanDays}d)`}
+                                            </span>
+                                          </span>
+                                        </span>
+                                      )}
+                                    </Fragment>
+                                  );
+                                },
+                              )}
                             </div>
                           </div>
                         </Fragment>
@@ -2254,9 +2515,13 @@ export function SchedulePage({
                                 <button
                                   key={node.id}
                                   type="button"
-                                  className={`schedule-sibling-chip ${isCurrent ? "active" : ""} ${isPast ? "is-past" : editableNode ? "is-editable" : "is-readonly"}`}
+                                  className={`schedule-sibling-chip ${isCurrent ? "active" : ""} ${hoveredId === node.id ? "is-hovered" : ""} ${isPast ? "is-past" : editableNode ? "is-editable" : "is-readonly"}`}
                                   aria-pressed={isCurrent}
                                   onClick={() => setSelected(node.id)}
+                                  onMouseEnter={() => setHoveredId(node.id)}
+                                  onMouseLeave={() =>
+                                    setHoveredId((curr) => (curr === node.id ? "" : curr))
+                                  }
                                 >
                                   <strong>{node.record.nodeName || node.record.title}</strong>
                                   <span>
