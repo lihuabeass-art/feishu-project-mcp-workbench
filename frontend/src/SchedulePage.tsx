@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import {
+  ArrowUpRight,
   CalendarDays,
   Check,
   ChevronDown,
@@ -21,8 +22,10 @@ import { useScrollIsolation } from "./useScrollIsolation";
 import type { Snapshot } from "./types";
 import { asError } from "./model";
 import { readFailureMessage } from "./readFeedback";
+import { sourceName, sourcePresets } from "./sourcePresets";
 import {
   closeScheduleSession,
+  loadSchedulePeople,
   loadScheduleSession,
   submitScheduleTargets,
   type SchedulePerson,
@@ -50,6 +53,37 @@ import "./schedule.css";
 type Entry = ScheduleTarget & { record: ScheduleRecord; resultMessage?: string | null };
 type Guard = { dirty: boolean; busy: boolean; uncertain: boolean };
 type Drag = { id: string; kind: "new" | "move" | "start" | "end"; grabbed: string };
+
+export interface ScheduleSessionController {
+  read: ScheduleRead | null;
+  pending: Promise<ScheduleRead> | null;
+  updateRead: (next: ScheduleRead) => void;
+  reload: (options?: { includePeople?: boolean }) => Promise<ScheduleRead>;
+}
+
+const createScheduleEntry = (record: ScheduleRecord): Entry => ({
+  id: record.id,
+  nodeId: record.identity.node,
+  identity: record.identity,
+  baseline: { ...record.dates },
+  dates: { ...record.dates },
+  cancel: false,
+  ...(record.result ? { result: record.result } : {}),
+  ...(record.resultMessage !== undefined ? { resultMessage: record.resultMessage } : {}),
+  readOnlyReason:
+    record.readOnlyReason ||
+    (!record.identity.owner && !record.ownerIds.some(Boolean)
+      ? "未能确认负责人，排期仅供查看"
+      : undefined),
+  record,
+});
+
+const isFallbackPersonName = (name: string | undefined | null, id: string) =>
+  !name ||
+  !name.trim() ||
+  name === id ||
+  /^\d+$/.test(name.trim()) ||
+  (id.length >= 6 && name === Array.from(id).slice(-6).join(""));
 
 const addDays = (value: string, days: number) => {
   const date = new Date(`${value}T00:00:00Z`);
@@ -91,11 +125,12 @@ function Avatar({ person }: { person?: SchedulePerson }) {
       (hash, char) => ((hash * 31 + char.charCodeAt(0)) >>> 0),
       0,
     ) % 4;
+  const hasRealInitials = Boolean(person?.name && !/^\d+$/.test(person.name.trim()));
   return (
     <span className={`schedule-avatar schedule-avatar-${color}`} aria-hidden="true">
       {person?.avatar && !failed ? (
         <img src={person.avatar} alt="" onError={() => setFailed(true)} />
-      ) : person?.name ? (
+      ) : hasRealInitials && person?.name ? (
         initials(person.name)
       ) : (
         <UserRound size={16} />
@@ -108,16 +143,25 @@ export function SchedulePage({
   onGuardChange,
   requestReload,
   snapshot,
+  preloadedSession,
 }: {
   onGuardChange: (guard: Guard) => void;
   requestReload: (reload: () => void) => void;
   snapshot?: Snapshot | null;
+  preloadedSession?: ScheduleSessionController;
 }) {
+  const initialRead = preloadedSession?.read || null;
   const [epoch, setEpoch] = useState(0);
-  const [read, setRead] = useState<ScheduleRead | null>(null);
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [read, setRead] = useState<ScheduleRead | null>(() => initialRead);
+  const [entries, setEntries] = useState<Entry[]>(() =>
+    initialRead ? initialRead.targets.map(createScheduleEntry) : [],
+  );
+  const [loading, setLoading] = useState(() => !initialRead);
   const [error, setError] = useState("");
+  const [peopleLoading, setPeopleLoading] = useState(false);
+  const [peopleError, setPeopleError] = useState("");
+  const peopleLoadingRef = useRef(false);
+  const currentSessionIdRef = useRef(initialRead?.sessionId || "");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [report, setReport] = useState("");
@@ -125,6 +169,8 @@ export function SchedulePage({
   const [week, setWeek] = useState(() => monday(today()));
   const [daySpan, setDaySpan] = useState<7 | 14>(7);
   const [view, setView] = useState<"mine" | "people">("mine");
+  const viewModeRef = useRef(view);
+  viewModeRef.current = view;
   const [source, setSource] = useState("");
   const [project, setProject] = useState("");
   const [type, setType] = useState("");
@@ -159,34 +205,68 @@ export function SchedulePage({
 
   useEffect(() => {
     let active = true;
+    setSelected("");
+    setReport("");
+    setReviewOpen(false);
+    setPeopleError("");
+    peopleLoadingRef.current = false;
+    setPeopleLoading(false);
+
+    if (preloadedSession) {
+      if (epoch === 0 && preloadedSession.read) {
+        currentSessionIdRef.current = preloadedSession.read.sessionId;
+        setRead(preloadedSession.read);
+        setEntries(preloadedSession.read.targets.map(createScheduleEntry));
+        setError("");
+        setLoading(false);
+        return () => {
+          active = false;
+          currentSessionIdRef.current = "";
+          peopleLoadingRef.current = false;
+        };
+      }
+      currentSessionIdRef.current = "";
+      setLoading(true);
+      setError("");
+      setRead(null);
+      setEntries([]);
+      const request =
+        epoch === 0 && preloadedSession.pending
+          ? preloadedSession.pending
+          : preloadedSession.reload({ includePeople: viewModeRef.current === "people" });
+      request
+        .then((result) => {
+          if (!active) return;
+          currentSessionIdRef.current = result.sessionId;
+          setRead(result);
+          setEntries(result.targets.map(createScheduleEntry));
+          preloadedSession.updateRead(result);
+        })
+        .catch((failure: unknown) => {
+          if (active) setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`);
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+      return () => {
+        active = false;
+        currentSessionIdRef.current = "";
+        peopleLoadingRef.current = false;
+      };
+    }
+
+    currentSessionIdRef.current = "";
     setLoading(true);
     setError("");
     setRead(null);
     setEntries([]);
-    setSelected("");
-    setReport("");
-    setReviewOpen(false);
     const request = loadScheduleSession();
     request
       .then((result) => {
         if (!active) return;
+        currentSessionIdRef.current = result.sessionId;
         setRead(result);
-        setEntries(
-          result.targets.map((record) => ({
-            id: record.id,
-            nodeId: record.identity.node,
-            identity: record.identity,
-            baseline: { ...record.dates },
-            dates: { ...record.dates },
-            cancel: false,
-            readOnlyReason:
-              record.readOnlyReason ||
-              (!record.identity.owner && !record.ownerIds.some(Boolean)
-                ? "未能确认负责人，排期仅供查看"
-                : undefined),
-            record,
-          })),
-        );
+        setEntries(result.targets.map(createScheduleEntry));
       })
       .catch((failure: unknown) => {
         if (active) setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`);
@@ -196,9 +276,115 @@ export function SchedulePage({
       });
     return () => {
       active = false;
+      currentSessionIdRef.current = "";
+      peopleLoadingRef.current = false;
       void closeScheduleSession(request).catch(() => {});
     };
   }, [epoch]);
+
+  const triggerLoadPeople = (currentRead: ScheduleRead) => {
+    if (currentRead.peopleLoaded !== false || peopleLoadingRef.current) return;
+    const targetSessionId = currentRead.sessionId;
+    currentSessionIdRef.current = targetSessionId;
+    peopleLoadingRef.current = true;
+    setPeopleLoading(true);
+    setPeopleError("");
+    loadSchedulePeople(targetSessionId)
+      .then((nextRead) => {
+        if (currentSessionIdRef.current !== targetSessionId) return;
+        setRead(nextRead);
+        setEntries((current) => {
+          const existingMap = new Map(current.map((item) => [item.id, item]));
+          const merged: Entry[] = [];
+          const seen = new Set<string>();
+          for (const record of nextRead.targets) {
+            seen.add(record.id);
+            const prevEntry = existingMap.get(record.id);
+            if (prevEntry) {
+              const keepLocal = scheduleChanged(prevEntry) || prevEntry.result === "uncertain";
+              merged.push({
+                ...prevEntry,
+                baseline: keepLocal ? prevEntry.baseline : { ...record.dates },
+                dates: keepLocal ? prevEntry.dates : { ...record.dates },
+                readOnlyReason:
+                  record.readOnlyReason ||
+                  (!record.identity.owner && !record.ownerIds.some(Boolean)
+                    ? "未能确认负责人，排期仅供查看"
+                    : undefined),
+                record,
+              });
+            } else {
+              merged.push(createScheduleEntry(record));
+            }
+          }
+          for (const prevEntry of current) {
+            if (!seen.has(prevEntry.id)) merged.push(prevEntry);
+          }
+          return merged;
+        });
+        preloadedSession?.updateRead(nextRead);
+      })
+      .catch((failure: unknown) => {
+        if (currentSessionIdRef.current !== targetSessionId) return;
+        setPeopleError(`读取团队成员排期失败：${readFailureMessage(asError(failure).kind)}`);
+      })
+      .finally(() => {
+        if (currentSessionIdRef.current === targetSessionId) {
+          peopleLoadingRef.current = false;
+          setPeopleLoading(false);
+        }
+      });
+  };
+
+  useEffect(() => {
+    if (!preloadedSession || dirty || busy || busyRef.current || uncertain) return;
+    if (
+      preloadedSession.read &&
+      preloadedSession.read.sessionId !== currentSessionIdRef.current
+    ) {
+      currentSessionIdRef.current = preloadedSession.read.sessionId;
+      peopleLoadingRef.current = false;
+      setPeopleLoading(false);
+      setPeopleError("");
+      setRead(preloadedSession.read);
+      setEntries(preloadedSession.read.targets.map(createScheduleEntry));
+      setError("");
+      setLoading(false);
+      if (viewModeRef.current === "people" && preloadedSession.read.peopleLoaded === false) {
+        triggerLoadPeople(preloadedSession.read);
+      }
+      return;
+    }
+    if (!preloadedSession.read && preloadedSession.pending && currentSessionIdRef.current) {
+      let active = true;
+      currentSessionIdRef.current = "";
+      peopleLoadingRef.current = false;
+      setPeopleLoading(false);
+      setPeopleError("");
+      setLoading(true);
+      setError("");
+      const req = preloadedSession.pending;
+      req
+        .then((result) => {
+          if (!active) return;
+          currentSessionIdRef.current = result.sessionId;
+          setRead(result);
+          setEntries(result.targets.map(createScheduleEntry));
+          if (viewModeRef.current === "people" && result.peopleLoaded === false) {
+            triggerLoadPeople(result);
+          }
+        })
+        .catch((failure: unknown) => {
+          if (active) setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`);
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+      return () => {
+        active = false;
+      };
+    }
+  }, [preloadedSession?.read, preloadedSession?.pending, dirty, busy, uncertain]);
 
   const people = useMemo(
     () =>
@@ -210,19 +396,79 @@ export function SchedulePage({
       ),
     [read],
   );
-  const personFor = (entry: Entry, id: string) =>
-    people.get(JSON.stringify([entry.identity.connection, entry.identity.project, id])) ||
-    people.get(JSON.stringify([null, null, id]));
+  const personFor = (entry: Entry, id: string): SchedulePerson | undefined => {
+    if (!id) return undefined;
+    const scoped = people.get(
+      JSON.stringify([entry.identity.connection, entry.identity.project, id]),
+    );
+    const global = people.get(JSON.stringify([null, null, id]));
+    const fallbackAvatar =
+      id === read?.currentUserId ? read?.currentUserAvatar || undefined : undefined;
+    if (scoped && !isFallbackPersonName(scoped.name, id)) {
+      return {
+        ...scoped,
+        avatar: scoped.avatar || global?.avatar || fallbackAvatar,
+      };
+    }
+    if (global && !isFallbackPersonName(global.name, id)) {
+      return {
+        ...scoped,
+        ...global,
+        avatar: scoped?.avatar || global.avatar || fallbackAvatar,
+      };
+    }
+    const base = scoped || global;
+    if (base) {
+      return {
+        ...global,
+        ...base,
+        avatar: scoped?.avatar || global?.avatar || fallbackAvatar,
+      };
+    }
+    return undefined;
+  };
+  const resolveOwnerId = (entry: Entry, owner: string) =>
+    owner ||
+    entry.record.ownerId ||
+    entry.record.ownerIds[0] ||
+    (entry.record.mine ? read?.currentUserId || "" : "") ||
+    "";
   const displayPerson = (entry: Entry, id: string) => {
-    const name = personFor(entry, id)?.name || id;
+    if (!id) return "负责人不明";
+    const rawName = personFor(entry, id)?.name;
+    if (!rawName || isFallbackPersonName(rawName, id)) {
+      if (id === read?.currentUserId) return "当前用户";
+      const fallbackPeerIds = Array.from(
+        new Set(
+          entries
+            .filter(
+              (item) =>
+                item.identity.connection === entry.identity.connection &&
+                item.identity.project === entry.identity.project,
+            )
+            .flatMap((item) => [
+              ...(item.record.ownerId ? [item.record.ownerId] : []),
+              ...item.record.ownerIds,
+            ])
+            .filter((peerId) => {
+              if (!peerId || peerId === read?.currentUserId) return false;
+              const peerName = personFor(entry, peerId)?.name;
+              return !peerName || isFallbackPersonName(peerName, peerId);
+            }),
+        ),
+      );
+      if (fallbackPeerIds.length <= 1) return "团队成员";
+      const idx = fallbackPeerIds.indexOf(id);
+      return idx >= 0 ? `团队成员 ${idx + 1}` : "团队成员";
+    }
     const peers = (read?.people || []).filter(
       (item) =>
         item.connection === entry.identity.connection &&
         item.project === entry.identity.project &&
-        item.name === name &&
+        item.name === rawName &&
         item.id !== id,
     );
-    if (!peers.length) return name;
+    if (!peers.length) return rawName;
     const chars = Array.from(id);
     let length = Math.min(6, chars.length);
     while (
@@ -232,7 +478,7 @@ export function SchedulePage({
       )
     )
       length++;
-    return `${name} (${chars.slice(-length).join("")})`;
+    return `${rawName} (${chars.slice(-length).join("")})`;
   };
   const groupKey = (entry: Entry, id: string) =>
     JSON.stringify([entry.identity.connection, entry.identity.project, id]);
@@ -285,6 +531,62 @@ export function SchedulePage({
     names.add(item.name || item.id);
     personOptions.set(item.id, names);
   }
+  const personBaseLabels = Array.from(personOptions, ([id, names]) => {
+    const realNames = Array.from(names).filter((n) => !isFallbackPersonName(n, id));
+    const baseLabel =
+      realNames.length > 0
+        ? realNames.join(" / ")
+        : id === read?.currentUserId
+          ? "当前用户"
+          : "成员";
+    return [id, baseLabel] as const;
+  });
+  const personLabelCounts = new Map<string, string[]>();
+  for (const [id, label] of personBaseLabels) {
+    const ids = personLabelCounts.get(label) || [];
+    ids.push(id);
+    personLabelCounts.set(label, ids);
+  }
+  const personFilterEntries: Array<[string, string]> = personBaseLabels.map(([id, label]) => {
+    const peerIds = (personLabelCounts.get(label) || []).filter((otherId) => otherId !== id);
+    if (!peerIds.length) return [id, label];
+    const chars = Array.from(id);
+    let length = Math.min(6, chars.length);
+    while (
+      length < chars.length &&
+      peerIds.some(
+        (peerId) =>
+          Array.from(peerId).slice(-length).join("") === chars.slice(-length).join(""),
+      )
+    ) {
+      length++;
+    }
+    return [id, `${label} (${chars.slice(-length).join("")})`];
+  });
+  const currentUserGlobal = read?.currentUserId
+    ? people.get(JSON.stringify([null, null, read.currentUserId]))
+    : undefined;
+  const currentUserScopedReal = read?.currentUserId
+    ? read.people.find(
+        (item) =>
+          item.id === read.currentUserId && !isFallbackPersonName(item.name, read.currentUserId!),
+      )
+    : undefined;
+  const currentUserDisplayName =
+    (currentUserGlobal && !isFallbackPersonName(currentUserGlobal.name, read?.currentUserId || "")
+      ? currentUserGlobal.name
+      : currentUserScopedReal?.name) || "当前用户";
+  const currentUserPerson: SchedulePerson | undefined = read?.currentUserId
+    ? {
+        id: read.currentUserId,
+        name: currentUserDisplayName,
+        avatar:
+          currentUserGlobal?.avatar ||
+          currentUserScopedReal?.avatar ||
+          read.currentUserAvatar ||
+          undefined,
+      }
+    : currentUserGlobal;
 
   const scopeSources = source
     ? read?.sources.filter((item) => item.id === source) || []
@@ -414,6 +716,97 @@ export function SchedulePage({
     const e = dates.end.trim();
     return s && e ? `${s} ~ ${e}` : s || e;
   };
+  const isOpaqueKey = (val: string) => {
+    const trimmed = val.trim();
+    if (!trimmed) return true;
+    return (
+      (!/[\u3400-\u9fff]/.test(trimmed) && /^[a-z0-9_.:-]+$/i.test(trimmed)) ||
+      trimmed === "p" ||
+      trimmed === "t"
+    );
+  };
+  const knownSourceMap: Record<string, string> = {
+    "personal-todo": "个人待办",
+    personal_todo: "个人待办",
+    "participated-story": "参与的需求",
+    participated_story: "参与的需求",
+    "participating-requirements": "参与的需求",
+    participating_requirements: "参与的需求",
+    "related-story": "我参与的需求",
+    related_story: "我参与的需求",
+    "related-issue": "关联缺陷",
+    related_issue: "关联缺陷",
+  };
+  const readableSourceName = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return "工作来源";
+    const matched = read?.sources.find((src) => src.id === trimmed || src.name === trimmed);
+    if (matched?.name && !isOpaqueKey(matched.name)) return matched.name;
+    const lookupId = matched?.id || trimmed;
+    const snapMatched = snapshot?.sources.find((src) => src.id === lookupId || src.id === trimmed);
+    if (snapMatched) {
+      const presetResolved = sourceName(snapMatched);
+      if (presetResolved && !isOpaqueKey(presetResolved)) return presetResolved;
+    }
+    const presetById = sourcePresets.find((p) => p.key === lookupId || p.key === trimmed)?.name;
+    if (presetById) return presetById;
+    if (matched?.name) {
+      const presetByName = sourcePresets.find((p) => p.key === matched.name.trim())?.name;
+      if (presetByName) return presetByName;
+    }
+    if (knownSourceMap[lookupId]) return knownSourceMap[lookupId];
+    if (knownSourceMap[trimmed]) return knownSourceMap[trimmed];
+    if (matched?.name && knownSourceMap[matched.name.trim()]) return knownSourceMap[matched.name.trim()];
+    if (!isOpaqueKey(trimmed)) return trimmed;
+    return "工作来源";
+  };
+  const formatScopeError = (item: NonNullable<ScheduleRead["itemErrors"]>[number]) => {
+    const matchedEntry = entries.find(
+      (e) =>
+        e.identity.project === item.project &&
+        e.identity.type === item.type &&
+        e.identity.item === item.item,
+    );
+    const catalogSpace =
+      projectNames.get(item.project) ||
+      (matchedEntry && matchedEntry.record.projectName !== item.project
+        ? matchedEntry.record.projectName
+        : "");
+    const spaceLabel =
+      catalogSpace && !isOpaqueKey(catalogSpace)
+        ? catalogSpace
+        : !isOpaqueKey(item.project) && item.project.trim()
+          ? item.project
+          : "当前空间";
+    const knownTypeMap: Record<string, string> = {
+      story: "需求",
+      issue: "缺陷",
+      bug: "缺陷",
+      task: "任务",
+      sub_task: "子任务",
+    };
+    const catalogType =
+      typeNames.get(JSON.stringify([item.project, item.type])) ||
+      typeNames.get(`${item.project}:${item.type}`) ||
+      typeNames.get(item.type) ||
+      knownTypeMap[item.type] ||
+      (!isOpaqueKey(item.type) && /[\u3400-\u9fff]/.test(item.type) ? item.type : "事项");
+    const resolvedTitle = item.title?.trim() || matchedEntry?.record.title?.trim() || "";
+    const shortId =
+      item.item.trim() && !/^\d{15,}$/.test(item.item.trim()) && !isOpaqueKey(item.item.trim())
+        ? `#${item.item.trim()}`
+        : /^\d{1,14}$/.test(item.item.trim())
+          ? `#${item.item.trim()}`
+          : "";
+    const itemLabel = resolvedTitle
+      ? `${catalogType}「${resolvedTitle}」${shortId}`
+      : shortId
+        ? `${catalogType} ${shortId}`
+        : catalogType;
+    const sourceLabels = Array.from(new Set(item.sources.map(readableSourceName).filter(Boolean)));
+    const sourceSuffix = sourceLabels.length > 0 ? `（${sourceLabels.join("、")}）` : "";
+    return `${spaceLabel} · ${itemLabel}${sourceSuffix}：${item.message}`;
+  };
 
   const update = (id: string, fn: (entry: Entry) => ScheduleTarget) =>
     setEntries((current) =>
@@ -441,6 +834,26 @@ export function SchedulePage({
     }
   };
 
+  const scheduleIntoViewedWeek = (id: string) => {
+    setSelected(id);
+    update(id, (entry) => {
+      if (!canEdit(entry)) return entry;
+      const span = Math.max(1, scheduleSpanDays(entry.dates) || 1);
+      if (currentToday >= windowStart && currentToday <= windowEnd) {
+        const start = currentToday;
+        const weekSunday = addDays(monday(currentToday), 6);
+        const rawEnd = addDays(start, span - 1);
+        const end = rawEnd <= weekSunday ? rawEnd : weekSunday;
+        return editSchedule(entry, { start, end: end < start ? start : end });
+      }
+      const start = week;
+      const weekFriday = addDays(week, 4);
+      const rawEnd = addDays(start, span - 1);
+      const end = rawEnd <= weekFriday ? rawEnd : weekFriday;
+      return editSchedule(entry, { start, end: end < start ? start : end });
+    });
+  };
+
   const revertAll = () => {
     if (busyRef.current) return;
     setEntries((current) =>
@@ -466,9 +879,10 @@ export function SchedulePage({
     const current = drag.current;
     const entry = entries.find((item) => item.id === current?.id);
     if (!current || !entry) return;
+    const span = Math.max(1, scheduleSpanDays(entry.dates) || 1);
     const dates =
       current.kind === "new"
-        ? { start: day, end: day }
+        ? { start: day, end: addDays(day, span - 1) }
         : current.kind === "move"
           ? shiftSchedule(entry.dates, current.grabbed, day)
           : resizeSchedule(entry.dates, current.kind, day);
@@ -488,9 +902,10 @@ export function SchedulePage({
     if (!current || busyRef.current) return;
     update(current.id, (entry) => {
       if (!canEdit(entry)) return entry;
+      const span = Math.max(1, scheduleSpanDays(entry.dates) || 1);
       const dates =
         current.kind === "new"
-          ? { start: day, end: day }
+          ? { start: day, end: addDays(day, span - 1) }
           : current.kind === "move"
             ? shiftSchedule(entry.dates, current.grabbed, day)
             : resizeSchedule(entry.dates, current.kind, day);
@@ -560,17 +975,44 @@ export function SchedulePage({
         current.map((entry) => {
           const submission = frozen.find((item) => item.id === entry.id);
           if (!submission) return entry;
+          const outcome = results.get(entry.id)?.result || "uncertain";
           return {
             ...entry,
             ...settleSchedule(
               entry,
               submission.dates,
-              results.get(entry.id)?.result || "uncertain",
+              outcome,
             ),
+            record:
+              outcome === "accepted"
+                ? { ...entry.record, dates: { ...submission.dates } }
+                : entry.record,
             resultMessage: results.get(entry.id)?.message,
           };
         }),
       );
+      if (preloadedSession && read) {
+        const nextRead: ScheduleRead = {
+          ...read,
+          targets: read.targets.map((record) => {
+            const submission = frozen.find((item) => item.id === record.id);
+            if (!submission) return record;
+            const outcome = results.get(record.id)?.result || "uncertain";
+            const resultMessage = results.get(record.id)?.message;
+            if (outcome === "accepted" || outcome === "uncertain") {
+              return {
+                ...record,
+                dates: { ...submission.dates },
+                result: outcome,
+                resultMessage,
+              };
+            }
+            return record;
+          }),
+        };
+        setRead(nextRead);
+        preloadedSession.updateRead(nextRead);
+      }
       const count = (result: string) =>
         frozen.filter((item) => (results.get(item.id)?.result || "uncertain") === result).length;
       setReport(
@@ -592,6 +1034,19 @@ export function SchedulePage({
             : entry;
         }),
       );
+      if (!unsent && preloadedSession && read) {
+        const nextRead: ScheduleRead = {
+          ...read,
+          targets: read.targets.map((record) => {
+            const item = frozen.find((value) => value.id === record.id);
+            return item
+              ? { ...record, dates: { ...item.dates }, result: "uncertain" }
+              : record;
+          }),
+        };
+        setRead(nextRead);
+        preloadedSession.updateRead(nextRead);
+      }
       setReport(
         `本次同步：收到成功回执 0 项，失败 0 项，结果不确定 ${unsent ? 0 : frozen.length} 项，未发送 ${unsent ? frozen.length : 0} 项。${unsent ? err?.message || "会话校验未通过" : "请先在飞书核对；本次不会自动重发。"}`,
       );
@@ -720,19 +1175,15 @@ export function SchedulePage({
                   aria-hidden="true"
                 />
                 <span className="schedule-scope-text">
-                  来源：{scopeSources.map((item) => item.name).join("、") || "无可执行来源"}
+                  来源：{scopeSources.map((item) => readableSourceName(item.name || item.id)).join("、") || "无可执行来源"}
                   {scopeSources.length > 0 && ` · ${scopeComplete ? "完整读取" : "部分读取失败"}`} · 读取时间{" "}
                   {read.readAt}
                   {read.readRequests !== undefined && ` · 读取请求 ${read.readRequests} 次`}
                 </span>
                 {view === "mine" && (
                   <span className="schedule-person">
-                    <Avatar
-                      person={people.get(JSON.stringify([null, null, read.currentUserId || ""]))}
-                    />
-                    {people.get(JSON.stringify([null, null, read.currentUserId || ""]))?.name ||
-                      read.currentUserId ||
-                      "当前用户"}
+                    <Avatar person={currentUserPerson} />
+                    {currentUserDisplayName}
                   </span>
                 )}
                 <button
@@ -754,7 +1205,7 @@ export function SchedulePage({
                 .filter((item) => item.error)
                 .map((item) => (
                   <p key={item.id} className="schedule-source-error">
-                    {item.name}：{item.error}
+                    {readableSourceName(item.name || item.id)}：{item.error}
                   </p>
                 ))}
             </div>
@@ -769,15 +1220,26 @@ export function SchedulePage({
                 <div>
                   <strong>部分事项读取不完整，已保留本次成功读取的内容。</strong>
                   {scopeErrors.map((item, index) => (
-                    <p key={index}>
-                      {item.project} / {item.type} / {item.item} ·{" "}
-                      {item.sources
-                        .map((id) => read.sources.find((src) => src.id === id)?.name || id)
-                        .join("、")}
-                      ：{item.message}
-                    </p>
+                    <p key={index}>{formatScopeError(item)}</p>
                   ))}
                 </div>
+              </div>
+            )}
+            {peopleLoading && (
+              <div className="banner preview" role="status">
+                <span>正在加载团队成员排期…</span>
+              </div>
+            )}
+            {peopleError && !peopleLoading && (
+              <div className="banner warning" role="alert">
+                <span>{peopleError}</span>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => triggerLoadPeople(read)}
+                >
+                  重试加载成员
+                </button>
               </div>
             )}
             {report && (
@@ -813,7 +1275,12 @@ export function SchedulePage({
                     <button
                       type="button"
                       className={view === "people" ? "active" : ""}
-                      onClick={() => setView("people")}
+                      onClick={() => {
+                        setView("people");
+                        if (read && read.peopleLoaded === false) {
+                          triggerLoadPeople(read);
+                        }
+                      }}
                     >
                       按人查看
                     </button>
@@ -823,7 +1290,7 @@ export function SchedulePage({
                     value={source}
                     onChange={setSource}
                     options={options(
-                      read.sources.map((item) => [item.id, item.name]),
+                      read.sources.map((item) => [item.id, readableSourceName(item.name || item.id)]),
                       "全部来源",
                     )}
                   />
@@ -866,13 +1333,7 @@ export function SchedulePage({
                         ariaLabel="筛选人员"
                         value={person}
                         onChange={setPerson}
-                        options={options(
-                          Array.from(personOptions, ([id, names]) => [
-                            id,
-                            `${Array.from(names).join(" / ")} · ${id}`,
-                          ]),
-                          "全部人员",
-                        )}
+                        options={options(personFilterEntries, "全部人员")}
                       />
                     </>
                   )}
@@ -1009,9 +1470,8 @@ export function SchedulePage({
                                   groupKey(pendingRows[index - 1].entry, pendingRows[index - 1].owner) !==
                                     groupKey(entry, owner)) && (
                                   <div className="schedule-group">
-                                    <Avatar person={personFor(entry, owner)} />
-                                    {personFor(entry, owner)?.name || owner || "负责人不明"}
-                                    {owner && <small>{owner}</small>}
+                                    <Avatar person={personFor(entry, resolveOwnerId(entry, owner))} />
+                                    <span>{owner ? displayPerson(entry, owner) : "负责人不明"}</span>
                                   </div>
                                 )}
                               <div
@@ -1040,8 +1500,7 @@ export function SchedulePage({
                                     {entry.record.nodeName} ·{" "}
                                     {view === "people" ? (
                                       <>
-                                        {personFor(entry, owner)?.name || owner || "负责人不明"}
-                                        {owner && ` (${owner})`} ·{" "}
+                                        {owner ? displayPerson(entry, owner) : "负责人不明"} ·{" "}
                                         {entry.record.cacheKind === "detail_node"
                                           ? "事项详情缓存节点 · "
                                           : entry.identity.scope === "node" &&
@@ -1102,7 +1561,7 @@ export function SchedulePage({
                     ) : (
                       <>
                         <p className="schedule-pool-hint">
-                          不在当前日历视窗内的已排事项，点击跳转至对应周并选中。
+                          点击卡片在右侧调整或直接拖入当前周日历；也可一键排入本周或定位至对应周。
                         </p>
                         <div className="schedule-pool-list">
                           {outsideRows.map(({ entry, owner }, index) => (
@@ -1112,27 +1571,76 @@ export function SchedulePage({
                                   groupKey(outsideRows[index - 1].entry, outsideRows[index - 1].owner) !==
                                     groupKey(entry, owner)) && (
                                   <div className="schedule-group">
-                                    <Avatar person={personFor(entry, owner)} />
-                                    {personFor(entry, owner)?.name || owner || "负责人不明"}
-                                    {owner && <small>{owner}</small>}
+                                    <Avatar person={personFor(entry, resolveOwnerId(entry, owner))} />
+                                    <span>{owner ? displayPerson(entry, owner) : "负责人不明"}</span>
                                   </div>
                                 )}
-                              <button
-                                type="button"
-                                className={`schedule-outside-item ${entry.id === selected ? "selected" : ""}`}
-                                onClick={() => {
-                                  setWeek(monday(entry.dates.start));
-                                  setSelected(entry.id);
-                                }}
+                              <div
+                                className={`schedule-pending-card schedule-outside-card ${entry.id === selected ? "selected" : ""}`}
                               >
-                                <strong>{entry.record.title}</strong>
-                                <span>
-                                  {entry.record.nodeName} · {targetLabel(entry, owner)}
-                                </span>
-                                <span className="schedule-outside-range">
-                                  {entry.dates.start} ~ {entry.dates.end} ↗
-                                </span>
-                              </button>
+                                <button
+                                  type="button"
+                                  className={`schedule-outside-item ${entry.id === selected ? "selected" : ""}`}
+                                  draggable={canEdit(entry)}
+                                  onDragStart={(event) => startDrag(event, entry, "new", "")}
+                                  onDragEnd={() => {
+                                    drag.current = null;
+                                    setPreview(null);
+                                  }}
+                                  onClick={() => setSelected(entry.id)}
+                                >
+                                  <span className="schedule-pending-head">
+                                    <strong>{entry.record.title}</strong>
+                                    {!canEdit(entry) && (
+                                      <span className="schedule-readonly-pill" aria-hidden="true">
+                                        只读
+                                      </span>
+                                    )}
+                                  </span>
+                                  <span>
+                                    {entry.record.nodeName} · {targetLabel(entry, owner)}
+                                  </span>
+                                  <span className="schedule-outside-range">
+                                    {entry.dates.start} ~ {entry.dates.end}
+                                  </span>
+                                </button>
+                                <div
+                                  className="schedule-pending-quick"
+                                  aria-label={`${entry.record.title}跨周排期操作`}
+                                >
+                                  {canEdit(entry) ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="schedule-quick-chip"
+                                        onClick={() => applyQuickPreset(entry.id, "today")}
+                                      >
+                                        今天
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="schedule-quick-chip"
+                                        onClick={() => scheduleIntoViewedWeek(entry.id)}
+                                      >
+                                        排入本周
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <span>其他周排期</span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="schedule-quick-chip"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setWeek(monday(entry.dates.start));
+                                      setSelected(entry.id);
+                                    }}
+                                  >
+                                    定位该周 ↗
+                                  </button>
+                                </div>
+                              </div>
                             </Fragment>
                           ))}
                           {outsideRows.length === 0 && (
@@ -1233,9 +1741,8 @@ export function SchedulePage({
                               groupKey(rows[rowIndex - 1].entry, rows[rowIndex - 1].owner) !==
                                 groupKey(entry, owner)) && (
                               <div className="schedule-group">
-                                <Avatar person={personFor(entry, owner)} />
-                                {personFor(entry, owner)?.name || owner || "负责人不明"}
-                                {owner && <small>{owner}</small>}
+                                <Avatar person={personFor(entry, resolveOwnerId(entry, owner))} />
+                                <span>{owner ? displayPerson(entry, owner) : "负责人不明"}</span>
                               </div>
                             )}
                           <div className={`schedule-row ${entry.id === selected ? "selected" : ""}`}>
@@ -1243,7 +1750,7 @@ export function SchedulePage({
                               className="schedule-row-label"
                               onClick={() => setSelected(entry.id)}
                             >
-                              <Avatar person={personFor(entry, owner)} />
+                              <Avatar person={personFor(entry, resolveOwnerId(entry, owner))} />
                               <span>
                                 <strong>{entry.record.title}</strong>
                                 <small>
@@ -1460,9 +1967,15 @@ export function SchedulePage({
                           {projectLabel(selectedEntry)} · {typeLabel(selectedEntry)}
                         </span>
                         {selectedEntry.record.itemUrl && (
-                          <ExternalLink href={selectedEntry.record.itemUrl}>
-                            在飞书查看
-                          </ExternalLink>
+                          <div className="workflow-manual-fill detail-item-link">
+                            <ExternalLink
+                              href={selectedEntry.record.itemUrl}
+                              title="在浏览器打开飞书事项"
+                            >
+                              打开飞书事项
+                              <ArrowUpRight size={13} aria-hidden="true" />
+                            </ExternalLink>
+                          </div>
                         )}
                       </div>
                       <div>

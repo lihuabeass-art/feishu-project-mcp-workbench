@@ -12,12 +12,14 @@ export interface ScheduleRecord {
   sourceAggregate?: boolean;
   cacheKind?: string; startState?: string; endState?: string; fetchedAt?: string | null;
   unknownOwner?: boolean;
+  result?: ScheduleResult; resultMessage?: string | null;
 }
 export interface ScheduleRead {
   sessionId: string;
   sources: ScheduleSource[]; people: SchedulePerson[]; targets: ScheduleRecord[];
-  currentUserId?: string | null; accountError?: string | null; readAt: string; complete: boolean; readRequests?: number;
-  itemErrors?: Array<{ project: string; type: string; item: string; sources: string[]; message: string }>;
+  currentUserId?: string | null; currentUserAvatar?: string | null; peopleLoaded?: boolean;
+  accountError?: string | null; readAt: string; complete: boolean; readRequests?: number;
+  itemErrors?: Array<{ project: string; type: string; item: string; title?: string; sources: string[]; message: string }>;
 }
 export interface ScheduleWriteTarget { id: string; identity: ScheduleIdentity; dates: ScheduleDates; cancel: boolean }
 export interface ScheduleWriteResult {
@@ -26,7 +28,7 @@ export interface ScheduleWriteResult {
 }
 
 interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
-interface WireRead { session_id: string; current_user: string; current_user_name: string; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
+interface WireRead { session_id: string; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
 interface WireResult { targets: ScheduleWriteResult["results"]; write_requests: number }
 let lifecycle: Promise<unknown> = Promise.resolve();
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -34,22 +36,71 @@ function enqueue<T>(operation: () => Promise<T>): Promise<T> {
   lifecycle = result.catch(() => {});
   return result;
 }
-export const loadScheduleSession = () => enqueue(async (): Promise<ScheduleRead> => {
-  const result = await invoke<WireRead>("load_schedule_session");
+function isFallbackPersonName(name: string | undefined | null, id: string): boolean {
+  if (!name || !name.trim()) return true;
+  const trimmed = name.trim();
+  return (
+    trimmed === id ||
+    /^\d{6,}$/.test(trimmed) ||
+    (id.length >= 6 && trimmed === Array.from(id).slice(-6).join(""))
+  );
+}
+function mapWireRead(result: WireRead): ScheduleRead {
   const people = new Map<string, SchedulePerson>();
+  const currentHasRealName =
+    Boolean(result.current_user) &&
+    !isFallbackPersonName(result.current_user_name, result.current_user);
   for (const target of result.targets) for (const owner of target.owners || []) {
     const { connection, project } = target.identity;
     const key = JSON.stringify([connection, project, owner.id]);
     const previous = people.get(key);
-    const isFallback = (name: string) => !name.trim() || name === owner.id || name === Array.from(owner.id).slice(-6).join("");
-    people.set(key, { ...previous, ...owner, connection, project, name: previous && !isFallback(previous.name) && isFallback(owner.name) ? previous.name : owner.name || previous?.name || owner.id,
-      avatar: owner.avatar || previous?.avatar, position: owner.position || previous?.position });
+    const candidateName =
+      owner.id === result.current_user && isFallbackPersonName(owner.name, owner.id) && currentHasRealName
+        ? result.current_user_name
+        : owner.name;
+    const resolvedName =
+      previous && !isFallbackPersonName(previous.name, owner.id) && isFallbackPersonName(candidateName, owner.id)
+        ? previous.name
+        : candidateName || previous?.name || owner.id;
+    const resolvedAvatar =
+      owner.avatar ||
+      previous?.avatar ||
+      (owner.id === result.current_user ? result.current_user_avatar : undefined);
+    people.set(key, {
+      ...previous,
+      ...owner,
+      connection,
+      project,
+      name: resolvedName,
+      avatar: resolvedAvatar,
+      position: owner.position || previous?.position,
+    });
   }
-  if (result.current_user) people.set(JSON.stringify([null, null, result.current_user]), { id: result.current_user, name: result.current_user_name || result.current_user });
+  if (result.current_user) {
+    const scopedRealName = Array.from(people.values()).find(
+      (person) => person.id === result.current_user && !isFallbackPersonName(person.name, result.current_user),
+    )?.name;
+    const globalName = currentHasRealName
+      ? result.current_user_name
+      : scopedRealName || "当前用户";
+    people.set(JSON.stringify([null, null, result.current_user]), {
+      id: result.current_user,
+      name: globalName,
+      ...(result.current_user_avatar ? { avatar: result.current_user_avatar } : {}),
+    });
+  }
   return {
-    sessionId: result.session_id, currentUserId: result.current_user, accountError: result.account_error,
-    readAt: new Date(result.read_at_ms).toLocaleString(), sources: result.sources, readRequests: result.read_requests, itemErrors: result.item_errors,
-    complete: result.sources.length > 0 && result.failed_items === 0 && result.sources.every((item) => item.complete), people: [...people.values()],
+    sessionId: result.session_id,
+    currentUserId: result.current_user,
+    currentUserAvatar: result.current_user_avatar,
+    peopleLoaded: result.people_loaded ?? true,
+    accountError: result.account_error,
+    readAt: new Date(result.read_at_ms).toLocaleString(),
+    sources: result.sources,
+    readRequests: result.read_requests,
+    itemErrors: result.item_errors,
+    complete: result.sources.length > 0 && result.failed_items === 0 && result.sources.every((item) => item.complete),
+    people: [...people.values()],
     targets: result.targets.map((target) => ({
       id: target.id, identity: target.identity, title: target.title, nodeName: target.node_name,
       ownerId: target.identity.owner || (target.owners.length === 1 ? target.owners[0].id : null),
@@ -60,6 +111,17 @@ export const loadScheduleSession = () => enqueue(async (): Promise<ScheduleRead>
       cacheKind: target.cache_kind, startState: target.start_state, endState: target.end_state, fetchedAt: target.fetched_at_ms ? new Date(target.fetched_at_ms).toLocaleString() : null,
     })),
   };
+}
+export const loadScheduleSession = (options?: { includePeople?: boolean }) => enqueue(async (): Promise<ScheduleRead> => {
+  const result =
+    options?.includePeople === undefined
+      ? await invoke<WireRead>("load_schedule_session")
+      : await invoke<WireRead>("load_schedule_session", { includePeople: options.includePeople });
+  return mapWireRead(result);
+});
+export const loadSchedulePeople = (sessionId: string) => enqueue(async (): Promise<ScheduleRead> => {
+  const result = await invoke<WireRead>("load_schedule_people", { sessionId });
+  return mapWireRead(result);
 });
 export const closeScheduleSession = (request: Promise<ScheduleRead>) => enqueue(async () => {
   const read = await request.catch(() => null);

@@ -284,6 +284,7 @@
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface-soft);
+  flex-shrink: 0;
 }
 
 .schedule-pool-tabs button {
@@ -312,6 +313,7 @@
   line-height: 1.5;
   color: var(--muted);
   margin: 0;
+  flex-shrink: 0;
 }
 
 .schedule-pool-list {
@@ -319,8 +321,13 @@
   flex-direction: column;
   gap: 8px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   flex: 1;
   min-height: 0;
+}
+
+.schedule-pool-list > * {
+  flex-shrink: 0;
 }
 
 .schedule-pool-empty {
@@ -330,6 +337,7 @@
   border-radius: 10px;
   font-size: 12px;
   color: var(--muted);
+  flex-shrink: 0;
 }
 
 .schedule-pending-card {
@@ -338,6 +346,7 @@
   border-radius: 11px;
   background: var(--surface-solid);
   overflow: hidden;
+  flex-shrink: 0;
   transition: border-color 140ms ease, background 140ms ease;
 }
 
@@ -443,11 +452,31 @@
   border-radius: 11px;
   background: var(--surface-solid);
   color: var(--text);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.schedule-outside-card .schedule-outside-item {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.schedule-outside-item[draggable="true"] {
+  cursor: grab;
+}
+
+.schedule-outside-item[draggable="true"]:active {
+  cursor: grabbing;
 }
 
 .schedule-outside-item.selected {
   border-color: var(--border-strong);
   background: var(--surface-selected);
+}
+
+.schedule-outside-card.selected .schedule-outside-item.selected {
+  background: transparent;
 }
 
 .schedule-outside-item strong {
@@ -615,6 +644,7 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--heading);
+  flex-shrink: 0;
 }
 
 .schedule-group small {
@@ -888,6 +918,10 @@
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.schedule-editor-meta .detail-item-link {
+  margin: 0;
 }
 
 .schedule-editor-tag {
@@ -1269,11 +1303,28 @@
   .schedule-pending {
     border-right: 0;
     border-bottom: 1px solid var(--line);
-    max-height: 280px;
+    min-height: 200px;
+    max-height: 320px;
   }
   .schedule-inspector {
     border-left: 0;
     border-top: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 960px) {
+  .schedule-calendar {
+    --schedule-label-width: 176px;
+  }
+  .schedule-bar {
+    padding: 0 5px;
+    gap: 3px;
+  }
+  .schedule-bar-badges {
+    gap: 2px;
+  }
+  .schedule-bar-days {
+    display: none;
   }
 }
 

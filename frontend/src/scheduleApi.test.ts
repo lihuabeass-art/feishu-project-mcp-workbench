@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
-import { closeScheduleSession, loadScheduleSession, submitScheduleTargets } from "./scheduleApi";
+import { closeScheduleSession, loadSchedulePeople, loadScheduleSession, submitScheduleTargets } from "./scheduleApi";
 
 it("桌面会话先结束旧会话再读取新会话，写入只传目标 ID 和日期", async () => {
   const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
@@ -80,4 +80,67 @@ it("保留详情缓存节点状态、来源和抓取时间", async () => {
   invoke.mockResolvedValueOnce({ session_id: "local", current_user: "", current_user_name: "", read_at_ms: 1000, sources: [], failed_items: 0, targets: [{ id: "n", identity: { connection: "", project: "p", type: "t", item: "i", node: "", scope: "node", owner: null }, title: "事项", node_name: "节点", owners: [], sources: ["a", "b"], baseline: { start: "", end: "" }, cache_kind: "detail_node", start_state: "missing", end_state: "empty", fetched_at_ms: 2000, read_only_reason: "只读" }] });
   const target = (await loadScheduleSession()).targets[0];
   expect(target).toMatchObject({ cacheKind: "detail_node", startState: "missing", endState: "empty", sourceIds: ["a", "b"], fetchedAt: new Date(2000).toLocaleString(), readOnlyReason: "只读" });
+});
+
+it("支持分层预加载参数与按需加载团队成员排期，并用当前用户真实姓名与头像升级本人空间条目", async () => {
+  const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "1000000000000123456" };
+  invoke.mockResolvedValueOnce({
+    session_id: "s-mine",
+    current_user: "1000000000000123456",
+    current_user_name: "张晓明",
+    current_user_avatar: "https://example.com/me.png",
+    people_loaded: false,
+    read_at_ms: 1000,
+    sources: [{ id: "s", name: "个人待办", complete: true }],
+    failed_items: 0,
+    item_errors: [{ project: "p", type: "t", item: "i2", title: "登录异常", sources: ["s"], message: "读取未完成" }],
+    targets: [
+      { id: "1", identity, title: "我的节点", node_name: "开发", owners: [{ id: "1000000000000123456", name: "123456" }], unknown_owner: false, sources: ["s"], baseline: { start: "", end: "" }, source_aggregate: false },
+    ],
+  });
+  const mineRead = await loadScheduleSession({ includePeople: false });
+  expect(invoke).toHaveBeenLastCalledWith("load_schedule_session", { includePeople: false });
+  expect(mineRead.peopleLoaded).toBe(false);
+  expect(mineRead.currentUserAvatar).toBe("https://example.com/me.png");
+  expect(mineRead.itemErrors?.[0].title).toBe("登录异常");
+  expect(mineRead.people).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: "1000000000000123456", project: "p", name: "张晓明", avatar: "https://example.com/me.png" }),
+      expect.objectContaining({ id: "1000000000000123456", name: "张晓明", avatar: "https://example.com/me.png" }),
+    ]),
+  );
+
+  invoke.mockResolvedValueOnce({
+    session_id: "s-mine",
+    current_user: "1000000000000123456",
+    current_user_name: "张晓明",
+    current_user_avatar: "https://example.com/me.png",
+    people_loaded: true,
+    read_at_ms: 2000,
+    sources: [{ id: "s", name: "个人待办", complete: true }],
+    failed_items: 0,
+    targets: [
+      { id: "1", identity, title: "我的节点", node_name: "开发", owners: [{ id: "1000000000000123456", name: "张晓明", avatar: "https://example.com/me.png" }], unknown_owner: false, sources: ["s"], baseline: { start: "", end: "" }, source_aggregate: false },
+      { id: "2", identity: { ...identity, owner: "peer-1" }, title: "同事节点", node_name: "联调", owners: [{ id: "peer-1", name: "王敏", avatar: "https://example.com/peer.png" }], unknown_owner: false, sources: ["s"], baseline: { start: "2026-11-16", end: "2026-11-18" }, source_aggregate: false },
+    ],
+  });
+  const allRead = await loadSchedulePeople("s-mine");
+  expect(invoke).toHaveBeenLastCalledWith("load_schedule_people", { sessionId: "s-mine" });
+  expect(allRead.peopleLoaded).toBe(true);
+  expect(allRead.targets).toHaveLength(2);
+
+  // 当前用户姓名为空或尾号兜底且空间也未解析出真实姓名时，全局条目显示“当前用户”而非裸 ID
+  invoke.mockResolvedValueOnce({
+    session_id: "s-fallback-user",
+    current_user: "1000000000000123456",
+    current_user_name: "123456",
+    read_at_ms: 3000,
+    sources: [],
+    failed_items: 0,
+    targets: [],
+  });
+  const fallbackRead = await loadScheduleSession({ includePeople: false });
+  expect(fallbackRead.people).toEqual([
+    expect.objectContaining({ id: "1000000000000123456", name: "当前用户" }),
+  ]);
 });

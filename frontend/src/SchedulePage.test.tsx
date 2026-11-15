@@ -2,9 +2,9 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SchedulePage } from "./SchedulePage";
-import { closeScheduleSession, loadScheduleSession, submitScheduleTargets, type ScheduleRead } from "./scheduleApi";
-vi.mock("./scheduleApi", () => ({ loadScheduleSession: vi.fn(), closeScheduleSession: vi.fn(), submitScheduleTargets: vi.fn() }));
+import { SchedulePage, type ScheduleSessionController } from "./SchedulePage";
+import { closeScheduleSession, loadSchedulePeople, loadScheduleSession, submitScheduleTargets, type ScheduleRead } from "./scheduleApi";
+vi.mock("./scheduleApi", () => ({ loadScheduleSession: vi.fn(), loadSchedulePeople: vi.fn(), closeScheduleSession: vi.fn(), submitScheduleTargets: vi.fn() }));
 const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
 const data = (): ScheduleRead => ({ sessionId: "session", currentUserId: "me", readAt: "today", complete: false, sources: [{ id: "s", name: "我的来源", complete: false, error: "部分事项读取失败" }], people: [{ id: "me", name: "本人" }], targets: [{ id: "one", identity, title: "任务一", nodeName: "开发", ownerId: "me", ownerIds: ["me"], sourceIds: ["s"], projectName: "空间", typeName: "需求", dates: { start: "", end: "" }, mine: true }] });
 beforeEach(() => { vi.mocked(loadScheduleSession).mockResolvedValue(data()); vi.mocked(closeScheduleSession).mockResolvedValue(); });
@@ -94,13 +94,22 @@ it("来源筛选只展示所选来源的完整性和关联失败，全部来源�
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
 });
 
-it("本地来源缓存提示包含事项身份和来源，并随来源筛选", async () => {
+it("本地来源缓存提示包含可读事项身份和来源，不裸露内部长键，并随来源筛选", async () => {
   const read = data();
   read.sources = [{ id: "a", name: "来源甲", complete: false }, { id: "b", name: "来源乙", complete: false }];
-  read.itemErrors = [{ project: "空间甲", type: "需求", item: "123", sources: ["a"], message: "该来源的本地缓存不完整" }];
+  read.itemErrors = [
+    { project: "空间甲", type: "需求", item: "123", sources: ["a"], message: "该来源的本地缓存不完整" },
+    { project: "9000000000000654321", type: "issue", item: "456", title: "登录异常修复", sources: ["personal-todo"], message: "读取超时" },
+    { project: "space_key_xyz", type: "custom_type_key", item: "789", sources: ["raw_internal_source"], message: "连接中断" },
+  ];
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
-  expect(screen.getByText("空间甲 / 需求 / 123 · 来源甲：该来源的本地缓存不完整")).toBeTruthy();
+  expect(screen.getByText("空间甲 · 需求 #123（来源甲）：该来源的本地缓存不完整")).toBeTruthy();
+  expect(screen.getByText("当前空间 · 缺陷「登录异常修复」#456（个人待办）：读取超时")).toBeTruthy();
+  expect(screen.getByText("当前空间 · 事项 #789（工作来源）：连接中断")).toBeTruthy();
+  expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("9000000000000654321");
+  expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("space_key_xyz");
+  expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("raw_internal_source");
   fireEvent.click(screen.getByRole("combobox", { name: "筛选来源" }));
   fireEvent.click(screen.getByRole("option", { name: "来源乙" }));
   expect(screen.queryByText(/该来源的本地缓存不完整/)).toBeNull();
@@ -417,7 +426,7 @@ it("默认显示来源聚合日期且保持只读，按人查看不虚构负责�
   expect(screen.getByText("负责人不明")).toBeTruthy();
   expect(screen.queryByText(/节点共同排期/)).toBeNull();
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
-  fireEvent.click(screen.getByRole("option", { name: "本人 · me" }));
+  fireEvent.click(screen.getByRole("option", { name: "本人" }));
   expect(screen.queryByRole("button", { name: "来源记录" })).toBeNull();
   expect(screen.getByText("当前范围未包含该人员的安排")).toBeTruthy();
   expect(submitScheduleTargets).not.toHaveBeenCalled();
@@ -478,7 +487,7 @@ it("按人筛选后切回我的排期不会沿用隐藏的人员筛选", async (
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
   fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
-  fireEvent.click(screen.getByRole("option", { name: "同事 · other" }));
+  fireEvent.click(screen.getByRole("option", { name: "同事" }));
   expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
   expect(screen.getByRole("button", { name: /任务一/ })).toBeTruthy();
@@ -503,7 +512,7 @@ it("人员有待安排事项但本周无排期时说明本周为空", async () =
   await setup();
   fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
-  fireEvent.click(screen.getByRole("option", { name: "本人 · me" }));
+  fireEvent.click(screen.getByRole("option", { name: "本人" }));
   expect(screen.getByText("本周暂无可显示的安排")).toBeTruthy();
   expect(screen.queryByText("当前范围未包含该人员的安排")).toBeNull();
 });
@@ -524,7 +533,7 @@ it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同
   expect(pending.querySelectorAll(".schedule-group")).toHaveLength(3);
   expect(pending.textContent).toContain("张三 (same)");
   expect(pending.textContent).toContain("张三 (other)");
-  expect(pending.textContent).toContain("李四 (same) · 节点共同排期");
+  expect(pending.textContent).toContain("李四 · 节点共同排期");
   expect(pending.querySelector('img[src="a.png"]')).toBeTruthy();
   expect(pending.querySelector('img[src="b.png"]')).toBeTruthy();
   expect(document.querySelector(".schedule-row-label")?.textContent).toContain("李四");
@@ -537,9 +546,9 @@ it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同
   expect(document.querySelector(".schedule-editor")?.textContent).toContain(`已排期：${currentWeekDay(0)} ~ ${currentWeekDay(0)}（共 1 个自然日）`);
   expect(document.querySelector(".schedule-editor")?.textContent).not.toContain("日期待补齐");
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
-  fireEvent.click(screen.getByRole("option", { name: /same/ }));
+  fireEvent.click(screen.getByRole("option", { name: "张三 / 李四" }));
   expect(pending.textContent).not.toContain("张三 (other)");
-  expect(pending.textContent).toContain("李四 (same)");
+  expect(pending.textContent).toContain("李四");
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
@@ -608,8 +617,31 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   fireEvent.click(outsideTab);
   const outsideCard = screen.getByRole("button", { name: /三周后专项/ });
   expect(outsideCard.textContent).toContain(`${farStart} ~ ${farEnd}`);
-  fireEvent.click(outsideCard);
+  expect(outsideCard.getAttribute("draggable")).toBe("true");
 
+  // 1. 点击卡片主体仅在右侧检查器选中该事项，不强制跳离当前周
+  fireEvent.click(outsideCard);
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(farStart);
+  expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(farEnd);
+  expect(outsideCard.className).toContain("schedule-outside-item");
+
+  // 2. 将其他周已排事项直接拖入当前周日历第 2 列（索引 1），保留其原本 3 天跨度
+  const singleWeekHeaders = document.querySelectorAll(".schedule-days > div");
+  fireEvent.dragStart(outsideCard, { dataTransfer: transfer });
+  fireEvent.drop(singleWeekHeaders[1], { dataTransfer: transfer });
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(1));
+  expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(currentWeekDay(3));
+  expect(screen.getByRole("button", { name: "三周后专项" }).className).toContain("schedule-bar");
+
+  // 3. 还原云端日期后回到其他周已排，点击『排入本周』一键排入当前周（保留 3 天跨度）
+  fireEvent.click(screen.getByRole("button", { name: "还原云端日期" }));
+  const outsideQuick = screen.getByLabelText("三周后专项跨周排期操作");
+  fireEvent.click(within(outsideQuick).getByRole("button", { name: "排入本周" }));
+  expect(screen.getByRole("button", { name: "三周后专项" }).className).toContain("schedule-bar");
+
+  // 4. 还原后点击『定位该周 ↗』跳转到该事项所在周并在日历视窗中显示长条
+  fireEvent.click(screen.getByRole("button", { name: "还原云端日期" }));
+  fireEvent.click(within(screen.getByLabelText("三周后专项跨周排期操作")).getByRole("button", { name: /定位该周/ }));
   expect(screen.getByRole("button", { name: "三周后专项" }).className).toContain("schedule-bar");
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(farStart);
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(farEnd);
@@ -833,4 +865,238 @@ it("核对弹层支持 Escape 关闭与全部还原自动关闭，概览卡支�
 
   fireEvent.click(screen.getByRole("button", { name: "全部还原" }));
   expect((screen.getByRole("button", { name: "同步排期" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("本人尾号兜底自动替换为真实姓名与头像，纯数字回退名不显示单数字头像，检查器提供胶囊式『打开飞书事项』按钮", async () => {
+  const uid = "9000000000000654321";
+  const read = data();
+  read.currentUserId = uid;
+  read.currentUserAvatar = "https://example.com/me-avatar.png";
+  read.people = [
+    { id: uid, name: "王小明", avatar: "https://example.com/me-avatar.png" },
+    { id: uid, name: "654321", connection: "c", project: "p" },
+    { id: "1000000000000999999", name: "999999", connection: "c", project: "p" },
+  ];
+  read.targets = [
+    {
+      ...read.targets[0],
+      identity: { ...identity, owner: uid },
+      ownerId: uid,
+      ownerIds: [uid],
+      itemUrl: "https://project.feishu.cn/p/story/detail/101",
+    },
+    {
+      ...read.targets[0],
+      id: "num-colleague",
+      title: "未知同事任务",
+      identity: { ...identity, owner: "1000000000000999999", node: "n2" },
+      ownerId: "1000000000000999999",
+      ownerIds: ["1000000000000999999"],
+      mine: false,
+    },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+
+  expect(document.querySelector(".schedule-scope")?.textContent).toContain("王小明");
+  expect(document.querySelector('.schedule-scope img[src="https://example.com/me-avatar.png"]')).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
+  const linkWrap = document.querySelector(".schedule-editor-meta .workflow-manual-fill.detail-item-link");
+  expect(linkWrap).toBeTruthy();
+  const linkBtn = within(linkWrap as HTMLElement).getByRole("link", { name: /打开飞书事项/ });
+  expect(linkBtn.getAttribute("title")).toBe("在浏览器打开飞书事项");
+
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  const pending = document.querySelector(".schedule-pending")!;
+  expect(pending.textContent).toContain("王小明");
+  expect(pending.textContent).toContain("团队成员");
+  expect(pending.textContent).not.toContain(uid);
+  expect(pending.textContent).not.toContain("999999");
+  expect(pending.textContent).not.toContain("1000000000000999999");
+  expect(Array.from(pending.querySelectorAll(".schedule-group")).every((el) => !el.hasAttribute("title"))).toBe(true);
+  // 纯数字回退名不渲染单个数字字符作为头像，而是渲染通用人物 SVG 图标
+  const avatars = Array.from(pending.querySelectorAll(".schedule-avatar"));
+  expect(avatars.some((el) => el.textContent === "9" || el.textContent === "6")).toBe(false);
+  // 筛选人员下拉框不裸露 19 位 user_key，纯数字回退名展示为“成员”
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
+  expect(screen.getByRole("option", { name: "王小明" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "成员" })).toBeTruthy();
+  expect(screen.queryByRole("option", { name: new RegExp(uid) })).toBeNull();
+  expect(screen.queryByRole("option", { name: /1000000000000999999/ })).toBeNull();
+});
+
+it("无未保存草稿时若外部预加载会话轮换为新 sessionId，自动同步刷新排期视图", async () => {
+  const sessionOne: ScheduleRead = { ...data(), sessionId: "s-1" };
+  const sessionTwo: ScheduleRead = {
+    ...data(),
+    sessionId: "s-2",
+    sources: [
+      { id: "src-overdue", name: "src-overdue", complete: true },
+      { id: "related-story", name: "", complete: true },
+    ],
+    targets: [{ ...data().targets[0], id: "rotated-target", title: "外部轮换后的新事项" }],
+  };
+  const snapWithPresets = {
+    items: [],
+    total: 0,
+    last_success: null,
+    runs: [],
+    sources: [
+      {
+        id: "src-overdue",
+        builtin_key: "overdue",
+        display_name: null,
+        kind: "personal_todo",
+        enabled: true,
+        executable: true,
+        reason: null,
+        action: "overdue",
+        todo_scope: "all",
+      },
+    ],
+    config_path: "",
+    db_path: "",
+    credential_ready: true,
+    credential_description: "",
+  };
+  const updateRead = vi.fn();
+  const reload = vi.fn().mockResolvedValue(sessionTwo);
+
+  const { rerender } = render(
+    <SchedulePage
+      snapshot={snapWithPresets}
+      preloadedSession={{ read: sessionOne, pending: null, updateRead, reload }}
+      onGuardChange={vi.fn()}
+      requestReload={(fn) => fn()}
+    />,
+  );
+  expect(screen.getByRole("button", { name: /任务一/ })).toBeTruthy();
+
+  rerender(
+    <SchedulePage
+      snapshot={snapWithPresets}
+      preloadedSession={{ read: sessionTwo, pending: null, updateRead, reload }}
+      onGuardChange={vi.fn()}
+      requestReload={(fn) => fn()}
+    />,
+  );
+  expect(await screen.findByRole("button", { name: /外部轮换后的新事项/ })).toBeTruthy();
+  expect(document.querySelector(".schedule-scope")?.textContent).toContain("逾期待办");
+  expect(document.querySelector(".schedule-scope")?.textContent).toContain("我参与的需求");
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选来源" }));
+  expect(screen.getByRole("option", { name: "逾期待办" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "我参与的需求" })).toBeTruthy();
+});
+
+it("按需加载全员排期期间若重新读取新会话，旧会话迟到响应不会污染新会话", async () => {
+  const sessionOne: ScheduleRead = { ...data(), sessionId: "s-old", peopleLoaded: false };
+  const sessionTwo: ScheduleRead = {
+    ...data(),
+    sessionId: "s-new",
+    peopleLoaded: false,
+    targets: [{ ...data().targets[0], id: "new-target", title: "新会话事项" }],
+  };
+  let resolveOldPeople!: (value: ScheduleRead) => void;
+  vi.mocked(loadSchedulePeople).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveOldPeople = resolve;
+      }),
+  );
+
+  const updateRead = vi.fn();
+  const reload = vi.fn().mockResolvedValue(sessionTwo);
+  const controller: ScheduleSessionController = {
+    read: sessionOne,
+    pending: null,
+    updateRead,
+    reload,
+  };
+
+  render(
+    <SchedulePage
+      preloadedSession={controller}
+      onGuardChange={vi.fn()}
+      requestReload={(fn) => fn()}
+    />,
+  );
+
+  // 触发旧会话 s-old 的按需人员加载
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  expect(loadSchedulePeople).toHaveBeenCalledWith("s-old");
+
+  // 在旧请求完成前点击『重新读取』切换到新会话 s-new
+  fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+  expect(await screen.findByRole("button", { name: /新会话事项/ })).toBeTruthy();
+
+  // 此时旧会话的 loadSchedulePeople 才迟到返回，不得覆盖新会话事项或污染 preloadedSession
+  resolveOldPeople({
+    ...sessionOne,
+    peopleLoaded: true,
+    targets: [{ ...sessionOne.targets[0], id: "stale-colleague", title: "过期会话同事事项" }],
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: /新会话事项/ })).toBeTruthy());
+  expect(screen.queryByRole("button", { name: /过期会话同事事项/ })).toBeNull();
+  expect(updateRead).toHaveBeenLastCalledWith(sessionTwo);
+});
+
+it("按需加载全员排期并保留未同步草稿，预加载会话在切换与挂载间直接复用", async () => {
+  const initialRead = data();
+  initialRead.peopleLoaded = false;
+  const fullRead: ScheduleRead = {
+    ...initialRead,
+    peopleLoaded: true,
+    people: [...initialRead.people, { id: "colleague-1", name: "李同事", avatar: "https://example.com/c.png", connection: "c", project: "p" }],
+    targets: [
+      ...initialRead.targets,
+      {
+        ...initialRead.targets[0],
+        id: "colleague-target",
+        title: "李同事的开发节点",
+        identity: { ...identity, owner: "colleague-1", node: "n-col" },
+        ownerId: "colleague-1",
+        ownerIds: ["colleague-1"],
+        mine: false,
+      },
+    ],
+  };
+  vi.mocked(loadSchedulePeople).mockResolvedValue(fullRead);
+
+  const updateRead = vi.fn();
+  const reload = vi.fn().mockResolvedValue(fullRead);
+  const controller: ScheduleSessionController = {
+    read: initialRead,
+    pending: null,
+    updateRead,
+    reload,
+  };
+
+  const { unmount } = render(
+    <SchedulePage
+      preloadedSession={controller}
+      onGuardChange={vi.fn()}
+      requestReload={(fn) => fn()}
+    />,
+  );
+
+  // 预加载会话已就绪时直接展示，不额外调用 loadScheduleSession
+  expect(screen.getByRole("button", { name: /任务一/ })).toBeTruthy();
+  expect(loadScheduleSession).not.toHaveBeenCalled();
+
+  // 先在『我的排期』下修改本人草稿
+  const quickBar = screen.getByLabelText("任务一快捷排期");
+  fireEvent.click(within(quickBar).getByRole("button", { name: "今天" }));
+  expect(screen.getByRole("button", { name: "核对并同步 (1)" })).toBeTruthy();
+
+  // 切换到『按人查看』时按需触发 loadSchedulePeople，完成后合并同事事项且不丢失本人未保存草稿
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  await waitFor(() => expect(loadSchedulePeople).toHaveBeenCalledWith("session"));
+  expect(await screen.findByRole("button", { name: /李同事的开发节点/ })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "核对并同步 (1)" })).toBeTruthy();
+  expect(updateRead).toHaveBeenCalledWith(fullRead);
+
+  // 组件卸载（如切回其他主导航页）时不销毁预加载会话
+  unmount();
+  expect(closeScheduleSession).not.toHaveBeenCalled();
 });
