@@ -10,6 +10,7 @@ export function readFailureMessage(kind: string): string {
     case "store":
     case "storage": return "本地数据暂时无法读取，请重试";
     case "incomplete": return "部分信息尚未获取完成，请稍后刷新";
+    case "conflict": return "当前会话或数据状态已变化，请重新读取";
     default: return "暂时无法获取最新信息，请稍后重试";
   }
 }

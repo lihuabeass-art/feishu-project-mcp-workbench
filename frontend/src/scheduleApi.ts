@@ -129,7 +129,13 @@ export const closeScheduleSession = (request: Promise<ScheduleRead>) => enqueue(
   const read = await request.catch(() => null);
   if (read) await invoke<void>("close_schedule_session", { sessionId: read.sessionId });
 });
-export const submitScheduleTargets = async (sessionId: string, targets: ScheduleWriteTarget[]): Promise<ScheduleWriteResult> => {
+export const resetScheduleSession = (options?: { force?: boolean }) => enqueue(async () => {
+  await invoke<void>(
+    "reset_schedule_session",
+    options?.force === undefined ? undefined : { force: options.force },
+  );
+});
+export const submitScheduleTargets = (sessionId: string, targets: ScheduleWriteTarget[]): Promise<ScheduleWriteResult> => enqueue(async () => {
   const result = await invoke<WireResult>("sync_schedule_session", { sessionId, changes: targets.map((target) => ({ id: target.id, start: target.dates.start, end: target.dates.end, cancel: target.cancel })) });
   return { results: result.targets, writeRequests: result.write_requests };
-};
+});

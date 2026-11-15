@@ -365,6 +365,10 @@ fn schedule_receipt_accepted(payload: &crate::mcp::ToolResultPayload) -> bool {
 }
 
 impl ScheduleSession {
+    pub fn has_uncertain(&self) -> bool {
+        !self.frozen.is_empty() || !self.frozen_nodes.is_empty()
+    }
+
     pub fn load(session: &Session) -> Result<Self, BackendError> {
         Self::load_internal(session, false)
     }

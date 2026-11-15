@@ -46,6 +46,35 @@ fn close_schedule<T>(mutex: &std::sync::Mutex<Option<T>>, matches: impl FnOnce(&
     Ok(())
 }
 
+fn reset_schedule<T>(
+    mutex: &std::sync::Mutex<Option<T>>,
+    force: bool,
+    is_uncertain: impl FnOnce(&T) -> bool,
+) -> Result<(), BackendError> {
+    let mut guard = match mutex.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err(BackendError::conflict("排期正在同步或读取，请稍候"));
+        }
+        Err(std::sync::TryLockError::Poisoned(error)) => {
+            if !force {
+                return Err(BackendError::conflict(
+                    "上次排期任务中断，结果可能不确定，请先在飞书核对并重新读取",
+                ));
+            }
+            error.into_inner()
+        }
+    };
+    if !force && guard.as_ref().is_some_and(is_uncertain) {
+        return Err(BackendError::conflict(
+            "当前排期存在未确认结果，请先在飞书核对并重新读取",
+        ));
+    }
+    *guard = None;
+    mutex.clear_poison();
+    Ok(())
+}
+
 #[tauri::command]
 async fn load_schedule_session(include_people: Option<bool>) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
     blocking(move || {
@@ -87,6 +116,12 @@ async fn close_schedule_session(session_id: String) -> Result<(), UiError> {
     blocking(move || {
         close_schedule(&SCHEDULE_SESSION, |s| s.view.session_id == session_id)
     }).await
+}
+
+#[tauri::command]
+async fn reset_schedule_session(force: Option<bool>) -> Result<(), UiError> {
+    blocking(move || reset_schedule(&SCHEDULE_SESSION, force == Some(true), |s| s.has_uncertain()))
+        .await
 }
 
 #[derive(Serialize)]
@@ -771,7 +806,8 @@ fn main() {
             load_schedule_session,
             load_schedule_people,
             sync_schedule_session,
-            close_schedule_session
+            close_schedule_session,
+            reset_schedule_session
         ])
         .run(tauri::generate_context!())
         .expect("无法启动 FSTODO 桌面窗口");
@@ -799,6 +835,35 @@ mod tests {
         let guard = lock_schedule(&mutex).unwrap();
         assert!(close_schedule(&mutex, |_| true).is_err());
         drop(guard);
+    }
+
+    #[test]
+    fn reset_schedule_respects_busy_and_uncertain_unless_forced() {
+        let mutex = std::sync::Arc::new(std::sync::Mutex::new(Some("idle".to_string())));
+        reset_schedule(&mutex, false, |_| false).unwrap();
+        assert!(lock_schedule(&mutex).unwrap().is_none());
+
+        *lock_schedule(&mutex).unwrap() = Some("uncertain".into());
+        assert!(reset_schedule(&mutex, false, |s| s == "uncertain").is_err());
+        assert_eq!(lock_schedule(&mutex).unwrap().as_deref(), Some("uncertain"));
+        reset_schedule(&mutex, true, |s| s == "uncertain").unwrap();
+        assert!(lock_schedule(&mutex).unwrap().is_none());
+
+        *lock_schedule(&mutex).unwrap() = Some("busy".into());
+        let guard = lock_schedule(&mutex).unwrap();
+        assert!(reset_schedule(&mutex, false, |_| false).is_err());
+        assert!(reset_schedule(&mutex, true, |_| false).is_err());
+        drop(guard);
+
+        let worker = mutex.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = worker.lock().unwrap();
+            panic!("模拟崩溃");
+        }).join().is_err());
+        assert!(reset_schedule(&mutex, false, |_| false).is_err());
+        assert!(lock_schedule(&mutex).is_err());
+        reset_schedule(&mutex, true, |_| false).unwrap();
+        assert!(lock_schedule(&mutex).unwrap().is_none());
     }
 
     #[test]

@@ -459,13 +459,36 @@ it("单端来源聚合日期在待安排中标明来源并保留原值", async (
 it.each([
   [{ kind: "connection", message: "内部地址和令牌" }, "暂时无法连接服务，请稍后重试"],
   [{ kind: "auth", message: "敏感凭证" }, "连接凭证已失效，请在连接设置中更新 Token"],
+  [{ kind: "conflict", message: "内部冲突栈" }, "当前会话或数据状态已变化，请重新读取"],
   [new Error("内部异常"), "暂时无法获取最新信息，请稍后重试"],
 ])("读取失败按错误类别显示脱敏反馈", async (failure, message) => {
   vi.mocked(loadScheduleSession).mockRejectedValueOnce(failure);
   render(<SchedulePage onGuardChange={vi.fn()} requestReload={vi.fn()} />);
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toContain(message);
-  expect(alert.textContent).not.toMatch(/\[object Object\]|内部地址|敏感凭证|内部异常/);
+  expect(alert.textContent).not.toMatch(/\[object Object\]|内部地址|敏感凭证|内部冲突栈|内部异常/);
+});
+
+it("读取失败横幅点击重新读取时携带 forceReset 重新建立会话", async () => {
+  const recovered = data();
+  const reload = vi
+    .fn()
+    .mockRejectedValueOnce({ kind: "conflict", message: "旧会话残留" })
+    .mockResolvedValueOnce(recovered);
+  render(
+    <SchedulePage
+      preloadedSession={{ read: null, pending: null, updateRead: vi.fn(), reload }}
+      onGuardChange={vi.fn()}
+      requestReload={(fn) => fn()}
+    />,
+  );
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("当前会话或数据状态已变化，请重新读取");
+  expect(reload).toHaveBeenNthCalledWith(1, { includePeople: false });
+
+  fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+  expect(await screen.findByRole("button", { name: /任务一/ })).toBeTruthy();
+  expect(reload).toHaveBeenNthCalledWith(2, { includePeople: false, forceReset: true });
 });
 
 it("已排期长条可由键盘选择并进入日期与顺延操作", async () => {

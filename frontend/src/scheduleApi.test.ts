@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
-import { closeScheduleSession, loadSchedulePeople, loadScheduleSession, submitScheduleTargets } from "./scheduleApi";
+import { closeScheduleSession, loadSchedulePeople, loadScheduleSession, resetScheduleSession, submitScheduleTargets } from "./scheduleApi";
 
 it("桌面会话先结束旧会话再读取新会话，写入只传目标 ID 和日期", async () => {
   const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
@@ -148,4 +148,48 @@ it("支持分层预加载参数与按需加载团队成员排期，并用当前�
   expect(fallbackRead.people).toEqual([
     expect.objectContaining({ id: "1000000000000123456", name: "当前用户" }),
   ]);
+});
+
+it("提交排期与关闭、重置会话按生命周期串行排队，避免 WouldBlock 冲突", async () => {
+  invoke.mockReset();
+  const order: string[] = [];
+  let resolveSync!: (value: unknown) => void;
+  invoke.mockImplementation((command: string) => {
+    order.push(command);
+    if (command === "sync_schedule_session") {
+      return new Promise((resolve) => {
+        resolveSync = resolve;
+      });
+    }
+    return Promise.resolve(undefined);
+  });
+
+  const readPromise = Promise.resolve({
+    sessionId: "s-queue",
+    currentUserId: "me",
+    readAt: "",
+    complete: true,
+    sources: [],
+    people: [],
+    targets: [],
+  });
+  const syncPromise = submitScheduleTargets("s-queue", [
+    {
+      id: "1",
+      identity: { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal", owner: "me" },
+      dates: { start: "2026-11-16", end: "2026-11-17" },
+      cancel: false,
+    },
+  ]);
+  const closePromise = closeScheduleSession(readPromise);
+  const resetPromise = resetScheduleSession({ force: true });
+
+  await Promise.resolve();
+  expect(order).toEqual(["sync_schedule_session"]);
+
+  resolveSync({ targets: [{ id: "1", result: "accepted" }], write_requests: 1 });
+  await Promise.all([syncPromise, closePromise, resetPromise]);
+
+  expect(order).toEqual(["sync_schedule_session", "close_schedule_session", "reset_schedule_session"]);
+  expect(invoke).toHaveBeenLastCalledWith("reset_schedule_session", { force: true });
 });

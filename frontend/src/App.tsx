@@ -4,7 +4,7 @@ import { AppVersion } from "./AppVersion";
 import { AppUpdateDialog, AppUpdateSettings } from "./AppUpdater";
 import { useAppUpdater } from "./useAppUpdater";
 import { SchedulePage, type ScheduleSessionController } from "./SchedulePage";
-import { closeScheduleSession, loadScheduleSession, type ScheduleRead } from "./scheduleApi";
+import { closeScheduleSession, loadScheduleSession, resetScheduleSession, type ScheduleRead } from "./scheduleApi";
 import { useScrollIsolation } from "./useScrollIsolation";
 import { prepareUpdateInstallation } from "./appUpdateSafety";
 import { workspaceActionBlocked, type WorkspaceActivity } from "./operationPolicy";
@@ -494,6 +494,75 @@ function Workspace() {
   scheduleConnectionKeyRef.current = scheduleConnectionKey;
   const scheduleFingerprintRef = useRef(schedulePreloadFingerprint);
   scheduleFingerprintRef.current = schedulePreloadFingerprint;
+  const openOrRecoverScheduleSession = useCallback(
+    async (
+      prev: Promise<ScheduleRead> | null,
+      options: { includePeople: boolean; forceReset?: boolean },
+    ): Promise<ScheduleRead> => {
+      if (prev) {
+        try {
+          await closeScheduleSession(prev);
+        } catch (closeFailure) {
+          // 前序关闭失败（如状态错位或会话曾泄漏）时，在允许的前提下先清理后端会话，避免后续 load 永久冲突。
+          if (!options.forceReset && scheduleGuardRef.current.uncertain) {
+            throw closeFailure;
+          }
+          await resetScheduleSession({ force: Boolean(options.forceReset) });
+        }
+      } else if (options.forceReset) {
+        await resetScheduleSession({ force: true });
+      }
+      try {
+        return await loadScheduleSession({ includePeople: options.includePeople });
+      } catch (failure) {
+        if (asError(failure).kind !== "conflict") throw failure;
+        if (!options.forceReset && (scheduleGuardRef.current.busy || scheduleGuardRef.current.uncertain)) {
+          throw failure;
+        }
+        await resetScheduleSession({ force: Boolean(options.forceReset) });
+        return await loadScheduleSession({ includePeople: options.includePeople });
+      }
+    },
+    [],
+  );
+  const beginScheduleLoad = useCallback(
+    (
+      fingerprint: string,
+      connectionKey: string,
+      options: { includePeople: boolean; forceReset?: boolean },
+    ): Promise<ScheduleRead> => {
+      const prev =
+        scheduleSessionRef.current.pending ||
+        (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
+      const req = openOrRecoverScheduleSession(prev, options);
+      scheduleSessionRef.current = {
+        fingerprint,
+        connectionKey,
+        pending: req,
+        read: null,
+      };
+      setPreloadedSchedule(null);
+      return req.then(
+        (res) => {
+          if (scheduleSessionRef.current.pending !== req) {
+            void closeScheduleSession(Promise.resolve(res)).catch(() => {});
+            return res;
+          }
+          scheduleSessionRef.current.read = res;
+          scheduleSessionRef.current.pending = null;
+          setPreloadedSchedule(res);
+          return res;
+        },
+        (err) => {
+          if (scheduleSessionRef.current.pending === req) {
+            scheduleSessionRef.current.pending = null;
+          }
+          throw err;
+        },
+      );
+    },
+    [openOrRecoverScheduleSession],
+  );
   useEffect(() => {
     if (!schedulePreloadFingerprint) {
       if (!data?.credential_ready && (scheduleSessionRef.current.pending || scheduleSessionRef.current.read)) {
@@ -525,35 +594,10 @@ function Workspace() {
     ) {
       return;
     }
-    const prev =
-      scheduleSessionRef.current.pending ||
-      (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
-    if (prev) void closeScheduleSession(prev).catch(() => {});
-    const req = loadScheduleSession({ includePeople: false });
-    scheduleSessionRef.current = {
-      fingerprint: schedulePreloadFingerprint,
-      connectionKey: scheduleConnectionKey,
-      pending: req,
-      read: null,
-    };
-    setPreloadedSchedule(null);
-    void req.then(
-      (res) => {
-        if (scheduleSessionRef.current.pending !== req) {
-          void closeScheduleSession(Promise.resolve(res)).catch(() => {});
-          return;
-        }
-        scheduleSessionRef.current.read = res;
-        scheduleSessionRef.current.pending = null;
-        setPreloadedSchedule(res);
-      },
-      () => {
-        if (scheduleSessionRef.current.pending === req) {
-          scheduleSessionRef.current.pending = null;
-        }
-      },
-    );
-  }, [schedulePreloadFingerprint, scheduleConnectionKey, data?.credential_ready]);
+    void beginScheduleLoad(schedulePreloadFingerprint, scheduleConnectionKey, {
+      includePeople: false,
+    }).catch(() => {});
+  }, [schedulePreloadFingerprint, scheduleConnectionKey, data?.credential_ready, beginScheduleLoad]);
   useEffect(
     () => () => {
       const prev =
@@ -565,6 +609,7 @@ function Workspace() {
     [],
   );
   const updateScheduleRead = useCallback((next: ScheduleRead) => {
+    if (scheduleSessionRef.current.read?.sessionId !== next.sessionId) return;
     scheduleSessionRef.current.read = next;
     setPreloadedSchedule(next);
   }, []);
@@ -575,38 +620,20 @@ function Workspace() {
     scheduleSessionRef.current.pending = null;
     scheduleSessionRef.current.read = null;
     setPreloadedSchedule(null);
-    if (prev) void closeScheduleSession(prev).catch(() => {});
+    if (prev) {
+      void closeScheduleSession(prev).catch(() => resetScheduleSession({ force: true }).catch(() => {}));
+    } else {
+      void resetScheduleSession({ force: true }).catch(() => {});
+    }
   }, []);
-  const reloadScheduleSession = useCallback((options?: { includePeople?: boolean }) => {
-    const prev =
-      scheduleSessionRef.current.pending ||
-      (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
-    if (prev) void closeScheduleSession(prev).catch(() => {});
-    const req = loadScheduleSession({ includePeople: Boolean(options?.includePeople) });
-    scheduleSessionRef.current.fingerprint = scheduleFingerprintRef.current;
-    scheduleSessionRef.current.connectionKey = scheduleConnectionKeyRef.current;
-    scheduleSessionRef.current.pending = req;
-    scheduleSessionRef.current.read = null;
-    setPreloadedSchedule(null);
-    return req.then(
-      (res) => {
-        if (scheduleSessionRef.current.pending !== req) {
-          void closeScheduleSession(Promise.resolve(res)).catch(() => {});
-          return res;
-        }
-        scheduleSessionRef.current.read = res;
-        scheduleSessionRef.current.pending = null;
-        setPreloadedSchedule(res);
-        return res;
-      },
-      (err) => {
-        if (scheduleSessionRef.current.pending === req) {
-          scheduleSessionRef.current.pending = null;
-        }
-        throw err;
-      },
-    );
-  }, []);
+  const reloadScheduleSession = useCallback(
+    (options?: { includePeople?: boolean; forceReset?: boolean }) =>
+      beginScheduleLoad(scheduleFingerprintRef.current, scheduleConnectionKeyRef.current, {
+        includePeople: Boolean(options?.includePeople),
+        forceReset: options?.forceReset,
+      }),
+    [beginScheduleLoad],
+  );
   const scheduleController = useMemo<ScheduleSessionController>(
     () => ({
       get read() {

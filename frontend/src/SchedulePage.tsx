@@ -58,7 +58,7 @@ export interface ScheduleSessionController {
   read: ScheduleRead | null;
   pending: Promise<ScheduleRead> | null;
   updateRead: (next: ScheduleRead) => void;
-  reload: (options?: { includePeople?: boolean }) => Promise<ScheduleRead>;
+  reload: (options?: { includePeople?: boolean; forceReset?: boolean }) => Promise<ScheduleRead>;
 }
 
 const normalizeNodeStatus = (status?: string | null) => (status ?? "").trim().toLowerCase();
@@ -180,6 +180,7 @@ export function SchedulePage({
   const [peopleError, setPeopleError] = useState("");
   const peopleLoadingRef = useRef(false);
   const currentSessionIdRef = useRef(initialRead?.sessionId || "");
+  const forceResetRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [report, setReport] = useState("");
@@ -260,10 +261,16 @@ export function SchedulePage({
       setError("");
       setRead(null);
       setEntries([]);
+      const forceReset = forceResetRef.current;
+      forceResetRef.current = false;
       const request =
         epoch === 0 && preloadedSession.pending
           ? preloadedSession.pending
-          : preloadedSession.reload({ includePeople: viewModeRef.current === "people" });
+          : preloadedSession.reload(
+              forceReset
+                ? { includePeople: viewModeRef.current === "people", forceReset: true }
+                : { includePeople: viewModeRef.current === "people" },
+            );
       request
         .then((result) => {
           if (!active) return;
@@ -1284,7 +1291,10 @@ export function SchedulePage({
           <button
             type="button"
             className="secondary"
-            onClick={() => setEpoch((value) => value + 1)}
+            onClick={() => {
+              forceResetRef.current = true;
+              setEpoch((value) => value + 1);
+            }}
           >
             重新读取
           </button>
@@ -1468,7 +1478,12 @@ export function SchedulePage({
                   type="button"
                   className="secondary"
                   disabled={busy}
-                  onClick={() => requestReload(() => setEpoch((value) => value + 1))}
+                  onClick={() =>
+                    requestReload(() => {
+                      forceResetRef.current = true;
+                      setEpoch((value) => value + 1);
+                    })
+                  }
                 >
                   放弃本次编辑并重新读取
                 </button>

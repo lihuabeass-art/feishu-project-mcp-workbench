@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 import { loadSnapshot } from "./api";
-import { closeScheduleSession, loadScheduleSession, type ScheduleRead } from "./scheduleApi";
+import { closeScheduleSession, loadScheduleSession, resetScheduleSession, type ScheduleRead } from "./scheduleApi";
 import type { ScheduleSessionController } from "./SchedulePage";
 
 const desktopState = vi.hoisted(() => ({ value: false }));
@@ -31,17 +31,19 @@ vi.mock("./api", async (original) => {
 vi.mock("./scheduleApi", () => ({
   loadScheduleSession: vi.fn(),
   closeScheduleSession: vi.fn().mockResolvedValue(undefined),
+  resetScheduleSession: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./SchedulePage", () => ({ SchedulePage: ({ onGuardChange, preloadedSession }: { onGuardChange: (guard: { dirty: boolean; busy: boolean; uncertain: boolean }) => void; preloadedSession?: ScheduleSessionController }) => {
   const [guard, setGuard] = useState({ dirty: false, busy: false, uncertain: false });
   const [sessionId, setSessionId] = useState<string | null>(() => preloadedSession?.read?.sessionId || null);
+  const [loadFailed, setLoadFailed] = useState(false);
   useEffect(() => onGuardChange(guard), [guard, onGuardChange]);
   useEffect(() => {
     if (!preloadedSession || preloadedSession.read) return;
     const req = preloadedSession.pending ?? preloadedSession.reload();
-    void req.then((res) => setSessionId(res.sessionId));
+    void req.then((res) => { setLoadFailed(false); setSessionId(res.sessionId); }, () => setLoadFailed(true));
   }, []);
-  return <div><span>排期页面内容</span>{sessionId && <span>已复用预加载会话:{sessionId}</span>}<button onClick={() => setGuard({ dirty: true, busy: false, uncertain: false })}>模拟编辑</button><button onClick={() => setGuard({ dirty: true, busy: true, uncertain: false })}>模拟同步</button><button onClick={() => setGuard({ dirty: true, busy: false, uncertain: true })}>模拟不确定结果</button></div>;
+  return <div><span>排期页面内容</span>{sessionId && <span>已复用预加载会话:{sessionId}</span>}{loadFailed && <span>读取出错</span>}<button onClick={() => setGuard({ dirty: true, busy: false, uncertain: false })}>模拟编辑</button><button onClick={() => setGuard({ dirty: true, busy: true, uncertain: false })}>模拟同步</button><button onClick={() => setGuard({ dirty: true, busy: false, uncertain: true })}>模拟不确定结果</button><button onClick={() => void preloadedSession?.reload({ includePeople: false, forceReset: true }).then((res) => { setLoadFailed(false); setSessionId(res.sessionId); }, () => setLoadFailed(true))}>模拟出错后重新读取</button><button onClick={() => preloadedSession?.updateRead({ sessionId: "stale-closed", currentUserId: "me", peopleLoaded: false, readAt: "", complete: true, sources: [], people: [], targets: [] })}>模拟过期更新</button></div>;
 } }));
 afterEach(() => { desktopState.value = false; cleanup(); vi.clearAllMocks(); });
 
@@ -230,4 +232,88 @@ it("首屏快照加载完成前提前点击事项安排发起的会话不会被�
   await waitFor(() => expect(screen.getByText("已复用预加载会话:early-session-1")).toBeTruthy());
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
   expect(closeScheduleSession).not.toHaveBeenCalled();
+});
+
+it("后台预加载遇残留干净会话冲突时自动非强制重置恢复，过期会话 updateRead 不覆盖当前会话", async () => {
+  desktopState.value = true;
+  vi.mocked(loadSnapshot).mockResolvedValueOnce({
+    items: [],
+    total: 0,
+    last_success: null,
+    runs: [],
+    sources: [],
+    config_path: "cfg",
+    db_path: "db",
+    credential_ready: true,
+    credential_description: "已配置",
+  });
+  const recovered: ScheduleRead = {
+    sessionId: "recovered-1",
+    currentUserId: "me",
+    peopleLoaded: false,
+    readAt: "2026-11-15 02:00:00",
+    complete: true,
+    sources: [],
+    people: [],
+    targets: [],
+  };
+  vi.mocked(loadScheduleSession)
+    .mockRejectedValueOnce({ kind: "conflict", message: "请先结束当前排期会话，再重新读取" })
+    .mockResolvedValueOnce(recovered);
+
+  render(<App />);
+  await waitFor(() => expect(resetScheduleSession).toHaveBeenCalledWith({ force: false }));
+  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(2));
+
+  fireEvent.click(await screen.findByText("事项安排"));
+  expect(await screen.findByText("已复用预加载会话:recovered-1")).toBeTruthy();
+
+  // 过期 sessionId 的 updateRead 不得覆盖已激活的 recovered-1
+  fireEvent.click(screen.getByText("模拟过期更新"));
+  fireEvent.click(screen.getByRole("button", { name: /我的工作/ }));
+  fireEvent.click(screen.getByText("事项安排"));
+  expect(await screen.findByText("已复用预加载会话:recovered-1")).toBeTruthy();
+});
+
+it("非强制重置遇阻塞/不确定会话失败时不静默强清，用户出错后点击重新读取可强制恢复", async () => {
+  desktopState.value = true;
+  vi.mocked(loadSnapshot).mockResolvedValueOnce({
+    items: [],
+    total: 0,
+    last_success: null,
+    runs: [],
+    sources: [],
+    config_path: "cfg",
+    db_path: "db",
+    credential_ready: true,
+    credential_description: "已配置",
+  });
+  vi.mocked(loadScheduleSession)
+    .mockRejectedValueOnce({ kind: "conflict", message: "请先结束当前排期会话，再重新读取" })
+    .mockRejectedValueOnce({ kind: "conflict", message: "请先结束当前排期会话，再重新读取" })
+    .mockResolvedValueOnce({
+      sessionId: "forced-1",
+      currentUserId: "me",
+      peopleLoaded: false,
+      readAt: "2026-11-15 02:05:00",
+      complete: true,
+      sources: [],
+      people: [],
+      targets: [],
+    });
+  vi.mocked(resetScheduleSession)
+    .mockRejectedValueOnce({ kind: "conflict", message: "当前排期存在未确认结果，请先在飞书核对并重新读取" })
+    .mockRejectedValueOnce({ kind: "conflict", message: "当前排期存在未确认结果，请先在飞书核对并重新读取" })
+    .mockResolvedValueOnce(undefined);
+
+  render(<App />);
+  await waitFor(() => expect(resetScheduleSession).toHaveBeenCalledWith({ force: false }));
+
+  fireEvent.click(await screen.findByText("事项安排"));
+  expect(await screen.findByText("读取出错")).toBeTruthy();
+  expect(resetScheduleSession).not.toHaveBeenCalledWith({ force: true });
+
+  fireEvent.click(screen.getByText("模拟出错后重新读取"));
+  await waitFor(() => expect(resetScheduleSession).toHaveBeenCalledWith({ force: true }));
+  expect(await screen.findByText("已复用预加载会话:forced-1")).toBeTruthy();
 });
