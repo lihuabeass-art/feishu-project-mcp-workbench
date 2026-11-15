@@ -6,6 +6,7 @@ export interface SchedulePerson { id: string; name: string; avatar?: string | nu
 export interface ScheduleSource { id: string; name: string; complete: boolean; error?: string | null }
 export interface ScheduleRecord {
   id: string; identity: ScheduleIdentity; title: string; nodeName: string;
+  nodeStatus?: string; nodeOrder?: number;
   ownerId?: string | null; sourceIds: string[]; projectName: string; typeName: string;
   dates: ScheduleDates; mine: boolean; readOnlyReason?: string | null; itemUrl?: string | null;
   ownerIds: string[];
@@ -27,7 +28,7 @@ export interface ScheduleWriteResult {
   writeRequests: number;
 }
 
-interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
+interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; node_status?: string; node_order?: number; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
 interface WireRead { session_id: string; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
 interface WireResult { targets: ScheduleWriteResult["results"]; write_requests: number }
 let lifecycle: Promise<unknown> = Promise.resolve();
@@ -103,6 +104,7 @@ function mapWireRead(result: WireRead): ScheduleRead {
     people: [...people.values()],
     targets: result.targets.map((target) => ({
       id: target.id, identity: target.identity, title: target.title, nodeName: target.node_name,
+      nodeStatus: target.node_status ?? "", nodeOrder: target.node_order ?? 0,
       ownerId: target.identity.owner || (target.owners.length === 1 ? target.owners[0].id : null),
       ownerIds: target.owners.map((owner) => owner.id), unknownOwner: target.unknown_owner, sourceIds: target.sources,
       projectName: target.identity.project, typeName: target.identity.type, dates: target.baseline,

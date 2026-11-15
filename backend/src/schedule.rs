@@ -45,6 +45,8 @@ pub struct Target {
     pub identity: Identity,
     pub title: String,
     pub node_name: String,
+    pub node_status: String,
+    pub node_order: usize,
     pub owner_name: String,
     pub owners: Vec<Person>,
     pub unknown_owner: bool,
@@ -298,6 +300,8 @@ fn build_aggregate_targets(
                 title
             },
             node_name,
+            node_status: String::new(),
+            node_order: 0,
             owner_name: String::new(),
             owners: Vec::new(),
             unknown_owner: false,
@@ -920,13 +924,16 @@ async fn load_remote(
                 let kind = id.work_item_type_key.as_deref().unwrap_or_default();
                 let config_key = (project.to_owned(), kind.to_owned());
                 if !state.schedule_configs.contains_key(&config_key) {
-                    let config = crate::source_query::metadata(client, "list_node_field_config", project, kind, session.config.max_pages).await;
-                    state.schedule_configs.insert(
-                        config_key.clone(),
-                        config
-                            .map(|fields| fields.iter().any(|field| field["field_key"] == "schedule"))
-                            .map_err(|_| ()),
-                    );
+                    let config = fetch_node_schedule_config(
+                        client,
+                        project,
+                        kind,
+                        session.config.max_pages,
+                    )
+                    .await;
+                    state
+                        .schedule_configs
+                        .insert(config_key.clone(), config.map_err(|_| ()));
                 }
                 let config = *state.schedule_configs.get(&config_key).unwrap();
                 if config.is_err() {
@@ -955,9 +962,9 @@ async fn load_remote(
                     .and_then(|d| crate::workflow::item_url(&session.config.endpoint, &id, &d.data));
                 let first = view.targets.len();
                 let nodes_incomplete = nodes.iter().any(node_data_incomplete);
-                for node in nodes {
-                    build_targets(&mut view.targets, &view.session_id, fingerprint, &view.current_user, &id,
-                        if title.is_empty() { &id.work_item_id } else { &title }, &sources, &node);
+                for (node_order, node) in nodes.into_iter().enumerate() {
+                    build_targets_with_order(&mut view.targets, &view.session_id, fingerprint, &view.current_user, &id,
+                        if title.is_empty() { &id.work_item_id } else { &title }, &sources, &node, node_order);
                 }
                 for target in &mut view.targets[first..] {
                     target.item_url = item_url.clone();
@@ -1188,20 +1195,14 @@ async fn expand_cached_non_todo_items(
         let kind = id.work_item_type_key.as_deref().unwrap_or_default();
         let config_key = (project.to_owned(), kind.to_owned());
         if !schedule_configs.contains_key(&config_key) {
-            let config = crate::source_query::metadata(
+            let config = fetch_node_schedule_config(
                 client.as_ref(),
-                "list_node_field_config",
                 project,
                 kind,
                 session.config.max_pages,
             )
             .await;
-            schedule_configs.insert(
-                config_key.clone(),
-                config
-                    .map(|fields| fields.iter().any(|field| field["field_key"] == "schedule"))
-                    .map_err(|_| ()),
-            );
+            schedule_configs.insert(config_key.clone(), config.map_err(|_| ()));
         }
         let config = *schedule_configs.get(&config_key).unwrap();
         if config.is_err() {
@@ -1227,8 +1228,8 @@ async fn expand_cached_non_todo_items(
             .and_then(|d| crate::workflow::item_url(&session.config.endpoint, &id, &d.data));
         let nodes_incomplete = nodes.iter().any(node_data_incomplete);
         let mut temp = Vec::new();
-        for node in nodes {
-            build_targets(
+        for (node_order, node) in nodes.into_iter().enumerate() {
+            build_targets_with_order(
                 &mut temp,
                 session_id,
                 fingerprint,
@@ -1241,6 +1242,7 @@ async fn expand_cached_non_todo_items(
                 },
                 &sources,
                 &node,
+                node_order,
             );
         }
         let has_incomplete_target = temp.iter().any(incomplete_target);
@@ -1479,9 +1481,28 @@ fn incomplete_target(target: &Target) -> bool {
         Some("节点负责人或排期信息不完整，仅供查看" | "负责人排期数据不完整" | "负责人排期身份重复，请在飞书查看" | "排期日期格式无法确认" | "负责人身份不明，排期仅供查看"))
 }
 
+fn normalized_node_status(node: &Value) -> String {
+    detail::text(&node["basic"]["status"])
+        .or_else(|| detail::text(&node["status"]))
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn is_completed_node_status(status: &str) -> bool {
+    !status.is_empty() && status != "doing" && status != "not_started"
+}
+
 fn node_data_incomplete(node: &Value) -> bool {
     if node_key(node).is_empty() { return true; }
-    let Some(owners) = node.pointer("/assignees/owners").and_then(Value::as_array) else { return true; };
+    let status = normalized_node_status(node);
+    let completed = is_completed_node_status(&status);
+    let empty_vec = Vec::new();
+    let owners = match node.pointer("/assignees/owners") {
+        Some(Value::Array(arr)) => arr,
+        None | Some(Value::Null) if completed => &empty_vec,
+        _ => return true,
+    };
     if owners.iter().any(|owner| txt(&owner["user_key"]).trim().is_empty()) { return true; }
     match node.get("assignee_schedule_list") {
         None | Some(Value::Null) => dates(&node["schedule"]).is_none(),
@@ -1490,8 +1511,12 @@ fn node_data_incomplete(node: &Value) -> bool {
             let mut seen = BTreeMap::new();
             for row in rows {
                 let owner = txt(&row["assignee"]["user_key"]);
-                if owner.trim().is_empty() || !owners.iter().any(|candidate| txt(&candidate["user_key"]) == owner)
-                    || dates(&row["schedule_info"]).is_none() { return true; }
+                if owner.trim().is_empty()
+                    || (!completed && !owners.iter().any(|candidate| txt(&candidate["user_key"]) == owner))
+                    || dates(&row["schedule_info"]).is_none()
+                {
+                    return true;
+                }
                 if let Some(previous) = seen.insert(owner, row) {
                     if previous != row { return true; }
                 }
@@ -1781,6 +1806,69 @@ async fn fetch_nodes(
     Err(BackendError::parse("节点", "节点分页达到上限"))
 }
 
+async fn fetch_node_schedule_config(
+    client: &dyn TodoSource,
+    project: &str,
+    kind: &str,
+    max_pages: u32,
+) -> Result<bool, BackendError> {
+    let mut seen_pages = HashSet::new();
+    for page in crate::config::page_numbers(max_pages) {
+        let args = if page == 1 {
+            json!({
+                "project_key": project,
+                "work_item_type": kind,
+            })
+        } else {
+            json!({
+                "project_key": project,
+                "work_item_type": kind,
+                "page_num": page,
+            })
+        };
+        let value = parse_tool_json(
+            "list_node_field_config",
+            &client
+                .call_tool("list_node_field_config", args.as_object().unwrap())
+                .await?,
+        )?;
+        let list = value["list"]
+            .as_array()
+            .ok_or_else(|| BackendError::parse("list_node_field_config", "缺少字段配置列表"))?;
+        if list
+            .iter()
+            .any(|field| field["field_key"] == "schedule" || field["field_type"] == "schedule")
+        {
+            return Ok(true);
+        }
+        if !list.is_empty() && !seen_pages.insert(serde_json::to_string(list)?) {
+            return Err(BackendError::parse("list_node_field_config", "字段配置分页重复"));
+        }
+        let more = match value.get("pagination") {
+            None | Some(Value::Null) if page == 1 => false,
+            None | Some(Value::Null) => {
+                return Err(BackendError::parse("list_node_field_config", "续页缺少分页状态"))
+            }
+            Some(pagination) => match pagination.get("has_more") {
+                None | Some(Value::Null) if page == 1 => false,
+                Some(v) => v
+                    .as_bool()
+                    .ok_or_else(|| BackendError::parse("list_node_field_config", "分页状态无效"))?,
+                None => {
+                    return Err(BackendError::parse("list_node_field_config", "续页缺少分页状态"))
+                }
+            },
+        };
+        if !more {
+            return Ok(false);
+        }
+        if list.is_empty() {
+            return Err(BackendError::parse("list_node_field_config", "字段配置分页未取全"));
+        }
+    }
+    Err(BackendError::parse("list_node_field_config", "字段配置分页达到上限"))
+}
+
 fn node_key(node: &Value) -> String {
     let basic = detail::text(&node["basic"]["node_key"]).filter(|key| !key.trim().is_empty());
     let direct = detail::text(&node["node_key"]).filter(|key| !key.trim().is_empty());
@@ -1788,6 +1876,7 @@ fn node_key(node: &Value) -> String {
     basic.or(direct).unwrap_or_default()
 }
 
+#[cfg(test)]
 fn build_targets(
     out: &mut Vec<Target>,
     sid: &str,
@@ -1798,10 +1887,23 @@ fn build_targets(
     sources: &BTreeSet<String>,
     node: &Value,
 ) {
+    build_targets_with_order(out, sid, connection, current, id, title, sources, node, 0);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_targets_with_order(
+    out: &mut Vec<Target>,
+    sid: &str,
+    connection: &str,
+    current: &str,
+    id: &WorkItemId,
+    title: &str,
+    sources: &BTreeSet<String>,
+    node: &Value,
+    node_order: usize,
+) {
     let key = node_key(node);
-    let status = detail::text(&node["basic"]["status"])
-        .or_else(|| detail::text(&node["status"]))
-        .unwrap_or_default();
+    let status = normalized_node_status(node);
     let owners = node["assignees"]["owners"]
         .as_array()
         .cloned()
@@ -1908,7 +2010,11 @@ fn build_targets(
         } else if status == "not_started" {
             Some("当前连接尚未验证此状态的排期写入")
         } else if status != "doing" {
-            Some("节点已完成或状态不明")
+            if status.is_empty() {
+                Some("节点已完成或状态不明")
+            } else {
+                Some("该节点已流转完成，排期仅供查看")
+            }
         } else if owner.is_none() && personal.is_some_and(|p| !p.is_empty()) {
             Some("负责人身份不明，排期仅供查看")
         } else if owner.is_none() && owners.is_empty() {
@@ -1975,6 +2081,8 @@ fn build_targets(
             },
             title: title.into(),
             node_name: txt(&node["basic"]["name"]),
+            node_status: status.clone(),
+            node_order,
             owner_name: if name.is_empty() {
                 owner.unwrap_or_default()
             } else {
@@ -3780,6 +3888,131 @@ mod tests {
         let plan = ScheduleSession::load_mine(&session).unwrap();
         assert!(!plan.view.people_loaded);
         assert!(plan.view.sources.iter().any(|s| s.id == "a" && s.complete));
+        drop(installed);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn schedule_config_without_pagination_and_historical_completed_nodes_preserve_active_doing_editability() {
+        struct UnpaginatedConfigAndHistoryScenario {
+            fake: Arc<Fake>,
+        }
+        #[async_trait]
+        impl TodoSource for UnpaginatedConfigAndHistoryScenario {
+            async fn describe(&self) -> Result<ConnectionInfo, BackendError> {
+                unreachable!()
+            }
+            async fn close(&mut self) {}
+            async fn call_tool(
+                &self,
+                tool: &str,
+                args: &Map<String, Value>,
+            ) -> Result<ToolResultPayload, BackendError> {
+                match tool {
+                    "list_node_field_config" => {
+                        crate::mcp::record_schedule_rpc();
+                        self.fake
+                            .calls
+                            .lock()
+                            .unwrap()
+                            .push((tool.into(), Value::Object(args.clone())));
+                        assert!(
+                            args.get("page_num").is_none(),
+                            "list_node_field_config first call should not require page_num"
+                        );
+                        Ok(ToolResultPayload::from_json(json!({
+                            "list": [{ "field_key": "schedule", "field_type": "schedule" }]
+                        })))
+                    }
+                    "get_node_detail" => {
+                        crate::mcp::record_schedule_rpc();
+                        self.fake
+                            .calls
+                            .lock()
+                            .unwrap()
+                            .push((tool.into(), Value::Object(args.clone())));
+                        Ok(ToolResultPayload::from_json(json!({
+                            "list": [
+                                {
+                                    "basic": { "node_key": "n_hist", "name": "需求评审", "status": "done" },
+                                    "assignees": { "owners": [{ "user_key": "me", "name": "本人" }] },
+                                    "assignee_schedule_list": [{
+                                        "assignee": { "user_key": "me", "name": "本人" },
+                                        "schedule_info": {
+                                            "estimate_start_time": 1794326400000i64,
+                                            "estimate_finish_time": 1794412800000i64
+                                        }
+                                    }]
+                                },
+                                {
+                                    "basic": { "node_key": "n_active", "name": "后端代码合入", "status": "DOING" },
+                                    "assignees": { "owners": [{ "user_key": "me", "name": "本人" }] },
+                                    "assignee_schedule_list": [{
+                                        "assignee": { "user_key": "me", "name": "本人" },
+                                        "schedule_info": {
+                                            "estimate_start_time": 1794499200000i64,
+                                            "estimate_finish_time": 1794585600000i64
+                                        }
+                                    }]
+                                },
+                                {
+                                    "basic": { "node_key": "n_future", "name": "上线验收", "status": "not_started" },
+                                    "assignees": { "owners": [{ "user_key": "me", "name": "本人" }] },
+                                    "schedule": { "estimate_start_time": null, "estimate_finish_time": null }
+                                }
+                            ]
+                        })))
+                    }
+                    _ => self.fake.call_tool(tool, args).await,
+                }
+            }
+        }
+
+        let (session, dir) = fixture();
+        let fake = Arc::new(Fake {
+            calls: Mutex::new(vec![]),
+            fail_detail: AtomicBool::new(false),
+            partial_page: AtomicBool::new(false),
+            receipts: Mutex::new(vec![]),
+        });
+        let installed = crate::remote::install_test_client(
+            &session.config,
+            &session.credential().unwrap(),
+            Box::new(UnpaginatedConfigAndHistoryScenario { fake }),
+        );
+
+        let plan = ScheduleSession::load_mine(&session).unwrap();
+        assert!(plan.view.sources.iter().all(|s| s.complete));
+        assert_eq!(plan.view.failed_items, 0);
+        assert!(plan.view.item_errors.is_empty());
+        assert_eq!(plan.view.targets.len(), 3);
+
+        let hist = &plan.view.targets[0];
+        assert_eq!(hist.node_name, "需求评审");
+        assert_eq!(hist.node_status, "done");
+        assert_eq!(hist.node_order, 0);
+        assert_eq!(
+            hist.read_only_reason.as_deref(),
+            Some("该节点已流转完成，排期仅供查看")
+        );
+        assert!(!incomplete_target(hist));
+
+        let active = &plan.view.targets[1];
+        assert_eq!(active.node_name, "后端代码合入");
+        assert_eq!(active.node_status, "doing");
+        assert_eq!(active.node_order, 1);
+        assert_eq!(active.read_only_reason, None);
+
+        let future = &plan.view.targets[2];
+        assert_eq!(future.node_name, "上线验收");
+        assert_eq!(future.node_status, "not_started");
+        assert_eq!(future.node_order, 2);
+        assert_eq!(
+            future.read_only_reason.as_deref(),
+            Some("当前连接尚未验证此状态的排期写入")
+        );
+
         drop(installed);
         drop(session);
         std::fs::remove_dir_all(dir).unwrap();

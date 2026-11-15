@@ -61,6 +61,28 @@ export interface ScheduleSessionController {
   reload: (options?: { includePeople?: boolean }) => Promise<ScheduleRead>;
 }
 
+const normalizeNodeStatus = (status?: string | null) => (status ?? "").trim().toLowerCase();
+
+const isCurrentSchedulableStatus = (status?: string | null) => {
+  const normalized = normalizeNodeStatus(status);
+  return normalized === "" || normalized === "doing";
+};
+
+const isPastTransitionedStatus = (status?: string | null) => {
+  const normalized = normalizeNodeStatus(status);
+  return normalized !== "" && normalized !== "doing" && normalized !== "not_started";
+};
+
+const resolveDefaultReadOnlyReason = (record: ScheduleRecord): string | undefined => {
+  if (record.readOnlyReason) return record.readOnlyReason;
+  if (isPastTransitionedStatus(record.nodeStatus)) return "该节点已流转完成，排期仅供查看";
+  if (normalizeNodeStatus(record.nodeStatus) === "not_started")
+    return "当前连接尚未验证此状态的排期写入";
+  if (!record.identity.owner && !record.ownerIds.some(Boolean))
+    return "未能确认负责人，排期仅供查看";
+  return undefined;
+};
+
 const createScheduleEntry = (record: ScheduleRecord): Entry => ({
   id: record.id,
   nodeId: record.identity.node,
@@ -70,11 +92,7 @@ const createScheduleEntry = (record: ScheduleRecord): Entry => ({
   cancel: false,
   ...(record.result ? { result: record.result } : {}),
   ...(record.resultMessage !== undefined ? { resultMessage: record.resultMessage } : {}),
-  readOnlyReason:
-    record.readOnlyReason ||
-    (!record.identity.owner && !record.ownerIds.some(Boolean)
-      ? "未能确认负责人，排期仅供查看"
-      : undefined),
+  readOnlyReason: resolveDefaultReadOnlyReason(record),
   record,
 });
 
@@ -306,11 +324,7 @@ export function SchedulePage({
                 ...prevEntry,
                 baseline: keepLocal ? prevEntry.baseline : { ...record.dates },
                 dates: keepLocal ? prevEntry.dates : { ...record.dates },
-                readOnlyReason:
-                  record.readOnlyReason ||
-                  (!record.identity.owner && !record.ownerIds.some(Boolean)
-                    ? "未能确认负责人，排期仅供查看"
-                    : undefined),
+                readOnlyReason: resolveDefaultReadOnlyReason(record),
                 record,
               });
             } else {
@@ -496,17 +510,36 @@ export function SchedulePage({
     ),
   );
 
+  const isCurrentSchedulablePoolNode = (entry: Entry) =>
+    isCurrentSchedulableStatus(entry.record.nodeStatus);
+  const isPastTransitionedNode = (entry: Entry) =>
+    isPastTransitionedStatus(entry.record.nodeStatus);
+
   const isEditableTarget = (entry: Entry) =>
     !read?.accountError &&
     !entry.record.sourceAggregate &&
     entry.record.mine &&
     !entry.readOnlyReason &&
+    !isPastTransitionedNode(entry) &&
+    normalizeNodeStatus(entry.record.nodeStatus) !== "not_started" &&
     !frozenNodes.has(nodeKey(entry));
   const canEdit = (entry: Entry) => view === "mine" && isEditableTarget(entry) && !busy;
 
+  const baseWeekStart = week;
+  const baseWeekEnd = addDays(week, 6);
   const days = Array.from({ length: daySpan }, (_, index) => addDays(week, index));
   const windowStart = days[0];
   const windowEnd = days[days.length - 1];
+
+  const itemIdentityKey = (entry: Entry) =>
+    JSON.stringify([
+      entry.identity.connection,
+      entry.identity.project,
+      entry.identity.type,
+      entry.identity.item,
+      entry.record.title,
+    ]);
+  const mineItemKeys = new Set(entries.filter((item) => item.record.mine).map(itemIdentityKey));
 
   const visible = entries.filter(
     (entry) =>
@@ -517,6 +550,7 @@ export function SchedulePage({
       (view === "people" ||
         !!read?.accountError ||
         entry.record.mine ||
+        (isPastTransitionedNode(entry) && mineItemKeys.has(itemIdentityKey(entry))) ||
         entry.record.sourceAggregate ||
         entry.record.unknownOwner ||
         (!entry.identity.owner && !entry.record.ownerIds.some(Boolean))) &&
@@ -617,12 +651,66 @@ export function SchedulePage({
       entry.dates.start <= windowEnd &&
       entry.dates.end >= windowStart,
   );
-  const rows =
+  const rawScheduledRows =
     view === "people"
       ? personRows(scheduled)
       : scheduled.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
-  const pending = visible.filter((entry) => !validSchedule(entry.dates));
+  const groupedRowMap = new Map<string, { key: string; owner: string; entries: Entry[] }>();
+  for (const { entry, owner } of rawScheduledRows) {
+    const key =
+      view === "people"
+        ? JSON.stringify([groupKey(entry, owner), itemIdentityKey(entry)])
+        : itemIdentityKey(entry);
+    const existing = groupedRowMap.get(key);
+    if (existing) {
+      if (!existing.entries.some((item) => item.id === entry.id)) {
+        existing.entries.push(entry);
+      }
+    } else {
+      groupedRowMap.set(key, { key, owner, entries: [entry] });
+    }
+  }
+
+  const rows = Array.from(groupedRowMap.values()).map(({ key, owner, entries: groupEntries }) => {
+    const sorted = [...groupEntries].sort(
+      (a, b) =>
+        (a.record.nodeOrder ?? 0) - (b.record.nodeOrder ?? 0) ||
+        a.dates.start.localeCompare(b.dates.start) ||
+        a.dates.end.localeCompare(b.dates.end) ||
+        a.id.localeCompare(b.id),
+    );
+    const laneLastEndCol: number[] = [];
+    const bars = sorted.map((entry) => {
+      const startCol = Math.max(
+        0,
+        days.findIndex((day) => day >= entry.dates.start),
+      );
+      const endCol = days.reduce(
+        (value, day, index) => (day <= entry.dates.end ? index : value),
+        0,
+      );
+      let lane = laneLastEndCol.findIndex((lastEnd) => lastEnd < startCol);
+      if (lane === -1) {
+        lane = laneLastEndCol.length;
+        laneLastEndCol.push(endCol);
+      } else {
+        laneLastEndCol[lane] = endCol;
+      }
+      return { entry, startCol, endCol, lane };
+    });
+    const laneCount = Math.max(1, laneLastEndCol.length);
+    const primaryEntry =
+      sorted.find((item) => canEdit(item) && normalizeNodeStatus(item.record.nodeStatus) === "doing") ||
+      sorted.find((item) => normalizeNodeStatus(item.record.nodeStatus) === "doing") ||
+      sorted.find((item) => canEdit(item)) ||
+      sorted[0];
+    return { key, owner, primaryEntry, bars, laneCount };
+  });
+
+  const pending = visible.filter(
+    (entry) => isCurrentSchedulablePoolNode(entry) && !validSchedule(entry.dates),
+  );
   const pendingRows =
     view === "people"
       ? personRows(pending)
@@ -630,8 +718,9 @@ export function SchedulePage({
 
   const outside = visible.filter(
     (entry) =>
+      isCurrentSchedulablePoolNode(entry) &&
       validSchedule(entry.dates) &&
-      (entry.dates.end < windowStart || entry.dates.start > windowEnd),
+      (entry.dates.end < baseWeekStart || entry.dates.start > baseWeekEnd),
   );
   const outsideRows =
     view === "people"
@@ -639,6 +728,16 @@ export function SchedulePage({
       : outside.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
   const selectedEntry = visible.find((entry) => entry.id === selected);
+  const siblingNodes = selectedEntry
+    ? visible
+        .filter((item) => itemIdentityKey(item) === itemIdentityKey(selectedEntry))
+        .sort(
+          (a, b) =>
+            (a.record.nodeOrder ?? 0) - (b.record.nodeOrder ?? 0) ||
+            a.dates.start.localeCompare(b.dates.start) ||
+            a.id.localeCompare(b.id),
+        )
+    : [];
 
   const changedEntries = entries.filter(
     (entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)),
@@ -1713,58 +1812,65 @@ export function SchedulePage({
                       </div>
                     )}
 
-                    {rows.map(({ entry, owner }, rowIndex) => {
-                      const start = Math.max(
-                        0,
-                        days.findIndex((day) => day >= entry.dates.start),
-                      );
-                      const last = days.reduce(
-                        (value, day, index) => (day <= entry.dates.end ? index : value),
-                        0,
-                      );
-                      const editable = canEdit(entry);
-                      const changed = scheduleChanged(entry);
-                      const isFrozen = frozenNodes.has(nodeKey(entry)) || entry.result === "uncertain";
-                      const barStateClass = isFrozen
-                        ? "is-uncertain"
-                        : !editable
-                          ? "is-readonly"
-                          : changed
-                            ? "is-draft"
-                            : entry.result
-                              ? `is-${entry.result}`
-                              : "is-cloud";
+                    {rows.map((row, rowIndex) => {
+                      const { key, owner, primaryEntry, bars, laneCount } = row;
+                      const rowSelected = bars.some((b) => b.entry.id === selected);
+                      const resultEntry =
+                        bars.find((b) => b.entry.id === selected && b.entry.result)?.entry ||
+                        bars.find((b) => b.entry.result)?.entry;
                       return (
-                        <Fragment key={`${entry.id}:${owner}`}>
+                        <Fragment key={key}>
                           {view === "people" &&
                             (rowIndex === 0 ||
-                              groupKey(rows[rowIndex - 1].entry, rows[rowIndex - 1].owner) !==
-                                groupKey(entry, owner)) && (
+                              groupKey(rows[rowIndex - 1].primaryEntry, rows[rowIndex - 1].owner) !==
+                                groupKey(primaryEntry, owner)) && (
                               <div className="schedule-group">
-                                <Avatar person={personFor(entry, resolveOwnerId(entry, owner))} />
-                                <span>{owner ? displayPerson(entry, owner) : "负责人不明"}</span>
+                                <Avatar
+                                  person={personFor(
+                                    primaryEntry,
+                                    resolveOwnerId(primaryEntry, owner),
+                                  )}
+                                />
+                                <span>
+                                  {owner ? displayPerson(primaryEntry, owner) : "负责人不明"}
+                                </span>
                               </div>
                             )}
-                          <div className={`schedule-row ${entry.id === selected ? "selected" : ""}`}>
+                          <div className={`schedule-row ${rowSelected ? "selected" : ""}`}>
                             <div
                               className="schedule-row-label"
-                              onClick={() => setSelected(entry.id)}
+                              onClick={() => setSelected(primaryEntry.id)}
                             >
-                              <Avatar person={personFor(entry, resolveOwnerId(entry, owner))} />
+                              <Avatar
+                                person={personFor(
+                                  primaryEntry,
+                                  resolveOwnerId(primaryEntry, owner),
+                                )}
+                              />
                               <span>
-                                <strong>{entry.record.title}</strong>
+                                <strong>{primaryEntry.record.title}</strong>
                                 <small>
-                                  {entry.record.nodeName} · {targetLabel(entry, owner)}
+                                  {bars.length > 1
+                                    ? `${primaryEntry.record.nodeName}（共 ${bars.length} 个节点） · ${targetLabel(primaryEntry, owner)}`
+                                    : `${primaryEntry.record.nodeName} · ${targetLabel(primaryEntry, owner)}`}
                                 </small>
-                                {entry.result && (
+                                {resultEntry?.result && (
                                   <small className="schedule-result">
-                                    {resultLabel[entry.result]}
+                                    {resultLabel[resultEntry.result]}
                                   </small>
                                 )}
                               </span>
                             </div>
                             <div
                               className="schedule-row-grid"
+                              style={
+                                laneCount > 1
+                                  ? ({
+                                      "--schedule-lanes": laneCount,
+                                      gridTemplateRows: `repeat(${laneCount}, minmax(40px, auto))`,
+                                    } as React.CSSProperties)
+                                  : undefined
+                              }
                               onDragOver={(event) => {
                                 if (drag.current) {
                                   event.preventDefault();
@@ -1795,12 +1901,16 @@ export function SchedulePage({
                                 dropDay(event, days[index]);
                               }}
                             >
-                              {days.map((day) => {
+                              {days.map((day, dayIndex) => {
                                 const weekdayIndex =
                                   (new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7;
                                 return (
                                   <div
                                     key={day}
+                                    style={{
+                                      gridColumn: dayIndex + 1,
+                                      gridRow: laneCount > 1 ? `1 / ${laneCount + 1}` : 1,
+                                    }}
                                     className={[
                                       weekdayIndex >= 5 && "weekend",
                                       day === currentToday && "today",
@@ -1810,83 +1920,115 @@ export function SchedulePage({
                                   />
                                 );
                               })}
-                              <button
-                                type="button"
-                                className={`schedule-bar ${barStateClass} ${entry.id === selected ? "selected" : ""}`}
-                                style={{
-                                  gridColumn: `${start + 1} / ${last + 2}`,
-                                  gridRow: 1,
-                                }}
-                                draggable={editable}
-                                onDragStart={(event) => {
-                                  const rect = event.currentTarget.getBoundingClientRect();
-                                  const width = rect.width / (last - start + 1);
-                                  const index = Math.max(
-                                    start,
-                                    Math.min(
-                                      last,
-                                      start + Math.floor((event.clientX - rect.left) / width),
-                                    ),
-                                  );
-                                  startDrag(event, entry, "move", days[index]);
-                                }}
-                                onDragEnd={() => {
-                                  drag.current = null;
-                                  setPreview(null);
-                                }}
-                                onClick={() => setSelected(entry.id)}
-                                title={`${entry.record.title} · ${entry.record.nodeName}`}
-                              >
-                                {entry.dates.start < windowStart ? (
-                                  <span aria-hidden="true">‹ </span>
-                                ) : (
-                                  editable && (
-                                    <span
-                                      className="schedule-handle start"
-                                      draggable
-                                      onDragStart={(event) => {
-                                        event.stopPropagation();
-                                        startDrag(event, entry, "start", entry.dates.start);
-                                      }}
-                                      aria-hidden="true"
-                                    />
-                                  )
-                                )}
-                                <span className="schedule-bar-title">
-                                  {entry.record.title}
-                                  {entry.result && ` · ${resultLabel[entry.result]}`}
-                                </span>
-                                <span className="schedule-bar-badges" aria-hidden="true">
-                                  <span className="schedule-bar-days">
-                                    {scheduleSpanDays(entry.dates)}d
-                                  </span>
-                                  {changed && (
-                                    <span className="schedule-bar-badge is-draft">
-                                      {classifyScheduleReview(entry) === "added" ? "新增" : "已改"}
+                              {bars.map(({ entry, startCol, endCol, lane }) => {
+                                const editable = canEdit(entry);
+                                const changed = scheduleChanged(entry);
+                                const isFrozen =
+                                  frozenNodes.has(nodeKey(entry)) || entry.result === "uncertain";
+                                const pastNode = isPastTransitionedNode(entry);
+                                const barStateClass = isFrozen
+                                  ? "is-uncertain"
+                                  : pastNode
+                                    ? "is-readonly is-past-node"
+                                    : !editable
+                                      ? "is-readonly"
+                                      : changed
+                                        ? "is-draft"
+                                        : entry.result
+                                          ? `is-${entry.result}`
+                                          : "is-cloud";
+                                const barTitleText = entry.record.nodeName || entry.record.title;
+                                const ariaName = `${entry.record.title}${
+                                  entry.record.nodeName &&
+                                  entry.record.nodeName !== entry.record.title
+                                    ? ` · ${entry.record.nodeName}`
+                                    : ""
+                                }${entry.result ? ` · ${resultLabel[entry.result]}` : ""}`;
+                                return (
+                                  <button
+                                    key={entry.id}
+                                    type="button"
+                                    aria-label={ariaName}
+                                    className={`schedule-bar ${barStateClass} ${entry.id === selected ? "selected" : ""}`}
+                                    style={{
+                                      gridColumn: `${startCol + 1} / ${endCol + 2}`,
+                                      gridRow: lane + 1,
+                                    }}
+                                    draggable={editable}
+                                    onDragStart={(event) => {
+                                      const rect = event.currentTarget.getBoundingClientRect();
+                                      const width = rect.width / (endCol - startCol + 1);
+                                      const index = Math.max(
+                                        startCol,
+                                        Math.min(
+                                          endCol,
+                                          startCol +
+                                            Math.floor((event.clientX - rect.left) / width),
+                                        ),
+                                      );
+                                      startDrag(event, entry, "move", days[index]);
+                                    }}
+                                    onDragEnd={() => {
+                                      drag.current = null;
+                                      setPreview(null);
+                                    }}
+                                    onClick={() => setSelected(entry.id)}
+                                    title={`${entry.record.title} · ${barTitleText}`}
+                                  >
+                                    {entry.dates.start < windowStart ? (
+                                      <span aria-hidden="true">‹ </span>
+                                    ) : (
+                                      editable && (
+                                        <span
+                                          className="schedule-handle start"
+                                          draggable
+                                          onDragStart={(event) => {
+                                            event.stopPropagation();
+                                            startDrag(event, entry, "start", entry.dates.start);
+                                          }}
+                                          aria-hidden="true"
+                                        />
+                                      )
+                                    )}
+                                    <span className="schedule-bar-title">
+                                      {barTitleText}
+                                      {entry.result && ` · ${resultLabel[entry.result]}`}
                                     </span>
-                                  )}
-                                  {!editable && !isFrozen && (
-                                    <span className="schedule-bar-badge is-readonly">
-                                      <Lock size={11} />
+                                    <span className="schedule-bar-badges" aria-hidden="true">
+                                      <span className="schedule-bar-days">
+                                        {scheduleSpanDays(entry.dates)}d
+                                      </span>
+                                      {changed && (
+                                        <span className="schedule-bar-badge is-draft">
+                                          {classifyScheduleReview(entry) === "added"
+                                            ? "新增"
+                                            : "已改"}
+                                        </span>
+                                      )}
+                                      {!editable && !isFrozen && (
+                                        <span className="schedule-bar-badge is-readonly">
+                                          <Lock size={11} />
+                                        </span>
+                                      )}
                                     </span>
-                                  )}
-                                </span>
-                                {entry.dates.end > windowEnd ? (
-                                  <span aria-hidden="true"> ›</span>
-                                ) : (
-                                  editable && (
-                                    <span
-                                      className="schedule-handle end"
-                                      draggable
-                                      onDragStart={(event) => {
-                                        event.stopPropagation();
-                                        startDrag(event, entry, "end", entry.dates.end);
-                                      }}
-                                      aria-hidden="true"
-                                    />
-                                  )
-                                )}
-                              </button>
+                                    {entry.dates.end > windowEnd ? (
+                                      <span aria-hidden="true"> ›</span>
+                                    ) : (
+                                      editable && (
+                                        <span
+                                          className="schedule-handle end"
+                                          draggable
+                                          onDragStart={(event) => {
+                                            event.stopPropagation();
+                                            startDrag(event, entry, "end", entry.dates.end);
+                                          }}
+                                          aria-hidden="true"
+                                        />
+                                      )
+                                    )}
+                                  </button>
+                                );
+                              })}
                             </div>
                           </div>
                         </Fragment>
@@ -1986,6 +2128,48 @@ export function SchedulePage({
                           {scheduleChanged(selectedEntry) && "· 未同步"}
                         </p>
                       </div>
+                      {siblingNodes.length > 1 && (
+                        <div
+                          className="schedule-sibling-nodes"
+                          role="group"
+                          aria-label="同事项节点"
+                        >
+                          <span className="schedule-sibling-label">
+                            同事项节点（{siblingNodes.length}）
+                          </span>
+                          <div className="schedule-sibling-list">
+                            {siblingNodes.map((node) => {
+                              const isCurrent = node.id === selectedEntry.id;
+                              const isPast = isPastTransitionedNode(node);
+                              const editableNode = canEdit(node);
+                              const dateText = validSchedule(node.dates)
+                                ? node.dates.start === node.dates.end
+                                  ? node.dates.start.slice(5)
+                                  : `${node.dates.start.slice(5)}~${node.dates.end.slice(5)}`
+                                : "待安排";
+                              const stateText = isPast
+                                ? "已流转只读"
+                                : editableNode
+                                  ? "当前可排"
+                                  : "只读";
+                              return (
+                                <button
+                                  key={node.id}
+                                  type="button"
+                                  className={`schedule-sibling-chip ${isCurrent ? "active" : ""} ${isPast ? "is-past" : editableNode ? "is-editable" : "is-readonly"}`}
+                                  aria-pressed={isCurrent}
+                                  onClick={() => setSelected(node.id)}
+                                >
+                                  <strong>{node.record.nodeName || node.record.title}</strong>
+                                  <span>
+                                    {dateText} · {stateText}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                       {view === "mine" && (
                         <>
                           {canEdit(selectedEntry) && (

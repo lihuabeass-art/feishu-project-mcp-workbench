@@ -149,7 +149,7 @@ it("诚实区分撤回待排期与还原云端日期，单端缺失时阻断同�
   expect((screen.getByRole("button", { name: "同步排期" }) as HTMLButtonElement).disabled).toBe(true);
 
   // 2. 云端已有日期事项修改后展示云端当前值并提供“还原云端日期”，温和说明飞书清空方式，不暴露假取消排期按钮
-  fireEvent.click(screen.getByRole("button", { name: "云端已有任务" }));
+  fireEvent.click(screen.getByRole("button", { name: /云端已有任务/ }));
   expect(screen.queryByRole("button", { name: "取消排期" })).toBeNull();
   expect(screen.getByText(/暂未验证清空排期接口/)).toBeTruthy();
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "" } });
@@ -345,10 +345,10 @@ it("每个目标直接展示对应结果，并与本次汇总一致", async () =
   confirmSync();
   await screen.findByText(/收到成功回执 1 项，失败 1 项，结果不确定 1 项，未发送 1 项/);
   for (const [index, label] of ["上次提交：收到成功回执", "上次提交：失败", "上次提交：结果不确定", "上次提交：未发送"].entries()) {
-    const bar = screen.getByRole("button", { name: new RegExp(`任务${["一", "二", "三", "四"][index]} · ${label}`) });
+    const bar = screen.getByRole("button", { name: new RegExp(`任务${["一", "二", "三", "四"][index]}.*${label}`) });
     expect(bar.closest(".schedule-row")?.querySelector(".schedule-result")?.textContent).toBe(label);
   }
-  fireEvent.click(screen.getByRole("button", { name: /任务一 · 上次提交：收到成功回执/ }));
+  fireEvent.click(screen.getByRole("button", { name: /任务一.*上次提交：收到成功回执/ }));
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "" } });
   expect(screen.getByRole("button", { name: /任务一.*上次提交：收到成功回执/ }).className).toContain("schedule-pending-item");
   expect(screen.getByText(/未同步/)).toBeTruthy();
@@ -378,7 +378,7 @@ it("我的排期保留负责人不明目标及只读原因，排除明确属于�
   expect(screen.getByRole("button", { name: /共同负责人未确认/ }).textContent).toContain("尚有负责人身份不明");
   expect(screen.getByRole("button", { name: /无人负责/ }).textContent).toContain("负责人不明");
   expect(document.querySelector(".schedule-row-label")?.textContent).toContain("节点共同排期 · 负责人不明");
-  const bar = screen.getByRole("button", { name: "身份不明" });
+  const bar = screen.getByRole("button", { name: /^身份不明/ });
   expect(bar.getAttribute("draggable")).toBe("false"); fireEvent.click(bar);
   expect(screen.getByText("负责人排期数据不完整")).toBeTruthy();
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
@@ -393,7 +393,7 @@ it("共同排期列出所有可确认负责人，待安排也显示负责人", a
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
   expect(document.querySelector(".schedule-row-label")?.textContent).toContain("节点共同排期 · 本人、同事");
   expect(screen.getByRole("button", { name: /任务一/ }).textContent).toContain("开发 · 本人 · 待安排");
-  fireEvent.click(screen.getByRole("button", { name: "共同任务" }));
+  fireEvent.click(screen.getByRole("button", { name: /共同任务/ }));
   expect(screen.getByText("仅可编辑明确属于自己的排期")).toBeTruthy();
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
 });
@@ -403,7 +403,7 @@ it.each([false, true])("混合负责人共同排期只读（包含身份不明�
   read.people.push({ id: "other", name: "同事" });
   read.targets = [{ ...base, id: "mixed", title: "混合共同任务", identity: { ...identity, scope: "node", owner: undefined }, ownerId: null, ownerIds: unknownOwner ? ["me"] : ["me", "other"], unknownOwner, dates: { start: currentWeekDay(0), end: currentWeekDay(0) }, readOnlyReason: "仅可编辑明确属于自己的排期" }];
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
-  const bar = screen.getByRole("button", { name: "混合共同任务" });
+  const bar = screen.getByRole("button", { name: /混合共同任务/ });
   expect(bar.getAttribute("draggable")).toBe("false");
   fireEvent.click(bar);
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
@@ -418,7 +418,7 @@ it("默认显示来源聚合日期且保持只读，按人查看不虚构负责�
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
   expect(screen.getByText(/来源聚合日期/)).toBeTruthy();
   expect(screen.queryByText(/节点共同排期/)).toBeNull();
-  const bar = screen.getByRole("button", { name: "来源记录" });
+  const bar = screen.getByRole("button", { name: /来源记录/ });
   expect(bar.getAttribute("draggable")).toBe("false");
   fireEvent.click(bar);
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
@@ -427,7 +427,7 @@ it("默认显示来源聚合日期且保持只读，按人查看不虚构负责�
   expect(screen.queryByText(/节点共同排期/)).toBeNull();
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
   fireEvent.click(screen.getByRole("option", { name: "本人" }));
-  expect(screen.queryByRole("button", { name: "来源记录" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /来源记录/ })).toBeNull();
   expect(screen.getByText("当前范围未包含该人员的安排")).toBeTruthy();
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
@@ -458,7 +458,7 @@ it("已排期长条可由键盘选择并进入日期与顺延操作", async () =
   const read = data(); const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   read.targets[0].dates = { start: day, end: day }; vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup(); const user = userEvent.setup();
-  const bar = screen.getByRole("button", { name: "任务一" }); bar.focus(); expect(document.activeElement).toBe(bar);
+  const bar = screen.getByRole("button", { name: /任务一/ }); bar.focus(); expect(document.activeElement).toBe(bar);
   await user.keyboard("{Enter}");
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(day);
   await user.click(screen.getByRole("button", { name: "顺延 +1 天" }));
@@ -542,7 +542,7 @@ it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同
   fireEvent.click(shared);
   expect(document.querySelector(".schedule-editor")?.textContent).toContain("节点共同排期");
   expect(screen.queryByLabelText("开始日期")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "已排期" }));
+  fireEvent.click(screen.getByRole("button", { name: /已排期/ }));
   expect(document.querySelector(".schedule-editor")?.textContent).toContain(`已排期：${currentWeekDay(0)} ~ ${currentWeekDay(0)}（共 1 个自然日）`);
   expect(document.querySelector(".schedule-editor")?.textContent).not.toContain("日期待补齐");
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
@@ -590,11 +590,13 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   await setup();
 
   expect(document.querySelectorAll(".schedule-days > div")).toHaveLength(7);
+  expect(screen.getByRole("tab", { name: "其他周已排 (2)" })).toBeTruthy();
   // 单周视图下第 2 周开始的事项不在当前 7 天视窗内
   expect(screen.queryByRole("button", { name: /跨双周右界任务/ })).toBeNull();
 
-  // 切换到双周 14 天后，跨双周右界任务进入视窗（第 9 列至第 14 列，右端裁切显示 ›）
+  // 切换到双周 14 天后，跨双周右界任务进入视窗（第 9 列至第 14 列，右端裁切显示 ›），且『其他周已排』数量锚定单周口径保持 2 不变
   fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+  expect(screen.getByRole("tab", { name: "其他周已排 (2)" })).toBeTruthy();
   const dayHeaders = document.querySelectorAll(".schedule-days > div");
   expect(dayHeaders).toHaveLength(14);
   const biBar = screen.getByRole("button", { name: /跨双周右界任务/ });
@@ -631,18 +633,18 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   fireEvent.drop(singleWeekHeaders[1], { dataTransfer: transfer });
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(1));
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(currentWeekDay(3));
-  expect(screen.getByRole("button", { name: "三周后专项" }).className).toContain("schedule-bar");
+  expect(screen.getByRole("button", { name: /三周后专项/ }).className).toContain("schedule-bar");
 
   // 3. 还原云端日期后回到其他周已排，点击『排入本周』一键排入当前周（保留 3 天跨度）
   fireEvent.click(screen.getByRole("button", { name: "还原云端日期" }));
   const outsideQuick = screen.getByLabelText("三周后专项跨周排期操作");
   fireEvent.click(within(outsideQuick).getByRole("button", { name: "排入本周" }));
-  expect(screen.getByRole("button", { name: "三周后专项" }).className).toContain("schedule-bar");
+  expect(screen.getByRole("button", { name: /三周后专项/ }).className).toContain("schedule-bar");
 
   // 4. 还原后点击『定位该周 ↗』跳转到该事项所在周并在日历视窗中显示长条
   fireEvent.click(screen.getByRole("button", { name: "还原云端日期" }));
   fireEvent.click(within(screen.getByLabelText("三周后专项跨周排期操作")).getByRole("button", { name: /定位该周/ }));
-  expect(screen.getByRole("button", { name: "三周后专项" }).className).toContain("schedule-bar");
+  expect(screen.getByRole("button", { name: /三周后专项/ }).className).toContain("schedule-bar");
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(farStart);
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(farEnd);
 });
@@ -693,11 +695,11 @@ it("待排卡片支持快捷排期胶囊落位，单端缺日期的可编辑项�
 
   const quickBar = screen.getByLabelText("任务一快捷排期");
   fireEvent.click(within(quickBar).getByRole("button", { name: "今明" }));
-  expect(screen.getByRole("button", { name: "任务一" }).className).toContain("schedule-bar");
+  expect(screen.getByRole("button", { name: /任务一/ }).className).toContain("schedule-bar");
 
   // 单周视图下点击检查器『排到下周』预设后，自动将日历视窗跳转到下周周一并直接展示长条
   fireEvent.click(screen.getByRole("button", { name: "排到下周" }));
-  expect(screen.getByRole("button", { name: "任务一" }).className).toContain("schedule-bar");
+  expect(screen.getByRole("button", { name: /任务一/ }).className).toContain("schedule-bar");
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(7));
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(currentWeekDay(11));
 });
@@ -726,7 +728,7 @@ it("提交前二次确认弹层严格区分本次新增（含纯空白原值）�
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(2) } });
 
   // 2. 修改已有云端排期事项及单端原值事项（均应识别为本次修改）
-  fireEvent.click(screen.getByRole("button", { name: "修改排期事项" }));
+  fireEvent.click(screen.getByRole("button", { name: /修改排期事项/ }));
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(4) } });
 
   fireEvent.click(screen.getByRole("button", { name: /单端原值事项/ }));
@@ -1099,4 +1101,103 @@ it("按需加载全员排期并保留未同步草稿，预加载会话在切换�
   // 组件卸载（如切回其他主导航页）时不销毁预加载会话
   unmount();
   expect(closeScheduleSession).not.toHaveBeenCalled();
+});
+
+it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨，历史已流转节点不进待排池且只读，当前进行中节点可编辑改期", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.targets = [
+    {
+      ...base,
+      id: "node-design-old",
+      title: "核心架构演进专项",
+      nodeName: "后端方案设计",
+      nodeStatus: "completed",
+      nodeOrder: 0,
+      identity: { ...identity, item: "story-multi", node: "n-design" },
+      dates: { start: currentWeekDay(-10), end: currentWeekDay(-9) },
+    },
+    {
+      ...base,
+      id: "node-code-done",
+      title: "核心架构演进专项",
+      nodeName: "后端代码研发",
+      nodeStatus: "completed",
+      nodeOrder: 1,
+      identity: { ...identity, item: "story-multi", node: "n-code" },
+      dates: { start: currentWeekDay(0), end: currentWeekDay(1) },
+    },
+    {
+      ...base,
+      id: "node-test-done",
+      title: "核心架构演进专项",
+      nodeName: "联调与自测",
+      nodeStatus: "done",
+      nodeOrder: 2,
+      identity: { ...identity, item: "story-multi", node: "n-test" },
+      dates: { start: currentWeekDay(1), end: currentWeekDay(2) },
+    },
+    {
+      ...base,
+      id: "node-merge-doing",
+      title: "核心架构演进专项",
+      nodeName: "后端代码合入",
+      nodeStatus: "doing",
+      nodeOrder: 3,
+      identity: { ...identity, item: "story-multi", node: "n-merge" },
+      dates: { start: "", end: "" },
+    },
+    {
+      ...base,
+      id: "node-future",
+      title: "核心架构演进专项",
+      nodeName: "灰度和上线",
+      nodeStatus: "not_started",
+      nodeOrder: 4,
+      identity: { ...identity, item: "story-multi", node: "n-future" },
+      dates: { start: "", end: "" },
+    },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+
+  // 1. 左侧待排期与其他周已排只收纳当前活跃 doing 节点，不混入已流转完成或未开始的节点
+  expect(screen.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "其他周已排 (0)" })).toBeTruthy();
+  const pendingPool = document.querySelector(".schedule-pending")!;
+  expect(pendingPool.textContent).toContain("后端代码合入");
+  expect(pendingPool.textContent).not.toContain("后端方案设计");
+  expect(pendingPool.textContent).not.toContain("灰度和上线");
+
+  // 2. 甘特图中同一事项在本周内的多个节点合并为唯一一横排，且重叠日期（day 1）自动分配到不同子轨道不互相遮挡
+  const ganttRows = document.querySelectorAll(".schedule-row");
+  expect(ganttRows).toHaveLength(1);
+  const codeBar = screen.getByRole("button", { name: /核心架构演进专项 · 后端代码研发/ });
+  const testBar = screen.getByRole("button", { name: /核心架构演进专项 · 联调与自测/ });
+  expect(codeBar.querySelector(".schedule-bar-title")?.textContent).toBe("后端代码研发");
+  expect(testBar.querySelector(".schedule-bar-title")?.textContent).toBe("联调与自测");
+  expect(codeBar.style.gridRow).toBe("1");
+  expect(testBar.style.gridRow).toBe("2");
+  expect(codeBar.getAttribute("draggable")).toBe("false");
+  expect(testBar.getAttribute("draggable")).toBe("false");
+  expect(codeBar.classList.contains("is-past-node")).toBe(true);
+
+  // 3. 点击历史已流转节点在右侧检查器查看其只读状态，并通过『同事项节点』切换器切换到当前可编辑节点
+  fireEvent.click(codeBar);
+  expect(screen.getByText("该节点已流转完成，排期仅供查看")).toBeTruthy();
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
+  const siblingGroup = screen.getByRole("group", { name: "同事项节点" });
+  expect(siblingGroup.textContent).toContain("后端方案设计");
+  expect(siblingGroup.textContent).toContain("后端代码合入");
+  fireEvent.click(within(siblingGroup).getByRole("button", { name: /后端代码合入/ }));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
+
+  // 4. 将当前可编辑的『后端代码合入』排到本周（day 3 ~ day 4），与前序节点共享同一横排且无重叠时复用第 1 轨
+  fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(3) } });
+  fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(4) } });
+  expect(document.querySelectorAll(".schedule-row")).toHaveLength(1);
+  const mergeBar = screen.getByRole("button", { name: /核心架构演进专项 · 后端代码合入/ });
+  expect(mergeBar.querySelector(".schedule-bar-title")?.textContent).toBe("后端代码合入");
+  expect(mergeBar.getAttribute("draggable")).toBe("true");
+  expect(mergeBar.style.gridRow).toBe("1");
 });
