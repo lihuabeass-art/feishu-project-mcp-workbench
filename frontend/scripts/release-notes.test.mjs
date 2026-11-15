@@ -166,3 +166,24 @@ test("无 tag 的开发界面提供离线提示，不伪造发布记录", (t) =>
   assert.deepEqual(notes.history.map((entry) => entry.version), ["1.0.0"]);
   assert.doesNotMatch(notes.history[0].markdown, /尚未发布的新功能/);
 });
+
+test("0.7.0 着重介绍事项安排大功能点，并承接 0.6.7 延后开放的首个排期提交", (t) => {
+  const f = fixture(t);
+  f.git("tag", "v0.6.7");
+  f.commit("feat(事项安排)!: 开放侧栏事项安排入口并完善离开确认弹层隔离");
+  const preview = f.notes({ version: "0.7.0" });
+  assert.match(preview.markdown, /## 重点功能：事项安排\n\n全新开放「事项安排」排期规划工作台/);
+  assert.match(preview.markdown, /从已启用的待办与参与来源读取事项及节点排期/);
+  assert.match(preview.markdown, /三栏排期工作台/);
+  assert.match(preview.markdown, /我的排期与按人查看/);
+  assert.match(preview.markdown, /多节点同排与快捷改期/);
+  assert.match(preview.markdown, /云端差异核对与安全同步/);
+
+  const repoNotes = generateReleaseNotes({ version: "0.7.0" });
+  assert.equal(repoNotes.previousTag, "v0.6.7");
+  assert.match(repoNotes.markdown, /## 重点功能：事项安排/);
+  assert.match(repoNotes.markdown, /## 新增功能\n\n- 从个人待办读取并规划节点排期/);
+  const v067 = repoNotes.history.find((entry) => entry.version === "0.6.7");
+  assert.ok(v067);
+  assert.doesNotMatch(v067.markdown, /从个人待办读取并规划节点排期/);
+});

@@ -62,6 +62,19 @@ function previousRelease(cwd, version, previousTag, commit) {
   return candidates[0] || null;
 }
 
+const DEFERRED_SCHEDULE_SHA = "061ef97d76a1d04dd0fb83184105aecdcfde4d7c";
+
+const SCHEDULE_HIGHLIGHT_070 = [
+  "## 重点功能：事项安排",
+  "全新开放「事项安排」排期规划工作台，从已启用来源汇总待办与参与事项的节点排期，集中完成查看、规划、核对与同步：",
+  [
+    "- **三栏排期工作台**：提供左侧可折叠待排与跨周池、中部单周／双周甘特时间轴、右侧常驻排期检查器，支持「仅看可排期」筛选与跨周定位。",
+    "- **我的排期与按人查看**：从已启用的待办与参与来源读取事项及节点排期，支持切换按团队成员查看并补全人员实名与头像；按流程必填配置识别需排期节点，自动过滤无需新排的无日期节点及已结束、状态流事项。",
+    "- **多节点同排与快捷改期**：支持待排卡片拖拽入周、撤回待排，以及今日、近两日、本周、下周、顺延一天的自然日快捷排期；同一事项下本人的多节点合并同行展示、重叠日期自动分轨，清晰区分当前可排的进行中节点与只读的历史已流转节点。",
+    "- **云端差异核对与安全同步**：按「本次新增」「本次修改」「沿用云端」分类统计并支持提交前二次确认、逐项撤回与还原云端基线；内置后台静默预加载、跨页签会话复用与未同步草稿离开确认保护。",
+  ].join("\n"),
+].join("\n\n");
+
 function notesAt(cwd, target, previousTag) {
   const { commit } = target;
   const previous = previousRelease(cwd, target.version, previousTag, commit);
@@ -81,17 +94,30 @@ function notesAt(cwd, target, previousTag) {
       const [sha, subject] = entry.split("\x1f");
       return { sha, subject };
     });
+  if (target.version === "0.7.0" && versionFromTag(previous) === "0.6.7" && !commits.some((entry) => entry.sha === DEFERRED_SCHEDULE_SHA)) {
+    try {
+      git(cwd, "merge-base", "--is-ancestor", DEFERRED_SCHEDULE_SHA, commit);
+      const subject = git(cwd, "show", "-s", "--format=%s", DEFERRED_SCHEDULE_SHA);
+      if (subject) commits.unshift({ sha: DEFERRED_SCHEDULE_SHA, subject });
+    } catch {
+      // Fixture repositories without the 0.6.7 deferred commit keep their own commit list.
+    }
+  }
   const groups = new Map([["新增功能", []], ["问题修复", []], ["体验优化", []], ["维护与文档", []], ["其他变化", []]]);
   for (const { sha, subject } of commits) {
     // 0.6.7 暂不展示尚未开放的事项安排功能。
-    if (target.version === "0.6.7" && sha === "061ef97d76a1d04dd0fb83184105aecdcfde4d7c") continue;
+    if (target.version === "0.6.7" && sha === DEFERRED_SCHEDULE_SHA) continue;
     const match = /^(\w+)(?:\([^)]+\))?!?:\s*(.+)$/.exec(subject);
     const type = match?.[1], text = match?.[2] || subject;
     if (type === "chore") continue;
     const group = type === "feat" ? "新增功能" : type === "fix" ? "问题修复" : ["perf", "refactor", "style"].includes(type) ? "体验优化" : ["docs", "test", "build", "ci"].includes(type) ? "维护与文档" : "其他变化";
     groups.get(group).push(text);
   }
-  const sections = [...groups].filter(([, entries]) => entries.length).map(([title, entries]) => `## ${title}\n\n${entries.map((entry) => `- ${entry}`).join("\n")}`);
+  const hasScheduleHighlight = target.version === "0.7.0" && commits.some(({ subject }) => /\(事项安排\)!?:/.test(subject));
+  const sections = [
+    ...(hasScheduleHighlight ? [SCHEDULE_HIGHLIGHT_070] : []),
+    ...[...groups].filter(([, entries]) => entries.length).map(([title, entries]) => `## ${title}\n\n${entries.map((entry) => `- ${entry}`).join("\n")}`),
+  ];
   const markdown = [
     `# FSTODO ${target.version}`,
     `提交日期：${date}`,
