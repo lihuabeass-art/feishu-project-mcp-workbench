@@ -1981,7 +1981,6 @@ export function SchedulePage({
                               style={
                                 laneCount > 1
                                   ? ({
-                                      "--schedule-lanes": laneCount,
                                       gridTemplateRows: `repeat(${laneCount}, minmax(44px, auto))`,
                                     } as React.CSSProperties)
                                   : undefined
@@ -2080,6 +2079,8 @@ export function SchedulePage({
                                           barStateClass,
                                           isNarrowBar && "is-narrow-bar",
                                           isSingleCol && "is-single-day-bar",
+                                          entry.dates.start < windowStart && "is-clipped-start",
+                                          entry.dates.end > windowEnd && "is-clipped-end",
                                           isBarHovered && "is-hovered",
                                           entry.id === selected && "selected",
                                         ]

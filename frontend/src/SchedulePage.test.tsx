@@ -1442,7 +1442,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
         nodeStatus: "done",
         nodeOrder: 0,
         identity: { ...identity, item: "story-visual", node: "node-3" },
-        dates: { start: currentWeekDay(0), end: currentWeekDay(0) },
+        dates: { start: currentWeekDay(-1), end: currentWeekDay(1) },
       },
       {
         ...base,
@@ -1489,8 +1489,17 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(rowEl.querySelectorAll(".schedule-bar-side-label")).toHaveLength(0);
 
     // 2. 短条（1d/2d）移除重复前置图标：1d 条隐藏尾部角标并启用紧凑双行，2d 条仅隐藏天数与『已流转』文字而保留状态微章；当前可排实线高亮卡片与已流转虚线弱化卡片层级分明
+    const envBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端环境准备/ });
     const prdBar = screen.getByRole("button", { name: /排期节点辨识专项 · 产品方案评审/ });
     const feBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
+    expect(envBar.classList.contains("is-narrow-bar")).toBe(true);
+    expect(envBar.classList.contains("is-single-day-bar")).toBe(false);
+    expect(envBar.classList.contains("is-clipped-start")).toBe(true);
+    expect(envBar.querySelector(".schedule-bar-clip")?.textContent).toBe("‹");
+    expect(getComputedStyle(envBar.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("inline-flex");
+    expect(getComputedStyle(envBar.querySelector(".schedule-bar-days") as HTMLElement).display).toBe("none");
+    expect(getComputedStyle(envBar.querySelector(".schedule-bar-past-text") as HTMLElement).display).toBe("none");
+
     expect(prdBar.classList.contains("is-single-day-bar")).toBe(true);
     expect(prdBar.classList.contains("is-past-node")).toBe(true);
     expect(feBar.classList.contains("is-narrow-bar")).toBe(true);
@@ -1542,6 +1551,10 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(feBarDraft.classList.contains("is-narrow-bar")).toBe(true);
     expect(feBarDraft.classList.contains("is-draft")).toBe(true);
     expect(getComputedStyle(feBarDraft.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("inline-flex");
+    document.documentElement.dataset.appearance = "pearl";
+    expect(getComputedStyle(feBarDraft).borderTopWidth).toBe("1.5px");
+    expect(getComputedStyle(prdBar).borderTopStyle).toBe("dashed");
+    delete document.documentElement.dataset.appearance;
 
     fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
     const feBarBiweekly = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });

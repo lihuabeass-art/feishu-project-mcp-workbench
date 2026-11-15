@@ -730,7 +730,7 @@
   border-radius: 9px;
   box-shadow:
     0 2px 6px color-mix(in srgb, var(--green) 11%, transparent),
-    inset 0 1px 0 color-mix(in srgb, #ffffff 65%, transparent);
+    inset 0 1px 0 color-mix(in srgb, var(--surface-solid) 65%, transparent);
   font-size: 12px;
   cursor: pointer;
 }
@@ -747,7 +747,7 @@
   pointer-events: none;
 }
 
-:root[data-appearance="pearl"] .schedule-bar:not(.is-readonly):not(.is-uncertain) {
+:where(:root[data-appearance="pearl"]) .schedule-bar.is-cloud {
   background: linear-gradient(
     115deg,
     color-mix(in srgb, var(--green) 20%, var(--surface-solid)),
@@ -837,6 +837,8 @@
     var(--surface-tint)
   );
   border: 1.5px solid var(--green);
+  border-width: 1.5px;
+  border-style: solid;
   box-shadow:
     0 0 0 2px color-mix(in srgb, var(--green) 16%, transparent),
     0 2px 8px color-mix(in srgb, var(--green) 12%, transparent);
@@ -1628,7 +1630,7 @@
     --schedule-label-width: 176px;
   }
   .schedule-bar {
-    padding: 0 5px;
+    padding: 4px 6px 4px 11px;
     gap: 3px;
   }
   .schedule-bar-badges {
