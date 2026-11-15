@@ -100,3 +100,30 @@ fn initial_missing_schedule_context_updates_ui_without_claiming_a_remote_change(
     genuinely_changed[0].item.name=Some("真实改名".into());
     assert_eq!(cache_patch(&before,&genuinely_changed).unwrap()["updated_count"],1);
 }
+
+#[test]
+fn terminal_node_flow_status_name_counts_only_real_changes() {
+    let (store, mut detail, personal, _, a, b) = fixture();
+    detail.data["work_item_attribute"]["work_item_mod"] = json!("节点流");
+    detail.data["work_item_attribute"]["work_item_status"] = json!({"key":"end","name":"需求上线"});
+    detail.data["work_item_current_node"] = json!([]);
+    store.save_item_detail(&detail).unwrap();
+    let related = item(detail::summary(&detail, Value::Null));
+    store.upsert_items(b, &[related.clone()], 2).unwrap();
+    let before = store.query_items(&ItemFilter::default()).unwrap();
+    assert_eq!(before[0].item.flow.kind, crate::model::domain::FlowKind::None);
+    assert_eq!(before[0].status_name.as_deref(), Some("需求上线"));
+
+    store.upsert_items(b, &[related], 3).unwrap();
+    store.upsert_items(a, &[personal], 3).unwrap();
+    let unchanged = store.query_items(&ItemFilter::default()).unwrap();
+    let patch = cache_patch(&before, &unchanged).unwrap();
+    assert_eq!(patch["modified"], json!([]));
+    assert_eq!(patch["updated_count"], 0);
+
+    detail.data["work_item_attribute"]["work_item_status"] = json!({"key":"archived","name":"已归档"});
+    store.save_item_detail(&detail).unwrap();
+    let after = store.query_items(&ItemFilter::default()).unwrap();
+    assert_eq!(after[0].status_name.as_deref(), Some("已归档"));
+    assert_eq!(cache_patch(&unchanged, &after).unwrap()["updated_count"], 1);
+}

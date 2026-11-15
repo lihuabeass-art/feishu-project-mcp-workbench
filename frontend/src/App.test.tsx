@@ -1986,4 +1986,53 @@ describe("所有来源调度与清单 patch", () => {
     expect(screen.queryByText("需求甲")).toBeNull();
     expect(loadSnapshot).toHaveBeenCalledOnce();
   });
+
+  it("节点流终态或无当前节点的已完成事项展示 status_name 或已完成，不再显示流程信息未提供", async () => {
+    const data = snapshot();
+    data.items = [
+      {
+        ...item("space-a", "终态上线需求", "story"),
+        id: { project_key: "space-a", work_item_type_key: "story", work_item_id: "story-online" },
+        is_completed: true,
+        status_name: "需求上线",
+        flow: {
+          kind: "none",
+          node_name: null,
+          node_state_key: null,
+          start_state_key_name: null,
+          end_state_key_name: null,
+        },
+      },
+      {
+        ...item("space-a", "普通已完成事项", "story"),
+        id: { project_key: "space-a", work_item_type_key: "story", work_item_id: "story-done" },
+        is_completed: true,
+        status_name: null,
+        flow: {
+          kind: "none",
+          node_name: null,
+          node_state_key: null,
+          start_state_key_name: null,
+          end_state_key_name: null,
+        },
+      },
+    ];
+    data.total = 2;
+    vi.mocked(loadSnapshot).mockResolvedValue(data);
+    render(<App />);
+    expect(await screen.findByText("终态上线需求")).toBeTruthy();
+    expect(screen.getByText("需求上线")).toBeTruthy();
+    const doneDots = Array.from(document.querySelectorAll(".status-dot.done")).map(
+      (dot) => dot.parentElement?.textContent,
+    );
+    expect(doneDots).toContain("需求上线");
+    expect(doneDots).toContain("已完成");
+    expect(screen.queryByText("流程信息未提供")).toBeNull();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索工作" }), {
+      target: { value: "需求上线" },
+    });
+    expect(screen.getByText("终态上线需求")).toBeTruthy();
+    expect(screen.queryByText("普通已完成事项")).toBeNull();
+  });
 });

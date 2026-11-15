@@ -41,6 +41,7 @@ function keyboardFocus(element: HTMLElement) {
 
 function FlowLine({ item }: { item: CachedItem }) {
   const f = item.flow;
+  const fallbackStatus = item.status_name?.trim() || (item.is_completed === true ? "已完成" : "");
   return (
     <span className="list-mode-flow">
       {(f.kind === "node" || f.kind === "both") && (
@@ -61,7 +62,16 @@ function FlowLine({ item }: { item: CachedItem }) {
           )}
         </span>
       )}
-      {f.kind === "none" && <span className="muted">流程信息未提供</span>}
+      {f.kind === "none" && (
+        fallbackStatus ? (
+          <span>
+            <i className="status-dot done" />
+            {fallbackStatus}
+          </span>
+        ) : (
+          <span className="muted">流程信息未提供</span>
+        )
+      )}
     </span>
   );
 }

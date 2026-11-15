@@ -156,6 +156,7 @@ type ManualSync = {
 
 function Flow({ item }: { item: CachedItem }) {
   const f = item.flow;
+  const fallbackStatus = item.status_name?.trim() || (item.is_completed === true ? "已完成" : "");
   return <div className="flow-lines">
     {(f.kind === "node" || f.kind === "both") && <span title={nodeScopeLabel(item)}>
       <i className="status-dot" />{f.node_name || "名称未提供"}
@@ -164,7 +165,15 @@ function Flow({ item }: { item: CachedItem }) {
       <i className="status-dot amber" />状态 · {f.start_state_key_name || "未提供"}
       {f.end_state_key_name && <><ArrowRight size={12} />{f.end_state_key_name}</>}
     </span>}
-    {f.kind === "none" && <span className="muted">流程信息未提供</span>}
+    {f.kind === "none" && (
+      fallbackStatus ? (
+        <span>
+          <i className="status-dot done" />{fallbackStatus}
+        </span>
+      ) : (
+        <span className="muted">流程信息未提供</span>
+      )
+    )}
   </div>;
 }
 

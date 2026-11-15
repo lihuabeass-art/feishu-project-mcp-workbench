@@ -191,6 +191,9 @@ pub struct CachedItem {
     pub updated_at_ms: Option<i64>,
     /// 只使用远端 finish_status；未提供时保留未知。
     pub is_completed: Option<bool>,
+    /// 完整详情中的工作项状态名称（如节点流终态「需求上线」）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_name: Option<String>,
     /// 完整详情内容的版本；抓取时间变化不触发详情页更新。
     pub detail_revision: Option<String>,
     /// 完整详情里的「所属项目」关联；缺字段时为空，不从空间名猜测。
@@ -325,6 +328,14 @@ const SELECT_COLUMNS: &str = "project_key, work_item_type_key, work_item_id, ide
       WHERE d.project_key=work_item.project_key AND d.type_key=work_item.work_item_type_key \
         AND d.item_id=work_item.work_item_id), \
      (SELECT CASE WHEN json_valid(snapshot_json) THEN CASE WHEN json_type(snapshot_json, '$.data.work_item_attribute.work_item_mod') = 'text' THEN json_extract(snapshot_json, '$.data.work_item_attribute.work_item_mod') END END FROM item_detail d \
+      WHERE d.project_key=work_item.project_key AND d.type_key=work_item.work_item_type_key \
+        AND d.item_id=work_item.work_item_id), \
+     (SELECT CASE WHEN json_valid(snapshot_json) THEN \
+        CASE json_type(snapshot_json, '$.data.work_item_attribute.work_item_status') \
+          WHEN 'object' THEN CASE WHEN json_type(snapshot_json, '$.data.work_item_attribute.work_item_status.name') = 'text' THEN json_extract(snapshot_json, '$.data.work_item_attribute.work_item_status.name') END \
+          WHEN 'text' THEN json_extract(snapshot_json, '$.data.work_item_attribute.work_item_status') \
+        END \
+      END FROM item_detail d \
       WHERE d.project_key=work_item.project_key AND d.type_key=work_item.work_item_type_key \
         AND d.item_id=work_item.work_item_id)";
 
@@ -1743,6 +1754,10 @@ fn map_cached_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedItem> {
             };
         }
     }
+    let status_name = row
+        .get::<_, Option<String>>(27)?
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
     Ok(CachedItem {
         item,
         current_node_names,
@@ -1752,6 +1767,7 @@ fn map_cached_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedItem> {
         created_at_ms: row.get(18)?,
         updated_at_ms: row.get(19)?,
         is_completed: row.get(20)?,
+        status_name,
         detail_revision: row.get(21)?,
         related_projects: serde_json::from_str(&row.get::<_, Option<String>>(23)?.unwrap_or_else(|| "[]".into()))
             .map_err(|error| rusqlite::Error::FromSqlConversionFailure(23,rusqlite::types::Type::Text,Box::new(error)))?,
@@ -2179,6 +2195,22 @@ mod item_activity_tests {
         detail.data["work_item_fields"][0]["value"] = json!("unknown");
         store.save_item_detail(&detail).unwrap();
         assert_eq!(store.query_items(&ItemFilter { project_key: Some("p".into()), ..Default::default() }).unwrap()[0].is_completed, None);
+
+        detail.data["work_item_attribute"]["work_item_mod"] = json!("节点流");
+        detail.data["work_item_attribute"]["work_item_status"] = json!({"key":"end","name":"需求上线"});
+        detail.data["work_item_current_node"] = json!([]);
+        store.save_item_detail(&detail).unwrap();
+        let row = &store.query_items(&ItemFilter { project_key: Some("p".into()), ..Default::default() }).unwrap()[0];
+        assert_eq!(row.item.flow.kind, FlowKind::None);
+        assert_eq!(row.status_name.as_deref(), Some("需求上线"));
+
+        detail.data["work_item_attribute"]["work_item_status"] = json!("  已发布  ");
+        store.save_item_detail(&detail).unwrap();
+        assert_eq!(store.query_items(&ItemFilter { project_key: Some("p".into()), ..Default::default() }).unwrap()[0].status_name.as_deref(), Some("已发布"));
+
+        detail.data["work_item_attribute"]["work_item_status"] = json!({"key":"end","name":"   "});
+        store.save_item_detail(&detail).unwrap();
+        assert_eq!(store.query_items(&ItemFilter { project_key: Some("p".into()), ..Default::default() }).unwrap()[0].status_name, None);
     }
 }
 

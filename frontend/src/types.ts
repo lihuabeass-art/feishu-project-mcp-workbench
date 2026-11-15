@@ -40,6 +40,7 @@ export interface CachedItem {
   created_at_ms?: number | null;
   updated_at_ms?: number | null;
   is_completed?: boolean | null;
+  status_name?: string | null;
   // 完整详情内容版本，用于回读已落库的新详情；不随抓取时间变化。
   detail_revision?: string | null;
   flow: {

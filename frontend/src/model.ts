@@ -212,9 +212,9 @@ export function filterItems(
         ? !item.related_projects?.length
         : item.related_projects?.some((p) => relatedProjectKey(item.id.project_key, p) === selectedProject))) &&
       matchesFilter(item.flow.kind, flowKind) &&
-      matchesFilter(item.flow.start_state_key_name, stateName) &&
+      matchesFilter(item.flow.start_state_key_name || item.status_name || null, stateName) &&
       (!text ||
-        [item.name, item.id.work_item_id, item.project_name, ...(item.related_projects || []).map((p) => p.name)].some((v) =>
+        [item.name, item.id.work_item_id, item.project_name, item.status_name, ...(item.related_projects || []).map((p) => p.name)].some((v) =>
           v?.toLocaleLowerCase().includes(text),
         )),
   );
@@ -269,7 +269,7 @@ export function workflowFacets(
     ),
     state: valueFacet(
       filterItems(items, query, type, project, flowKind, nodeName, "", relatedProject),
-      (item) => [item.flow.start_state_key_name],
+      (item) => [item.flow.start_state_key_name || item.status_name || null],
       stateName,
     ),
   };
