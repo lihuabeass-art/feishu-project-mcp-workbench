@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SchedulePage, type ScheduleSessionController } from "./SchedulePage";
 import { closeScheduleSession, loadSchedulePeople, loadScheduleSession, submitScheduleTargets, type ScheduleRead } from "./scheduleApi";
+const loadCss = async (rel: string) => {
+  const fsModule = "node:fs";
+  const fs = (await import(/* @vite-ignore */ fsModule)) as {
+    readFileSync: (path: URL, encoding: string) => string;
+  };
+  return fs.readFileSync(new URL(rel, import.meta.url), "utf8");
+};
 vi.mock("./scheduleApi", () => ({ loadScheduleSession: vi.fn(), loadSchedulePeople: vi.fn(), closeScheduleSession: vi.fn(), submitScheduleTargets: vi.fn() }));
 const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
 const data = (): ScheduleRead => ({ sessionId: "session", currentUserId: "me", readAt: "today", complete: false, sources: [{ id: "s", name: "我的来源", complete: false, error: "部分事项读取失败" }], people: [{ id: "me", name: "本人" }], targets: [{ id: "one", identity, title: "任务一", nodeName: "开发", ownerId: "me", ownerIds: ["me"], sourceIds: ["s"], projectName: "空间", typeName: "需求", dates: { start: "", end: "" }, mine: true }] });
@@ -1405,9 +1410,9 @@ it("同事项节点过滤无关无排期节点、按节点去重多人记录、�
 
 it("排期主面板在 styles.css 后加载时仍保持 overflow: hidden 以裁切圆角", async () => {
   const scheduleStyleEl = document.createElement("style");
-  scheduleStyleEl.textContent = readFileSync(resolve(__dirname, "./schedule.css"), "utf8");
+  scheduleStyleEl.textContent = await loadCss("./schedule.css");
   const stylesStyleEl = document.createElement("style");
-  stylesStyleEl.textContent = readFileSync(resolve(__dirname, "./styles.css"), "utf8");
+  stylesStyleEl.textContent = await loadCss("./styles.css");
   // 按 main.tsx 的模块求值顺序注入（App -> schedule.css 在 styles.css 之前）
   document.head.append(scheduleStyleEl, stylesStyleEl);
   try {
@@ -1421,136 +1426,263 @@ it("排期主面板在 styles.css 后加载时仍保持 overflow: hidden 以裁�
   }
 });
 
-it("多节点子轨道左右对齐、短排期条相邻空白格延伸标签（左右自动避让）及悬停聚焦原位浮层卡片联动", async () => {
+it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条内聚展示节点名且不向相邻日期格渲染额外框体，悬停聚焦展示原位浮层卡片", async () => {
+  const scheduleStyleEl = document.createElement("style");
+  scheduleStyleEl.textContent = await loadCss("./schedule.css");
+  document.head.append(scheduleStyleEl);
+  try {
+    const read = data();
+    const base = read.targets[0];
+    read.targets = [
+      {
+        ...base,
+        id: "n-env",
+        title: "排期节点辨识专项",
+        nodeName: "前端环境准备",
+        nodeStatus: "done",
+        nodeOrder: 0,
+        identity: { ...identity, item: "story-visual", node: "node-3" },
+        dates: { start: currentWeekDay(0), end: currentWeekDay(0) },
+      },
+      {
+        ...base,
+        id: "n-fe-dev",
+        title: "排期节点辨识专项",
+        nodeName: "前端代码开发",
+        nodeStatus: "doing",
+        nodeOrder: 1,
+        scheduleRequired: true,
+        identity: { ...identity, item: "story-visual", node: "node-4" },
+        dates: { start: currentWeekDay(1), end: currentWeekDay(2) },
+      },
+      {
+        ...base,
+        id: "n-tech",
+        title: "排期节点辨识专项",
+        nodeName: "技术架构设计",
+        nodeStatus: "completed",
+        nodeOrder: 2,
+        identity: { ...identity, item: "story-visual", node: "node-2" },
+        dates: { start: currentWeekDay(2), end: currentWeekDay(2) },
+      },
+      {
+        ...base,
+        id: "n-prd",
+        title: "排期节点辨识专项",
+        nodeName: "产品方案评审",
+        nodeStatus: "done",
+        nodeOrder: 3,
+        identity: { ...identity, item: "story-visual", node: "node-1" },
+        dates: { start: currentWeekDay(6), end: currentWeekDay(6) },
+      },
+    ];
+    vi.mocked(loadScheduleSession).mockResolvedValue(read);
+    await setup();
+
+    // 1. 左侧事项栏与单节点行保持完全一致的简洁结构，不渲染多余子卡片，右侧网格也不在相邻日期格渲染任何额外胶囊框
+    const rowEl = document.querySelector(".schedule-row") as HTMLElement;
+    expect(rowEl).toBeTruthy();
+    const rowLabel = rowEl.querySelector(".schedule-row-label") as HTMLElement;
+    expect(rowLabel.textContent).toContain("排期节点辨识专项");
+    expect(rowLabel.textContent).toContain("前端代码开发（共 4 个节点）");
+    expect(rowEl.querySelectorAll(".schedule-lane-node")).toHaveLength(0);
+    expect(rowEl.querySelectorAll(".schedule-bar-side-label")).toHaveLength(0);
+
+    // 2. 短条（1d/2d）移除重复前置图标：1d 条隐藏尾部角标并启用紧凑双行，2d 条仅隐藏天数与『已流转』文字而保留状态微章；当前可排实线高亮卡片与已流转虚线弱化卡片层级分明
+    const prdBar = screen.getByRole("button", { name: /排期节点辨识专项 · 产品方案评审/ });
+    const feBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
+    expect(prdBar.classList.contains("is-single-day-bar")).toBe(true);
+    expect(prdBar.classList.contains("is-past-node")).toBe(true);
+    expect(feBar.classList.contains("is-narrow-bar")).toBe(true);
+    expect(feBar.classList.contains("is-cloud")).toBe(true);
+    expect(prdBar.querySelector(".schedule-bar-state-icon")).toBeNull();
+    expect(feBar.querySelector(".schedule-bar-state-icon")).toBeNull();
+    expect(prdBar.querySelector(".schedule-bar-badge.is-past")).toBeTruthy();
+    expect(prdBar.querySelector(".schedule-bar-badge.is-readonly")).toBeNull();
+
+    const prdBadges = prdBar.querySelector(".schedule-bar-badges") as HTMLElement;
+    const feDays = feBar.querySelector(".schedule-bar-days") as HTMLElement;
+    const prdTitle = prdBar.querySelector(".schedule-bar-title") as HTMLElement;
+    const feTitle = feBar.querySelector(".schedule-bar-title") as HTMLElement;
+    expect(getComputedStyle(prdBadges).display).toBe("none");
+    expect(getComputedStyle(feDays).display).toBe("none");
+    expect(getComputedStyle(prdTitle).whiteSpace).toBe("normal");
+    expect(getComputedStyle(prdBar).borderTopStyle).toBe("dashed");
+    expect(getComputedStyle(feBar).borderTopStyle).toBe("solid");
+    expect(getComputedStyle(feTitle).fontWeight).toBe("600");
+    expect(getComputedStyle(prdTitle).fontWeight).toBe("400");
+
+    // 3. 悬停与键盘聚焦排期条时触发原位上浮完整卡片（靠近右边缘自动右对齐防溢出）
+    fireEvent.mouseEnter(prdBar);
+    const popover = document.querySelector(".schedule-bar-popover") as HTMLElement;
+    expect(popover).toBeTruthy();
+    expect(popover.classList.contains("is-align-right")).toBe(true);
+    expect(popover.textContent).toContain("已流转");
+    expect(popover.textContent).toContain("产品方案评审");
+    expect(popover.textContent).toContain("(1d)");
+    fireEvent.mouseLeave(prdBar);
+    expect(document.querySelector(".schedule-bar-popover")).toBeNull();
+
+    fireEvent.focus(feBar);
+    const focusPopover = document.querySelector(".schedule-bar-popover") as HTMLElement;
+    expect(focusPopover).toBeTruthy();
+    expect(focusPopover.textContent).toContain("当前可排");
+    expect(focusPopover.textContent).toContain("前端代码开发");
+    expect(focusPopover.textContent).toContain("(2d)");
+    fireEvent.blur(feBar);
+    expect(document.querySelector(".schedule-bar-popover")).toBeNull();
+
+    // 4. 2d 草稿条保留『已改』角标，而切换至双周 14 天视图时 2d 条自动切换为 is-single-day-bar 双行紧凑模式
+    fireEvent.click(feBar);
+    fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(1) } });
+    fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(3) } });
+    // 先把结束日期改为周三使之仍为 2d 草稿：开始周二、结束周三但与原 baseline 不同（把开始改为周三、结束周四）
+    fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(2) } });
+    const feBarDraft = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
+    expect(feBarDraft.classList.contains("is-narrow-bar")).toBe(true);
+    expect(feBarDraft.classList.contains("is-draft")).toBe(true);
+    expect(getComputedStyle(feBarDraft.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("inline-flex");
+
+    fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+    const feBarBiweekly = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
+    expect(feBarBiweekly.classList.contains("is-single-day-bar")).toBe(true);
+    expect(getComputedStyle(feBarBiweekly.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("none");
+  } finally {
+    scheduleStyleEl.remove();
+  }
+});
+
+it("我的排期与个人待办不混入同事项下他人的历史已流转节点，且不会将不同负责人的节点错误合并到同一行", async () => {
   const read = data();
   const base = read.targets[0];
+  read.sources = [{ id: "personal-todo", name: "个人待办", complete: true }];
+  read.people = [
+    { id: "me", name: "杨顺", connection: "c", project: "p" },
+    { id: "yan", name: "闫国强", connection: "c", project: "p" },
+    { id: "liu", name: "刘悦然", connection: "c", project: "p" },
+    { id: "shi", name: "施伟", connection: "c", project: "p" },
+  ];
   read.targets = [
-    // 第 1 轨（周日 col 6，右侧贴边无空位、左侧有空位 -> 延伸标签自动翻转到左侧 is-left）
+    // 事项 7165715799：当前用户『杨顺』负责待排『后端方案设计』，『闫国强』已完成『产品方案设计』，『刘悦然』已完成『前端方案设计』
     {
       ...base,
-      id: "n-prd",
-      title: "排期节点辨识专项",
-      nodeName: "产品方案评审",
-      nodeStatus: "done",
+      id: "7165715799-prd-yan",
+      title: "操作日志页面中新增操作类型：发布",
+      nodeName: "产品方案设计",
+      nodeStatus: "finished",
       nodeOrder: 0,
-      identity: { ...identity, item: "story-visual", node: "node-1" },
-      dates: { start: currentWeekDay(6), end: currentWeekDay(6) },
-    },
-    // 第 2 轨（周三 col 2，右侧有充足空白列 -> 延伸标签在右侧 is-right）
-    {
-      ...base,
-      id: "n-tech",
-      title: "排期节点辨识专项",
-      nodeName: "技术架构设计",
-      nodeStatus: "completed",
-      nodeOrder: 1,
-      identity: { ...identity, item: "story-visual", node: "node-2" },
+      scheduleRequired: false,
+      ownerId: "yan",
+      ownerIds: ["yan"],
+      sourceIds: ["personal-todo"],
+      mine: false,
+      readOnlyReason: "该节点已流转完成，排期仅供查看",
+      identity: { ...identity, item: "7165715799", node: "state_0", owner: "yan" },
       dates: { start: currentWeekDay(2), end: currentWeekDay(2) },
     },
-    // 第 1 轨前段：周一 col 0 + 周二~周三 col 1~2 紧挨着（col 0 左右均无空位不强塞外部标签，col 1~2 右侧 col 3~5 有空位显示右侧延伸标签）
     {
       ...base,
-      id: "n-env",
-      title: "排期节点辨识专项",
-      nodeName: "前端环境准备",
-      nodeStatus: "done",
+      id: "7165715799-fe-liu",
+      title: "操作日志页面中新增操作类型：发布",
+      nodeName: "前端方案设计",
+      nodeStatus: "finished",
       nodeOrder: 2,
-      identity: { ...identity, item: "story-visual", node: "node-3" },
-      dates: { start: currentWeekDay(0), end: currentWeekDay(0) },
+      scheduleRequired: false,
+      ownerId: "liu",
+      ownerIds: ["liu"],
+      sourceIds: ["personal-todo"],
+      mine: false,
+      readOnlyReason: "该节点已流转完成，排期仅供查看",
+      identity: { ...identity, item: "7165715799", node: "state_44", owner: "liu" },
+      dates: { start: currentWeekDay(3), end: currentWeekDay(3) },
     },
     {
       ...base,
-      id: "n-fe-dev",
-      title: "排期节点辨识专项",
-      nodeName: "前端代码开发",
+      id: "7165715799-be-me",
+      title: "操作日志页面中新增操作类型：发布",
+      nodeName: "后端方案设计",
       nodeStatus: "doing",
       nodeOrder: 3,
       scheduleRequired: true,
-      identity: { ...identity, item: "story-visual", node: "node-4" },
-      dates: { start: currentWeekDay(1), end: currentWeekDay(2) },
+      ownerId: "me",
+      ownerIds: ["me"],
+      sourceIds: ["personal-todo"],
+      mine: true,
+      readOnlyReason: null,
+      identity: { ...identity, item: "7165715799", node: "state_45", owner: "me" },
+      dates: { start: "", end: "" },
+    },
+    // 事项 7138355755：当前用户『杨顺』负责『后端代码合入』，『施伟』已完成『需求测试』
+    {
+      ...base,
+      id: "7138355755-qa-shi",
+      title: "支持运营管理员查看平台操作记录",
+      nodeName: "需求测试",
+      nodeStatus: "finished",
+      nodeOrder: 8,
+      scheduleRequired: false,
+      ownerId: "shi",
+      ownerIds: ["shi"],
+      sourceIds: ["personal-todo"],
+      mine: false,
+      readOnlyReason: "该节点已流转完成，排期仅供查看",
+      identity: { ...identity, item: "7138355755", node: "state_12", owner: "shi" },
+      dates: { start: currentWeekDay(0), end: currentWeekDay(2) },
+    },
+    {
+      ...base,
+      id: "7138355755-merge-me",
+      title: "支持运营管理员查看平台操作记录",
+      nodeName: "后端代码合入",
+      nodeStatus: "doing",
+      nodeOrder: 10,
+      scheduleRequired: true,
+      ownerId: "me",
+      ownerIds: ["me"],
+      sourceIds: ["personal-todo"],
+      mine: true,
+      readOnlyReason: null,
+      identity: { ...identity, item: "7138355755", node: "state_20", owner: "me" },
+      dates: { start: "", end: "" },
     },
   ];
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
 
-  // 1. 左侧事项栏按子轨道逐行对齐展示节点序号、名称与状态标识
-  const rowEl = document.querySelector(".schedule-row.is-multi-node") as HTMLElement;
-  expect(rowEl).toBeTruthy();
-  const laneRows = rowEl.querySelectorAll(".schedule-row-lane");
-  expect(laneRows).toHaveLength(2);
-  const laneNodes = Array.from(rowEl.querySelectorAll(".schedule-lane-node"));
-  expect(laneNodes).toHaveLength(4);
-  expect(laneNodes.map((el) => el.querySelector(".schedule-lane-node-name")?.textContent)).toEqual([
-    "1. 产品方案评审",
-    "3. 前端环境准备",
-    "4. 前端代码开发",
-    "2. 技术架构设计",
-  ]);
-  expect(laneNodes[0].classList.contains("is-past")).toBe(true);
-  expect(laneNodes[3].classList.contains("is-past")).toBe(true);
-  expect(laneNodes[2].classList.contains("is-editable")).toBe(true);
+  // 1. 在『我的排期』下，甘特图绝不出现闫国强、刘悦然、施伟的节点，待排池只显示当前用户自己的 2 个待排节点
+  expect(document.querySelectorAll(".schedule-row")).toHaveLength(0);
+  expect(screen.queryByText(/闫国强/)).toBeNull();
+  expect(screen.queryByText(/刘悦然/)).toBeNull();
+  expect(screen.queryByText(/施伟/)).toBeNull();
+  expect(screen.getByRole("tab", { name: "待排期 (2)" })).toBeTruthy();
 
-  // 2. 点击左侧子轨道节点直接选中对应节点到右侧检查器
-  fireEvent.click(laneNodes[3]);
-  expect(laneNodes[3].classList.contains("is-selected")).toBe(true);
-  expect(document.querySelector(".schedule-editor")?.textContent).toContain("技术架构设计");
+  // 选中当前用户的『后端方案设计』时，由于同事项下其余节点属于他人，『同事项节点』不混入闫国强/刘悦然的节点
+  fireEvent.click(screen.getByRole("button", { name: /操作日志页面中新增操作类型：发布后端方案设计/ }));
+  expect(screen.queryByRole("group", { name: "同事项节点" })).toBeNull();
 
-  // 3. 短条（1d/2d）精简角标类名与历史节点已完成徽标区分
-  const prdBar = screen.getByRole("button", { name: /排期节点辨识专项 · 产品方案评审/ });
-  const techBar = screen.getByRole("button", { name: /排期节点辨识专项 · 技术架构设计/ });
-  const envBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端环境准备/ });
-  const feBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
-  expect(prdBar.classList.contains("is-single-day-bar")).toBe(true);
-  expect(feBar.classList.contains("is-narrow-bar")).toBe(true);
-  expect(prdBar.querySelector(".schedule-bar-badge.is-past")).toBeTruthy();
-  expect(prdBar.querySelector(".schedule-bar-badge.is-readonly")).toBeNull();
-  expect(feBar.querySelector(".schedule-bar-state-icon.is-editable")).toBeTruthy();
+  // 2. 切换到『按人查看』时，闫国强、刘悦然、施伟各自归入本人分组与独立行，绝不把闫国强的『产品方案设计』合并到刘悦然行内
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  const peopleRows = Array.from(document.querySelectorAll(".schedule-row-label")).map(
+    (el) => el.textContent || "",
+  );
+  expect(peopleRows.some((text) => text.includes("前端方案设计 · 刘悦然"))).toBe(true);
+  expect(peopleRows.some((text) => text.includes("产品方案设计 · 闫国强"))).toBe(true);
+  expect(peopleRows.some((text) => text.includes("需求测试 · 施伟"))).toBe(true);
+  expect(peopleRows.some((text) => text.includes("前端方案设计（共 2 个节点） · 刘悦然"))).toBe(false);
 
-  // 4. 相邻空白日期格延伸标签：右侧有空位用 is-right，贴近右边缘无空位但左侧有空位用 is-left，左右紧挨无空位不强塞碰撞标签
-  const sideLabels = Array.from(rowEl.querySelectorAll(".schedule-bar-side-label"));
-  const sideTexts = sideLabels.map((el) => ({
-    text: el.textContent,
-    right: el.classList.contains("is-right"),
-    left: el.classList.contains("is-left"),
-  }));
-  // 周三『技术架构设计』右侧有空白列 -> is-right
-  expect(sideTexts.some((item) => item.text?.includes("2. 技术架构设计 · 1d") && item.right)).toBe(true);
-  // 周二~周三『前端代码开发』右侧 col 3~5 有空白列 -> is-right
-  expect(sideTexts.some((item) => item.text?.includes("4. 前端代码开发 · 2d") && item.right)).toBe(true);
-  // 周一『前端环境准备』左侧为第 0 列边界、右侧紧挨『前端代码开发』-> 不生成碰撞外部标签
-  expect(sideTexts.some((item) => item.text?.includes("前端环境准备"))).toBe(false);
-
-  // 单独测试贴右边界且左侧完全空闲时的左侧翻转标签（is-left）
-  const leftFlipRead = data();
-  leftFlipRead.targets = [
-    {
-      ...base,
-      id: "sunday-only",
-      title: "周末收尾事项",
-      nodeName: "上线验证回归",
-      nodeStatus: "doing",
-      scheduleRequired: true,
-      identity: { ...identity, item: "story-sun", node: "node-sun" },
-      dates: { start: currentWeekDay(6), end: currentWeekDay(6) },
-    },
-  ];
-  vi.mocked(loadScheduleSession).mockResolvedValue(leftFlipRead);
+  // 3. 即便在账号未确认的回退只读模式（accountError）下展示全部目标，『我的排期』也按负责人分别成行，不把闫国强节点挂在刘悦然名下
   cleanup();
+  const fallbackRead = {
+    ...read,
+    currentUserId: "",
+    accountError: "未能确认当前飞书账号，请检查连接后重试",
+  };
+  vi.mocked(loadScheduleSession).mockResolvedValue(fallbackRead);
   await setup();
-  const leftSideLabel = document.querySelector(".schedule-bar-side-label") as HTMLElement;
-  expect(leftSideLabel).toBeTruthy();
-  expect(leftSideLabel.classList.contains("is-left")).toBe(true);
-  expect(leftSideLabel.textContent).toContain("上线验证回归 · 1d");
-
-  // 5. 悬停与键盘聚焦排期条时触发原位上浮完整卡片（靠近右边缘自动右对齐防溢出）
-  const sunBar = screen.getByRole("button", { name: /周末收尾事项 · 上线验证回归/ });
-  fireEvent.mouseEnter(sunBar);
-  const popover = document.querySelector(".schedule-bar-popover") as HTMLElement;
-  expect(popover).toBeTruthy();
-  expect(popover.classList.contains("is-align-right")).toBe(true);
-  expect(popover.textContent).toContain("当前可排");
-  expect(popover.textContent).toContain("上线验证回归");
-  expect(popover.textContent).toContain("(1d)");
-  fireEvent.mouseLeave(sunBar);
-  expect(document.querySelector(".schedule-bar-popover")).toBeNull();
+  const fallbackRows = Array.from(document.querySelectorAll(".schedule-row-label")).map(
+    (el) => el.textContent || "",
+  );
+  expect(fallbackRows.some((text) => text.includes("前端方案设计 · 刘悦然"))).toBe(true);
+  expect(fallbackRows.some((text) => text.includes("产品方案设计 · 闫国强"))).toBe(true);
+  expect(fallbackRows.some((text) => text.includes("前端方案设计（共 2 个节点） · 刘悦然"))).toBe(false);
 });
