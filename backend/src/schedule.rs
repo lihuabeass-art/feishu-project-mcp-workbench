@@ -47,6 +47,7 @@ pub struct Target {
     pub node_name: String,
     pub node_status: String,
     pub node_order: usize,
+    pub schedule_required: bool,
     pub owner_name: String,
     pub owners: Vec<Person>,
     pub unknown_owner: bool,
@@ -119,6 +120,7 @@ pub struct SyncResult {
 struct LoadState {
     processed_items: HashSet<(String, String, String)>,
     schedule_configs: BTreeMap<(String, String), Result<bool, ()>>,
+    transition_required: BTreeMap<(String, String, String, String), Option<Value>>,
     detail_names: BTreeMap<(String, String), String>,
     detail_avatars: BTreeMap<(String, String), String>,
 }
@@ -131,6 +133,7 @@ pub struct ScheduleSession {
     deferred_targets: Vec<Target>,
     processed_items: HashSet<(String, String, String)>,
     schedule_configs: BTreeMap<(String, String), Result<bool, ()>>,
+    transition_required: BTreeMap<(String, String, String, String), Option<Value>>,
     detail_names: BTreeMap<(String, String), String>,
     detail_avatars: BTreeMap<(String, String), String>,
     next_target_seq: usize,
@@ -302,6 +305,7 @@ fn build_aggregate_targets(
             node_name,
             node_status: String::new(),
             node_order: 0,
+            schedule_required: true,
             owner_name: String::new(),
             owners: Vec::new(),
             unknown_owner: false,
@@ -465,12 +469,27 @@ impl ScheduleSession {
                                     deferred_targets.push(target);
                                 }
                             }
+                            resolve_schedule_required_remote(
+                                client.as_ref(),
+                                &mut view.targets,
+                                &state.schedule_configs,
+                                &mut state.transition_required,
+                            )
+                            .await;
                             backfill_missing_people_remote(
                                 session,
                                 client.as_ref(),
                                 &mut view,
                                 &mut state.detail_names,
                                 &mut state.detail_avatars,
+                            )
+                            .await;
+                        } else {
+                            resolve_schedule_required_remote(
+                                client.as_ref(),
+                                &mut view.targets,
+                                &state.schedule_configs,
+                                &mut state.transition_required,
                             )
                             .await;
                         }
@@ -505,6 +524,7 @@ impl ScheduleSession {
             deferred_targets,
             processed_items: state.processed_items,
             schedule_configs: state.schedule_configs,
+            transition_required: state.transition_required,
             detail_names: state.detail_names,
             detail_avatars: state.detail_avatars,
             next_target_seq,
@@ -557,6 +577,13 @@ impl ScheduleSession {
                 &self.view.targets,
                 &failed_extra_sources,
             );
+            resolve_schedule_required_remote(
+                client.as_ref(),
+                &mut self.view.targets,
+                &self.schedule_configs,
+                &mut self.transition_required,
+            )
+            .await;
             finish_person_names_with_details(
                 session,
                 &self.view.current_user,
@@ -1869,6 +1896,220 @@ async fn fetch_node_schedule_config(
     Err(BackendError::parse("list_node_field_config", "字段配置分页达到上限"))
 }
 
+fn has_complete_schedule_dates(dates: &Dates) -> bool {
+    !dates.start.trim().is_empty() && !dates.end.trim().is_empty()
+}
+
+fn is_schedule_field_key(key: &str) -> bool {
+    matches!(
+        key.trim(),
+        "schedule"
+            | "estimate_start_date"
+            | "estimate_end_date"
+            | "estimate_start_time"
+            | "estimate_finish_time"
+    )
+}
+
+fn collect_schedule_requirements<'a>(
+    rows: &'a [Value],
+    inherited_constraints: &[&'a Vec<Value>],
+    matches_owner: &mut bool,
+    target_owner: Option<&str>,
+) {
+    for row in rows {
+        let Some(obj) = row.as_object() else {
+            continue;
+        };
+        if obj.get("finished").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let mut constraints = inherited_constraints.to_vec();
+        if let Some(owners) = obj
+            .get("not_finished_owner")
+            .and_then(Value::as_array)
+            .filter(|arr| !arr.is_empty())
+        {
+            constraints.push(owners);
+        }
+        let is_sched = ["field_key", "key", "field_type", "field_type_key"]
+            .into_iter()
+            .filter_map(|k| obj.get(k).and_then(Value::as_str))
+            .any(is_schedule_field_key);
+        if is_sched {
+            let allowed = match target_owner.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(uid) => constraints.iter().all(|owner_list| {
+                    owner_list
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|o| o.trim() == uid)
+                }),
+                None => true,
+            };
+            if allowed {
+                *matches_owner = true;
+            }
+        }
+        if let Some(children) = obj.get("sub_field").and_then(Value::as_array) {
+            collect_schedule_requirements(children, &constraints, matches_owner, target_owner);
+        }
+    }
+}
+
+fn node_requires_schedule(required: &Value, target_owner: Option<&str>) -> bool {
+    let mut matches_owner = false;
+    for container in ["node_fields", "form_items"] {
+        if let Some(rows) = required.get(container).and_then(Value::as_array) {
+            collect_schedule_requirements(rows, &[], &mut matches_owner, target_owner);
+        } else if let Some(rows) = required
+            .get("data")
+            .and_then(|d| d.get(container))
+            .and_then(Value::as_array)
+        {
+            collect_schedule_requirements(rows, &[], &mut matches_owner, target_owner);
+        }
+    }
+    matches_owner
+}
+
+async fn fetch_transition_required(
+    client: &dyn TodoSource,
+    project: &str,
+    kind: &str,
+    item: &str,
+    node: &str,
+) -> Option<Value> {
+    let args = json!({
+        "project_key": project,
+        "work_item_type_key": kind,
+        "work_item_id": item,
+        "state_key": node,
+        "mode": "unfinished",
+    });
+    let payload = client
+        .call_tool(
+            crate::mcp::feishu::TOOL_GET_TRANSITION_REQUIRED,
+            args.as_object().unwrap(),
+        )
+        .await
+        .ok()?;
+    let value = parse_tool_json(crate::mcp::feishu::TOOL_GET_TRANSITION_REQUIRED, &payload).ok()?;
+    let obj = value.as_object()?;
+    if obj.is_empty() {
+        return Some(value);
+    }
+    let has_valid_container = ["node_fields", "form_items"]
+        .into_iter()
+        .any(|k| obj.get(k).is_some_and(Value::is_array))
+        || obj
+            .get("data")
+            .and_then(Value::as_object)
+            .is_some_and(|d| {
+                ["node_fields", "form_items"]
+                    .into_iter()
+                    .any(|k| d.get(k).is_some_and(Value::is_array))
+            });
+    if !has_valid_container {
+        return None;
+    }
+    Some(value)
+}
+
+async fn resolve_schedule_required_remote(
+    client: &dyn TodoSource,
+    targets: &mut [Target],
+    schedule_configs: &BTreeMap<(String, String), Result<bool, ()>>,
+    cache: &mut BTreeMap<(String, String, String, String), Option<Value>>,
+) {
+    let mut pending_keys = Vec::new();
+    let mut seen = HashSet::new();
+    for target in targets.iter() {
+        if target.source_aggregate
+            || target.node_status != "doing"
+            || has_complete_schedule_dates(&target.baseline)
+        {
+            continue;
+        }
+        let project = target.identity.project.trim();
+        let kind = target.identity.r#type.trim();
+        let item = target.identity.item.trim();
+        let node = target.identity.node.trim();
+        if project.is_empty() || kind.is_empty() || item.is_empty() || node.is_empty() {
+            continue;
+        }
+        if !matches!(
+            schedule_configs.get(&(project.to_owned(), kind.to_owned())),
+            Some(Ok(true))
+        ) {
+            continue;
+        }
+        let key = (
+            project.to_owned(),
+            kind.to_owned(),
+            item.to_owned(),
+            node.to_owned(),
+        );
+        if !cache.contains_key(&key) && seen.insert(key.clone()) {
+            pending_keys.push(key);
+        }
+    }
+    if !pending_keys.is_empty() {
+        let fetched = stream::iter(pending_keys)
+            .map(|key| async move {
+                let val = fetch_transition_required(client, &key.0, &key.1, &key.2, &key.3).await;
+                (key, val)
+            })
+            .buffered(4)
+            .collect::<Vec<_>>()
+            .await;
+        for (key, val) in fetched {
+            cache.insert(key, val);
+        }
+    }
+    for target in targets.iter_mut() {
+        if target.source_aggregate {
+            continue;
+        }
+        if target.node_status != "doing" {
+            target.schedule_required = false;
+            continue;
+        }
+        if has_complete_schedule_dates(&target.baseline) {
+            target.schedule_required = true;
+            continue;
+        }
+        let project = target.identity.project.trim();
+        let kind = target.identity.r#type.trim();
+        let item = target.identity.item.trim();
+        let node = target.identity.node.trim();
+        if project.is_empty() || kind.is_empty() || item.is_empty() || node.is_empty() {
+            continue;
+        }
+        match schedule_configs.get(&(project.to_owned(), kind.to_owned())) {
+            Some(Ok(false)) => {
+                target.schedule_required = false;
+            }
+            Some(Ok(true)) => {
+                let key = (
+                    project.to_owned(),
+                    kind.to_owned(),
+                    item.to_owned(),
+                    node.to_owned(),
+                );
+                if let Some(Some(req_val)) = cache.get(&key) {
+                    target.schedule_required =
+                        node_requires_schedule(req_val, target.identity.owner.as_deref());
+                } else {
+                    target.schedule_required = true;
+                }
+            }
+            _ => {
+                target.schedule_required = true;
+            }
+        }
+    }
+}
+
 fn node_key(node: &Value) -> String {
     let basic = detail::text(&node["basic"]["node_key"]).filter(|key| !key.trim().is_empty());
     let direct = detail::text(&node["node_key"]).filter(|key| !key.trim().is_empty());
@@ -2083,6 +2324,7 @@ fn build_targets_with_order(
             node_name: txt(&node["basic"]["name"]),
             node_status: status.clone(),
             node_order,
+            schedule_required: status == "doing",
             owner_name: if name.is_empty() {
                 owner.unwrap_or_default()
             } else {
@@ -2178,6 +2420,9 @@ mod tests {
                 ],"pagination":{"has_more":false}}),
                 "list_node_field_config" => {
                     json!({"list":[{"field_key":"schedule","field_type":"schedule"}],"pagination":{"has_more":false}})
+                }
+                "get_transition_required" => {
+                    json!({"node_fields":[{"field_key":"schedule"}]})
                 }
                 "update_node" => return Ok(self.receipts.lock().unwrap().remove(0)),
                 _ => panic!("unexpected tool {tool}"),
@@ -3492,6 +3737,9 @@ mod tests {
                     "list": [{ "field_key": "schedule", "field_type": "schedule" }],
                     "pagination": { "has_more": false }
                 }),
+                "get_transition_required" => json!({
+                    "node_fields": [{ "field_key": "schedule" }]
+                }),
                 _ => panic!("unexpected tool {tool}"),
             };
             Ok(ToolResultPayload::from_json(v))
@@ -3663,6 +3911,9 @@ mod tests {
                 "list_node_field_config" => json!({
                     "list": [{ "field_key": "schedule", "field_type": "schedule" }],
                     "pagination": { "has_more": false }
+                }),
+                "get_transition_required" => json!({
+                    "node_fields": [{ "field_key": "schedule" }]
                 }),
                 "update_node" => json!("success"),
                 _ => panic!("unexpected tool {tool}"),
@@ -3946,7 +4197,7 @@ mod tests {
                                     }]
                                 },
                                 {
-                                    "basic": { "node_key": "n_active", "name": "后端代码合入", "status": "DOING" },
+                                    "basic": { "node_key": "n_active", "name": "方案开发", "status": "DOING" },
                                     "assignees": { "owners": [{ "user_key": "me", "name": "本人" }] },
                                     "assignee_schedule_list": [{
                                         "assignee": { "user_key": "me", "name": "本人" },
@@ -3992,6 +4243,7 @@ mod tests {
         assert_eq!(hist.node_name, "需求评审");
         assert_eq!(hist.node_status, "done");
         assert_eq!(hist.node_order, 0);
+        assert!(!hist.schedule_required);
         assert_eq!(
             hist.read_only_reason.as_deref(),
             Some("该节点已流转完成，排期仅供查看")
@@ -3999,19 +4251,245 @@ mod tests {
         assert!(!incomplete_target(hist));
 
         let active = &plan.view.targets[1];
-        assert_eq!(active.node_name, "后端代码合入");
+        assert_eq!(active.node_name, "方案开发");
         assert_eq!(active.node_status, "doing");
         assert_eq!(active.node_order, 1);
+        assert!(active.schedule_required);
         assert_eq!(active.read_only_reason, None);
 
         let future = &plan.view.targets[2];
         assert_eq!(future.node_name, "上线验收");
         assert_eq!(future.node_status, "not_started");
         assert_eq!(future.node_order, 2);
+        assert!(!future.schedule_required);
         assert_eq!(
             future.read_only_reason.as_deref(),
             Some("当前连接尚未验证此状态的排期写入")
         );
+
+        drop(installed);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn doing_nodes_determine_schedule_required_on_demand_across_mine_and_people_loads() {
+        struct TransitionRequiredScenario {
+            calls: Mutex<Vec<(String, Value)>>,
+        }
+        #[async_trait]
+        impl TodoSource for Arc<TransitionRequiredScenario> {
+            async fn describe(&self) -> Result<ConnectionInfo, BackendError> {
+                unreachable!()
+            }
+            async fn close(&mut self) {}
+            async fn call_tool(
+                &self,
+                tool: &str,
+                args: &Map<String, Value>,
+            ) -> Result<ToolResultPayload, BackendError> {
+                crate::mcp::record_schedule_rpc();
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((tool.into(), Value::Object(args.clone())));
+                let v = match tool {
+                    "search_user_info" => json!([{
+                        "user_key": "me",
+                        "name_cn": "测试本人",
+                        "avatar_url": "https://example.com/me.png"
+                    }]),
+                    "list_todo" => json!({
+                        "list": [{
+                            "project_key": "p",
+                            "work_item_info": {
+                                "work_item_id": "1",
+                                "work_item_type_key": "story",
+                                "work_item_name": "测试需求"
+                            },
+                            "node_info": { "node_name": "方案设计" }
+                        }],
+                        "total": 1
+                    }),
+                    "get_workitem_brief" => json!({
+                        "work_item_attribute": {
+                            "work_item_id": "1",
+                            "owned_project": { "key": "p", "simple_name": "example" },
+                            "work_item_type": { "key": "story" },
+                            "work_item_mod": "节点流",
+                            "work_item_name": "测试需求"
+                        },
+                        "work_item_fields": [],
+                        "pagination": { "has_more": false }
+                    }),
+                    "list_node_field_config" => json!({
+                        "list": [{ "field_key": "schedule", "field_type": "schedule" }]
+                    }),
+                    "get_node_detail" => json!({
+                        "list": [
+                            {
+                                "basic": { "node_key": "n_scheduled", "name": "已排期节点", "status": "doing" },
+                                "assignees": { "owners": [{ "user_key": "me", "name_cn": "测试本人" }] },
+                                "assignee_schedule_list": [{
+                                    "assignee": { "user_key": "me", "name_cn": "测试本人" },
+                                    "schedule_info": {
+                                        "estimate_start_time": 1794499200000i64,
+                                        "estimate_finish_time": 1794585600000i64
+                                    }
+                                }]
+                            },
+                            {
+                                "basic": { "node_key": "n_need_sched", "name": "方案设计", "status": "doing" },
+                                "assignees": { "owners": [{ "user_key": "me", "name_cn": "测试本人" }] },
+                                "schedule": {}
+                            },
+                            {
+                                "basic": { "node_key": "n_no_sched", "name": "代码合入", "status": "doing" },
+                                "assignees": { "owners": [{ "user_key": "me", "name_cn": "测试本人" }] },
+                                "schedule": {}
+                            },
+                            {
+                                "basic": { "node_key": "n_peer_need", "name": "同行评审", "status": "doing" },
+                                "assignees": { "owners": [{ "user_key": "u_peer_a", "name_cn": "同事甲" }] },
+                                "schedule": {}
+                            },
+                            {
+                                "basic": { "node_key": "n_peer_optional", "name": "版本标记", "status": "doing" },
+                                "assignees": { "owners": [{ "user_key": "u_peer_b", "name_cn": "同事乙" }] },
+                                "schedule": {}
+                            }
+                        ]
+                    }),
+                    "get_transition_required" => {
+                        let state_key = args["state_key"].as_str().unwrap_or_default();
+                        match state_key {
+                            "n_need_sched" => json!({
+                                "node_fields": [
+                                    { "field_key": "schedule", "field_type_key": "schedule", "finished": false }
+                                ]
+                            }),
+                            "n_no_sched" => json!({
+                                "node_fields": [
+                                    { "field_key": "release_version", "field_name": "上车版本", "finished": false }
+                                ]
+                            }),
+                            "n_peer_need" => json!({
+                                "node_fields": [
+                                    { "field_key": "schedule", "not_finished_owner": ["u_peer_a"], "finished": false }
+                                ]
+                            }),
+                            "n_peer_optional" => json!({}),
+                            other => panic!("unexpected get_transition_required for {other}"),
+                        }
+                    }
+                    _ => panic!("unexpected tool {tool}"),
+                };
+                Ok(ToolResultPayload::from_json(v))
+            }
+        }
+
+        let (session, dir) = fixture();
+        assert!(!node_requires_schedule(
+            &json!({"node_fields":[{"field_key":"schedule","finished":true,"not_finished_owner":["u_other"]}]}),
+            Some("me")
+        ));
+        let nested_constraints = json!({
+            "node_fields": [{
+                "field_key": "group_sched",
+                "not_finished_owner": ["me", "u_peer_a"],
+                "sub_field": [{
+                    "field_key": "estimate_start_date",
+                    "not_finished_owner": ["me"]
+                }]
+            }]
+        });
+        assert!(node_requires_schedule(&nested_constraints, Some("me")));
+        assert!(!node_requires_schedule(&nested_constraints, Some("u_peer_a")));
+        assert!(!node_requires_schedule(&nested_constraints, Some("u_peer_b")));
+
+        let fake = Arc::new(TransitionRequiredScenario {
+            calls: Mutex::new(vec![]),
+        });
+        let installed = crate::remote::install_test_client(
+            &session.config,
+            &session.credential().unwrap(),
+            Box::new(fake.clone()),
+        );
+
+        let mut plan = ScheduleSession::load_mine(&session).unwrap();
+        assert!(!plan.view.people_loaded);
+        assert_eq!(plan.view.targets.len(), 3);
+
+        let scheduled = plan
+            .view
+            .targets
+            .iter()
+            .find(|t| t.identity.node == "n_scheduled")
+            .unwrap();
+        assert!(scheduled.schedule_required);
+
+        let need_sched = plan
+            .view
+            .targets
+            .iter()
+            .find(|t| t.identity.node == "n_need_sched")
+            .unwrap();
+        assert!(need_sched.schedule_required);
+
+        let no_sched = plan
+            .view
+            .targets
+            .iter()
+            .find(|t| t.identity.node == "n_no_sched")
+            .unwrap();
+        assert!(!no_sched.schedule_required);
+
+        // Verify load_mine only queried get_transition_required for unscheduled mine doing nodes
+        let mine_req_nodes: BTreeSet<String> = fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(tool, _)| tool == "get_transition_required")
+            .map(|(_, args)| args["state_key"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            mine_req_nodes,
+            BTreeSet::from(["n_need_sched".to_owned(), "n_no_sched".to_owned()])
+        );
+
+        // Now load_people should query get_transition_required only for the colleague doing nodes
+        let sid = plan.view.session_id.clone();
+        plan.load_people(&session, &sid).unwrap();
+        assert!(plan.view.people_loaded);
+        assert_eq!(plan.view.targets.len(), 5);
+
+        let peer_need = plan
+            .view
+            .targets
+            .iter()
+            .find(|t| t.identity.node == "n_peer_need")
+            .unwrap();
+        assert!(peer_need.schedule_required);
+
+        let peer_optional = plan
+            .view
+            .targets
+            .iter()
+            .find(|t| t.identity.node == "n_peer_optional")
+            .unwrap();
+        assert!(!peer_optional.schedule_required);
+
+        let all_req_calls: Vec<String> = fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(tool, _)| tool == "get_transition_required")
+            .map(|(_, args)| args["state_key"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(all_req_calls.len(), 4);
+        assert!(!all_req_calls.contains(&"n_scheduled".to_owned()));
 
         drop(installed);
         drop(session);
