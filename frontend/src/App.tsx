@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { AppVersion } from "./AppVersion";
 import { AppUpdateDialog, AppUpdateSettings } from "./AppUpdater";
 import { useAppUpdater } from "./useAppUpdater";
-import { SchedulePage } from "./SchedulePage";
+import { SchedulePage, type ScheduleSessionController } from "./SchedulePage";
+import { closeScheduleSession, loadScheduleSession, type ScheduleRead } from "./scheduleApi";
 import { useScrollIsolation } from "./useScrollIsolation";
 import { prepareUpdateInstallation } from "./appUpdateSafety";
 import { workspaceActionBlocked, type WorkspaceActivity } from "./operationPolicy";
@@ -450,6 +451,166 @@ function Workspace() {
   const typeNamesRevision = useRef(0);
   const typeOrderRevision = useRef(0);
   const [credentialRevision, setCredentialRevision] = useState(0);
+  const [preloadedSchedule, setPreloadedSchedule] = useState<ScheduleRead | null>(null);
+  const scheduleSessionRef = useRef<{
+    fingerprint: string;
+    connectionKey: string;
+    pending: Promise<ScheduleRead> | null;
+    read: ScheduleRead | null;
+  }>({ fingerprint: "", connectionKey: "", pending: null, read: null });
+  const scheduleConnectionKey =
+    desktop && data?.credential_ready && !compact
+      ? `${data.db_path}|${data.settings?.endpoint || ""}|${data.credential_description || ""}|${credentialRevision}`
+      : "";
+  const scheduleSourcesSignature = (data?.sources || [])
+    .filter((s) => s.enabled)
+    .map(
+      (s) =>
+        `${s.id}:${s.executable}:${s.project_key || ""}:${s.work_item_type_key || ""}:${s.view_id || ""}:${
+          s.type_scope?.configured
+            ? s.type_scope.types
+                .filter((t) => t.selected)
+                .map((t) => `${t.project_key}/${t.type_key}`)
+                .join("+")
+            : "*"
+        }`,
+    )
+    .join(";");
+  const scheduleDataRevision = `${data?.last_success?.id ?? ""}:${data?.last_success?.finished_at_ms ?? ""}:${syncPatchRevision.current}:${defectRevision}`;
+  const schedulePreloadFingerprint =
+    desktop && !loading && data?.credential_ready && !compact
+      ? `${scheduleConnectionKey}|${scheduleSourcesSignature}|${scheduleDataRevision}`
+      : "";
+  const scheduleConnectionKeyRef = useRef(scheduleConnectionKey);
+  scheduleConnectionKeyRef.current = scheduleConnectionKey;
+  const scheduleFingerprintRef = useRef(schedulePreloadFingerprint);
+  scheduleFingerprintRef.current = schedulePreloadFingerprint;
+  useEffect(() => {
+    if (!schedulePreloadFingerprint) {
+      if (!data?.credential_ready && (scheduleSessionRef.current.pending || scheduleSessionRef.current.read)) {
+        const prev =
+          scheduleSessionRef.current.pending ||
+          (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
+        scheduleSessionRef.current = { fingerprint: "", connectionKey: "", pending: null, read: null };
+        setPreloadedSchedule(null);
+        if (prev) void closeScheduleSession(prev).catch(() => {});
+      }
+      return;
+    }
+    if (scheduleSessionRef.current.fingerprint === schedulePreloadFingerprint) return;
+    // 首屏加载完成前若用户已进入「事项安排」主动触发了会话读取，且连接核心身份一致，直接对齐指纹不打断该会话
+    if (
+      (scheduleSessionRef.current.pending || scheduleSessionRef.current.read) &&
+      (!scheduleSessionRef.current.fingerprint ||
+        scheduleSessionRef.current.connectionKey === scheduleConnectionKey) &&
+      viewRef.current === "schedule"
+    ) {
+      scheduleSessionRef.current.fingerprint = schedulePreloadFingerprint;
+      scheduleSessionRef.current.connectionKey = scheduleConnectionKey;
+      return;
+    }
+    // 停留在事项安排且存在未保存编辑或不确定结果时，不在后台强关当前会话
+    if (
+      viewRef.current === "schedule" &&
+      (scheduleGuardRef.current.dirty || scheduleGuardRef.current.busy || scheduleGuardRef.current.uncertain)
+    ) {
+      return;
+    }
+    const prev =
+      scheduleSessionRef.current.pending ||
+      (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
+    if (prev) void closeScheduleSession(prev).catch(() => {});
+    const req = loadScheduleSession({ includePeople: false });
+    scheduleSessionRef.current = {
+      fingerprint: schedulePreloadFingerprint,
+      connectionKey: scheduleConnectionKey,
+      pending: req,
+      read: null,
+    };
+    setPreloadedSchedule(null);
+    void req.then(
+      (res) => {
+        if (scheduleSessionRef.current.pending !== req) {
+          void closeScheduleSession(Promise.resolve(res)).catch(() => {});
+          return;
+        }
+        scheduleSessionRef.current.read = res;
+        scheduleSessionRef.current.pending = null;
+        setPreloadedSchedule(res);
+      },
+      () => {
+        if (scheduleSessionRef.current.pending === req) {
+          scheduleSessionRef.current.pending = null;
+        }
+      },
+    );
+  }, [schedulePreloadFingerprint, scheduleConnectionKey, data?.credential_ready]);
+  useEffect(
+    () => () => {
+      const prev =
+        scheduleSessionRef.current.pending ||
+        (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
+      scheduleSessionRef.current = { fingerprint: "", connectionKey: "", pending: null, read: null };
+      if (prev) void closeScheduleSession(prev).catch(() => {});
+    },
+    [],
+  );
+  const updateScheduleRead = useCallback((next: ScheduleRead) => {
+    scheduleSessionRef.current.read = next;
+    setPreloadedSchedule(next);
+  }, []);
+  const invalidateScheduleSession = useCallback(() => {
+    const prev =
+      scheduleSessionRef.current.pending ||
+      (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
+    scheduleSessionRef.current.pending = null;
+    scheduleSessionRef.current.read = null;
+    setPreloadedSchedule(null);
+    if (prev) void closeScheduleSession(prev).catch(() => {});
+  }, []);
+  const reloadScheduleSession = useCallback((options?: { includePeople?: boolean }) => {
+    const prev =
+      scheduleSessionRef.current.pending ||
+      (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
+    if (prev) void closeScheduleSession(prev).catch(() => {});
+    const req = loadScheduleSession({ includePeople: Boolean(options?.includePeople) });
+    scheduleSessionRef.current.fingerprint = scheduleFingerprintRef.current;
+    scheduleSessionRef.current.connectionKey = scheduleConnectionKeyRef.current;
+    scheduleSessionRef.current.pending = req;
+    scheduleSessionRef.current.read = null;
+    setPreloadedSchedule(null);
+    return req.then(
+      (res) => {
+        if (scheduleSessionRef.current.pending !== req) {
+          void closeScheduleSession(Promise.resolve(res)).catch(() => {});
+          return res;
+        }
+        scheduleSessionRef.current.read = res;
+        scheduleSessionRef.current.pending = null;
+        setPreloadedSchedule(res);
+        return res;
+      },
+      (err) => {
+        if (scheduleSessionRef.current.pending === req) {
+          scheduleSessionRef.current.pending = null;
+        }
+        throw err;
+      },
+    );
+  }, []);
+  const scheduleController = useMemo<ScheduleSessionController>(
+    () => ({
+      get read() {
+        return scheduleSessionRef.current.read ?? preloadedSchedule;
+      },
+      get pending() {
+        return scheduleSessionRef.current.pending;
+      },
+      updateRead: updateScheduleRead,
+      reload: reloadScheduleSession,
+    }),
+    [preloadedSchedule, updateScheduleRead, reloadScheduleSession],
+  );
   const filterSchemes = useFilterSchemes({
     enabled: desktop && !!data?.capabilities?.filter_schemes && !!data.credential_ready,
     context: JSON.stringify([credentialRevision, data?.settings?.endpoint, data?.db_path]),
@@ -1521,7 +1682,7 @@ function Workspace() {
         <WorkflowSuccessToast key={id} id={id} report={result} dismiss={dismissWorkflowReport} />
       ))}
     </div>
-    {scheduleExit && <div ref={scheduleExitScrollRef} className="schedule-dialog-backdrop scroll-isolation-boundary"><div className="schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="schedule-exit-title" onKeyDown={(event) => { if (event.key === "Escape") setScheduleExit(null); }}><h2 id="schedule-exit-title">{!scheduleExit.action || scheduleGuard.busy ? "排期同步" : "未同步的编辑内容即将丢失"}</h2><p>{scheduleGuard.busy ? "排期正在同步，请等待本次结果。" : !scheduleExit.action ? "同步已结束，请关闭提示后重新操作。" : "离开后将丢弃本次会话中的编辑。"}</p>{scheduleGuard.uncertain && <p>部分排期可能已保存，请在飞书核对。</p>}<div><button autoFocus className="secondary" onClick={() => setScheduleExit(null)}>{!scheduleExit.action || scheduleGuard.busy ? "知道了" : "继续编辑"}</button>{scheduleExit.action && !scheduleGuard.busy && <button className="primary" onClick={() => { if (scheduleGuardRef.current.busy) return; const action = scheduleExit.action; setScheduleExit(null); updateScheduleGuard({ dirty: false, busy: false, uncertain: false }); action?.(); }}>放弃并继续</button>}</div></div></div>}
+    {scheduleExit && <div ref={scheduleExitScrollRef} className="schedule-dialog-backdrop scroll-isolation-boundary"><div className="schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="schedule-exit-title" onKeyDown={(event) => { if (event.key === "Escape") setScheduleExit(null); }}><h2 id="schedule-exit-title">{!scheduleExit.action || scheduleGuard.busy ? "排期同步" : "未同步的编辑内容即将丢失"}</h2><p>{scheduleGuard.busy ? "排期正在同步，请等待本次结果。" : !scheduleExit.action ? "同步已结束，请关闭提示后重新操作。" : "离开后将丢弃本次会话中的编辑。"}</p>{scheduleGuard.uncertain && <p>部分排期可能已保存，请在飞书核对。</p>}<div><button autoFocus className="secondary" onClick={() => setScheduleExit(null)}>{!scheduleExit.action || scheduleGuard.busy ? "知道了" : "继续编辑"}</button>{scheduleExit.action && !scheduleGuard.busy && <button className="primary" onClick={() => { if (scheduleGuardRef.current.busy) return; const hadUncertain = scheduleGuardRef.current.uncertain; const action = scheduleExit.action; setScheduleExit(null); if (hadUncertain) invalidateScheduleSession(); updateScheduleGuard({ dirty: false, busy: false, uncertain: false }); action?.(); }}>放弃并继续</button>}</div></div></div>}
     {compact && (
       <CompactWorkspace
         items={compactItems}
@@ -1704,7 +1865,7 @@ function Workspace() {
           )}
           {!compact && alerts}
 
-          {view === "schedule" && !compact && <SchedulePage snapshot={data} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit} />}
+          {view === "schedule" && !compact && <SchedulePage snapshot={data} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit} />}
 
           {view === "work" && (
             <>
