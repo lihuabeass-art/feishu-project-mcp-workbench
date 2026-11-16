@@ -200,8 +200,9 @@ export function SchedulePage({
   const [source, setSource] = useState("");
   const [project, setProject] = useState("");
   const [type, setType] = useState("");
-  const [person, setPerson] = useState("");
+  const [person, setPerson] = useState<string[]>([]);
   const [personQuery, setPersonQuery] = useState("");
+  const [personSearchRequest, setPersonSearchRequest] = useState(0);
   const [editableOnly, setEditableOnly] = useState(false);
   const [poolCollapsed, setPoolCollapsed] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
@@ -638,7 +639,7 @@ export function SchedulePage({
       (!source || entry.record.sourceIds.includes(source)) &&
       (!project || entry.identity.project === project) &&
       (!type || JSON.stringify([entry.identity.project, entry.identity.type]) === type) &&
-      (view !== "people" || !person || entry.record.ownerIds.includes(person)) &&
+      (view !== "people" || person.length === 0 || entry.record.ownerIds.some((id) => person.includes(id))) &&
       (view === "people" ||
         !!read?.accountError ||
         entry.record.mine ||
@@ -653,7 +654,7 @@ export function SchedulePage({
   const personOptions = new Map<string, Set<string>>();
   for (const item of read?.people || []) {
     if (project && item.project && item.project !== project) continue;
-    if (!`${item.name} ${item.id}`.toLowerCase().includes(personQuery.toLowerCase())) continue;
+    if (!person.includes(item.id) && !`${item.name} ${item.id}`.toLowerCase().includes(personQuery.toLowerCase())) continue;
     const names = personOptions.get(item.id) || new Set<string>();
     names.add(item.name || item.id);
     personOptions.set(item.id, names);
@@ -728,7 +729,7 @@ export function SchedulePage({
     items
       .flatMap((entry) =>
         (entry.record.ownerIds.length ? entry.record.ownerIds : [""])
-          .filter((id) => !person || id === person)
+          .filter((id) => person.length === 0 || person.includes(id))
           .map((owner) => ({ entry, owner })),
       )
       .sort(
@@ -855,9 +856,9 @@ export function SchedulePage({
         const bEditable = canEdit(b);
         if (aEditable !== bEditable) return aEditable ? -1 : 1;
         if (a.record.mine !== b.record.mine) return a.record.mine ? -1 : 1;
-      } else if (person) {
-        const aMatch = a.record.ownerIds.includes(person);
-        const bMatch = b.record.ownerIds.includes(person);
+      } else if (person.length > 0) {
+        const aMatch = a.record.ownerIds.some((id) => person.includes(id));
+        const bMatch = b.record.ownerIds.some((id) => person.includes(id));
         if (aMatch !== bMatch) return aMatch ? -1 : 1;
       }
       const aValid = validSchedule(a.dates);
@@ -1617,10 +1618,15 @@ export function SchedulePage({
                         aria-label="搜索人员"
                         placeholder="搜索人员"
                         value={personQuery}
-                        onChange={(event) => setPersonQuery(event.target.value)}
+                        onChange={(event) => {
+                          setPersonQuery(event.target.value);
+                          setPersonSearchRequest((request) => request + 1);
+                        }}
                       />
                       <Select
                         ariaLabel="筛选人员"
+                        openRequest={personSearchRequest}
+                        multiple
                         value={person}
                         onChange={setPerson}
                         options={options(personFilterEntries, "全部人员")}
@@ -2355,7 +2361,7 @@ export function SchedulePage({
                           })}
                         </div>
                         <p className="schedule-empty">
-                          {view === "people" && person && visible.length === 0
+                          {view === "people" && person.length > 0 && visible.length === 0
                             ? "当前范围未包含该人员的安排"
                             : "本周暂无可显示的安排"}
                         </p>

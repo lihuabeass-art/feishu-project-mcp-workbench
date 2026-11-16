@@ -611,6 +611,27 @@ it.each([0, 1, 2, 3, 4, 5, 6])("空周日历主体第 %i 列能接收待安排�
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(end);
 });
 
+it("搜索人员时自动展开筛选并显示匹配项", async () => {
+  const read = data();
+  read.people.push({ id: "other", name: "刘同事" });
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  const search = screen.getByLabelText("搜索人员");
+  const filter = screen.getByRole("combobox", { name: "筛选人员" });
+  fireEvent.change(search, { target: { value: "刘" } });
+  expect(filter.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByRole("option", { name: "刘同事" })).toBeTruthy();
+  expect(screen.queryByRole("option", { name: "本人" })).toBeNull();
+  fireEvent.click(screen.getByRole("option", { name: "刘同事" }));
+  expect(screen.getByRole("option", { name: "刘同事" }).getAttribute("aria-selected")).toBe("true");
+  fireEvent.click(filter);
+  expect(filter.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.change(search, { target: { value: "" } });
+  expect(filter.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByRole("option", { name: "本人" })).toBeTruthy();
+});
+
 it("按人筛选后切回我的排期不会沿用隐藏的人员筛选", async () => {
   const read = data(); read.people.push({ id: "other", name: "同事" });
   read.targets.push({ ...read.targets[0], id: "two", title: "同事任务", ownerId: "other", ownerIds: ["other"], mine: false, identity: { ...identity, owner: "other", node: "other" } });
@@ -622,6 +643,33 @@ it("按人筛选后切回我的排期不会沿用隐藏的人员筛选", async (
   fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
   expect(screen.getByRole("button", { name: /任务一/ })).toBeTruthy();
   expect(screen.queryByRole("button", { name: /同事任务/ })).toBeNull();
+});
+
+it("人员筛选支持连续多选、取消及清空，并按负责人显示共同排期", async () => {
+  const read = data();
+  read.people.push({ id: "other", name: "同事" }, { id: "third", name: "第三人" });
+  read.targets.push(
+    { ...read.targets[0], id: "shared", title: "共同任务", ownerId: null, ownerIds: ["me", "other", "third"], mine: false, identity: { ...identity, item: "shared", scope: "node", owner: undefined } },
+    { ...read.targets[0], id: "third", title: "第三人任务", ownerId: "third", ownerIds: ["third"], mine: false, identity: { ...identity, item: "third", owner: "third" } },
+  );
+  vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
+  fireEvent.click(screen.getByRole("option", { name: "本人" }));
+  fireEvent.click(screen.getByRole("option", { name: "同事" }));
+  expect(screen.getByRole("option", { name: "本人" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("option", { name: "同事" }).getAttribute("aria-selected")).toBe("true");
+  const pending = document.querySelector(".schedule-pending")!;
+  expect(pending.textContent).toContain("本人");
+  expect(pending.textContent).toContain("同事");
+  expect(pending.textContent).not.toContain("第三人任务");
+  expect(pending.textContent).not.toContain("第三人 ·");
+  fireEvent.click(screen.getByRole("option", { name: "本人" }));
+  expect(pending.textContent).not.toContain("任务一");
+  expect(pending.textContent).toContain("同事");
+  fireEvent.click(screen.getByRole("option", { name: "全部人员" }));
+  expect(pending.textContent).toContain("任务一");
+  expect(pending.textContent).toContain("第三人任务");
 });
 
 it("筛选排除当前目标时隐藏编辑区，恢复筛选后保留会话", async () => {

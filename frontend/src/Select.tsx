@@ -34,6 +34,7 @@ type SelectProps = {
   renderOption?: (option: SelectOption) => ReactNode;
   triggerLabel?: ReactNode;
   adjacent?: ReactNode;
+  openRequest?: number;
 } & (
   | { multiple?: false; value: string; onChange: (value: string) => void }
   | { multiple: true; value: string[]; onChange: (value: string[]) => void }
@@ -66,6 +67,7 @@ export function Select(props: SelectProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
+  const previousOpenRequest = useRef(props.openRequest);
   const isSelected = (option: SelectOption) => Array.isArray(value)
     ? option.value ? value.includes(option.value) : value.length === 0
     : option.value === value;
@@ -130,6 +132,13 @@ export function Select(props: SelectProps) {
     setOpen(false);
     setMenuPosition(null);
   }
+
+  useEffect(() => {
+    if (previousOpenRequest.current !== props.openRequest) {
+      previousOpenRequest.current = props.openRequest;
+      show();
+    }
+  }, [props.openRequest]);
 
   function choose(index: number) {
     const option = options[index];
