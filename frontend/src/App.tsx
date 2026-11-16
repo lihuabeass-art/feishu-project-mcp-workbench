@@ -55,7 +55,6 @@ import {
   itemKey,
   localTime,
   nodeScopeLabel,
-  stopLabel,
   typeLabel,
   orderTypeKeys,
   orderWorkItems,
@@ -73,7 +72,8 @@ import { sourceName, sourceProjects } from "./sourcePresets";
 import { WorkItemDetails } from "./WorkItemDetails";
 import { RelatedDefects } from "./RelatedDefects";
 import { CachedDefectDetails } from "./CachedDefectDetails";
-import { readFailureMessage, readFailureNeedsAction } from "./readFeedback";
+import { readFailureMessage, readFailureNeedsAction, syncFailureMessage } from "./readFeedback";
+import { SyncDiagnostics, reportFailure } from "./SyncDiagnostics";
 import { Select } from "./Select";
 import { LinkSettings } from "./LinkSettings";
 import { WorkflowSettings } from "./WorkflowSettings";
@@ -382,7 +382,8 @@ function Workspace() {
   const [credentialFeedback, setCredentialFeedback] = useState<SaveFeedback | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [syncFailure, setSyncFailure] = useState<string | null>(null);
-  const syncFailures = useRef(new Map<string, { kind: string; dismissed: boolean }>());
+  const syncFailures = useRef(new Map<string, AppError & { dismissed: boolean }>());
+  const [syncDiagnosticsOpen, setSyncDiagnosticsOpen] = useState(false);
   const [sourceReadFailures, setSourceReadFailures] = useState<Record<string, string>>({});
   const displayMode = useDisplayMode((message) => setError({ kind: "window", message }));
   const compact = displayMode.mode === "compact";
@@ -1118,9 +1119,14 @@ function Workspace() {
   }
 
   function publishSyncFailures() {
-    const messages = [...syncFailures.current.values()]
-      .filter((failure) => !failure.dismissed)
-      .map((failure) => readFailureMessage(failure.kind));
+    const messages = [...syncFailures.current.entries()]
+      .filter(([, failure]) => !failure.dismissed)
+      .map(([id, failure]) => {
+        const index = data?.sources.findIndex((source) => source.id === id) ?? -1;
+        const source = data?.sources[index];
+        const label = source && sourceName(source) !== source.id ? `${sourceName(source)}：` : `工作来源${index >= 0 ? ` ${index + 1}` : ""}：`;
+        return label + syncFailureMessage(failure.kind, failure.message);
+      });
     setSyncFailure(messages.length ? [...new Set(messages)].join("；") + "。" : null);
   }
 
@@ -1220,9 +1226,9 @@ function Workspace() {
           for (const check of report.checks) {
             if (!ids.includes(check.source_id)) continue;
             const ok = check.report?.status === "success" && check.report.complete && !check.report.items_rejected;
-            outcomes.set(check.source_id, ok ? null : {
-              kind: check.error_kind || "incomplete", message: "",
-            });
+            outcomes.set(check.source_id, ok ? null : check.report
+              ? reportFailure(check.report, report.runs)
+              : { kind: check.error_kind || "incomplete", message: check.error_message || "未提供详细原因" });
           }
         }
         const success =
@@ -1238,10 +1244,7 @@ function Workspace() {
             : "检查完成，数据无变化。";
         }
         else
-          failure ||= {
-            kind: "incomplete",
-            message: `同步未完成：${report.items_rejected ? `${report.items_rejected} 条未能入库` : stopLabel[report.stop_reason] || report.stop_reason}。已取得的内容仍保留。`,
-          };
+          failure ||= reportFailure(report, report.runs);
       } else {
         const info = await checkConnection();
         setConnectionCheck(info.session_established
@@ -1283,11 +1286,11 @@ function Workspace() {
           } else {
             const previous = syncFailures.current.get(id);
             if (readFailureNeedsAction(outcome.kind)) {
-              if (previous?.kind !== outcome.kind) syncFailures.current.set(id, { kind: outcome.kind, dismissed: false });
+              syncFailures.current.set(id, { ...outcome, dismissed: previous?.kind === outcome.kind ? previous.dismissed : false });
             } else if (previous) {
               // 新结果已不再指向凭证或权限问题，不能继续显示旧的操作指引。
               if (readFailureNeedsAction(previous.kind)) syncFailures.current.delete(id);
-              else previous.kind = outcome.kind;
+              else Object.assign(previous, outcome);
             }
           }
           if (manual?.remaining.delete(id)) {
@@ -1302,7 +1305,7 @@ function Workspace() {
           if (manual.failures.size) {
             if (ownsNotice) setNotice(null);
             for (const [id, outcome] of manual.failures)
-              syncFailures.current.set(id, { kind: outcome.kind, dismissed: false });
+              syncFailures.current.set(id, { ...outcome, dismissed: false });
           } else if (ownsNotice) {
             const text = manual.results.every((result) => result === "检查完成，数据无变化。")
               ? "检查完成，数据无变化。" : manual.results.length === 1 ? manual.results[0] : "刷新完成。";
@@ -1692,7 +1695,7 @@ function Workspace() {
   };
   const syncDisabled =
     !desktop || !source?.executable || !!contextOperation || (syncBusy && !incremental) || loading;
-  const hasAlerts = settingsRefreshFailed || !!error || !!syncFailure || !!notice || !!recoveryFeedback || Object.values(workflowReports).some((report) => !!report.error) || Object.values(typeOperationErrors).some(Boolean);
+  const hasAlerts = syncDiagnosticsOpen || settingsRefreshFailed || !!error || !!syncFailure || !!notice || !!recoveryFeedback || Object.values(workflowReports).some((report) => !!report.error) || Object.values(typeOperationErrors).some(Boolean);
   const alerts = (
     <>
       {settingsRefreshFailed && <div className="banner warning" role="status">
@@ -1748,6 +1751,7 @@ function Workspace() {
           <div>
             <strong>同步未完成</strong>
             <p>{syncFailure}</p>
+            <button className="secondary" aria-expanded={syncDiagnosticsOpen} onClick={() => setSyncDiagnosticsOpen((open) => !open)}>查看同步诊断</button>
           </div>
           <button
             className="icon-button"
@@ -1761,6 +1765,8 @@ function Workspace() {
           </button>
         </div>
       )}
+      {syncDiagnosticsOpen && <SyncDiagnostics sources={data?.sources || []} runs={data?.runs || []}
+        failures={[...syncFailures.current.entries()]} close={() => setSyncDiagnosticsOpen(false)} />}
       {notice && (
         <div
           className={`banner ${notice.tone} ${notice.tone === "success" ? "toast" : ""}`}
@@ -2311,6 +2317,10 @@ function Workspace() {
               { id: "links", label: "链接打开方式", icon: Link2, content: <LinkSettings onFeedback={setLinkFeedback} disabled={!!contextOperation || loading} /> },
               { id: "workflow", label: "流程操作", icon: ShieldCheck, content: <WorkflowSettings onFeedback={setWorkflowFeedback} disabled={!!contextOperation || loading} /> },
               { id: "updates", label: "软件更新", icon: ArrowDownToLine, content: <AppUpdateSettings updater={updater} /> },
+              { id: "diagnostics", label: "同步诊断", icon: FileText, content: <>
+                <p>查看最近的同步结果及详细失败原因，便于排查待办、空间与事项内容读取问题。</p>
+                <button className="secondary" aria-expanded={syncDiagnosticsOpen} onClick={() => setSyncDiagnosticsOpen((open) => !open)}>查看同步诊断</button>
+              </> },
             ]} />
         </div>
       </main>

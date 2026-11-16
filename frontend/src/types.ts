@@ -73,7 +73,7 @@ export interface SyncRun {
   error_kind: string | null;
   error_message: string | null;
   rejection_detail: string | null;
-  // 后端 v3 起附带；界面不展示同步台账，这里只是把 IPC 契约写全。
+  // 后端 v3 起附带；同步诊断按需展示，不进入普通错误提示。
   trigger?: "manual" | "automatic";
   source_id?: string | null;
   items_out_of_scope?: number;
@@ -158,6 +158,7 @@ export interface SyncReport {
   items_updated: number;
   items_rejected: number;
   stop_reason: string;
+  rejections?: Array<{ code: string; count: number; sample: string }>;
   // 后端 v3 起附带；旧后端不返回时按未知处理。
   run_id?: number;
   trigger?: "manual" | "automatic";
