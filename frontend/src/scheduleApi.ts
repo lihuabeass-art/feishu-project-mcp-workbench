@@ -114,13 +114,14 @@ function mapWireRead(result: WireRead): ScheduleRead {
     })),
   };
 }
-export const loadScheduleSession = (options?: { includePeople?: boolean }) => enqueue(async (): Promise<ScheduleRead> => {
+// 候选读取不占编辑会话的串行队列；当前会话的提交无需等待后台网络读取。
+export const loadScheduleSession = async (options?: { includePeople?: boolean }): Promise<ScheduleRead> => {
   const result =
     options?.includePeople === undefined
       ? await invoke<WireRead>("load_schedule_session")
       : await invoke<WireRead>("load_schedule_session", { includePeople: options.includePeople });
   return mapWireRead(result);
-});
+};
 export const loadSchedulePeople = (sessionId: string) => enqueue(async (): Promise<ScheduleRead> => {
   const result = await invoke<WireRead>("load_schedule_people", { sessionId });
   return mapWireRead(result);

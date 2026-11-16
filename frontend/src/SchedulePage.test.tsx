@@ -23,7 +23,7 @@ const confirmSync = () => {
   if (dialog) fireEvent.click(within(dialog).getByRole("button", { name: /确认同步/ }));
 };
 
-it("后台刷新保留预加载内容并暂停编辑，失败保留旧内容且可手动重读，成功后恢复编辑", async () => {
+it.each(["refreshing", "failed"])("后台%s保留有效会话，持续允许编辑、核对与提交", async (phase) => {
   const read = data();
   const controller: ScheduleSessionController = { read, pending: null, refreshing: false, refreshError: "", updateRead: vi.fn(), reload: vi.fn().mockResolvedValue({ ...read, sessionId: "new-session" }) };
   const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload(), preloadedSession: controller };
@@ -34,20 +34,70 @@ it("后台刷新保留预加载内容并暂停编辑，失败保留旧内容且�
   page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller }} />);
   expect(screen.getAllByText("任务一").length).toBeGreaterThan(0);
   expect(screen.getByRole("status").textContent).toContain("保留上次");
-  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
   expect((screen.getByRole("button", { name: "正在刷新…" }) as HTMLButtonElement).disabled).toBe(true);
-  controller.refreshing = false;
-  controller.refreshError = "最新排期读取未完成，已保留上次内容，请重新读取后再编辑。";
+  fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: "2026-11-16" } });
+  fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "2026-11-17" } });
+  fireEvent.click(screen.getByRole("button", { name: /核对并同步|同步排期/ }));
+  expect(screen.getByRole("dialog", { name: "核对排期变更并同步" })).toBeTruthy();
+  controller.refreshing = phase === "refreshing";
+  controller.refreshError = phase === "failed" ? "最新排期读取未完成，已保留上次内容，可继续编辑，稍后重试。" : "";
   page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller }} />);
-  expect(screen.getByText(controller.refreshError)).toBeTruthy();
+  if (controller.refreshError) expect(screen.getByText(controller.refreshError)).toBeTruthy();
   expect(screen.getAllByText("任务一").length).toBeGreaterThan(0);
-  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
-  controller.refreshError = "";
-  controller.read = { ...read, sessionId: "new-session" };
-  page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller }} />);
-  await waitFor(() => expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false));
-  fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
-  await waitFor(() => expect(controller.reload).toHaveBeenCalledWith({ includePeople: false }));
+  vi.mocked(submitScheduleTargets).mockResolvedValueOnce({ results: [{ id: "one", result: "accepted" }], writeRequests: 1 });
+  fireEvent.click(within(screen.getByRole("dialog", { name: "核对排期变更并同步" })).getByRole("button", { name: /确认同步/ }));
+  await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledWith("session", expect.arrayContaining([expect.objectContaining({ id: "one", dates: { start: "2026-11-16", end: "2026-11-17" } })])));
+});
+
+it("候选快照在拖动期间丢弃，拖放草稿仍绑定原会话并可核对提交", async () => {
+  const read = data();
+  const consumeCandidate = vi.fn((_next: ScheduleRead, adopt: boolean) => adopt);
+  const controller: ScheduleSessionController = { read, pending: null, refreshing: true, updateRead: vi.fn(), reload: vi.fn(), consumeCandidate };
+  const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload(), preloadedSession: controller };
+  const page = render(<SchedulePage {...props} />);
+  const transfer = { effectAllowed: "", setData: vi.fn() };
+  fireEvent.dragStart(await screen.findByRole("button", { name: /任务一/ }), { dataTransfer: transfer });
+  const candidate = { ...read, sessionId: "candidate", targets: [{ ...read.targets[0], id: "new-id", title: "候选内容" }] };
+  page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller, candidate }} />);
+  expect(consumeCandidate).toHaveBeenCalledWith(candidate, false);
+  expect(screen.queryByText("候选内容")).toBeNull();
+  fireEvent.drop(document.querySelectorAll(".schedule-days > div")[1], { dataTransfer: transfer });
+  vi.mocked(submitScheduleTargets).mockResolvedValueOnce({ results: [{ id: "one", result: "accepted" }], writeRequests: 1 });
+  confirmSync();
+  await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledWith("session", expect.arrayContaining([expect.objectContaining({ id: "one" })])));
+});
+
+it("空闲采用候选时按业务身份保留选中节点，使用新会话目标提交", async () => {
+  const read = data();
+  const consumeCandidate = vi.fn().mockReturnValue(true);
+  const controller: ScheduleSessionController = { read, pending: null, updateRead: vi.fn(), reload: vi.fn(), consumeCandidate };
+  const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload(), preloadedSession: controller };
+  const page = render(<SchedulePage {...props} />);
+  fireEvent.click(await screen.findByText("任务一"));
+  const candidate = { ...read, sessionId: "candidate", targets: [{ ...read.targets[0], id: "new-id" }] };
+  page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller, candidate }} />);
+  expect(consumeCandidate).toHaveBeenCalledWith(candidate, true);
+  fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: "2026-11-16" } });
+  fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "2026-11-17" } });
+  vi.mocked(submitScheduleTargets).mockResolvedValueOnce({ results: [{ id: "new-id", result: "accepted" }], writeRequests: 1 });
+  confirmSync();
+  await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledWith("candidate", expect.arrayContaining([expect.objectContaining({ id: "new-id" })])));
+});
+
+it("日期选择器已打开时不采用候选，也不关闭正在选择的日历", async () => {
+  const read = data();
+  const consumeCandidate = vi.fn((_next: ScheduleRead, adopt: boolean) => adopt);
+  const controller: ScheduleSessionController = { read, pending: null, updateRead: vi.fn(), reload: vi.fn(), consumeCandidate };
+  const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload(), preloadedSession: controller };
+  const page = render(<SchedulePage {...props} />);
+  fireEvent.click(await screen.findByText("任务一"));
+  fireEvent.click(screen.getByLabelText("开始日期"));
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  const candidate = { ...read, sessionId: "candidate", targets: [{ ...read.targets[0], id: "new-id" }] };
+  page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller, candidate }} />);
+  expect(consumeCandidate).toHaveBeenCalledWith(candidate, false);
+  expect(screen.getByRole("dialog")).toBeTruthy();
 });
 
 it("手动重读再次失败仍展示旧快照及恢复入口，不把内容替换成整页错误", async () => {
@@ -57,13 +107,11 @@ it("手动重读再次失败仍展示旧快照及恢复入口，不把内容替�
   fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
   await screen.findByText(/读取事项安排失败.*已保留上次内容/);
   expect(screen.getAllByText("任务一").length).toBeGreaterThan(0);
-  fireEvent.click(screen.getByText("任务一"));
-  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
   expect((screen.getByRole("button", { name: "重新读取" }) as HTMLButtonElement).disabled).toBe(false);
   vi.mocked(controller.reload).mockResolvedValueOnce({ ...data(), sessionId: "recovered" });
   fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
   await waitFor(() => expect((screen.getByRole("button", { name: "重新读取" }) as HTMLButtonElement).disabled).toBe(false));
-  fireEvent.click(screen.getByText("任务一"));
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
   expect(screen.queryByText(/读取事项安排失败.*已保留上次内容/)).toBeNull();
 });

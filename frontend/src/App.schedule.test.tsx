@@ -39,11 +39,14 @@ vi.mock("./SchedulePage", () => ({ SchedulePage: ({ onGuardChange, preloadedSess
   const [loadFailed, setLoadFailed] = useState(false);
   useEffect(() => onGuardChange(guard), [guard, onGuardChange]);
   useEffect(() => {
+    if (preloadedSession?.candidate) preloadedSession.consumeCandidate?.(preloadedSession.candidate, !guard.dirty && !guard.busy && !guard.uncertain);
+  }, [preloadedSession?.candidate, guard]);
+  useEffect(() => {
     if (!preloadedSession || preloadedSession.read) return;
     const req = preloadedSession.pending ?? preloadedSession.reload();
     void req.then((res) => { setLoadFailed(false); setSessionId(res.sessionId); }, () => setLoadFailed(true));
   }, []);
-  return <div><span>排期页面内容</span><span>当前显示会话:{preloadedSession?.read?.sessionId}</span>{preloadedSession?.refreshError && <span>{preloadedSession.refreshError}</span>}{sessionId && <span>已复用预加载会话:{sessionId}</span>}{loadFailed && <span>读取出错</span>}<button onClick={() => setGuard({ dirty: true, busy: false, uncertain: false })}>模拟编辑</button><button onClick={() => setGuard({ dirty: true, busy: true, uncertain: false })}>模拟同步</button><button onClick={() => setGuard({ dirty: true, busy: false, uncertain: true })}>模拟不确定结果</button><button onClick={() => void preloadedSession?.reload({ includePeople: false, forceReset: true }).then((res) => { setLoadFailed(false); setSessionId(res.sessionId); }, () => setLoadFailed(true))}>模拟出错后重新读取</button><button onClick={() => preloadedSession?.updateRead({ sessionId: "stale-closed", currentUserId: "me", peopleLoaded: false, readAt: "", complete: true, sources: [], people: [], targets: [] })}>模拟过期更新</button></div>;
+  return <div><span>排期页面内容</span><span>当前显示会话:{preloadedSession?.read?.sessionId}</span>{preloadedSession?.refreshError && <span>{preloadedSession.refreshError}</span>}{sessionId && <span>已复用预加载会话:{sessionId}</span>}{loadFailed && <span>读取出错</span>}<button onClick={() => preloadedSession?.onInteraction?.()}>模拟查看</button><button onClick={() => setGuard({ dirty: true, busy: false, uncertain: false })}>模拟编辑</button><button onClick={() => setGuard({ dirty: true, busy: true, uncertain: false })}>模拟同步</button><button onClick={() => setGuard({ dirty: true, busy: false, uncertain: true })}>模拟不确定结果</button><button onClick={() => void preloadedSession?.reload({ includePeople: false, forceReset: true }).then((res) => { setLoadFailed(false); setSessionId(res.sessionId); }, () => setLoadFailed(true))}>模拟出错后重新读取</button><button onClick={() => preloadedSession?.updateRead({ sessionId: "stale-closed", currentUserId: "me", peopleLoaded: false, readAt: "", complete: true, sources: [], people: [], targets: [] })}>模拟过期更新</button></div>;
 } }));
 beforeEach(() => {
   vi.mocked(loadSnapshot).mockReset().mockResolvedValue({ items: [], total: 0, last_success: null, runs: [], sources: [], config_path: "", db_path: "", credential_ready: false, credential_description: "" });
@@ -165,7 +168,7 @@ it("启动预加载后五分钟才后台补读，聚焦与进入页面复用在�
   expect(loadScheduleSession).toHaveBeenCalledTimes(2);
 });
 
-it.each(["partial", "account", "rejected"])("后台刷新 %s 保留上次快照，下一次重读关闭实际后端会话后恢复", async (failure) => {
+it.each(["partial", "account", "rejected"])("后台刷新 %s 保留原会话，只释放失败候选，下一次读取恢复", async (failure) => {
   desktopState.value = true;
   let now = 1_000_000;
   vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -182,14 +185,55 @@ it.each(["partial", "account", "rejected"])("后台刷新 %s 保留上次快照�
   fireEvent(window, new Event("focus"));
   await screen.findByText(/已保留上次内容/);
   expect(screen.getByText("当前显示会话:old")).toBeTruthy();
+  const closed = await Promise.all(vi.mocked(closeScheduleSession).mock.calls.map(([request]) => request));
+  expect(closed.map((value) => value.sessionId)).toEqual(failure === "rejected" ? [] : ["partial-backend"]);
   vi.mocked(loadScheduleSession).mockResolvedValueOnce({ ...read, sessionId: "recovered" });
   // 失败后快照仍然过期：一分钟后重新聚焦应恢复，而非再等五分钟。
   now += 60_000;
   fireEvent(window, new Event("focus"));
   await screen.findByText("当前显示会话:recovered");
   const previous = vi.mocked(closeScheduleSession).mock.calls.at(-1)![0];
-  expect((await previous).sessionId).toBe(failure === "rejected" ? "old" : "partial-backend");
+  expect((await previous).sessionId).toBe("old");
   expect(screen.queryByText(/已保留上次内容/)).toBeNull();
+});
+
+it.each(["模拟编辑", "模拟同步", "模拟不确定结果", "模拟查看"])("后台读取开始后%s，候选返回仍保留原会话", async (action) => {
+  desktopState.value = true;
+  let now = 1_000_000;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  vi.mocked(loadSnapshot).mockResolvedValueOnce({ items: [], total: 0, last_success: null, runs: [], sources: [], config_path: "cfg", db_path: "db", credential_ready: true, credential_description: "已配置" });
+  const read: ScheduleRead = { sessionId: "editing", currentUserId: "me", readAt: "上次读取", complete: true, sources: [], people: [], targets: [] };
+  let finish!: (read: ScheduleRead) => void;
+  vi.mocked(loadScheduleSession).mockResolvedValueOnce(read).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  render(<App />);
+  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByText("事项安排"));
+  await screen.findByText("当前显示会话:editing");
+  now += 300_000;
+  fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(2));
+  expect(closeScheduleSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText(action));
+  finish({ ...read, sessionId: "candidate" });
+  await waitFor(() => expect(closeScheduleSession).toHaveBeenCalledTimes(1));
+  expect((await vi.mocked(closeScheduleSession).mock.calls[0][0]).sessionId).toBe("candidate");
+  expect(screen.getByText("当前显示会话:editing")).toBeTruthy();
+});
+
+it("已有有效会话时显式重读失败也不先重置它", async () => {
+  desktopState.value = true;
+  vi.mocked(loadSnapshot).mockResolvedValueOnce({ items: [], total: 0, last_success: null, runs: [], sources: [], config_path: "cfg", db_path: "db", credential_ready: true, credential_description: "已配置" });
+  const read: ScheduleRead = { sessionId: "editing", currentUserId: "me", readAt: "上次读取", complete: true, sources: [], people: [], targets: [] };
+  vi.mocked(loadScheduleSession).mockResolvedValueOnce(read).mockRejectedValueOnce({ kind: "connection" });
+  render(<App />);
+  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByText("事项安排"));
+  await screen.findByText("当前显示会话:editing");
+  fireEvent.click(screen.getByText("模拟出错后重新读取"));
+  await screen.findByText(/已保留上次内容/);
+  expect(resetScheduleSession).not.toHaveBeenCalled();
+  expect(closeScheduleSession).not.toHaveBeenCalled();
+  expect(screen.getByText("当前显示会话:editing")).toBeTruthy();
 });
 
 it("后台预加载尚在途时进入事项安排直接复用同一未决 Promise，且放弃不确定状态后自动失效旧会话", async () => {
@@ -299,7 +343,7 @@ it("首屏快照加载完成前提前点击事项安排发起的会话不会被�
   expect(closeScheduleSession).not.toHaveBeenCalled();
 });
 
-it("后台预加载遇残留干净会话冲突时自动非强制重置恢复，过期会话 updateRead 不覆盖当前会话", async () => {
+it("后台读取冲突不重置其他会话，进入页面重试后过期 updateRead 不覆盖当前会话", async () => {
   desktopState.value = true;
   vi.mocked(loadSnapshot).mockResolvedValueOnce({
     items: [],
@@ -327,8 +371,8 @@ it("后台预加载遇残留干净会话冲突时自动非强制重置恢复，�
     .mockResolvedValueOnce(recovered);
 
   render(<App />);
-  await waitFor(() => expect(resetScheduleSession).toHaveBeenCalledWith({ force: false }));
-  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(1));
+  expect(resetScheduleSession).not.toHaveBeenCalled();
 
   fireEvent.click(await screen.findByText("事项安排"));
   expect(await screen.findByText("已复用预加载会话:recovered-1")).toBeTruthy();
@@ -340,7 +384,7 @@ it("后台预加载遇残留干净会话冲突时自动非强制重置恢复，�
   expect(await screen.findByText("已复用预加载会话:recovered-1")).toBeTruthy();
 });
 
-it("非强制重置遇阻塞/不确定会话失败时不静默强清，用户出错后点击重新读取可强制恢复", async () => {
+it("读取冲突不静默清理会话，无可用会话时用户明确重新读取可强制恢复", async () => {
   desktopState.value = true;
   vi.mocked(loadSnapshot).mockResolvedValueOnce({
     items: [],
@@ -366,13 +410,10 @@ it("非强制重置遇阻塞/不确定会话失败时不静默强清，用户出
       people: [],
       targets: [],
     });
-  vi.mocked(resetScheduleSession)
-    .mockRejectedValueOnce({ kind: "conflict", message: "当前排期存在未确认结果，请先在飞书核对并重新读取" })
-    .mockRejectedValueOnce({ kind: "conflict", message: "当前排期存在未确认结果，请先在飞书核对并重新读取" })
-    .mockResolvedValueOnce(undefined);
 
   render(<App />);
-  await waitFor(() => expect(resetScheduleSession).toHaveBeenCalledWith({ force: false }));
+  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(1));
+  expect(resetScheduleSession).not.toHaveBeenCalled();
 
   fireEvent.click(await screen.findByText("事项安排"));
   expect(await screen.findByText("读取出错")).toBeTruthy();

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowUpRight,
@@ -51,7 +51,7 @@ import {
 import "./schedule.css";
 
 type Entry = ScheduleTarget & { record: ScheduleRecord; resultMessage?: string | null };
-type Guard = { dirty: boolean; busy: boolean; uncertain: boolean };
+type Guard = { dirty: boolean; busy: boolean; uncertain: boolean; interacting?: boolean };
 type Drag = { id: string; kind: "new" | "move" | "start" | "end"; grabbed: string };
 
 export interface ScheduleSessionController {
@@ -59,6 +59,10 @@ export interface ScheduleSessionController {
   pending: Promise<ScheduleRead> | null;
   refreshing?: boolean;
   refreshError?: string;
+  onInteraction?: () => void;
+  endInteraction?: () => void;
+  candidate?: ScheduleRead | null;
+  consumeCandidate?: (next: ScheduleRead, adopt: boolean) => boolean;
   updateRead: (next: ScheduleRead) => void;
   reload: (options?: { includePeople?: boolean; forceReset?: boolean }) => Promise<ScheduleRead>;
 }
@@ -206,6 +210,8 @@ export function SchedulePage({
   const [hoveredId, setHoveredId] = useState("");
   const [preview, setPreview] = useState<{ id: string; start: string; end: string } | null>(null);
   const drag = useRef<Drag | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
   const reviewBackdropRef = useRef<HTMLDivElement>(null);
   const reviewScrollRef = useScrollIsolation(reviewBackdropRef);
 
@@ -222,9 +228,10 @@ export function SchedulePage({
     ]);
   const frozenNodes = new Set(entries.filter((entry) => entry.result === "uncertain").map(nodeKey));
 
-  useEffect(() => {
-    onGuardChange({ dirty, busy, uncertain });
-  }, [dirty, busy, uncertain, onGuardChange]);
+  useLayoutEffect(() => {
+    onGuardChange({ dirty, busy, uncertain, ...(reviewOpen || dragging || peopleLoading || datePickerOpen ? { interacting: true } : {}) });
+  }, [dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen, onGuardChange]);
+  useLayoutEffect(() => () => preloadedSession?.endInteraction?.(), []);
 
   useEffect(() => {
     if (!successToast) return;
@@ -236,7 +243,7 @@ export function SchedulePage({
 
   useEffect(() => {
     let active = true;
-    setSelected("");
+    if (!preloadedSession?.read) setSelected("");
     setHoveredId("");
     setReport("");
     setSuccessToast(null);
@@ -258,7 +265,8 @@ export function SchedulePage({
           peopleLoadingRef.current = false;
         };
       }
-      currentSessionIdRef.current = "";
+      const cachedRead = preloadedSession.read;
+      currentSessionIdRef.current = cachedRead?.sessionId || "";
       setLoading(true);
       setError("");
       setRead(preloadedSession.read);
@@ -276,6 +284,8 @@ export function SchedulePage({
       request
         .then((result) => {
           if (!active) return;
+          // 有缓存时由控制器统一采用候选；这里不能用 Promise 的旧结果覆盖读取期间产生的草稿。
+          if (cachedRead && (preloadedSession.consumeCandidate || cachedRead.sessionId === result.sessionId)) return;
           currentSessionIdRef.current = result.sessionId;
           setRead(result);
           setEntries(result.targets.map(createScheduleEntry));
@@ -322,8 +332,8 @@ export function SchedulePage({
   }, [epoch]);
 
   const triggerLoadPeople = (currentRead: ScheduleRead) => {
-    if (preloadedSession?.pending || preloadedSession?.refreshError) return;
     if (currentRead.peopleLoaded !== false || peopleLoadingRef.current) return;
+    preloadedSession?.onInteraction?.();
     const targetSessionId = currentRead.sessionId;
     currentSessionIdRef.current = targetSessionId;
     peopleLoadingRef.current = true;
@@ -372,22 +382,28 @@ export function SchedulePage({
       });
   };
 
-  useEffect(() => {
-    if (!preloadedSession || dirty || busy || busyRef.current || uncertain) return;
+  useLayoutEffect(() => {
+    if (!preloadedSession) return;
+    const protectedInteraction = dirty || busy || busyRef.current || uncertain || reviewOpen || dragging || peopleLoading || datePickerOpen;
+    const next = preloadedSession.candidate ?? preloadedSession.read;
+    if (preloadedSession.candidate && preloadedSession.consumeCandidate?.(preloadedSession.candidate, !protectedInteraction) === false) return;
+    if (protectedInteraction) return;
     if (
-      preloadedSession.read &&
-      preloadedSession.read.sessionId !== currentSessionIdRef.current
+      next &&
+      next.sessionId !== currentSessionIdRef.current
     ) {
-      currentSessionIdRef.current = preloadedSession.read.sessionId;
+      currentSessionIdRef.current = next.sessionId;
       peopleLoadingRef.current = false;
       setPeopleLoading(false);
       setPeopleError("");
-      setRead(preloadedSession.read);
-      setEntries(preloadedSession.read.targets.map(createScheduleEntry));
+      setRead(next);
+      const selectedIdentity = entries.find((entry) => entry.id === selected)?.identity;
+      setSelected(selectedIdentity ? next.targets.find((target) => JSON.stringify(target.identity) === JSON.stringify(selectedIdentity))?.id || "" : "");
+      setEntries(next.targets.map(createScheduleEntry));
       setError("");
       setLoading(false);
-      if (viewModeRef.current === "people" && preloadedSession.read.peopleLoaded === false) {
-        triggerLoadPeople(preloadedSession.read);
+      if (viewModeRef.current === "people" && next.peopleLoaded === false) {
+        triggerLoadPeople(next);
       }
       return;
     }
@@ -420,7 +436,7 @@ export function SchedulePage({
         active = false;
       };
     }
-  }, [preloadedSession?.read, preloadedSession?.pending, dirty, busy, uncertain]);
+  }, [preloadedSession?.candidate, preloadedSession?.read, preloadedSession?.pending, dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen]);
 
   const people = useMemo(
     () =>
@@ -568,7 +584,7 @@ export function SchedulePage({
     normalizeNodeStatus(entry.record.nodeStatus) !== "not_started" &&
     !frozenNodes.has(nodeKey(entry));
   const readRefreshing = Boolean(loading || preloadedSession?.refreshing || preloadedSession?.pending);
-  const readUnavailable = readRefreshing || Boolean(error || preloadedSession?.refreshError);
+  const readUnavailable = !read;
   const canEdit = (entry: Entry) => view === "mine" && isEditableTarget(entry) && !busy && !readUnavailable;
 
   const baseWeekStart = week;
@@ -1001,10 +1017,12 @@ export function SchedulePage({
     return `${spaceLabel} · ${itemLabel}${sourceSuffix}：${item.message}`;
   };
 
-  const update = (id: string, fn: (entry: Entry) => ScheduleTarget) =>
+  const update = (id: string, fn: (entry: Entry) => ScheduleTarget) => {
+    preloadedSession?.onInteraction?.();
     setEntries((current) =>
       current.map((entry) => (entry.id === id ? { ...entry, ...fn(entry) } : entry)),
     );
+  };
   const options = (values: Array<[string, string]>, all: string) => [
     { value: "", label: all },
     ...Array.from(new Map(values)).map(([value, label]) => ({ value, label })),
@@ -1063,6 +1081,8 @@ export function SchedulePage({
       return;
     }
     drag.current = { id: entry.id, kind, grabbed };
+    preloadedSession?.onInteraction?.();
+    setDragging(true);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", entry.id);
     setSelected(entry.id);
@@ -1091,6 +1111,7 @@ export function SchedulePage({
     event.preventDefault();
     const current = drag.current;
     drag.current = null;
+    setDragging(false);
     setPreview(null);
     if (!current || busyRef.current) return;
     update(current.id, (entry) => {
@@ -1110,6 +1131,7 @@ export function SchedulePage({
     event.preventDefault();
     const current = drag.current;
     drag.current = null;
+    setDragging(false);
     setPreview(null);
     if (!current || current.kind === "new" || busyRef.current) return;
     update(current.id, (entry) =>
@@ -1272,7 +1294,7 @@ export function SchedulePage({
   );
 
   return (
-    <section className="schedule-page" aria-label="事项安排">
+    <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={() => preloadedSession?.onInteraction?.()} onFocusCapture={() => preloadedSession?.onInteraction?.()}>
       {loading && !read ? (
         <div className="overview schedule-overview">
           <div className="schedule-overview-metrics">
@@ -1365,7 +1387,7 @@ export function SchedulePage({
                 <button
                   type="button"
                   className="primary"
-                  disabled={changedEntries.length === 0 || busy || loading || readUnavailable}
+                  disabled={changedEntries.length === 0 || busy || readUnavailable}
                   onClick={openReviewOrValidate}
                 >
                   <Check size={14} aria-hidden="true" />
@@ -1380,7 +1402,7 @@ export function SchedulePage({
 
             {readRefreshing && <p role="status">正在刷新最新排期，暂时保留上次读取的内容。</p>}
             {preloadedSession?.refreshError && <p className="banner warning" role="alert">{preloadedSession.refreshError}</p>}
-            {error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，请重新读取后再编辑。</p>}
+            {error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，可继续编辑，稍后重试。</p>}
             <div className="schedule-scope">
               <div className="schedule-scope-summary">
                 <span
@@ -1721,6 +1743,7 @@ export function SchedulePage({
                                   onDragStart={(event) => startDrag(event, entry, "new", "")}
                                   onDragEnd={() => {
                                     drag.current = null;
+                                    setDragging(false);
                                     setPreview(null);
                                   }}
                                   onClick={() => setSelected(entry.id)}
@@ -1822,6 +1845,7 @@ export function SchedulePage({
                                   onDragStart={(event) => startDrag(event, entry, "new", "")}
                                   onDragEnd={() => {
                                     drag.current = null;
+                                    setDragging(false);
                                     setPreview(null);
                                   }}
                                   onClick={() => setSelected(entry.id)}
@@ -2130,6 +2154,7 @@ export function SchedulePage({
                                         }}
                                         onDragEnd={() => {
                                           drag.current = null;
+                                          setDragging(false);
                                           setPreview(null);
                                         }}
                                         onMouseEnter={() => setHoveredId(entry.id)}
@@ -2448,6 +2473,7 @@ export function SchedulePage({
                             </div>
                           )}
                           <DateRangePicker
+                            onOpenChange={setDatePickerOpen}
                             start={selectedEntry.dates.start}
                             end={selectedEntry.dates.end}
                             startLabel="开始日期"

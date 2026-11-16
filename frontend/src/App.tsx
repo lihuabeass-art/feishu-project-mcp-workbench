@@ -300,8 +300,11 @@ function Workspace() {
   const [view, setView] = useState<View>("work");
   const viewRef = useRef(view);
   viewRef.current = view;
-  const [scheduleGuard, setScheduleGuard] = useState({ dirty: false, busy: false, uncertain: false });
+  const [scheduleGuard, setScheduleGuard] = useState<{ dirty: boolean; busy: boolean; uncertain: boolean; interacting?: boolean }>({ dirty: false, busy: false, uncertain: false });
   const scheduleGuardRef = useRef(scheduleGuard);
+  const scheduleInteractionRevision = useRef(0);
+  const [scheduleCandidate, setScheduleCandidate] = useState<ScheduleRead | null>(null);
+  const scheduleCandidateRef = useRef<{ read: ScheduleRead; revision: number } | null>(null);
   const [scheduleExit, setScheduleExit] = useState<{ action?: () => void } | null>(null);
   const scheduleExitScrollRef = useScrollIsolation();
   const updateScheduleGuard = useCallback((guard: typeof scheduleGuard) => { scheduleGuardRef.current = guard; setScheduleGuard(guard); }, []);
@@ -501,32 +504,12 @@ function Workspace() {
   scheduleFingerprintRef.current = schedulePreloadFingerprint;
   const openOrRecoverScheduleSession = useCallback(
     async (
-      prev: Promise<ScheduleRead> | null,
       options: { includePeople: boolean; forceReset?: boolean },
     ): Promise<ScheduleRead> => {
-      if (prev) {
-        try {
-          await closeScheduleSession(prev);
-        } catch (closeFailure) {
-          // 前序关闭失败（如状态错位或会话曾泄漏）时，在允许的前提下先清理后端会话，避免后续 load 永久冲突。
-          if (!options.forceReset && scheduleGuardRef.current.uncertain) {
-            throw closeFailure;
-          }
-          await resetScheduleSession({ force: Boolean(options.forceReset) });
-        }
-      } else if (options.forceReset) {
+      if (options.forceReset && !scheduleSessionRef.current.read) {
         await resetScheduleSession({ force: true });
       }
-      try {
-        return await loadScheduleSession({ includePeople: options.includePeople });
-      } catch (failure) {
-        if (asError(failure).kind !== "conflict") throw failure;
-        if (!options.forceReset && (scheduleGuardRef.current.busy || scheduleGuardRef.current.uncertain)) {
-          throw failure;
-        }
-        await resetScheduleSession({ force: Boolean(options.forceReset) });
-        return await loadScheduleSession({ includePeople: options.includePeople });
-      }
+      return await loadScheduleSession({ includePeople: options.includePeople });
     },
     [],
   );
@@ -544,10 +527,15 @@ function Workspace() {
       setScheduleRefreshError("");
       const previousRead = scheduleSessionRef.current.connectionKey === connectionKey
         ? preloadedSchedule ?? scheduleSessionRef.current.read : null;
-      const prev =
-        scheduleSessionRef.current.pending ||
-        (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
-      const req = openOrRecoverScheduleSession(prev, options);
+      const previousSession = scheduleSessionRef.current.read;
+      if (scheduleCandidateRef.current) {
+        void closeScheduleSession(Promise.resolve(scheduleCandidateRef.current.read)).catch(() => {});
+        scheduleCandidateRef.current = null;
+        setScheduleCandidate(null);
+      }
+      if (!previousRead && previousSession) void closeScheduleSession(Promise.resolve(previousSession)).catch(() => {});
+      const interactionRevision = scheduleInteractionRevision.current;
+      const req = openOrRecoverScheduleSession(options);
       scheduleSessionRef.current = {
         fingerprint,
         connectionKey,
@@ -561,14 +549,27 @@ function Workspace() {
             void closeScheduleSession(Promise.resolve(res)).catch(() => {});
             return res;
           }
-          scheduleSessionRef.current.read = res;
           scheduleSessionRef.current.pending = null;
           setScheduleRefreshing(false);
-          // 部分读取同样可能以 fulfilled 返回；保留可见快照，但单独记住新后端
-          // 会话供下次关闭，不能再对旧快照开放编辑或提交。
+          // 候选结果不完整时只释放候选会话，原编辑基线仍有效。
           if (previousRead && (res.accountError || (res.sources.length > 0 && !res.complete) || res.itemErrors?.length)) {
-            setScheduleRefreshError("最新排期仅部分读取完成，已保留上次内容，请重新读取后再编辑。");
+            void closeScheduleSession(Promise.resolve(res)).catch(() => {});
+            setScheduleRefreshError("最新排期仅部分读取完成，已保留上次内容，可继续编辑，稍后重试。");
             return previousRead;
+          }
+          const guard = scheduleGuardRef.current;
+          if (previousRead && (guard.dirty || guard.busy || guard.uncertain || guard.interacting || interactionRevision !== scheduleInteractionRevision.current)) {
+            void closeScheduleSession(Promise.resolve(res)).catch(() => {});
+            return scheduleSessionRef.current.read ?? previousRead;
+          }
+          if (previousRead && viewRef.current === "schedule") {
+            scheduleCandidateRef.current = { read: res, revision: interactionRevision };
+            setScheduleCandidate(res);
+            return previousRead;
+          }
+          scheduleSessionRef.current.read = res;
+          if (previousSession && previousSession.sessionId !== res.sessionId) {
+            void closeScheduleSession(Promise.resolve(previousSession)).catch(() => {});
           }
           if (!res.accountError && (res.complete || (res.sources.length === 0 && !res.itemErrors?.length))) {
             scheduleLastSuccessRef.current = Date.now();
@@ -580,7 +581,7 @@ function Workspace() {
           if (scheduleSessionRef.current.pending === req) {
             scheduleSessionRef.current.pending = null;
             setScheduleRefreshing(false);
-            setScheduleRefreshError("最新排期读取未完成，已保留上次内容，请重新读取后再编辑。");
+            setScheduleRefreshError("最新排期读取未完成，已保留上次内容，可继续编辑，稍后重试。");
           }
           throw err;
         },
@@ -591,6 +592,10 @@ function Workspace() {
   useEffect(() => {
     if (!schedulePreloadFingerprint) {
       if (!loading && !data?.credential_ready && (scheduleSessionRef.current.pending || scheduleSessionRef.current.read)) {
+        if (scheduleCandidateRef.current) void closeScheduleSession(Promise.resolve(scheduleCandidateRef.current.read)).catch(() => {});
+        scheduleCandidateRef.current = null;
+        setScheduleCandidate(null);
+        if (scheduleSessionRef.current.pending && scheduleSessionRef.current.read) void closeScheduleSession(Promise.resolve(scheduleSessionRef.current.read)).catch(() => {});
         const prev =
           scheduleSessionRef.current.pending ||
           (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
@@ -617,7 +622,7 @@ function Workspace() {
     // 停留在事项安排且存在未保存编辑或不确定结果时，不在后台强关当前会话
     if (
       viewRef.current === "schedule" &&
-      (scheduleGuardRef.current.dirty || scheduleGuardRef.current.busy || scheduleGuardRef.current.uncertain)
+      (scheduleGuardRef.current.dirty || scheduleGuardRef.current.busy || scheduleGuardRef.current.uncertain || scheduleGuardRef.current.interacting)
     ) {
       return;
     }
@@ -629,7 +634,7 @@ function Workspace() {
     if (!schedulePreloadFingerprint) return;
     const refreshIfStale = () => {
       const guard = scheduleGuardRef.current;
-      if (document.visibilityState === "hidden" || contextRef.current || guard.dirty || guard.busy || guard.uncertain
+      if (document.visibilityState === "hidden" || contextRef.current || guard.dirty || guard.busy || guard.uncertain || guard.interacting
         || scheduleSessionRef.current.pending || Date.now() - scheduleLastSuccessRef.current < 5 * 60_000
         || Date.now() - scheduleLastAttemptRef.current < 60_000) return;
       void beginScheduleLoad(scheduleFingerprintRef.current, scheduleConnectionKeyRef.current, {
@@ -648,6 +653,9 @@ function Workspace() {
   }, [Boolean(schedulePreloadFingerprint), view, beginScheduleLoad]);
   useEffect(
     () => () => {
+      if (scheduleCandidateRef.current) void closeScheduleSession(Promise.resolve(scheduleCandidateRef.current.read)).catch(() => {});
+      scheduleCandidateRef.current = null;
+      if (scheduleSessionRef.current.pending && scheduleSessionRef.current.read) void closeScheduleSession(Promise.resolve(scheduleSessionRef.current.read)).catch(() => {});
       const prev =
         scheduleSessionRef.current.pending ||
         (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
@@ -662,6 +670,10 @@ function Workspace() {
     setPreloadedSchedule(next);
   }, []);
   const invalidateScheduleSession = useCallback(() => {
+    if (scheduleCandidateRef.current) void closeScheduleSession(Promise.resolve(scheduleCandidateRef.current.read)).catch(() => {});
+    scheduleCandidateRef.current = null;
+    setScheduleCandidate(null);
+    if (scheduleSessionRef.current.pending && scheduleSessionRef.current.read) void closeScheduleSession(Promise.resolve(scheduleSessionRef.current.read)).catch(() => {});
     const prev =
       scheduleSessionRef.current.pending ||
       (scheduleSessionRef.current.read ? Promise.resolve(scheduleSessionRef.current.read) : null);
@@ -671,7 +683,7 @@ function Workspace() {
     setScheduleRefreshing(false);
     setScheduleRefreshError("");
     if (prev) {
-      void closeScheduleSession(prev).catch(() => resetScheduleSession({ force: true }).catch(() => {}));
+      void closeScheduleSession(prev).catch(() => {});
     } else {
       void resetScheduleSession({ force: true }).catch(() => {});
     }
@@ -694,11 +706,37 @@ function Workspace() {
       },
       refreshing: scheduleRefreshing,
       refreshError: scheduleRefreshError,
+      candidate: scheduleCandidate,
+      consumeCandidate: (next, adopt) => {
+        const candidate = scheduleCandidateRef.current;
+        if (candidate?.read !== next) return false;
+        const guard = scheduleGuardRef.current;
+        const allowed = adopt && candidate.revision === scheduleInteractionRevision.current && !guard.dirty && !guard.busy && !guard.uncertain && !guard.interacting;
+        scheduleCandidateRef.current = null;
+        setScheduleCandidate(null);
+        if (!allowed) {
+          void closeScheduleSession(Promise.resolve(next)).catch(() => {});
+          return false;
+        }
+        const previous = scheduleSessionRef.current.read;
+        scheduleSessionRef.current.read = next;
+        scheduleLastSuccessRef.current = Date.now();
+        setPreloadedSchedule(next);
+        if (previous && previous.sessionId !== next.sessionId) void closeScheduleSession(Promise.resolve(previous)).catch(() => {});
+        return true;
+      },
+      onInteraction: () => { scheduleInteractionRevision.current += 1; },
+      endInteraction: () => {
+        if (scheduleGuardRef.current.interacting) updateScheduleGuard({ ...scheduleGuardRef.current, interacting: false });
+      },
       updateRead: updateScheduleRead,
       reload: reloadScheduleSession,
     }),
-    [preloadedSchedule, scheduleRefreshing, scheduleRefreshError, updateScheduleRead, reloadScheduleSession],
+    [preloadedSchedule, scheduleCandidate, scheduleRefreshing, scheduleRefreshError, updateScheduleRead, reloadScheduleSession],
   );
+  useEffect(() => {
+    if (view !== "schedule" && scheduleCandidate) scheduleController.consumeCandidate?.(scheduleCandidate, true);
+  }, [view, scheduleCandidate, scheduleController]);
   const filterSchemes = useFilterSchemes({
     enabled: desktop && !!data?.capabilities?.filter_schemes && !!data.credential_ready,
     context: JSON.stringify([credentialRevision, data?.settings?.endpoint, data?.db_path]),

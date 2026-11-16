@@ -27,6 +27,7 @@ type Props = {
   endRequired?: boolean;
   disabled?: boolean;
   onChange: (start: string, end: string) => void;
+  onOpenChange?: (open: boolean) => void;
 };
 
 function dateValue(date: Date) {
@@ -71,6 +72,7 @@ export function DateRangePicker({
   endRequired = false,
   disabled = false,
   onChange,
+  onOpenChange,
 }: Props) {
   const id = useId();
   const popupId = `${id}-calendar`;
@@ -94,6 +96,10 @@ export function DateRangePicker({
   const validEnd = !!parseDate(end);
   const reversed = validStart && validEnd && end < start;
   const visible = open && !disabled;
+  useLayoutEffect(() => {
+    onOpenChange?.(visible);
+    return () => onOpenChange?.(false);
+  }, [visible, onOpenChange]);
 
   function show(endpoint: Endpoint, keyboard = false) {
     if (disabled) return;

@@ -21,10 +21,10 @@ use fstodo_backend::workflow::{self, WorkflowOptions, WorkflowRequest, WorkflowR
 use serde::Serialize;
 use tauri::{Manager, Emitter};
 
-// 排期基线与不确定写保护只存本进程；锁同时阻止重新读取覆盖在途写入。
-static SCHEDULE_SESSION: std::sync::Mutex<Option<fstodo_backend::schedule::ScheduleSession>> = std::sync::Mutex::new(None);
+// 当前编辑会话与后台候选会话并存；读取不关闭旧基线，采用后由前端逐个释放。
+static SCHEDULE_SESSION: std::sync::Mutex<Vec<fstodo_backend::schedule::ScheduleSession>> = std::sync::Mutex::new(Vec::new());
 
-fn lock_schedule<T>(mutex: &std::sync::Mutex<Option<T>>) -> Result<std::sync::MutexGuard<'_, Option<T>>, BackendError> {
+fn lock_schedule<T>(mutex: &std::sync::Mutex<Vec<T>>) -> Result<std::sync::MutexGuard<'_, Vec<T>>, BackendError> {
     match mutex.try_lock() {
         Ok(guard) => Ok(guard),
         Err(std::sync::TryLockError::WouldBlock) => Err(BackendError::conflict("排期正在同步或读取，请稍候")),
@@ -32,24 +32,25 @@ fn lock_schedule<T>(mutex: &std::sync::Mutex<Option<T>>) -> Result<std::sync::Mu
     }
 }
 
-fn close_schedule<T>(mutex: &std::sync::Mutex<Option<T>>, matches: impl FnOnce(&T) -> bool) -> Result<(), BackendError> {
+fn close_schedule<T>(mutex: &std::sync::Mutex<Vec<T>>, matches: impl FnMut(&T) -> bool) -> Result<(), BackendError> {
     let mut guard = match mutex.try_lock() {
         Ok(guard) => guard,
         Err(std::sync::TryLockError::WouldBlock) => return Err(BackendError::conflict("排期正在同步，请等待本次结果")),
         Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
     };
-    if guard.as_ref().is_some_and(|s| !matches(s)) {
+    if let Some(index) = guard.iter().position(matches) {
+        guard.remove(index);
+    } else if !guard.is_empty() {
         return Err(BackendError::conflict("排期会话已变化，请重新读取"));
     }
-    *guard = None;
-    mutex.clear_poison();
+    if guard.is_empty() { mutex.clear_poison(); }
     Ok(())
 }
 
 fn reset_schedule<T>(
-    mutex: &std::sync::Mutex<Option<T>>,
+    mutex: &std::sync::Mutex<Vec<T>>,
     force: bool,
-    is_uncertain: impl FnOnce(&T) -> bool,
+    is_uncertain: impl FnMut(&T) -> bool,
 ) -> Result<(), BackendError> {
     let mut guard = match mutex.try_lock() {
         Ok(guard) => guard,
@@ -65,12 +66,12 @@ fn reset_schedule<T>(
             error.into_inner()
         }
     };
-    if !force && guard.as_ref().is_some_and(is_uncertain) {
+    if !force && guard.iter().any(is_uncertain) {
         return Err(BackendError::conflict(
             "当前排期存在未确认结果，请先在飞书核对并重新读取",
         ));
     }
-    *guard = None;
+    guard.clear();
     mutex.clear_poison();
     Ok(())
 }
@@ -78,8 +79,8 @@ fn reset_schedule<T>(
 #[tauri::command]
 async fn load_schedule_session(include_people: Option<bool>) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
     blocking(move || {
-        let mut guard = lock_schedule(&SCHEDULE_SESSION)?;
-        if guard.is_some() { return Err(BackendError::conflict("请先结束当前排期会话，再重新读取")); }
+        // 网络读取独立于现有会话的写锁，后台慢请求不能阻塞当前节点提交。
+        drop(lock_schedule(&SCHEDULE_SESSION)?);
         let session = open_session()?;
         let schedule = if include_people == Some(true) {
             fstodo_backend::schedule::ScheduleSession::load_all(&session)?
@@ -87,7 +88,8 @@ async fn load_schedule_session(include_people: Option<bool>) -> Result<fstodo_ba
             fstodo_backend::schedule::ScheduleSession::load_mine(&session)?
         };
         let view = schedule.view.clone();
-        *guard = Some(schedule);
+        let mut guard = SCHEDULE_SESSION.lock().map_err(|_| BackendError::conflict("上次排期任务中断，结果可能不确定，请先在飞书核对并结束当前会话"))?;
+        guard.push(schedule);
         Ok(view)
     }).await
 }
@@ -96,7 +98,7 @@ async fn load_schedule_session(include_people: Option<bool>) -> Result<fstodo_ba
 async fn load_schedule_people(session_id: String) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
     blocking(move || {
         let mut guard = lock_schedule(&SCHEDULE_SESSION)?;
-        let schedule = guard.as_mut().ok_or_else(|| BackendError::conflict("排期会话已结束，请重新读取"))?;
+        let schedule = guard.iter_mut().find(|s| s.view.session_id == session_id).ok_or_else(|| BackendError::conflict("排期会话已结束，请重新读取"))?;
         schedule.load_people(&open_session()?, &session_id)?;
         Ok(schedule.view.clone())
     }).await
@@ -106,7 +108,7 @@ async fn load_schedule_people(session_id: String) -> Result<fstodo_backend::sche
 async fn sync_schedule_session(session_id: String, changes: Vec<fstodo_backend::schedule::Change>) -> Result<fstodo_backend::schedule::SyncResult, UiError> {
     blocking_schedule_sync(move || {
         let mut guard = lock_schedule(&SCHEDULE_SESSION)?;
-        let schedule = guard.as_mut().ok_or_else(|| BackendError::conflict("排期会话已结束，请重新读取"))?;
+        let schedule = guard.iter_mut().find(|s| s.view.session_id == session_id).ok_or_else(|| BackendError::conflict("排期会话已结束，请重新读取"))?;
         schedule.sync(&open_session()?, &session_id, changes)
     }).await
 }
@@ -819,7 +821,7 @@ mod tests {
 
     #[test]
     fn poisoned_schedule_requires_explicit_matching_close_before_reuse() {
-        let mutex = std::sync::Arc::new(std::sync::Mutex::new(Some("old".to_string())));
+        let mutex = std::sync::Arc::new(std::sync::Mutex::new(vec!["old".to_string()]));
         let worker = mutex.clone();
         assert!(std::thread::spawn(move || {
             let _guard = worker.lock().unwrap();
@@ -829,9 +831,9 @@ mod tests {
         assert!(close_schedule(&mutex, |id| id == "other").is_err());
         assert!(lock_schedule(&mutex).is_err());
         close_schedule(&mutex, |id| id == "old").unwrap();
-        assert!(lock_schedule(&mutex).unwrap().is_none());
-        *lock_schedule(&mutex).unwrap() = Some("new".into());
-        assert_eq!(lock_schedule(&mutex).unwrap().as_deref(), Some("new"));
+        assert!(lock_schedule(&mutex).unwrap().is_empty());
+        lock_schedule(&mutex).unwrap().push("new".into());
+        assert_eq!(*lock_schedule(&mutex).unwrap(), vec!["new"]);
         let guard = lock_schedule(&mutex).unwrap();
         assert!(close_schedule(&mutex, |_| true).is_err());
         drop(guard);
@@ -839,17 +841,17 @@ mod tests {
 
     #[test]
     fn reset_schedule_respects_busy_and_uncertain_unless_forced() {
-        let mutex = std::sync::Arc::new(std::sync::Mutex::new(Some("idle".to_string())));
+        let mutex = std::sync::Arc::new(std::sync::Mutex::new(vec!["idle".to_string()]));
         reset_schedule(&mutex, false, |_| false).unwrap();
-        assert!(lock_schedule(&mutex).unwrap().is_none());
+        assert!(lock_schedule(&mutex).unwrap().is_empty());
 
-        *lock_schedule(&mutex).unwrap() = Some("uncertain".into());
+        lock_schedule(&mutex).unwrap().push("uncertain".into());
         assert!(reset_schedule(&mutex, false, |s| s == "uncertain").is_err());
-        assert_eq!(lock_schedule(&mutex).unwrap().as_deref(), Some("uncertain"));
+        assert_eq!(*lock_schedule(&mutex).unwrap(), vec!["uncertain"]);
         reset_schedule(&mutex, true, |s| s == "uncertain").unwrap();
-        assert!(lock_schedule(&mutex).unwrap().is_none());
+        assert!(lock_schedule(&mutex).unwrap().is_empty());
 
-        *lock_schedule(&mutex).unwrap() = Some("busy".into());
+        lock_schedule(&mutex).unwrap().push("busy".into());
         let guard = lock_schedule(&mutex).unwrap();
         assert!(reset_schedule(&mutex, false, |_| false).is_err());
         assert!(reset_schedule(&mutex, true, |_| false).is_err());
@@ -863,7 +865,16 @@ mod tests {
         assert!(reset_schedule(&mutex, false, |_| false).is_err());
         assert!(lock_schedule(&mutex).is_err());
         reset_schedule(&mutex, true, |_| false).unwrap();
-        assert!(lock_schedule(&mutex).unwrap().is_none());
+        assert!(lock_schedule(&mutex).unwrap().is_empty());
+    }
+
+    #[test]
+    fn closing_candidate_keeps_editing_session_and_uncertainty_protection() {
+        let mutex = std::sync::Mutex::new(vec!["editing", "candidate"]);
+        close_schedule(&mutex, |s| *s == "candidate").unwrap();
+        assert_eq!(*lock_schedule(&mutex).unwrap(), vec!["editing"]);
+        assert!(reset_schedule(&mutex, false, |s| *s == "editing").is_err());
+        assert_eq!(*lock_schedule(&mutex).unwrap(), vec!["editing"]);
     }
 
     #[test]
