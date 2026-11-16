@@ -67,7 +67,7 @@ Windows 代理回归应覆盖：关闭 TUN 后仅使用系统 HTTP 代理、分�
 - **Updater 包签名**：使用 Tauri 的 updater 私钥对完整包签名，应用内只保存公钥；下载后验证，失败时拒绝安装。私钥应留在本机忽略目录或 CI Secret，不能提交至 Git，也不能作为 Release 附件上传。
 - **操作系统代码签名**：Windows 证书、Apple Developer ID 与公证用于系统信任、Gatekeeper 和身份连续性。Updater 签名不能替代它们。
 
-当前配置的公钥对应维护者本机忽略目录 `.local/updater/fstodo.key` 中的 updater 私钥。此私钥须另行安全备份；Windows 签名构建将 `TAURI_SIGNING_PRIVATE_KEY` 设置为该文件的绝对路径，macOS Actions 的同名 Secret 填写该文件内容，密码变量与密钥生成时保持一致。不要把私钥粘贴到代码、日志或 Release；丢失私钥会导致已安装客户端无法继续验证后续更新，不能通过换一把私钥直接恢复。
+当前配置的公钥对应维护者本机忽略目录 `.local/updater/fstodo.key` 中的 updater 私钥。此私钥须另行安全备份；Windows 和 macOS Actions 均从同一个 `TAURI_SIGNING_PRIVATE_KEY` Secret 读取私钥内容，密码 Secret 与密钥生成时保持一致。本机签名构建也可将该变量设为私钥文件的绝对路径。不要把私钥粘贴到代码、日志或 Release；丢失私钥会导致已安装客户端无法继续验证后续更新，不能通过换一把私钥直接恢复。
 
 当前 macOS 沿用 ad-hoc 签名（`signingIdentity: "-"`），不要求 Apple Developer 账号。Universal 更新归档同时服务 Apple Silicon 和 Intel，最低系统仍是 macOS 13。手动首次安装使用 DMG，应用内更新使用 `.app.tar.gz`；DMG 仍可随 Release 提供给首次安装或手动恢复的用户。
 
@@ -77,7 +77,7 @@ ad-hoc 构建的首次打开仍可能被 Gatekeeper 拦截，需要用户在系�
 
 普通构建没有 `TAURI_SIGNING_PRIVATE_KEY` 时仍可生成原有 Windows NSIS 或 macOS DMG，不能宣称已有可用的签名更新包。配置了该环境变量时，构建包装脚本开启 updater 产物生成。可选密码变量为 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
 
-Windows 在本机使用已有构建命令：
+正式 Windows 构建手动运行 `Build Windows` 工作流并指定已推送的版本 tag；工作流要求配置签名私钥，运行测试并上传包含安装包、签名及更新记录的 Artifact，整次运行成功后才能用于发布。本机仍可使用已有构建命令：
 
 ```sh
 cd frontend

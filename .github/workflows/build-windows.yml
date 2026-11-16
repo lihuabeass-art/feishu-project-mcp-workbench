@@ -1,0 +1,120 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已由用户确定并推送的版本 tag"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  FSTODO_RELEASE_TAG: ${{ inputs.tag }}
+
+jobs:
+  frontend-tests:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+
+  backend-tests:
+    name: Windows backend tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: windows-backend-tests
+          workspaces: backend -> target
+          cache-bin: false
+      - run: cargo test --locked
+        working-directory: backend
+
+  build:
+    name: Signed Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Validate tag and generate release notes
+        id: notes
+        run: node frontend/scripts/release-notes.mjs --output artifacts/release --github-output "$GITHUB_OUTPUT"
+      - name: Use generated notes for build
+        run: echo "FSTODO_RELEASE_NOTES_FILE=$GITHUB_WORKSPACE/artifacts/release/release.json" >> "$GITHUB_ENV"
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: windows-desktop-release
+          workspaces: frontend/src-tauri -> target
+          cache-bin: false
+      - run: npm ci
+        working-directory: frontend
+      - name: Build signed installer
+        working-directory: frontend
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo '缺少 updater 签名私钥，不能生成正式更新包。' >&2
+            exit 1
+          fi
+          npm run build:windows
+      - name: Collect signed installer and release records
+        env:
+          RELEASE_VERSION: ${{ steps.notes.outputs.version }}
+        run: |
+          mkdir -p artifacts/packages
+          installer="frontend/src-tauri/target/release/bundle/nsis/FSTODO_${RELEASE_VERSION}_x64-setup.exe"
+          test -s "$installer"
+          test -s "$installer.sig"
+          cp "$installer" "$installer.sig" artifacts/packages/
+          cp artifacts/release/release.json artifacts/release/RELEASE_NOTES.md LICENSE THIRD_PARTY_NOTICES.md artifacts/packages/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: FSTODO-${{ steps.notes.outputs.version }}-windows-x64
+          path: artifacts/packages/*
+          if-no-files-found: error
+          retention-days: 14

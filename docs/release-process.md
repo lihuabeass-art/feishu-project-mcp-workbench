@@ -2,7 +2,7 @@
 
 本文件仅在用户明确要求发版，或维护发版能力时读取。准备文档、修改 CI、开发功能、验证测试，都不等于本次获准打 tag、启动发版编译或对外分发。
 
-源码与正式安装包统一发布到公开仓库 `lihuabeass-art/feishu-project-mcp-workbench`。先在 Windows 本机构建、签名并发布正式 Release，确认 Windows 安装包已出现在 GitHub Latest；随后通过 GitHub Actions 构建同一 tag 的 macOS 版本，补齐同一 Release 的附件与更新清单。软件从公开 Release 自动检查更新、后台下载并验签，准备好后提示，由用户确认重启安装；自动检查与下载可关闭。首次安装与手动恢复仍可直接下载 NSIS / DMG；软件内当前版本的更新记录继续支持离线查看。
+源码与正式安装包统一发布到公开仓库 `lihuabeass-art/feishu-project-mcp-workbench`。先通过 GitHub Actions 构建并签名 Windows 安装包，再将核验后的产物发布到正式 Release，确认 Windows 安装包已出现在 GitHub Latest；随后通过 GitHub Actions 构建同一 tag 的 macOS 版本，补齐同一 Release 的附件与更新清单。软件从公开 Release 自动检查更新、后台下载并验签，准备好后提示，由用户确认重启安装；自动检查与下载可关闭。首次安装与手动恢复仍可直接下载 NSIS / DMG；软件内当前版本的更新记录继续支持离线查看。
 
 ## 正式发版的授权与完成标准
 
@@ -43,8 +43,8 @@
 2. 核对分支、工作区和已存在的 tag，检查测试、功能范围、变更记录及平台限制。其他任务的未提交修改不能混入发布；不能跳过失败测试或把未核验结果写成通过。
 3. 预览变更记录，核对比较起点与提交内容。自动汇总是初稿，应把提交记录与实际改动一起核对，避免把代码维护描述误当成已交付用户功能。
 4. 如需提交代码，遵循仓库的 `checkai → commitsplitter → 用户确认 → 本地提交` 链路。确认发布提交后，再给该提交创建用户指定的 tag。已交付版本的 tag 不移动、不覆盖；仅对本次任务创建且尚未交付的 tag，用户要求调整本次内容时，先停止旧构建并保留旧产物，再将本次 tag 校正到经审查的提交后重建，校正前须确认远端 tag 未被他人更改。
-5. 在 Windows 本机检出该 tag 对应的提交，配置 updater 签名私钥后执行 `npm run build:windows`。构建校验 tag，并生成用于软件内展示和随包交付的同一份记录。保留 NSIS、相邻 `.sig`、`release.json` 和 `RELEASE_NOTES.md`；安装包须包含本项目 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`。
-6. `Build macOS` 会由 main 或 tag 推送触发；为严格保证顺序，推送前暂时停用该工作流，记录其原状态，再推送已确认代码及 tag。发布未完成时也要恢复原状态；只有 Windows 已发布并确认为 Latest 后才手动启动指定 tag 的 macOS 构建。
+5. `Build macOS` 会由 main 或 tag 推送触发；为严格保证顺序，推送前暂时停用该工作流，记录其原状态，再推送已确认代码及 tag。发布中断时恢复原状态；重试时如需再次推送代码或 tag，必须先重新停用并记录原状态，确保 Windows 发布前不会触发 macOS 发版构建。只有 Windows 已发布并确认为 Latest 后才手动启动指定 tag 的 macOS 构建。
+6. 手动运行 `Build Windows`，输入已推送的 tag。工作流使用 GitHub Secrets 中现有 updater 私钥构建签名包，并运行前端和 Windows 后端测试；只有整次运行成功才可使用 Artifact。下载 `FSTODO-<版本>-windows-x64`，核对 run、tag、提交和 `release.json` 一致，保留 NSIS、相邻 `.sig`、`release.json` 和 `RELEASE_NOTES.md`；安装包须包含本项目 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`。
 7. 先核验 Windows 包、签名、版本及许可文件，创建草稿并上传 Windows 安装包、`.sig`、`release.json`、更新说明和许可附件。可发布只包含 `windows-x86_64` 的临时 `latest.json`，其版本、正文、日期、固定 tag URL 和签名来自同一 Windows 构建；验证签名及远端摘要后发布正式 Release 并设为 Latest。阶段性清单没有 macOS 平台项，Mac 客户端在补齐前不能通过该清单更新，应明确告知用户。
 8. 确认 GitHub Latest 指向本版、Windows 文件及签名已上传且摘要一致，匿名下载 Windows 包并核验 SHA256 和签名；之后恢复工作流并手动运行 `Build macOS`，指定相同 tag。不能在确认 Windows 发布前启动 macOS 发版构建。
 9. CI 检出指定 tag 和完整历史，前端测试、macOS 后端及钥匙串测试、Universal 构建并行运行；仅整次运行所有任务成功后，才能使用其 Artifact。核验 macOS 构建记录与 Windows 的版本、tag、提交一致，并验证 Universal 更新包签名，然后上传 DMG、`.app.tar.gz` 和 `.sig` 到已发布的同一 Release。按[自动更新说明](auto-update.md)生成完整 `latest.json`，上传并核验后替换阶段性清单；不得覆盖已发布的 Windows 安装包。Actions 成功不等于 Mac 实机安装验收。
@@ -86,7 +86,7 @@ npm run release:notes -- --version 0.5.0
 ## 记录保存与软件展示
 
 - `AGENTS.md` 只提供流程入口；本文件维护操作规则，不存放历次更新日志。
-- 构建时生成仓库根目录下的 `artifacts/release/release.json` 和 `RELEASE_NOTES.md`，属于构建产物，不写回源码或每次追加一个版本常量。Windows 本机交付时从此目录取更新说明；macOS Artifact 已附带该文件。公开 Release 的正文与随包记录应描述同一已核对范围。
+- 构建时生成仓库根目录下的 `artifacts/release/release.json` 和 `RELEASE_NOTES.md`，属于构建产物，不写回源码或每次追加一个版本常量。Windows 和 macOS Artifact 均附带这两份记录。公开 Release 的正文与随包记录应描述同一已核对范围。
 - 同一 tag、提交和完整标签历史在本机与 CI 生成相同记录。每次构建使用一份快照，校验其中的版本、tag 和提交，让软件内记录与随包 Markdown 一致；两平台汇总时再核对两份记录一致。
 - `release.json` 的 `history` 保存当前构建历史可达的全部较早版本，按语义版本倒序排列，同版本的 tag 别名只保留一项。每项使用该历史 tag 自己的提交及可达的比较起点生成，包含预发布版本，不把之后的提交混入旧记录；当前版本的 Markdown 仍只描述本次变化。
 - 软件侧栏的版本号可点击，默认打开当前安装版本的完整更新记录，可从版本列表切换查看各个历史版本；全部内容嵌入安装包，可离线查看，群友无需访问代码仓库。历史范围截至本次构建使用的公开 tag，不读取私有开发历史或未来版本。
@@ -104,13 +104,13 @@ npm run build:windows
 npm run build:macos
 ```
 
-Windows 在 Windows 构建；macOS 通常使用 `.github/workflows/build-macos.yml`，也可在 Mac 本机运行对应命令。不要用独立 `tauri bundle` 给旧二进制更换版本。
+正式发版使用 `.github/workflows/build-windows.yml` 和 `.github/workflows/build-macos.yml`；上述命令也可用于对应系统的本机构建。不要用独立 `tauri bundle` 给旧二进制更换版本。
 
 ### 缓存与测试调度
 
 `Build macOS` 同时在 `main` 推送时预热缓存：前端测试使用 4 个 worker，macOS 后端测试缓存与桌面 Universal 的两种 release 架构缓存分别保存。主分支预热直接执行普通前端构建和 Cargo 编译，不打 tag、不打包、不签名或上传安装包。
 
-Rust 缓存固定工具链并按工作区、依赖锁文件和部署目标隔离，只在 `main` 保存，发版 tag 读取默认分支缓存。GitHub 不允许不同 tag 直接复用彼此创建的缓存，因此不能只在 tag 构建里保存。缓存只复用依赖编译结果，应用本身、版本记录和安装包仍按本次 tag 重新生成；首次运行或缓存失效时自动完整编译。前端、后端、打包三个任务并行，最终发布仍要求整次运行成功。
+macOS Rust 缓存固定工具链并按工作区、依赖锁文件和部署目标隔离，只在 `main` 保存，发版 tag 读取默认分支缓存。Windows 工作流使用独立的后端与桌面构建缓存。缓存只复用依赖编译结果，应用本身、版本记录和安装包仍按本次 tag 重新生成；首次运行或缓存失效时自动完整编译。前端、后端、打包三个任务并行，最终发布仍要求整次运行成功。
 
 发版核对至少包含：用户版本号与 tag 一致、无混入的未提交改动、变更比较起点正确、测试通过、两平台完整包与 updater 签名齐全、两份 `release.json` 的版本/tag/提交一致、`latest.json` 固定指向本次 tag、许可文件随包分发、软件内版本与离线记录一致、GitHub 资源可匿名下载、Windows 旧版到新版真实更新，以及单独列明的 Mac 构建和实机结果。已知测试失败须先处理，不以 CI 暂时无法运行或本机测试通过替代目标平台验证。
 
