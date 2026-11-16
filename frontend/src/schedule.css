@@ -63,10 +63,13 @@
   .schedule-refresh-notice.is-leaving { opacity: 0; }
 }
 
-.schedule-overview {
-  grid-template-columns: minmax(0, 1fr) auto;
+.overview.schedule-overview {
+  grid-template-columns: minmax(0, 1fr) minmax(220px, auto) auto;
+  gap: 24px;
   margin-bottom: 0;
 }
+
+.schedule-overview .overview-divider { margin: 0 4px; }
 
 .schedule-overview-metrics {
   display: flex;
@@ -86,7 +89,7 @@
   color: var(--muted);
 }
 
-.schedule-metric > strong {
+.schedule-overview .schedule-metric > strong {
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -98,84 +101,69 @@
   color: var(--heading);
 }
 
-.schedule-metric > strong small {
+.schedule-overview .schedule-metric > strong small {
   font-size: 11px;
   font-weight: 400;
   margin-left: 0;
   color: var(--muted);
 }
 
-.schedule-overview-actions {
+.schedule-overview .schedule-overview-actions {
   flex-wrap: wrap;
   justify-content: flex-end;
+  border-top: 0;
+  padding-top: 0;
 }
 
-.schedule-scope {
-  padding: 10px 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface-raised);
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.schedule-scope-summary {
+.schedule-greeting {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-}
-
-.schedule-scope-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--green);
-}
-
-.schedule-scope-dot.is-warn {
-  background: var(--warning-text);
-}
-
-.schedule-scope-dot.is-idle {
-  background: var(--muted);
-}
-
-.schedule-scope-text {
-  flex: 1 1 240px;
+  gap: 12px;
   min-width: 0;
 }
 
-.schedule-person {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.schedule-greeting .schedule-avatar {
+  width: 44px;
+  height: 44px;
+  font-size: 17px;
+  box-shadow: 0 0 0 3px var(--surface-raised), 0 0 0 4px var(--line);
+}
+
+.schedule-greeting-copy { min-width: 0; }
+
+.schedule-greeting-date {
   font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.schedule-overview .schedule-greeting-copy > strong {
+  display: block;
+  margin-top: 1px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+
+.schedule-greeting-copy > p {
+  margin: 3px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
   color: var(--text-secondary);
 }
 
-.schedule-diagnostics-toggle {
-  padding: 5px 10px;
-  font-size: 11px;
-  border-radius: 8px;
-}
-
-.schedule-diagnostics-drawer {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
+.schedule-metric-note {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-selected);
   color: var(--text-secondary);
-  font-size: 11px;
-}
-
-.schedule-scope p {
-  margin: 4px 0 0;
-}
-
-.schedule-source-error {
-  color: var(--warning-text);
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.5;
 }
 
 /* 提高优先级以覆盖 styles.css 中后加载的 .work-panel { overflow: visible; }，确保顶部工具栏和三栏底角按面板圆角裁切。 */
@@ -1864,16 +1852,12 @@
   background: var(--surface-raised);
 }
 
-:root[data-appearance="pearl"] .schedule-scope,
 :root[data-appearance="pearl"] .schedule-review-dialog {
   border-color: var(--pearl-edge);
   box-shadow: 0 12px 34px var(--pearl-shadow);
 }
 
 @media (max-width: 1120px) {
-  .schedule-overview {
-    grid-template-columns: 1fr;
-  }
   .schedule-layout,
   .schedule-layout.is-pool-collapsed,
   .schedule-layout.is-inspector-closed,
@@ -1893,6 +1877,11 @@
 }
 
 @media (max-width: 960px) {
+  .overview.schedule-overview {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 18px;
+  }
+  .schedule-overview > .schedule-overview-actions { grid-column: 1 / -1; }
   .schedule-calendar {
     --schedule-label-width: 176px;
   }
@@ -1906,6 +1895,13 @@
   .schedule-bar-days {
     display: none;
   }
+}
+
+@media (max-width: 680px) {
+  .overview.schedule-overview { grid-template-columns: minmax(0, 1fr); }
+  .schedule-overview .schedule-overview-actions { justify-content: flex-start; }
+  .schedule-overview-metrics { gap: 12px; }
+  .schedule-metric-note { display: block; margin: 3px 0 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

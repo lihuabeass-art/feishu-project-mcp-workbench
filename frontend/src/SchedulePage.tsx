@@ -1480,7 +1480,7 @@ export function SchedulePage({
                   <CalendarDays size={20} />
                 </span>
                 <div className="schedule-metric">
-                  <span>待排期节点 <small className="schedule-metric-note">含未同步草稿</small></span>
+                  <span>待排期节点 {changedEntries.length > 0 && <small className="schedule-metric-note">含未同步草稿</small>}</span>
                   <strong>
                     {pending.length}
                     <small>{pending.filter(canEdit).length} 项可排期</small>
@@ -1488,7 +1488,7 @@ export function SchedulePage({
                 </div>
                 <div className="overview-divider" />
                 <div className="schedule-metric">
-                  <span>视窗内已排 <small className="schedule-metric-note">含未同步草稿</small></span>
+                  <span>视窗内已排 {changedEntries.length > 0 && <small className="schedule-metric-note">含未同步草稿</small>}</span>
                   <strong>
                     {scheduled.length}
                     <small>今日进行 {activeTodayCount}</small>
@@ -1538,7 +1538,7 @@ export function SchedulePage({
             {preloadedSession?.refreshError && <p className="banner warning" role="alert">{preloadedSession.refreshError}</p>}
             {error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，可继续编辑，稍后重试。</p>}
             {scopeSources.filter((item) => item.error).map((item) => (
-              <p key={item.id} className="banner warning" role="alert">
+              <p key={item.id} className="banner warning">
                 {readableSourceName(item.name || item.id)}：{item.error}
               </p>
             ))}

@@ -28,7 +28,7 @@ const projectSnapshot = (read: ScheduleRead): Snapshot => ({
 });
 beforeEach(() => { vi.mocked(loadScheduleSession).mockResolvedValue(data()); vi.mocked(closeScheduleSession).mockResolvedValue(); });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
-const setup = async () => { const guard = vi.fn(); render(<SchedulePage onGuardChange={guard} requestReload={(reload) => reload()} />); await screen.findByText(/部分读取失败/); return guard; };
+const setup = async () => { const guard = vi.fn(); render(<SchedulePage onGuardChange={guard} requestReload={(reload) => reload()} />); await screen.findByLabelText("今日问候"); return guard; };
 const confirmSync = () => {
   fireEvent.click(within(document.querySelector(".schedule-overview") as HTMLElement).getByRole("button", { name: /核对并同步|同步排期/ }));
   const dialog = screen.queryByRole("dialog", { name: "核对排期变更并同步" });
@@ -194,22 +194,60 @@ it("共同及个人排期区分同空间同名人员并显示身份不明的负�
   expect(screen.getAllByText(/尚有负责人身份不明/).length).toBeGreaterThan(0);
 });
 
-it.each([true, false])("零来源只显示无可执行来源（完整性标记 %s）", async (complete) => {
+it.each([true, false])("零来源不再占用常驻说明栏（完整性标记 %s）", async (complete) => {
   const read = data(); read.sources = []; read.targets = []; read.complete = complete;
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   render(<SchedulePage onGuardChange={vi.fn()} requestReload={vi.fn()} />);
-  await screen.findByText(/无可执行来源/);
-  const scope = document.querySelector(".schedule-scope")!.textContent!;
-  expect(scope).toContain("来源：无可执行来源");
-  expect(scope).not.toMatch(/完整读取|部分读取失败/);
+  await screen.findByLabelText("今日问候");
+  expect(document.querySelector(".schedule-scope")).toBeNull();
+  expect(screen.queryByText(/无可执行来源|完整读取|部分读取失败/)).toBeNull();
 });
 
-it("全部来源成功时显示完整读取", async () => {
+it("概览合并头像与今日问候，两项统计标明草稿且保留真实读取失败反馈", async () => {
   const read = data(); read.sources = [{ id: "s", name: "我的来源", complete: true }]; read.complete = true;
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  const page = render(<SchedulePage onGuardChange={vi.fn()} requestReload={vi.fn()} />);
+  const greeting = await screen.findByLabelText("今日问候");
+  expect(greeting.closest(".schedule-overview")).toBeTruthy();
+  expect(greeting.querySelector(".schedule-avatar")).toBeTruthy();
+  expect(greeting.textContent).toContain("本人");
+  expect(greeting.textContent).toMatch(/\d+月\d+日星期/);
+  expect(greeting.querySelector("p")?.textContent).toBeTruthy();
+  expect(screen.queryByText("含未同步草稿")).toBeNull();
+  fireEvent.click(within(screen.getByLabelText("任务一快捷排期")).getByRole("button", { name: "今天" }));
+  expect(screen.getAllByText("含未同步草稿")).toHaveLength(2);
+  fireEvent.click(screen.getByRole("button", { name: "全部还原" }));
+  expect(screen.queryByText("含未同步草稿")).toBeNull();
+  expect(screen.queryByText("本地排期草稿")).toBeNull();
+  expect(screen.queryByText(/完整读取|读取时间|读取请求/)).toBeNull();
+  expect(screen.queryByRole("button", { name: "读取说明" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  expect(screen.getByLabelText("今日问候")).toBe(greeting);
+  page.unmount();
+  vi.mocked(loadScheduleSession).mockResolvedValue(data());
   render(<SchedulePage onGuardChange={vi.fn()} requestReload={vi.fn()} />);
-  await screen.findByText(/完整读取/);
-  expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("部分读取失败");
+  expect(await screen.findByText(/部分事项读取失败/)).toBeTruthy();
+});
+
+it("今日问候跨上海午夜及午后时段更新，卸载后清理计时器", () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date("2026-11-16T23:59:30+08:00"));
+    const page = render(<SchedulePage preloadedSession={{ read: data(), pending: null, updateRead: vi.fn(), reload: vi.fn() }} onGuardChange={vi.fn()} requestReload={vi.fn()} />);
+    const greeting = screen.getByLabelText("今日问候");
+    const quote = greeting.querySelector("p")!.textContent;
+    expect(greeting.textContent).toContain("晚上好 · 11月16日星期一");
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(greeting.textContent).toContain("夜深了 · 11月17日星期二");
+    expect(greeting.querySelector("p")!.textContent).not.toBe(quote);
+    vi.setSystemTime(new Date("2026-11-17T13:59:30+08:00"));
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(greeting.textContent).toContain("下午好 · 11月17日星期二");
+    page.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("所属项目按空间和项目身份筛选，跨类型合并且支持多项目及无项目信息", async () => {
@@ -277,7 +315,7 @@ it("项目筛选区分缺少事项缓存与已读取但未提供项目，候选�
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
 });
 
-it("移除来源筛选后始终展示整体读取完整性和所有关联失败", async () => {
+it("删除常驻来源栏后仍展示所有关联读取失败", async () => {
   const read = data();
   read.sources = [{ id: "a", name: "完整来源", complete: true }, { id: "b", name: "失败来源", complete: false, error: "分页失败" }];
   read.itemErrors = [{ project: "p", type: "t", item: "bad", sources: ["b"], message: "详情失败" }, { project: "p", type: "t", item: "shared", sources: ["a", "b"], message: "共同事项失败" }];
@@ -290,7 +328,7 @@ it("移除来源筛选后始终展示整体读取完整性和所有关联失败"
   expect(screen.getByText(/分页失败/)).toBeTruthy();
   expect(screen.getByText(/详情失败/)).toBeTruthy();
   expect(screen.getByText(/共同事项失败/)).toBeTruthy();
-  expect(document.querySelector(".schedule-scope")?.textContent).toContain("部分读取失败");
+  expect(document.querySelector(".schedule-scope")).toBeNull();
   expect(screen.getByText(/详情失败/)).toBeTruthy();
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
 });
@@ -308,15 +346,15 @@ it("本地来源缓存提示包含可读事项身份和来源，不裸露内部�
   expect(screen.getByText("空间甲 · 需求 #123（来源甲）：该来源的本地缓存不完整")).toBeTruthy();
   expect(screen.getByText("当前空间 · 缺陷「登录异常修复」#456（个人待办）：读取超时")).toBeTruthy();
   expect(screen.getByText("当前空间 · 事项 #789（工作来源）：连接中断")).toBeTruthy();
-  expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("9000000000000654321");
-  expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("space_key_xyz");
-  expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("raw_internal_source");
+  expect(document.body.textContent).not.toContain("9000000000000654321");
+  expect(document.body.textContent).not.toContain("space_key_xyz");
+  expect(document.body.textContent).not.toContain("raw_internal_source");
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
 });
 
 it("单次读取后筛选和编辑不触发请求，经二次确认后同步差异并以回执推进基线", async () => {
   const guard = await setup();
-  expect(screen.getByText(/部分读取失败/)).toBeTruthy();
+  expect(screen.getByText(/部分事项读取失败/)).toBeTruthy();
   fireEvent.click(screen.getByText("任务一"));
   fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: "2026-11-13" } });
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "2026-11-16" } });
@@ -325,6 +363,7 @@ it("单次读取后筛选和编辑不触发请求，经二次确认后同步差�
   vi.mocked(submitScheduleTargets).mockResolvedValue({ results: [{ id: "one", result: "accepted", message: "收到成功回执，未回读核验" }], writeRequests: 1 });
   confirmSync();
   await screen.findByText("排期已同步");
+  expect(screen.queryByText("含未同步草稿")).toBeNull();
   expect(screen.queryByText("收到成功回执，未回读核验")).toBeNull();
   expect(screen.getByText("已保存 1 项节点排期")).toBeTruthy();
   const successBanner = screen.getByRole("status");
@@ -1053,7 +1092,7 @@ it("未确认当前账号时禁止编辑", async () => {
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   render(<SchedulePage onGuardChange={vi.fn()} requestReload={vi.fn()} />);
   await screen.findByText(/未能确认当前飞书账号/);
-  expect(document.querySelector(".schedule-scope")?.textContent).toContain("部分读取失败");
+  expect(screen.getByText(/部分事项读取失败/)).toBeTruthy();
   fireEvent.click(screen.getByText("任务一"));
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
   expect(submitScheduleTargets).not.toHaveBeenCalled();
@@ -1063,7 +1102,7 @@ it("详情缓存节点保留日期状态与抓取时间，无法编辑或误称�
   const read = data(); read.accountError = "本地缓存未确认当前飞书账号"; read.readRequests = 0;
   read.targets = [{ ...read.targets[0], identity: { ...identity, node: "", owner: undefined, scope: "node" }, ownerId: null, ownerIds: [], mine: false, cacheKind: "detail_node", startState: "empty", endState: "invalid", fetchedAt: "抓取时刻", readOnlyReason: "缓存不足以确认写入归属及字段配置，仅供查看" }];
   vi.mocked(loadScheduleSession).mockResolvedValue(read); render(<SchedulePage onGuardChange={vi.fn()} requestReload={vi.fn()} />);
-  expect(await screen.findByText(/读取时间 today/)).toBeTruthy();
+  expect(await screen.findByLabelText("今日问候")).toBeTruthy();
   const row = screen.getByRole("button", { name: /任务一/ });
   expect(row.textContent).toContain("事项详情缓存节点"); expect(row.textContent).toContain("开始：明确为空；结束：日期无效");
   expect(row.textContent).not.toContain("待安排"); fireEvent.click(row);
@@ -1346,12 +1385,6 @@ it("核对弹层支持 Escape 关闭与全部还原自动关闭，概览卡支�
   fireEvent.click(screen.getByRole("button", { name: "展开待排池" }));
   expect(document.querySelector(".schedule-pending")).toBeTruthy();
 
-  // 展开与收起读取诊断说明
-  fireEvent.click(screen.getByRole("button", { name: "读取说明" }));
-  expect(screen.getByText(/空间和项目筛选仅影响当前展示/)).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "收起诊断" }));
-  expect(screen.queryByText(/空间和项目筛选仅影响当前展示/)).toBeNull();
-
   // 快捷落位产生草稿后打开弹层，按 Escape 关闭，再点全部还原清空草稿
   const quickBar = screen.getByLabelText(`${read.targets[0].title}快捷排期`);
   fireEvent.click(within(quickBar).getByRole("button", { name: "今天" }));
@@ -1395,8 +1428,8 @@ it("本人尾号兜底自动替换为真实姓名与头像，纯数字回退名�
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
 
-  expect(document.querySelector(".schedule-scope")?.textContent).toContain("王小明");
-  expect(document.querySelector('.schedule-scope img[src="https://example.com/me-avatar.png"]')).toBeTruthy();
+  expect(screen.getByLabelText("今日问候").textContent).toContain("王小明");
+  expect(screen.getByLabelText("今日问候").querySelector('img[src="https://example.com/me-avatar.png"]')).toBeTruthy();
 
   fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
   const linkWrap = document.querySelector(".schedule-editor-heading .schedule-editor-actions.detail-item-link");
@@ -1479,8 +1512,7 @@ it("无未保存草稿时若外部预加载会话轮换为新 sessionId，自动
     />,
   );
   expect(await screen.findByRole("button", { name: /外部轮换后的新事项/ })).toBeTruthy();
-  expect(document.querySelector(".schedule-scope")?.textContent).toContain("逾期待办");
-  expect(document.querySelector(".schedule-scope")?.textContent).toContain("我参与的需求");
+  expect(document.querySelector(".schedule-scope")).toBeNull();
   expect(screen.queryByRole("combobox", { name: "筛选来源" })).toBeNull();
 });
 
@@ -1886,7 +1918,7 @@ it("同事项节点过滤无关无排期节点、按节点去重多人记录、�
   expect(siblingGroup.textContent).not.toContain("正式发布");
 });
 
-it("排期主面板在 styles.css 后加载时仍保持 overflow: hidden 以裁切圆角", async () => {
+it("通用样式后加载仍保留排期概览三列、正常姓名字号及面板圆角裁切", async () => {
   const scheduleStyleEl = document.createElement("style");
   scheduleStyleEl.textContent = await loadCss("./schedule.css");
   const stylesStyleEl = document.createElement("style");
@@ -1898,6 +1930,12 @@ it("排期主面板在 styles.css 后加载时仍保持 overflow: hidden 以裁�
     const panel = document.querySelector(".work-panel.schedule-panel") as HTMLElement;
     expect(panel).toBeTruthy();
     expect(getComputedStyle(panel).overflow).toBe("hidden");
+    const overview = document.querySelector(".schedule-overview")!;
+    expect(getComputedStyle(overview).gridTemplateColumns).toBe("minmax(0, 1fr) minmax(220px, auto) auto");
+    expect(getComputedStyle(screen.getByLabelText("今日问候").querySelector("strong")!).fontSize).toBe("14px");
+    expect(Array.from(overview.children).map((child) => child.className)).toEqual([
+      "schedule-overview-metrics", "schedule-greeting", "overview-actions schedule-overview-actions",
+    ]);
   } finally {
     scheduleStyleEl.remove();
     stylesStyleEl.remove();
