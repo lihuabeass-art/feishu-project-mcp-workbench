@@ -121,6 +121,17 @@ it("手工输入可只修改开始，保留原结束；结束早于开始时阻�
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
+it("使用普通文本输入避免系统日期控件，并校验手工输入的日期", () => {
+  render(<Harness />);
+  expect(input("开始日期").type).toBe("text");
+  fireEvent.change(input("开始日期"), { target: { value: "2026-02-30" } });
+  expect(input("开始日期").checkValidity()).toBe(false);
+  fireEvent.change(input("开始日期"), { target: { value: "2026-02-28" } });
+  expect(input("开始日期").checkValidity()).toBe(true);
+  fireEvent.change(input("结束日期"), { target: { value: "2026-1" } });
+  expect(input("结束日期").checkValidity()).toBe(false);
+});
+
 it("Portal 日历隔离标题、日期和留白处的滚轮，关闭清理监听且背景恢复滚动", async () => {
   const user = userEvent.setup();
   render(<Harness />);

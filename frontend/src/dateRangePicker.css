@@ -36,7 +36,7 @@
   outline: var(--control-focus-ring);
   outline-offset: var(--control-focus-offset);
 }
-.date-range-picker .date-range-endpoint > input[type="date"] {
+.date-range-picker .date-range-endpoint > input {
   width: 100%;
   min-width: 0;
   height: 22px;
@@ -49,12 +49,6 @@
   font-size: 12px;
   box-shadow: none;
   outline: none;
-}
-.date-range-endpoint > input::-webkit-calendar-picker-indicator {
-  display: none;
-}
-.date-range-endpoint > input::-webkit-datetime-edit {
-  padding: 0;
 }
 .date-range-separator {
   flex: 0 0 auto;

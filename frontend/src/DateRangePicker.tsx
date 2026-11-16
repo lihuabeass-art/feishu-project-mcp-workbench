@@ -165,10 +165,15 @@ export function DateRangePicker({
   }, [disabled]);
 
   useEffect(() => {
-    endRef.current?.setCustomValidity(
-      reversed ? "结束日期不能早于开始日期" : "",
+    startRef.current?.setCustomValidity(
+      start && !validStart ? "请输入有效日期，格式为 YYYY-MM-DD" : "",
     );
-  }, [reversed]);
+    endRef.current?.setCustomValidity(
+      end && !validEnd
+        ? "请输入有效日期，格式为 YYYY-MM-DD"
+        : reversed ? "结束日期不能早于开始日期" : "",
+    );
+  }, [start, end, validStart, validEnd, reversed]);
 
   useEffect(() => {
     if (!visible) return;
@@ -290,7 +295,10 @@ export function DateRangePicker({
         <span>{isStart ? "开始日期" : "结束日期"}</span>
         <input
           ref={isStart ? startRef : endRef}
-          type="date"
+          type="text"
+          inputMode="numeric"
+          placeholder="YYYY-MM-DD"
+          maxLength={10}
           aria-label={isStart ? startLabel : endLabel}
           aria-haspopup="dialog"
           aria-expanded={visible && phase === endpoint}
@@ -298,7 +306,6 @@ export function DateRangePicker({
           aria-invalid={(!isStart && reversed) || undefined}
           required={isStart ? startRequired : endRequired}
           disabled={disabled}
-          min={!isStart && validStart ? start : undefined}
           value={value}
           onClick={() => show(endpoint)}
           onKeyDown={(event) => inputKey(event, endpoint)}
