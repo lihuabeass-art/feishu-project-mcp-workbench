@@ -365,6 +365,7 @@ it("单次读取后筛选和编辑不触发请求，经二次确认后同步差�
   await screen.findByText("排期已同步");
   expect(screen.queryByText("含未同步草稿")).toBeNull();
   expect(screen.queryByText("收到成功回执，未回读核验")).toBeNull();
+  expect(screen.queryByText(/上次提交：/)).toBeNull();
   expect(screen.getByText("已保存 1 项节点排期")).toBeTruthy();
   const successBanner = screen.getByRole("status");
   expect(successBanner.className).toContain("success");
@@ -575,7 +576,7 @@ it("结果不确定的目标保持冻结，独立节点的未发送目标仍可�
   expect(vi.mocked(submitScheduleTargets).mock.calls[1][1].map((item) => item.id)).toEqual(["two"]);
 });
 
-it("每个目标直接展示对应结果，并与本次汇总一致", async () => {
+it("提交结果保留汇总与不确定保护，排期条、行标题和待排卡片不重复展示上次提交文字", async () => {
   const read = data();
   read.targets = ["一", "二", "三", "四"].map((suffix, index) => ({ ...read.targets[0], id: String(index), title: `任务${suffix}`, identity: { ...identity, node: `n${index}` } }));
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
@@ -589,13 +590,19 @@ it("每个目标直接展示对应结果，并与本次汇总一致", async () =
   vi.mocked(submitScheduleTargets).mockResolvedValue({ results: ["accepted", "failed", "uncertain", "unsent"].map((result, index) => ({ id: String(index), result: result as "accepted" | "failed" | "uncertain" | "unsent" })), writeRequests: 3 });
   confirmSync();
   await screen.findByText(/收到成功回执 1 项，失败 1 项，结果不确定 1 项，未发送 1 项/);
-  for (const [index, label] of ["上次提交：收到成功回执", "上次提交：失败", "上次提交：结果不确定", "上次提交：未发送"].entries()) {
-    const bar = screen.getByRole("button", { name: new RegExp(`任务${["一", "二", "三", "四"][index]}.*${label}`) });
-    expect(bar.closest(".schedule-row")?.querySelector(".schedule-result")?.textContent).toBe(label);
+  for (const suffix of ["一", "二", "三", "四"]) {
+    const bar = screen.getByRole("button", { name: `任务${suffix} · 开发` });
+    expect(bar.querySelector(".schedule-bar-title")?.textContent).toBe("开发");
+    expect(bar.closest(".schedule-row")?.textContent).not.toContain("上次提交");
   }
-  fireEvent.click(screen.getByRole("button", { name: /任务一.*上次提交：收到成功回执/ }));
+  expect(screen.queryByText(/上次提交：/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "任务三 · 开发" }));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByText("该节点存在结果不确定的排期，请先在飞书核对并重新读取。")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "任务一 · 开发" }));
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "" } });
-  expect(screen.getByRole("button", { name: /任务一.*上次提交：收到成功回执/ }).className).toContain("schedule-pending-item");
+  expect(screen.getByRole("button", { name: /任务一/ }).className).toContain("schedule-pending-item");
+  expect(screen.queryByText(/上次提交：/)).toBeNull();
   expect(document.querySelector(".schedule-inspector-dirty")?.textContent).toBe("本地草稿");
 });
 
@@ -738,7 +745,7 @@ it("已排期长条可由键盘选择并进入日期与顺延操作", async () =
 it.each([0, 1, 2, 3, 4, 5, 6])("空周日历主体第 %i 列能接收待安排事项", async (index) => {
   await setup(); const transfer = { effectAllowed: "", setData: vi.fn() };
   const grid = document.querySelector(".schedule-empty-grid") as HTMLElement;
-  expect(grid.querySelectorAll(":scope > div")).toHaveLength(7);
+  expect(grid.children).toHaveLength(0);
   vi.spyOn(grid, "getBoundingClientRect").mockReturnValue({ left: 100, right: 800, width: 700, top: 0, bottom: 180, height: 180, x: 100, y: 0, toJSON: () => ({}) });
   fireEvent.dragStart(screen.getByRole("button", { name: /任务一/ }), { dataTransfer: transfer });
   const over = createEvent.dragOver(grid, { dataTransfer: transfer }); Object.defineProperty(over, "clientX", { value: 150 + index * 100 }); fireEvent(grid, over);
@@ -747,6 +754,84 @@ it.each([0, 1, 2, 3, 4, 5, 6])("空周日历主体第 %i 列能接收待安排�
   const end = (screen.getByLabelText("结束日期") as HTMLInputElement).value;
   expect(end.slice(5)).toBe(headers[index].querySelector("strong")?.textContent);
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(end);
+});
+
+const blankDragEvent = (target: Element, kind: "dragOver" | "drop", clientX: number) => {
+  const event = createEvent[kind](target);
+  Object.defineProperty(event, "clientX", { value: clientX });
+  fireEvent(target, event);
+  return event;
+};
+
+it.each([7, 14].flatMap((span) => Array.from({ length: span }, (_, index) => [span, index])))
+  ("已有排期时，%i 天视图下方留白的第 %i 列可预览并新增排期草稿", async (span, index) => {
+    const read = data();
+    read.targets.push({ ...read.targets[0], id: "scheduled", title: "已有安排", identity: { ...identity, item: "scheduled" }, dates: { start: currentWeekDay(0), end: currentWeekDay(0) } });
+    vi.mocked(loadScheduleSession).mockResolvedValue(read);
+    await setup();
+    if (span === 14) fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+    expect(document.querySelectorAll(".schedule-row")).toHaveLength(1);
+    expect(screen.queryByText("本周暂无可显示的安排")).toBeNull();
+    const grid = document.querySelector(".schedule-empty-grid") as HTMLElement;
+    vi.spyOn(grid, "getBoundingClientRect").mockReturnValue({ left: 300, width: span * 100 } as DOMRect);
+    fireEvent.dragStart(screen.getByRole("button", { name: /任务一/ }), { dataTransfer: { effectAllowed: "", setData: vi.fn() } });
+    expect(grid.children).toHaveLength(0);
+    expect(blankDragEvent(grid, "dragOver", 350 + index * 100).defaultPrevented).toBe(true);
+    expect(document.querySelector(".schedule-preview")?.textContent).toBe(`${currentWeekDay(index)} → ${currentWeekDay(index)}`);
+    blankDragEvent(grid, "drop", 350 + index * 100);
+    expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(index));
+    expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(currentWeekDay(index));
+    expect(document.querySelectorAll(".schedule-row")).toHaveLength(2);
+    expect(document.querySelector(".schedule-preview")).toBeNull();
+    expect(submitScheduleTargets).not.toHaveBeenCalled();
+  });
+
+it.each([false, true])("名称列下方留白可接收拖放，按今天是否在当前窗口选择默认日期（未来周=%s）", async (futureWeek) => {
+  await setup();
+  if (futureWeek) fireEvent.click(screen.getByRole("button", { name: "下一周" }));
+  const grid = document.querySelector(".schedule-empty-grid") as HTMLElement;
+  vi.spyOn(grid, "getBoundingClientRect").mockReturnValue({ left: 300, width: 700 } as DOMRect);
+  const blank = document.querySelector(".schedule-blank-area")!;
+  const expected = futureWeek ? currentWeekDay(7) : new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  fireEvent.dragStart(screen.getByRole("button", { name: /任务一/ }), { dataTransfer: { effectAllowed: "", setData: vi.fn() } });
+  blankDragEvent(blank, "dragOver", 150);
+  expect(document.querySelector(".schedule-preview")?.textContent).toBe(`${expected} → ${expected}`);
+  blankDragEvent(blank, "drop", 150);
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(expected);
+  expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(expected);
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
+});
+
+it("已有多日排期可移到下方留白并拉伸，取消拖动或外部拖放不创建额外草稿", async () => {
+  const read = data();
+  read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(1) };
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
+  const grid = document.querySelector(".schedule-empty-grid") as HTMLElement;
+  vi.spyOn(grid, "getBoundingClientRect").mockReturnValue({ left: 300, width: 700 } as DOMRect);
+  expect(blankDragEvent(grid, "dragOver", 650).defaultPrevented).toBe(false);
+  blankDragEvent(grid, "drop", 650);
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(0));
+  const transfer = { effectAllowed: "", setData: vi.fn() };
+  const bar = document.querySelector(".schedule-bar") as HTMLElement;
+  vi.spyOn(bar, "getBoundingClientRect").mockReturnValue({ left: 300, width: 200 } as DOMRect);
+  const start = createEvent.dragStart(bar, { dataTransfer: transfer });
+  Object.defineProperty(start, "clientX", { value: 350 });
+  fireEvent(bar, start);
+  blankDragEvent(grid, "dragOver", 650);
+  fireEvent.dragEnd(bar);
+  expect(document.querySelector(".schedule-preview")).toBeNull();
+  blankDragEvent(grid, "drop", 650);
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(0));
+  fireEvent(bar, start);
+  blankDragEvent(grid, "drop", 650);
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(3));
+  expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(currentWeekDay(4));
+  fireEvent.dragStart(bar.querySelector(".schedule-handle.end")!, { dataTransfer: transfer });
+  blankDragEvent(grid, "drop", 950);
+  expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(currentWeekDay(6));
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
 it("搜索人员时自动展开筛选并显示匹配项", async () => {
@@ -1954,6 +2039,8 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(prdBar.classList.contains("is-past-node")).toBe(true);
     expect(feBar.classList.contains("is-narrow-bar")).toBe(true);
     expect(feBar.classList.contains("is-cloud")).toBe(true);
+    expect(feBar.classList.contains("is-schedulable")).toBe(true);
+    expect(prdBar.classList.contains("is-schedulable")).toBe(false);
     expect(prdBar.querySelector(".schedule-bar-state-icon")).toBeNull();
     expect(feBar.querySelector(".schedule-bar-state-icon")).toBeNull();
     expect(prdBar.querySelector(".schedule-bar-badge.is-past")).toBeNull();
@@ -1969,7 +2056,8 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(getComputedStyle(prdBar).borderTopStyle).toBe("solid");
     expect(getComputedStyle(feBar).borderTopStyle).toBe("solid");
     expect(getComputedStyle(feTitle).fontWeight).toBe("600");
-    expect(getComputedStyle(prdTitle).fontWeight).toBe("400");
+    expect(getComputedStyle(prdTitle).fontWeight).toBe("600");
+    expect(getComputedStyle(prdTitle).color).toBe(getComputedStyle(feTitle).color);
 
     // 3. 悬停与键盘聚焦排期条时触发原位上浮完整卡片（靠近右边缘自动右对齐防溢出）
     fireEvent.mouseEnter(prdBar);
@@ -2010,6 +2098,12 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     const feBarBiweekly = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
     expect(feBarBiweekly.classList.contains("is-single-day-bar")).toBe(true);
     expect(getComputedStyle(feBarBiweekly.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("none");
+    fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+    expect(document.querySelector(".schedule-bar.is-schedulable")).toBeNull();
+    for (const title of document.querySelectorAll(".schedule-bar-title")) {
+      expect(getComputedStyle(title).fontWeight).toBe("600");
+      expect(getComputedStyle(title).color).toBe(getComputedStyle(feTitle).color);
+    }
   } finally {
     scheduleStyleEl.remove();
   }

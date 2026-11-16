@@ -463,12 +463,6 @@
   line-height: 1.45;
 }
 
-.schedule-pending-item .schedule-result,
-.schedule-row-label .schedule-result {
-  color: var(--text);
-  font-size: 11px;
-}
-
 .schedule-pending-quick {
   display: flex;
   align-items: center;
@@ -670,13 +664,11 @@
 }
 
 .schedule-days .weekend,
-.schedule-row-grid .weekend,
-.schedule-empty-grid .weekend {
+.schedule-row-grid .weekend {
   background: var(--surface-soft);
 }
 
-.schedule-row-grid .today,
-.schedule-empty-grid .today {
+.schedule-row-grid .today {
   background: color-mix(in srgb, var(--green) 6%, transparent);
 }
 
@@ -856,6 +848,59 @@
   pointer-events: none;
 }
 
+/* 可排期条的光泽独立于草稿/结果底色，装饰层始终位于文字下方。 */
+.schedule-bar.is-schedulable {
+  --schedule-sheen: linear-gradient(
+    110deg,
+    transparent 12%,
+    color-mix(in srgb, var(--green) 20%, transparent) 32%,
+    color-mix(in srgb, var(--surface-solid) 65%, transparent) 46%,
+    color-mix(in srgb, var(--focus) 22%, transparent) 62%,
+    transparent 84%
+  );
+}
+
+:root[data-appearance="pearl"] .schedule-bar.is-schedulable {
+  --schedule-sheen: linear-gradient(
+    110deg,
+    transparent 8%,
+    var(--pearl-cyan) 28%,
+    var(--pearl-violet) 46%,
+    var(--pearl-rose) 64%,
+    transparent 88%
+  );
+}
+
+.schedule-bar.is-schedulable::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: var(--schedule-sheen);
+  background-size: 260% 100%;
+  animation: schedule-bar-sheen 7s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.schedule-bar::before,
+.schedule-bar-title,
+.schedule-bar-badges,
+.schedule-bar-clip {
+  z-index: 1;
+}
+
+.schedule-bar-title,
+.schedule-bar-badges,
+.schedule-bar-clip {
+  position: relative;
+}
+
+@keyframes schedule-bar-sheen {
+  0%, 100% { background-position: 100% 50%; }
+  50% { background-position: 0% 50%; }
+}
+
 :where(:root[data-appearance="pearl"]) .schedule-bar.is-cloud {
   background: linear-gradient(
     115deg,
@@ -954,7 +999,6 @@
 }
 
 .schedule-bar.is-readonly {
-  color: var(--text-secondary);
   border: 1px solid var(--line);
   border-color: color-mix(in srgb, var(--schedule-node-color) 28%, var(--line));
   box-shadow: none;
@@ -1021,12 +1065,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
-}
-
-.schedule-bar.is-readonly .schedule-bar-title,
-.schedule-bar.is-past-node .schedule-bar-title {
-  font-weight: 400;
-  color: var(--text-secondary);
 }
 
 .schedule-bar-badges {
@@ -1157,27 +1195,45 @@
 
 .schedule-handle {
   position: absolute;
-  top: 4px;
-  bottom: 4px;
-  width: 6px;
-  border-radius: 999px;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  width: 9px;
   cursor: ew-resize;
-  background: var(--green);
+  background: transparent;
   opacity: 0;
   transition: opacity 120ms ease;
 }
 
+.schedule-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.5px;
+  height: 14px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--schedule-node-color) 75%, var(--heading));
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
 .schedule-bar:hover .schedule-handle,
-.schedule-bar.selected .schedule-handle {
-  opacity: 0.75;
+.schedule-bar:focus-visible .schedule-handle {
+  opacity: 0.85;
 }
 
 .schedule-handle.start {
-  left: 2px;
+  left: 0;
 }
 
 .schedule-handle.end {
-  right: 2px;
+  right: 0;
+}
+
+.schedule-blank-area {
+  flex: 1;
+  display: flex;
 }
 
 .schedule-empty-body {
@@ -1191,14 +1247,6 @@
 .schedule-empty-grid {
   flex: 1;
   min-height: 220px;
-}
-
-.schedule-empty-grid > div {
-  border-right: 1px solid var(--line);
-}
-
-.schedule-empty-grid > div:last-child {
-  border-right: 0;
 }
 
 .schedule-empty {
@@ -1906,6 +1954,11 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .schedule-bar.is-schedulable::after {
+    animation: none;
+    background-position: 50% 50%;
+    opacity: 0.5;
+  }
   .schedule-switch-track,
   .schedule-switch-thumb,
   .schedule-pending-card,

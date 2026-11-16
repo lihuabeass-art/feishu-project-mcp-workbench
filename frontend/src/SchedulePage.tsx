@@ -149,16 +149,6 @@ const nodeColorStyle = (record: ScheduleRecord): React.CSSProperties => {
   return { "--schedule-node-hue": hash % 360 } as React.CSSProperties;
 };
 const unreadRelatedProject = "unread-related-project";
-const resultLabel = {
-  accepted: "上次提交：收到成功回执",
-  failed: "上次提交：失败",
-  uncertain: "上次提交：结果不确定",
-  unsent: "上次提交：未发送",
-} as const;
-const resultLabelFor = (entry: Entry) =>
-  entry.result === "accepted" && entry.resultMessage?.includes("清空")
-    ? "上次提交：日期已清空"
-    : entry.result ? resultLabel[entry.result] : "";
 const mergeResultWarnings = (previous?: string | null, next?: string | null) =>
   Array.from(new Set([...(previous || "").split("\n"), ...(next || "").split("\n")].filter(Boolean))).join("\n") || undefined;
 
@@ -315,6 +305,7 @@ export function SchedulePage({
   const [hoveredId, setHoveredId] = useState("");
   const [preview, setPreview] = useState<{ id: string; start: string; end: string } | null>(null);
   const drag = useRef<Drag | null>(null);
+  const blankGridRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const reviewBackdropRef = useRef<HTMLDivElement>(null);
@@ -1270,6 +1261,19 @@ export function SchedulePage({
     });
   };
 
+  const blankDropDay = (clientX: number) => {
+    const rect = blankGridRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return null;
+    // 名称列下方没有日期归属，默认排入当前窗口内的今天或窗口首日。
+    if (clientX < rect.left) {
+      return currentToday >= windowStart && currentToday <= windowEnd
+        ? currentToday
+        : windowStart;
+    }
+    const index = Math.min(days.length - 1, Math.floor(((clientX - rect.left) / rect.width) * days.length));
+    return days[index];
+  };
+
   const poolDrop = (event: DragEvent) => {
     event.preventDefault();
     const current = drag.current;
@@ -1877,11 +1881,6 @@ export function SchedulePage({
                                     )}
                                     {dateStatus(entry)}
                                   </span>
-                                  {entry.result && (
-                                    <span className="schedule-result">
-                                      {resultLabelFor(entry)}
-                                    </span>
-                                  )}
                                   {isCurrentSchedulableStatus(entry.record.nodeStatus) && !entry.record.sourceAggregate && (
                                     <NodeDwellTime startedAt={entry.record.nodeStartedAtMs} />
                                   )}
@@ -2078,9 +2077,6 @@ export function SchedulePage({
                     {rows.map((row, rowIndex) => {
                       const { key, owner, primaryEntry, bars, laneCount } = row;
                       const rowSelected = bars.some((b) => b.entry.id === selected);
-                      const resultEntry =
-                        bars.find((b) => b.entry.id === selected && b.entry.result)?.entry ||
-                        bars.find((b) => b.entry.result)?.entry;
                       return (
                         <Fragment key={key}>
                           {view === "people" &&
@@ -2107,11 +2103,6 @@ export function SchedulePage({
                                     ? `${primaryEntry.record.nodeName}（共 ${bars.length} 个节点） · ${targetLabel(primaryEntry, owner)}`
                                     : `${primaryEntry.record.nodeName} · ${targetLabel(primaryEntry, owner)}`}
                                 </small>
-                                {resultEntry?.result && (
-                                  <small className="schedule-result">
-                                    {resultLabelFor(resultEntry)}
-                                  </small>
-                                )}
                               </span>
                             </div>
                             <div
@@ -2206,7 +2197,7 @@ export function SchedulePage({
                                     entry.record.nodeName !== entry.record.title
                                       ? ` · ${entry.record.nodeName}`
                                       : ""
-                                  }${entry.result ? ` · ${resultLabelFor(entry)}` : ""}`;
+                                  }`;
                                   return (
                                     <Fragment key={entry.id}>
                                       <button
@@ -2215,6 +2206,7 @@ export function SchedulePage({
                                         className={[
                                           "schedule-bar",
                                           barStateClass,
+                                          view === "mine" && editable && !isFrozen && !pastNode && "is-schedulable",
                                           isNarrowBar && "is-narrow-bar",
                                           isSingleCol && "is-single-day-bar",
                                           entry.dates.start < windowStart && "is-clipped-start",
@@ -2284,7 +2276,6 @@ export function SchedulePage({
                                         )}
                                         <span className="schedule-bar-title">
                                           {barTitleText}
-                                          {entry.result && ` · ${resultLabelFor(entry)}`}
                                         </span>
                                         <span className="schedule-bar-badges" aria-hidden="true">
                                           <span className="schedule-bar-days">{spanDays}d</span>
@@ -2363,63 +2354,32 @@ export function SchedulePage({
                       );
                     })}
 
-                    {rows.length === 0 && (
+                    <div
+                      className="schedule-blank-area"
+                      onDragOver={(event) => {
+                        if (!drag.current) return;
+                        const day = blankDropDay(event.clientX);
+                        if (!day) return;
+                        event.preventDefault();
+                        previewDay(day);
+                      }}
+                      onDrop={(event) => {
+                        const day = blankDropDay(event.clientX);
+                        if (day) dropDay(event, day);
+                      }}
+                    >
                       <div className="schedule-empty-body">
                         <div
+                          ref={blankGridRef}
                           className="schedule-empty-grid"
-                          onDragOver={(event) => {
-                            if (drag.current) {
-                              event.preventDefault();
-                              const rect = event.currentTarget.getBoundingClientRect();
-                              const col = Math.max(
-                                0,
-                                Math.min(
-                                  days.length - 1,
-                                  Math.floor(
-                                    ((event.clientX - rect.left) / rect.width) * days.length,
-                                  ),
-                                ),
-                              );
-                              previewDay(days[col]);
-                            }
-                          }}
-                          onDrop={(event) => {
-                            const rect = event.currentTarget.getBoundingClientRect();
-                            const index = Math.max(
-                              0,
-                              Math.min(
-                                days.length - 1,
-                                Math.floor(
-                                  ((event.clientX - rect.left) / rect.width) * days.length,
-                                ),
-                              ),
-                            );
-                            dropDay(event, days[index]);
-                          }}
-                        >
-                          {days.map((day) => {
-                            const weekdayIndex =
-                              (new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7;
-                            return (
-                              <div
-                                key={day}
-                                className={[
-                                  weekdayIndex >= 5 && "weekend",
-                                  day === currentToday && "today",
-                                ]
-                                  .filter(Boolean)
-                                  .join(" ")}
-                              />
-                            );
-                          })}
-                        </div>
-                        <p className="schedule-empty">
+                        />
+                        {rows.length === 0 && <p className="schedule-empty">
                           {view === "people" && person.length > 0 && visible.length === 0
                             ? "当前范围未包含该人员的安排"
                             : "本周暂无可显示的安排"}
-                        </p>
+                        </p>}
                       </div>
-                    )}
+                    </div>
                   </div>
                 </div>
 
