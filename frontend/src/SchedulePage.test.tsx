@@ -30,10 +30,32 @@ beforeEach(() => { vi.mocked(loadScheduleSession).mockResolvedValue(data()); vi.
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const setup = async () => { const guard = vi.fn(); render(<SchedulePage onGuardChange={guard} requestReload={(reload) => reload()} />); await screen.findByText(/部分读取失败/); return guard; };
 const confirmSync = () => {
-  fireEvent.click(screen.getByRole("button", { name: /核对并同步|同步排期/ }));
+  fireEvent.click(within(document.querySelector(".schedule-overview") as HTMLElement).getByRole("button", { name: /核对并同步|同步排期/ }));
   const dialog = screen.queryByRole("dialog", { name: "核对排期变更并同步" });
   if (dialog) fireEvent.click(within(dialog).getByRole("button", { name: /确认同步/ }));
 };
+
+it("按人待排期显示各节点停留时间，隐藏重复操作说明和权限说明", async () => {
+  const read = data();
+  const now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now);
+  read.people.push({ id: "other", name: "同事" });
+  read.targets = [
+    { ...read.targets[0], nodeStatus: "doing", nodeStartedAtMs: now - 3 * 86_400_000, mine: false, ownerId: "other", ownerIds: ["other"], identity: { ...identity, owner: "other" }, readOnlyReason: "仅可编辑明确属于自己的排期" },
+    { ...read.targets[0], id: "two", title: "任务二", nodeStartedAtMs: now - 5 * 3_600_000, identity: { ...identity, node: "n2" } },
+    { ...read.targets[0], id: "unknown", title: "未知时间节点", identity: { ...identity, node: "n3" } },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  await screen.findByText("已停留 3 天");
+  expect(screen.getByText("已停留 5 小时")).toBeTruthy();
+  expect(screen.getByText("停留时间未知")).toBeTruthy();
+  const card = screen.getByRole("button", { name: /任务一/ });
+  expect(card.getAttribute("draggable")).toBe("false");
+  expect(card.textContent).not.toContain("仅可编辑明确属于自己的排期");
+  expect(screen.queryByText(/点快捷胶囊一键排期/)).toBeNull();
+});
 
 it.each(["refreshing", "failed"])("后台%s保留有效会话，持续允许编辑、核对与提交", async (phase) => {
   const read = data();
@@ -304,7 +326,7 @@ it("诚实区分撤回待排期与还原云端日期，单端缺失时阻断同�
   // 2. 云端已有日期事项修改后展示云端当前值并提供“还原云端日期”，温和说明飞书清空方式，不暴露假取消排期按钮
   fireEvent.click(screen.getByRole("button", { name: /云端已有任务/ }));
   expect(screen.queryByRole("button", { name: "取消排期" })).toBeNull();
-  expect(screen.getByText(/暂未验证清空排期接口/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "清空排期" })).toBeTruthy();
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "" } });
   expect(screen.getByText(/云端当前值/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: /核对并同步/ }));
@@ -370,7 +392,7 @@ it("明确权限拒绝保留编辑，成功目标不再重发", async () => {
   confirmSync();
   await screen.findByText(/失败 1 项/);
   const warningBanner = screen.getByRole("alert");
-  expect(warningBanner.className).toContain("warning");
+  expect(warningBanner.className).toContain("schedule-feedback");
   expect(warningBanner.className).not.toContain("success");
   confirmSync();
   await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledTimes(2));
@@ -507,7 +529,7 @@ it("每个目标直接展示对应结果，并与本次汇总一致", async () =
   fireEvent.click(screen.getByRole("button", { name: /任务一.*上次提交：收到成功回执/ }));
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "" } });
   expect(screen.getByRole("button", { name: /任务一.*上次提交：收到成功回执/ }).className).toContain("schedule-pending-item");
-  expect(screen.getByText(/未同步/)).toBeTruthy();
+  expect(document.querySelector(".schedule-inspector-dirty")?.textContent).toBe("本地草稿");
 });
 
 it("账号识别失败时显示原因和可读目标，禁止编辑", async () => {
@@ -830,6 +852,144 @@ it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同
   expect(pending.textContent).not.toContain("张三 (other)");
   expect(pending.textContent).toContain("李四");
   expect(submitScheduleTargets).not.toHaveBeenCalled();
+});
+
+it("排期检查器合并当前节点与日期信息，提供清空入口并保留云端日期对比", async () => {
+  const read = data();
+  read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
+  read.targets[0].fetchedAt = "2026-11-16 09:00";
+  read.targets.push({
+    ...read.targets[0], id: "sibling", nodeName: "方案设计",
+    identity: { ...identity, node: "design" },
+  });
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getAllByRole("button", { name: /任务一/ })[0]);
+  const editor = document.querySelector(".schedule-editor")!;
+  const heading = editor.querySelector(".schedule-editor-heading")!;
+  expect(heading.textContent).toBe("任务一本人");
+  const nodes = within(editor as HTMLElement).getByRole("group", { name: "同事项节点" });
+  const currentNode = nodes.querySelector('[aria-pressed="true"]')!;
+  expect(currentNode.textContent).toBe("开发当前可排");
+  expect(nodes.textContent).toContain("方案设计");
+  expect(editor.textContent).not.toContain("已排期：");
+  expect(editor.querySelectorAll(".schedule-span-info")).toHaveLength(1);
+  expect(within(editor as HTMLElement).getByRole("button", { name: "清空排期" })).toBeTruthy();
+  const readMeta = editor.querySelector(".schedule-read-meta") as HTMLDetailsElement;
+  expect(readMeta.open).toBe(false);
+  expect(readMeta.textContent).toContain("2026-11-16 09:00");
+  fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(1) } });
+  expect(editor.querySelector(".schedule-span-info")?.textContent).toBe("共 2 个自然日");
+  expect(editor.querySelector(".schedule-cloud-baseline")?.textContent).toContain(`${currentWeekDay(0)} ~ ${currentWeekDay(0)}`);
+  expect(document.querySelector(".schedule-inspector-dirty")?.textContent).toBe("本地草稿");
+  expect(heading.textContent).not.toContain("未同步");
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
+});
+
+it("清空排期先保留为草稿，可还原，核对后只发送该负责人的明确清空意图", async () => {
+  const read = data();
+  read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(1) };
+  read.targets[0].itemUrl = "https://project.feishu.cn/example/story/detail/1";
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
+  const editor = document.querySelector(".schedule-editor")!;
+  expect(editor.querySelector(".schedule-editor-meta a")).toBeNull();
+  expect(editor.querySelector(".schedule-editor-actions a")?.textContent).toBe("打开飞书事项");
+  fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe("");
+  expect(editor.textContent).toContain("待清空");
+  expect(editor.textContent).toContain("估分及实际工时按云端原值提交");
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "还原云端日期" }));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(0));
+  fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
+  fireEvent.click(screen.getAllByRole("button", { name: /核对并同步/ })[0]);
+  const dialog = screen.getByRole("dialog");
+  expect(dialog.textContent).toContain("本次清空");
+  expect(dialog.textContent).toContain("未排期（清空日期；估分及工时带入原值）");
+  vi.mocked(submitScheduleTargets).mockResolvedValue({
+    results: [{ id: "one", result: "accepted", message: "排期已清空，估分及工时已回读核对，节点保持进行中" }],
+    writeRequests: 1,
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: /确认同步/ }));
+  await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(submitScheduleTargets).mock.calls[0][1]).toEqual([
+    { id: "one", identity, dates: { start: "", end: "" }, cancel: true },
+  ]);
+  await waitFor(() => expect(document.querySelector(".schedule-inspector-dirty")).toBeNull());
+  expect(screen.queryByRole("button", { name: "清空排期" })).toBeNull();
+});
+
+it.each(["uncertain", "accepted"] as const)("清空返回%s时合并反馈，日期已核验后的估分差异单独提示", async (result) => {
+  const read = data();
+  read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
+  fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
+  vi.mocked(submitScheduleTargets).mockResolvedValue({
+    results: [{ id: "one", result, message: result === "accepted" ? "排期日期已清空，节点保持进行中" : "清空结果不确定，草稿已保留",
+      ...(result === "accepted" ? { warning: "日期已清空，但估分或计划工期与提交前不一致，请在飞书核对。" } : {}) }],
+    writeRequests: 1,
+  });
+  confirmSync();
+  await waitFor(() => expect(document.querySelectorAll(".schedule-feedback")).toHaveLength(1));
+  const feedback = document.querySelector(".schedule-feedback") as HTMLElement;
+  expect(screen.queryByRole("button", { name: "放弃本次编辑并重新读取" })).toBeNull();
+  if (result === "accepted") {
+    expect(feedback.textContent).toContain("日期已清空");
+    expect(feedback.textContent).toContain("估分或计划工期");
+    expect(feedback.textContent).not.toContain("结果不确定");
+    expect(document.querySelector(".schedule-inspector-dirty")).toBeNull();
+    expect(within(feedback).queryByRole("button", { name: "重新读取" })).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    // 普通改期没有核验工时或估分，不能清掉上一次清空留下的差异提示。
+    fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(1) } });
+    fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(1) } });
+    vi.mocked(submitScheduleTargets).mockResolvedValueOnce({
+      results: [{ id: "one", result: "accepted", message: "收到成功回执，未回读核验" }], writeRequests: 1,
+    });
+    confirmSync();
+    await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledTimes(2));
+    expect(document.querySelector(".schedule-feedback")?.textContent).toContain("估分或计划工期");
+  } else {
+    expect(feedback.querySelector("strong")?.textContent).toBe("部分排期尚未核验");
+    expect((feedback.querySelector("details") as HTMLDetailsElement).open).toBe(false);
+    expect(within(feedback).getByRole("button", { name: "重新读取" })).toBeTruthy();
+    expect(document.querySelector(".schedule-inspector-dirty")).toBeTruthy();
+    expect(loadScheduleSession).toHaveBeenCalledTimes(1);
+  }
+});
+
+it.each(["failed", "accepted"] as const)("多目标清空返回%s时，附带警告不重复且混合统计默认折叠", async (otherResult) => {
+  const read = data();
+  read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
+  read.targets.push({ ...read.targets[0], id: "two", title: "另一事项", identity: { ...identity, item: "other" } });
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
+  fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
+  fireEvent.click(screen.getByRole("button", { name: /另一事项/ }));
+  fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
+  vi.mocked(submitScheduleTargets).mockResolvedValueOnce({
+    results: [
+      { id: "one", result: "accepted", message: "日期已清空", warning: "日期已清空，但估分与提交前不一致，请核对。" },
+      { id: "two", result: otherResult, message: otherResult === "failed" ? "无权限修改" : "日期已清空",
+        ...(otherResult === "accepted" ? { warning: "日期已清空，但实际工时与提交前不一致，请核对。" } : {}) },
+    ], writeRequests: 2,
+  });
+  confirmSync();
+  await waitFor(() => expect(document.querySelector(".schedule-feedback")).toBeTruthy());
+  const feedback = document.querySelector(".schedule-feedback")!;
+  expect(feedback.textContent).toContain("估分与提交前不一致");
+  expect(Array.from(feedback.querySelectorAll("p")).filter((p) => p.textContent?.includes("估分与提交前不一致"))).toHaveLength(1);
+  if (otherResult === "failed") {
+    expect(feedback.textContent).toContain("失败 1 项");
+    expect((feedback.querySelector("details") as HTMLDetailsElement).open).toBe(false);
+  } else {
+    expect(Array.from(feedback.querySelectorAll("p")).filter((p) => p.textContent?.includes("实际工时与提交前不一致"))).toHaveLength(1);
+  }
 });
 
 it("未确认当前账号时禁止编辑", async () => {
@@ -1184,7 +1344,7 @@ it("本人尾号兜底自动替换为真实姓名与头像，纯数字回退名�
   expect(document.querySelector('.schedule-scope img[src="https://example.com/me-avatar.png"]')).toBeTruthy();
 
   fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
-  const linkWrap = document.querySelector(".schedule-editor-meta .workflow-manual-fill.detail-item-link");
+  const linkWrap = document.querySelector(".schedule-editor-heading .schedule-editor-actions.detail-item-link");
   expect(linkWrap).toBeTruthy();
   const linkBtn = within(linkWrap as HTMLElement).getByRole("link", { name: /打开飞书事项/ });
   expect(linkBtn.getAttribute("title")).toBe("在浏览器打开飞书事项");
@@ -1531,7 +1691,7 @@ it("纯成功同步展示悬浮绿色 Toast 并在 3 秒后自动消失，含失
     });
     expect(screen.queryByRole("status")).toBeNull();
 
-    // 2. 存在失败结果：展示持久 .banner.warning（role="alert"），3 秒后仍不消失
+    // 2. 存在失败结果：展示持久的局部反馈（role="alert"），3 秒后仍不消失
     fireEvent.click(screen.getByRole("button", { name: /失败排期事项/ }));
     fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(4) } });
     vi.mocked(submitScheduleTargets).mockResolvedValueOnce({
@@ -1541,8 +1701,7 @@ it("纯成功同步展示悬浮绿色 Toast 并在 3 秒后自动消失，含失
     confirmSync();
     await act(async () => {});
     const alertBanner = screen.getByRole("alert");
-    expect(alertBanner.className).toContain("banner");
-    expect(alertBanner.className).toContain("warning");
+    expect(alertBanner.className).toContain("schedule-feedback");
     expect(alertBanner.textContent).toContain("失败 1 项");
     await act(async () => {
       vi.advanceTimersByTime(5000);

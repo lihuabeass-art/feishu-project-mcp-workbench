@@ -18,13 +18,14 @@ it("后台候选读取未返回时，原编辑会话可独立提交", async () =
 
 it("桌面会话先结束旧会话再读取新会话，写入只传目标 ID 和日期", async () => {
   const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
-  const wire = { session_id: "s1", current_user: "me", current_user_name: "本人", read_at_ms: 1, sources: [{ id: "a", name: "来源", complete: true }], failed_items: 0, targets: [{ id: "1", identity, title: "标题", node_name: "开发", owners: [{ id: "me", name: "本人" }], sources: ["a"], baseline: { start: "", end: "" } }] };
+  const wire = { session_id: "s1", current_user: "me", current_user_name: "本人", read_at_ms: 1, sources: [{ id: "a", name: "来源", complete: true }], failed_items: 0, targets: [{ id: "1", identity, title: "标题", node_name: "开发", node_started_at_ms: 1794809754000, owners: [{ id: "me", name: "本人" }], sources: ["a"], baseline: { start: "", end: "" } }] };
   invoke.mockImplementation(async (command: string) => command === "load_schedule_session" ? wire : command === "sync_schedule_session" ? { targets: [{ id: "1", result: "accepted" }], write_requests: 1 } : undefined);
   const first = loadScheduleSession(); const closed = closeScheduleSession(first);
   const read = await first; await closed; await loadScheduleSession();
   expect(invoke.mock.calls.map((call) => call[0])).toEqual(["load_schedule_session", "close_schedule_session", "load_schedule_session"]);
   expect(read.targets[0].mine).toBe(true);
   expect(read.targets[0].identity).toEqual(identity);
+  expect(read.targets[0].nodeStartedAtMs).toBe(1794809754000);
   await submitScheduleTargets("s1", [{ id: "1", identity, dates: { start: "2026-11-13", end: "2026-11-14" }, cancel: false }]);
   expect(invoke).toHaveBeenLastCalledWith("sync_schedule_session", { sessionId: "s1", changes: [{ id: "1", start: "2026-11-13", end: "2026-11-14", cancel: false }] });
 });

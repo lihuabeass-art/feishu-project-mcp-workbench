@@ -30,9 +30,14 @@ describe("事项安排会话", () => {
     expect(validSchedule({ start: "2026-02-29", end: "2026-03-01" })).toBe(false);
     expect(scheduleValidation(editSchedule(target(), { start: "", end: "2026-11-16" }))).toContain("有效");
   });
-  it("取消意图不能发送，恢复原值后不再有变化，纯空白基线取消不视为变更", () => {
+  it("清空必须是显式意图，恢复后不再有变化，空基线清空不视为变更", () => {
     const cancelled = cancelSchedule(target());
-    expect(scheduleValidation(cancelled)).toContain("尚未验证取消日期");
+    expect(scheduleValidation(cancelled)).toBeNull();
+    expect(scheduleValidation({ ...cancelled, dates: target().dates })).toContain("不能同时提交日期");
+    expect(scheduleValidation(editSchedule(target(), { start: "", end: "" }))).toContain("有效");
+    const accepted = settleSchedule(cancelled, cancelled.dates, "accepted");
+    expect(accepted.cancel).toBe(false);
+    expect(scheduleChanged(accepted)).toBe(false);
     expect(scheduleChanged(editSchedule(cancelled, target().baseline))).toBe(false);
     const wsCancelled = cancelSchedule({ ...target(), baseline: { start: "   ", end: "\t" }, dates: { start: "   ", end: "\t" } });
     expect(hasBaselineSchedule(wsCancelled.baseline)).toBe(false);

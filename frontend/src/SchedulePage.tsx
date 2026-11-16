@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Lock,
+  Info,
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
@@ -34,6 +35,7 @@ import {
 } from "./scheduleApi";
 import {
   applyQuickSchedulePreset,
+  cancelSchedule,
   classifyScheduleReview,
   editSchedule,
   hasBaselineSchedule,
@@ -50,7 +52,7 @@ import {
 } from "./scheduleSession";
 import "./schedule.css";
 
-type Entry = ScheduleTarget & { record: ScheduleRecord; resultMessage?: string | null };
+type Entry = ScheduleTarget & { record: ScheduleRecord; resultMessage?: string | null; resultWarning?: string | null };
 type Guard = { dirty: boolean; busy: boolean; uncertain: boolean; interacting?: boolean };
 type Drag = { id: string; kind: "new" | "move" | "start" | "end"; grabbed: string };
 
@@ -98,6 +100,7 @@ const createScheduleEntry = (record: ScheduleRecord): Entry => ({
   cancel: false,
   ...(record.result ? { result: record.result } : {}),
   ...(record.resultMessage !== undefined ? { resultMessage: record.resultMessage } : {}),
+  ...(record.resultWarning !== undefined ? { resultWarning: record.resultWarning } : {}),
   readOnlyReason: resolveDefaultReadOnlyReason(record),
   record,
 });
@@ -141,6 +144,10 @@ const resultLabel = {
   uncertain: "上次提交：结果不确定",
   unsent: "上次提交：未发送",
 } as const;
+const resultLabelFor = (entry: Entry) =>
+  entry.result === "accepted" && entry.resultMessage?.includes("清空")
+    ? "上次提交：日期已清空"
+    : entry.result ? resultLabel[entry.result] : "";
 
 function Avatar({ person }: { person?: SchedulePerson }) {
   const [failed, setFailed] = useState(false);
@@ -162,6 +169,22 @@ function Avatar({ person }: { person?: SchedulePerson }) {
       )}
     </span>
   );
+}
+
+function NodeDwellTime({ startedAt }: { startedAt?: number | null }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const elapsed = startedAt != null && Number.isFinite(startedAt) && startedAt > 0 && startedAt <= now
+    ? now - startedAt : null;
+  const label = elapsed == null ? "停留时间未知"
+    : elapsed < 60_000 ? "已停留不足 1 分钟"
+    : elapsed < 3_600_000 ? `已停留 ${Math.floor(elapsed / 60_000)} 分钟`
+    : elapsed < 86_400_000 ? `已停留 ${Math.floor(elapsed / 3_600_000)} 小时`
+    : `已停留 ${Math.floor(elapsed / 86_400_000)} 天`;
+  return <small title={elapsed == null ? "飞书未提供可确认的节点实际进入时间" : `节点进入时间：${new Date(startedAt!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`}>{label}</small>;
 }
 
 export function SchedulePage({
@@ -220,6 +243,9 @@ export function SchedulePage({
   const currentToday = today();
   const dirty = entries.some(scheduleChanged);
   const uncertain = entries.some((entry) => entry.result === "uncertain");
+  const persistentWarnings = Array.from(new Set(entries.flatMap((entry) =>
+    entry.resultWarning ? [entry.resultWarning] : [],
+  )));
   const nodeKey = (entry: Entry) =>
     JSON.stringify([
       entry.identity.connection,
@@ -942,6 +968,7 @@ export function SchedulePage({
   }, [reviewOpen]);
 
   const dateStatus = (entry: Entry) => {
+    if (entry.cancel && scheduleChanged(entry)) return "待清空 · 核对并同步后生效";
     if ((!entry.record.cacheKind || entry.record.cacheKind === "node") && !entry.record.sourceAggregate) {
       if (validSchedule(entry.dates))
         return `已排期：${entry.dates.start} ~ ${entry.dates.end}（共 ${scheduleSpanDays(entry.dates)} 个自然日）`;
@@ -1249,6 +1276,7 @@ export function SchedulePage({
                 ? { ...entry.record, dates: { ...submission.dates } }
                 : entry.record,
             resultMessage: results.get(entry.id)?.message,
+            resultWarning: results.get(entry.id)?.warning ?? entry.resultWarning,
           };
         }),
       );
@@ -1260,12 +1288,14 @@ export function SchedulePage({
             if (!submission) return record;
             const outcome = results.get(record.id)?.result || "uncertain";
             const resultMessage = results.get(record.id)?.message;
+            const resultWarning = results.get(record.id)?.warning ?? record.resultWarning;
             if (outcome === "accepted" || outcome === "uncertain") {
               return {
                 ...record,
                 dates: { ...submission.dates },
                 result: outcome,
                 resultMessage,
+                resultWarning,
               };
             }
             return record;
@@ -1280,13 +1310,17 @@ export function SchedulePage({
       const failed = count("failed");
       const uncertainCount = count("uncertain");
       const unsent = count("unsent");
-      if (accepted > 0 && failed === 0 && uncertainCount === 0 && unsent === 0) {
+      const warnings = response.results.filter((result) => result.warning);
+      const cleared = frozen.filter((item) => item.cancel && results.get(item.id)?.result === "accepted").length;
+      if (accepted > 0 && failed === 0 && uncertainCount === 0 && unsent === 0 && warnings.length === 0) {
         setReport("");
         setSuccessToast({ id: Date.now(), accepted });
       } else {
         setSuccessToast(null);
         setReport(
-          `本次同步：收到成功回执 ${accepted} 项，失败 ${failed} 项，结果不确定 ${uncertainCount} 项，未发送 ${unsent} 项；实际写请求 ${response.writeRequests} 次。成功回执未回读核验。`,
+          warnings.length > 0 && failed === 0 && uncertainCount === 0 && unsent === 0
+            ? ""
+            : `本次同步：${cleared ? `已核验清空 ${cleared} 项，` : ""}收到成功回执 ${accepted - cleared} 项，失败 ${failed} 项，结果不确定 ${uncertainCount} 项，未发送 ${unsent} 项。${accepted > cleared ? "普通改期的成功回执尚未回读核验。" : ""}`,
         );
       }
     } catch (failure) {
@@ -1520,9 +1554,37 @@ export function SchedulePage({
                 </button>
               </div>
             )}
-            {report && (
-              <div className="banner warning" role="alert">
-                {report}
+            {(report || uncertain || persistentWarnings.length > 0) && (
+              <div className="schedule-feedback" role="alert">
+                <Info size={17} aria-hidden="true" />
+                <div className="schedule-feedback-content">
+                  <strong>{uncertain ? "部分排期尚未核验" : "排期同步提示"}</strong>
+                  {uncertain || report.startsWith("本次同步：") ? (
+                    <>
+                      <p>{uncertain
+                        ? "编辑内容已保留，请先核对飞书中的实际结果。重新读取将结束本次编辑。"
+                        : "未完成的编辑已保留，可查看各节点结果后重试。"}</p>
+                      {report && <details><summary>查看同步详情</summary><p>{report}</p></details>}
+                    </>
+                  ) : report && <p>{report}</p>}
+                  {persistentWarnings.filter((warning) => warning !== report).map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </div>
+                {uncertain && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    title="结束本次编辑并重新读取云端排期"
+                    onClick={() => requestReload(() => {
+                      forceResetRef.current = true;
+                      setEpoch((value) => value + 1);
+                    })}
+                  >
+                    重新读取
+                  </button>
+                )}
               </div>
             )}
             {successToast && (
@@ -1542,24 +1604,6 @@ export function SchedulePage({
                     <X size={16} aria-hidden="true" />
                   </button>
                 </div>
-              </div>
-            )}
-            {uncertain && (
-              <div className="banner warning">
-                <span>部分排期可能已保存，请在飞书核对。</span>
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={busy}
-                  onClick={() =>
-                    requestReload(() => {
-                      forceResetRef.current = true;
-                      setEpoch((value) => value + 1);
-                    })
-                  }
-                >
-                  放弃本次编辑并重新读取
-                </button>
               </div>
             )}
 
@@ -1749,9 +1793,6 @@ export function SchedulePage({
 
                     {poolTab === "pending" ? (
                       <>
-                        <p className="schedule-pool-hint">
-                          点快捷胶囊一键排期，或拖入右侧日历设期；新增草稿可拖回此处撤回。
-                        </p>
                         <div className="schedule-pool-list">
                           {pendingRows.map(({ entry, owner }, index) => (
                             <Fragment key={`${entry.id}:${owner}`}>
@@ -1805,10 +1846,13 @@ export function SchedulePage({
                                   </span>
                                   {entry.result && (
                                     <span className="schedule-result">
-                                      {resultLabel[entry.result]}
+                                      {resultLabelFor(entry)}
                                     </span>
                                   )}
-                                  {entry.readOnlyReason && <small>{entry.readOnlyReason}</small>}
+                                  {isCurrentSchedulableStatus(entry.record.nodeStatus) && !entry.record.sourceAggregate && (
+                                    <NodeDwellTime startedAt={entry.record.nodeStartedAtMs} />
+                                  )}
+                                  {entry.readOnlyReason && entry.readOnlyReason !== "仅可编辑明确属于自己的排期" && <small>{entry.readOnlyReason}</small>}
                                 </button>
                                 {canEdit(entry) && (
                                   <div
@@ -2035,7 +2079,7 @@ export function SchedulePage({
                                 </small>
                                 {resultEntry?.result && (
                                   <small className="schedule-result">
-                                    {resultLabel[resultEntry.result]}
+                                    {resultLabelFor(resultEntry)}
                                   </small>
                                 )}
                               </span>
@@ -2132,7 +2176,7 @@ export function SchedulePage({
                                     entry.record.nodeName !== entry.record.title
                                       ? ` · ${entry.record.nodeName}`
                                       : ""
-                                  }${entry.result ? ` · ${resultLabel[entry.result]}` : ""}`;
+                                  }${entry.result ? ` · ${resultLabelFor(entry)}` : ""}`;
                                   return (
                                     <Fragment key={entry.id}>
                                       <button
@@ -2209,7 +2253,7 @@ export function SchedulePage({
                                         )}
                                         <span className="schedule-bar-title">
                                           {barTitleText}
-                                          {entry.result && ` · ${resultLabel[entry.result]}`}
+                                          {entry.result && ` · ${resultLabelFor(entry)}`}
                                         </span>
                                         <span className="schedule-bar-badges" aria-hidden="true">
                                           <span className="schedule-bar-days">{spanDays}d</span>
@@ -2377,8 +2421,15 @@ export function SchedulePage({
                         <span className="schedule-editor-tag">
                           {projectLabel(selectedEntry)} · {typeLabel(selectedEntry)}
                         </span>
+                      </div>
+                      <div className="schedule-editor-heading">
+                        <h3>{selectedEntry.record.title}</h3>
+                        <p>
+                          {siblingNodes.length <= 1 && selectedEntry.record.nodeName && `${selectedEntry.record.nodeName} · `}
+                          {targetLabel(selectedEntry, selectedEntry.record.ownerId || "")}
+                        </p>
                         {selectedEntry.record.itemUrl && (
-                          <div className="workflow-manual-fill detail-item-link">
+                          <div className="schedule-editor-actions workflow-manual-fill detail-item-link">
                             <ExternalLink
                               href={selectedEntry.record.itemUrl}
                               title="在浏览器打开飞书事项"
@@ -2388,14 +2439,6 @@ export function SchedulePage({
                             </ExternalLink>
                           </div>
                         )}
-                      </div>
-                      <div>
-                        <h3>{selectedEntry.record.title}</h3>
-                        <p>
-                          {selectedEntry.record.nodeName} ·{" "}
-                          {targetLabel(selectedEntry, selectedEntry.record.ownerId || "")}{" "}
-                          {scheduleChanged(selectedEntry) && "· 未同步"}
-                        </p>
                       </div>
                       {siblingNodes.length > 1 && (
                         <div
@@ -2435,7 +2478,7 @@ export function SchedulePage({
                                 >
                                   <strong>{node.record.nodeName || node.record.title}</strong>
                                   <span>
-                                    {dateText} · {stateText}
+                                    {isCurrent ? stateText : `${dateText} · ${stateText}`}
                                   </span>
                                 </button>
                               );
@@ -2444,7 +2487,15 @@ export function SchedulePage({
                         </div>
                       )}
                       {view === "mine" && (
-                        <>
+                        <section className="schedule-editor-dates" aria-label="节点排期">
+                          <div className="schedule-editor-section-head">
+                            <strong>节点排期</strong>
+                            {validSchedule(selectedEntry.dates) && (
+                              <span className="schedule-span-info">
+                                共 {scheduleSpanDays(selectedEntry.dates)} 个自然日
+                              </span>
+                            )}
+                          </div>
                           {canEdit(selectedEntry) && (
                             <div
                               className="schedule-inspector-presets"
@@ -2502,11 +2553,6 @@ export function SchedulePage({
                               )
                             }
                           />
-                          {validSchedule(selectedEntry.dates) && (
-                            <p className="schedule-span-info">
-                              共 {scheduleSpanDays(selectedEntry.dates)} 个自然日
-                            </p>
-                          )}
                           {scheduleChanged(selectedEntry) &&
                             hasBaselineSchedule(selectedEntry.baseline) && (
                               <div className="schedule-cloud-baseline">
@@ -2526,19 +2572,34 @@ export function SchedulePage({
                                 : "撤回待排期"}
                             </button>
                           )}
-                          {hasBaselineSchedule(selectedEntry.baseline) && (
+                          {canEdit(selectedEntry) && hasBaselineSchedule(selectedEntry.baseline) && !selectedEntry.cancel && (
+                            <button
+                              type="button"
+                              className="secondary schedule-clear-btn"
+                              onClick={() => update(selectedEntry.id, cancelSchedule)}
+                            >
+                              清空排期
+                            </button>
+                          )}
+                          {selectedEntry.cancel && scheduleChanged(selectedEntry) && (
                             <p className="schedule-clear-note">
-                              当前飞书连接暂未验证清空排期接口；如需清空已有排期，请在飞书中修改。
+                              本次将清空开始与结束日期；估分及实际工时按云端原值提交。飞书可能联动调整估分，提交后会核对并提示差异。
                             </p>
                           )}
-                        </>
+                        </section>
                       )}
-                      <p>{dateStatus(selectedEntry)}</p>
+                      {(view !== "mine" || !validSchedule(selectedEntry.dates)) && (
+                        <p>{dateStatus(selectedEntry)}</p>
+                      )}
                       {selectedEntry.record.fetchedAt && (
-                        <p>事项详情抓取时间 {selectedEntry.record.fetchedAt}</p>
+                        <details key={selectedEntry.id} className="schedule-read-meta">
+                          <summary>数据读取信息</summary>
+                          <p>事项详情抓取时间 {selectedEntry.record.fetchedAt}</p>
+                        </details>
                       )}
                       {selectedEntry.readOnlyReason && <p>{selectedEntry.readOnlyReason}</p>}
                       {selectedEntry.resultMessage && <p>{selectedEntry.resultMessage}</p>}
+                      {selectedEntry.resultWarning && <p className="schedule-result-warning">{selectedEntry.resultWarning}</p>}
                       {frozenNodes.has(nodeKey(selectedEntry)) && (
                         <p>该节点存在结果不确定的排期，请先在飞书核对并重新读取。</p>
                       )}
@@ -2614,7 +2675,7 @@ export function SchedulePage({
                                   <span
                                     className={`schedule-review-badge ${isAdded ? "is-added" : "is-modified"}`}
                                   >
-                                    {isAdded ? "本次新增" : "本次修改"}
+                                    {entry.cancel ? "本次清空" : isAdded ? "本次新增" : "本次修改"}
                                   </span>
                                   <strong>{entry.record.title}</strong>
                                 </div>
@@ -2649,11 +2710,13 @@ export function SchedulePage({
                                   →
                                 </span>
                                 <strong className="schedule-review-next">
-                                  本次提交值：{entry.dates.start} ~ {entry.dates.end}（共{" "}
-                                  {scheduleSpanDays(entry.dates)} 天）
+                                  {entry.cancel
+                                    ? "本次提交值：未排期（清空日期；估分及工时带入原值）"
+                                    : `本次提交值：${entry.dates.start} ~ ${entry.dates.end}（共 ${scheduleSpanDays(entry.dates)} 天）`}
                                 </strong>
                               </div>
                             )}
+                            {entry.cancel && <p>飞书可能联动调整估分，提交后会核对并单独提示差异。</p>}
                           </div>
                         );
                       })}

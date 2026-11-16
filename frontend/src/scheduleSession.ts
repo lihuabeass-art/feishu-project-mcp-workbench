@@ -136,7 +136,7 @@ export function cancelSchedule(target: ScheduleTarget): ScheduleTarget {
   return { ...target, dates: { start: "", end: "" }, cancel: true };
 }
 
-/** 清空协议尚未验证；本函数绝不将其视为可发送的写入。 */
+/** 清空是显式意图；后端读取完整排期、保留工时并回读核验。 */
 export function scheduleValidation(target: ScheduleTarget): string | null {
   if (!scheduleChanged(target)) return null;
   if (target.result === "uncertain") return "暂时无法确认是否保存，请先在飞书核对";
@@ -146,7 +146,7 @@ export function scheduleValidation(target: ScheduleTarget): string | null {
       ![identity.connection, identity.project, identity.type, identity.item, identity.node].every(value => value?.trim()) ||
       identity.node !== target.nodeId || (identity.scope !== "personal" && identity.scope !== "node") ||
       (identity.scope === "personal" && !identity.owner?.trim())) return "排期目标身份不完整，请重新读取";
-  if (target.cancel) return "当前连接尚未验证取消日期";
+  if (target.cancel) return target.dates.start || target.dates.end ? "清空排期不能同时提交日期" : null;
   if (!validSchedule(target.dates)) return "请填写有效的开始和结束日期，结束日期不能早于开始日期";
   return null;
 }
@@ -155,6 +155,6 @@ export function scheduleValidation(target: ScheduleTarget): string | null {
 export function settleSchedule(target: ScheduleTarget, submitted: ScheduleDates, result: ScheduleResult): ScheduleTarget {
   if (target.result === "uncertain") return target;
   const frozen = { ...submitted };
-  if (result === "accepted") return { ...target, baseline: frozen, result, submitted: frozen };
+  if (result === "accepted") return { ...target, baseline: frozen, cancel: false, result, submitted: frozen };
   return { ...target, result, submitted: frozen };
 }

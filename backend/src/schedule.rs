@@ -1,4 +1,4 @@
-//! 会话内事项安排。入口读取已启用的个人待办及节点，写入不做隐式重读或重试。
+//! 会话内事项安排。普通改期按回执处理；清空日期读取完整值并回读核验，写请求不重试。
 use crate::{
     api::Session,
     detail,
@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
+mod clear;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Dates {
@@ -46,6 +47,7 @@ pub struct Target {
     pub title: String,
     pub node_name: String,
     pub node_status: String,
+    pub node_started_at_ms: Option<i64>,
     pub node_order: usize,
     pub schedule_required: bool,
     pub owner_name: String,
@@ -108,6 +110,8 @@ pub struct Change {
 pub struct TargetResult {
     pub id: String,
     pub result: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
     pub message: &'static str,
 }
 #[derive(Debug, Serialize)]
@@ -304,6 +308,7 @@ fn build_aggregate_targets(
             },
             node_name,
             node_status: String::new(),
+            node_started_at_ms: None,
             node_order: 0,
             schedule_required: true,
             owner_name: String::new(),
@@ -703,17 +708,17 @@ impl ScheduleSession {
             if let Some(reason) = &target.read_only_reason {
                 return Err(BackendError::validation(reason.clone()));
             }
-            if change.cancel {
-                return Err(BackendError::validation("当前连接尚未验证取消日期"));
-            }
             let (start, end) = (date_ms(&change.start), date_ms(&change.end));
-            if start.is_none() || end.is_none() || start > end {
+            if change.cancel && (!change.start.is_empty() || !change.end.is_empty()) {
+                return Err(BackendError::validation("清空排期不能同时提交日期"));
+            }
+            if !change.cancel && (start.is_none() || end.is_none() || start > end) {
                 return Err(BackendError::validation("请填写有效的开始和结束日期"));
             }
             if target.baseline.start == change.start && target.baseline.end == change.end {
                 return Err(BackendError::validation("排期没有变化"));
             }
-            prepared.push((target.clone(), change, start.unwrap(), end.unwrap()));
+            prepared.push((target.clone(), change, start, end));
         }
         if prepared.is_empty() {
             return Err(BackendError::validation("没有可同步的排期变化"));
@@ -726,13 +731,22 @@ impl ScheduleSession {
             let mut stopped = false; let mut uncertain_nodes = HashSet::new();
             for (target, change, start, end) in prepared {
                 let node = (target.identity.project.clone(), target.identity.r#type.clone(), target.identity.item.clone(), target.identity.node.clone());
-                if stopped || uncertain_nodes.contains(&node) { result.targets.push(TargetResult { id: change.id, result: "unsent", message: "本次未发送" }); continue; }
+                if stopped || uncertain_nodes.contains(&node) { result.targets.push(TargetResult { warning: None, id: change.id, result: "unsent", message: "本次未发送" }); continue; }
                 let item_id = WorkItemId { project_key: Some(target.identity.project.clone()),
                     work_item_type_key: Some(target.identity.r#type.clone()), work_item_id: target.identity.item.clone() };
                 let _access = match tokio::time::timeout(lock_timeout, crate::item_access::lock_workflow(&session.store, &item_id)).await {
                     Ok(access) => access,
-                    Err(_) => { result.targets.push(TargetResult { id: change.id, result: "unsent", message: "等待事项写入超时，本次未发送" }); continue; }
+                    Err(_) => { result.targets.push(TargetResult { warning: None, id: change.id, result: "unsent", message: "等待事项写入超时，本次未发送" }); continue; }
                 };
+                let clear_before = if change.cancel {
+                    match clear::snapshot(client.as_ref(), &item_id, &target, &self.view.current_user, true).await {
+                        Ok(before) if before.dates == target.baseline => Some(before),
+                        _ => {
+                            result.targets.push(TargetResult { warning: None, id: change.id, result: "unsent", message: "云端排期已变化或完整数据读取失败，本次未清空，请重新读取后核对" });
+                            continue;
+                        }
+                    }
+                } else { None };
                 let request_id = format!("schedule-{}-{}-{}", std::process::id(), self.view.session_id, NEXT.fetch_add(1, Ordering::Relaxed));
                 let record = crate::store::ActionRecord {
                     request_id: request_id.clone(),
@@ -746,46 +760,79 @@ impl ScheduleSession {
                 };
                 match session.store.begin_action(&record) {
                     Ok(true) => {},
-                    _ => { result.targets.push(TargetResult { id: change.id, result: "unsent", message: "事项正在写入或台账不可用，本次未发送" }); continue; }
+                    _ => { result.targets.push(TargetResult { warning: None, id: change.id, result: "unsent", message: "事项正在写入或台账不可用，本次未发送" }); continue; }
                 }
                 if session.store.mark_detail_refresh(&item_id).is_err() {
                     let _ = session.store.finish_action(&request_id, "failed", false, Some("本地缓存状态登记失败，未发送"), crate::sync::now_ms());
-                    result.targets.push(TargetResult { id: change.id, result: "unsent", message: "本地登记失败，本次未发送" });
+                    result.targets.push(TargetResult { warning: None, id: change.id, result: "unsent", message: "本地登记失败，本次未发送" });
                     continue;
                 }
-                let mut patch = json!({
+                let mut patch = if let Some(before) = &clear_before { clear::patch(before) } else { json!({
                     "clear_schedule": false,
                     "is_auto": false,
                     "estimate_start_date": start,
                     "estimate_end_date": end,
-                });
+                }) };
                 let mut args = json!({"project_key":target.identity.project,"work_item_id":target.identity.item,"node_id":target.identity.node});
                 if target.identity.scope == "personal" { patch["owners"] = json!([target.identity.owner]); args["schedules"] = json!([patch]); } else { args["node_schedule"] = patch; }
                 let before_write = rpc_count.load(Ordering::Relaxed);
                 let response = client.call_tool("update_node", args.as_object().unwrap()).await;
                 let connection_error; let mut rejected = false;
-                let accepted = match response {
-                    Ok(payload) => { connection_error = explicit_auth_failure(&payload); schedule_receipt_accepted(&payload) },
-                    Err(e) => { connection_error = matches!(e.kind(), ErrorKind::Auth | ErrorKind::Credential | ErrorKind::Connection) || matches!(&e, BackendError::Tool { code, message, .. } if *code == Some(401) || explicit_auth_marker(message)); rejected = matches!(e, BackendError::Permission { .. }) || rpc_count.load(Ordering::Relaxed) == before_write; false }
+                let (accepted, receipt_note) = match response {
+                    Ok(payload) => {
+                        connection_error = explicit_auth_failure(&payload);
+                        let accepted = schedule_receipt_accepted(&payload);
+                        let note = (!accepted).then_some(if payload.is_error { "写入回执为工具错误" } else if payload.structured.is_some() { "结构化写入回执未确认成功" } else { "写入回执格式异常" });
+                        (accepted, note)
+                    },
+                    Err(e) => { connection_error = matches!(e.kind(), ErrorKind::Auth | ErrorKind::Credential | ErrorKind::Connection) || matches!(&e, BackendError::Tool { code, message, .. } if *code == Some(401) || explicit_auth_marker(message)); rejected = matches!(e, BackendError::Permission { .. }) || rpc_count.load(Ordering::Relaxed) == before_write; (false, Some("写入请求响应异常")) }
                 };
                 let accepted = accepted && !connection_error;
+                result.write_requests += rpc_count.load(Ordering::Relaxed).saturating_sub(before_write);
+                if let Some(before) = &clear_before {
+                    let after = if rejected { None } else {
+                        clear::snapshot(client.as_ref(), &item_id, &target, &self.view.current_user, false).await
+                            .ok()
+                    };
+                    let verified = after.as_ref().is_some_and(clear::dates_cleared);
+                    let warning = after.as_ref().filter(|_| verified).and_then(|after| clear::warning(before, after));
+                    let message = if verified { if warning.is_some() { "排期日期已清空，节点保持进行中" } else { "排期已清空，估分及工时已回读核对，节点保持进行中" } }
+                        else if rejected { "清空请求未发送或被拒绝，草稿已保留" }
+                        else { "清空结果不确定，草稿已保留，请先在飞书核对并重新读取" };
+                    let status = if verified { "verified" } else if rejected { "failed" } else { "unknown" };
+                    let ledger_detail = [Some(message), warning.as_deref(), receipt_note].into_iter().flatten().collect::<Vec<_>>().join("；");
+                    let ledger_failed = session.store.finish_action(&request_id, status, verified, Some(&ledger_detail), crate::sync::now_ms()).is_err();
+                    if verified {
+                        if let Some(t) = self.view.targets.iter_mut().find(|t| t.id == change.id) {
+                            t.baseline = Dates { start: String::new(), end: String::new() };
+                        }
+                    } else if !rejected {
+                        self.frozen.insert(change.id.clone()); self.frozen_nodes.insert(node.clone()); uncertain_nodes.insert(node);
+                    }
+                    stopped |= connection_error;
+                    result.targets.push(TargetResult {
+                        warning,
+                        id: change.id, result: if verified { "accepted" } else if rejected { "failed" } else { "uncertain" },
+                        message: if ledger_failed { if verified { "排期已清空并回读核验；本地台账记录失败" } else { "清空结果未确认且本地台账记录失败，请先在飞书核对" } } else { message },
+                    });
+                    continue;
+                }
                 let (status, detail) = if accepted { ("unknown", "收到成功回执，未回读核验") }
                     else if rejected { ("failed", if rpc_count.load(Ordering::Relaxed) == before_write { "请求未发送" } else { "请求被权限拒绝" }) }
                     else { ("unknown", "已发送，结果不确定") };
                 let ledger_failed = session.store.finish_action(&request_id, status, false, Some(detail), crate::sync::now_ms()).is_err();
                 if accepted {
                     if let Some(t) = self.view.targets.iter_mut().find(|t| t.id == change.id) { t.baseline = Dates { start: change.start, end: change.end }; }
-                    result.targets.push(TargetResult { id: change.id, result: "accepted", message: if ledger_failed { "收到成功回执，未回读核验；本地台账记录失败" } else { "收到成功回执，未回读核验" } });
+                    result.targets.push(TargetResult { warning: None, id: change.id, result: "accepted", message: if ledger_failed { "收到成功回执，未回读核验；本地台账记录失败" } else { "收到成功回执，未回读核验" } });
                 } else if rejected {
                     stopped |= connection_error;
                     let message = if rpc_count.load(Ordering::Relaxed) == before_write { "请求未发送，请检查连接后重试" } else { "连接或权限拒绝了本次请求" };
-                    result.targets.push(TargetResult { id: change.id, result: "failed", message: if ledger_failed { "请求失败，本地台账记录失败" } else { message } });
+                    result.targets.push(TargetResult { warning: None, id: change.id, result: "failed", message: if ledger_failed { "请求失败，本地台账记录失败" } else { message } });
                 } else {
                     self.frozen.insert(change.id.clone()); self.frozen_nodes.insert(node.clone()); uncertain_nodes.insert(node); stopped |= connection_error;
-                    result.targets.push(TargetResult { id: change.id, result: "uncertain", message: if ledger_failed { "暂时无法确认是否保存，请先在飞书核对；本地台账记录失败" } else { "暂时无法确认是否保存，请先在飞书核对" } });
+                    result.targets.push(TargetResult { warning: None, id: change.id, result: "uncertain", message: if ledger_failed { "暂时无法确认是否保存，请先在飞书核对；本地台账记录失败" } else { "暂时无法确认是否保存，请先在飞书核对" } });
                 }
             }
-            result.write_requests = rpc_count.load(Ordering::Relaxed);
             Ok(result)
         }))
     }
@@ -1047,6 +1094,7 @@ async fn load_remote(
                 }
                 for target in &mut view.targets[first..] {
                     target.item_url = item_url.clone();
+                    target.node_started_at_ms = detail.as_ref().and_then(|d| current_node_started_at(&d.data, &target.identity.node));
                     if target.read_only_reason.is_none() && !matches!(config, Ok(true)) {
                         target.read_only_reason = Some(if config.is_err() { "节点排期配置读取失败，仅供查看" } else { "未找到节点排期字段配置，仅供查看" }.into());
                     }
@@ -1328,6 +1376,7 @@ async fn expand_cached_non_todo_items(
         let has_incomplete_target = temp.iter().any(incomplete_target);
         for mut target in temp {
             target.item_url = item_url.clone();
+            target.node_started_at_ms = detail.as_ref().and_then(|d| current_node_started_at(&d.data, &target.identity.node));
             if target.read_only_reason.is_none() && !matches!(config, Ok(true)) {
                 target.read_only_reason = Some(
                     if config.is_err() {
@@ -2170,6 +2219,18 @@ fn node_key(node: &Value) -> String {
     basic.or(direct).unwrap_or_default()
 }
 
+/// Only the same current node's actual entry time is a dwell-time baseline.
+/// Planned dates and item update times describe different business events.
+fn current_node_started_at(data: &Value, node: &str) -> Option<i64> {
+    if node.is_empty() { return None; }
+    let mut matches = data["work_item_current_node"].as_array()?.iter()
+        .filter(|row| detail::text(&row["id"]).as_deref() == Some(node));
+    let row = matches.next()?;
+    if matches.next().is_some() { return None; }
+    DateTime::parse_from_rfc3339(row["actual_begin_time"].as_str()?).ok()
+        .map(|time| time.timestamp_millis()).filter(|time| *time > 0)
+}
+
 #[cfg(test)]
 fn build_targets(
     out: &mut Vec<Target>,
@@ -2376,6 +2437,7 @@ fn build_targets_with_order(
             title: title.into(),
             node_name: txt(&node["basic"]["name"]),
             node_status: status.clone(),
+            node_started_at_ms: None,
             node_order,
             schedule_required: status == "doing",
             owner_name: if name.is_empty() {
@@ -2398,6 +2460,26 @@ fn build_targets_with_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dwell_time_uses_only_same_current_nodes_actual_begin_time() {
+        let data = json!({"work_item_current_node":[
+            {"id":"a", "actual_begin_time":"2026-11-16T14:15:54+08:00"},
+            {"id":"b", "estimated_start_time":"2026-11-01T00:00:00+08:00"}
+        ]});
+        assert_eq!(current_node_started_at(&data, "a"), Some(1794809754000));
+        assert_eq!(current_node_started_at(&data, "b"), None);
+        assert_eq!(current_node_started_at(&data, "missing"), None);
+        assert_eq!(current_node_started_at(&data, ""), None);
+        for time in [json!(null), json!("invalid"), json!("1970-01-01T00:00:00Z")] {
+            assert_eq!(current_node_started_at(&json!({"work_item_current_node":[{"id":"a","actual_begin_time":time}]}), "a"), None);
+        }
+        let mut duplicate = data;
+        let first = duplicate["work_item_current_node"][0].clone();
+        duplicate["work_item_current_node"].as_array_mut().unwrap().push(first);
+        assert_eq!(current_node_started_at(&duplicate, "a"), None);
+    }
+    include!("schedule/clear_tests.rs");
 
     #[test]
     fn target_reports_unknown_owners_and_preserves_specific_errors() {
@@ -2464,7 +2546,7 @@ mod tests {
                     if self.fail_detail.load(Ordering::SeqCst) {
                         return Err(BackendError::parse("测试", "离线失败"));
                     }
-                    json!({"work_item_attribute":{"work_item_id":"1","owned_project":{"key":"p","simple_name":"example"},"work_item_type":{"key":"story"},"work_item_name":"测试事项"},"work_item_fields":[],"pagination":{"has_more":false}})
+                    json!({"work_item_attribute":{"work_item_id":"1","owned_project":{"key":"p","simple_name":"example"},"work_item_type":{"key":"story"},"work_item_name":"测试事项"},"work_item_current_node":[{"id":"n1","actual_begin_time":"2026-11-16T14:15:54+08:00"}],"work_item_fields":[],"pagination":{"has_more":false}})
                 }
                 "get_node_detail" if self.fail_detail.load(Ordering::SeqCst) => return Err(BackendError::parse("测试", "节点失败")),
                 "get_node_detail" => json!({"list":[
@@ -2592,6 +2674,8 @@ mod tests {
         assert_eq!(plan.view.targets.len(), 2);
         assert_eq!(plan.view.targets[0].sources, ["a", "b"]);
         assert_eq!(plan.view.targets[0].title, "测试事项");
+        assert_eq!(plan.view.targets[0].node_started_at_ms, Some(1794809754000));
+        assert_eq!(plan.view.targets[1].node_started_at_ms, None);
         assert_eq!(plan.view.targets[0].baseline, Dates { start: String::new(), end: String::new() });
         assert!(plan.view.targets[0].read_only_reason.is_none());
         assert_eq!(plan.view.targets[0].item_url.as_deref(), Some("https://project.feishu.cn/example/story/detail/1"));
