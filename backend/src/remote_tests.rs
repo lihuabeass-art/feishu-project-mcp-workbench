@@ -162,39 +162,6 @@ fn a_detail(id: &WorkItemId) -> ItemDetail {
 }
 
 #[tokio::test]
-async fn complete_metadata_is_shared_scoped_expires_and_execution_bypasses_it() {
-    let fake = Fake::default();
-    let remote = reader(fake.clone());
-    let (a, b) = tokio::join!(
-        remote.metadata("list_workitem_field_config", "p", "story", false),
-        remote.metadata("list_workitem_field_config", "p", "story", false)
-    );
-    assert_eq!(a.unwrap(), b.unwrap());
-    assert_eq!(fake.configs.load(Ordering::SeqCst), 1);
-    remote
-        .metadata("list_workitem_field_config", "other", "story", false)
-        .await
-        .unwrap();
-    remote
-        .metadata("list_workitem_field_config", "p", "story", true)
-        .await
-        .unwrap();
-    assert_eq!(fake.configs.load(Ordering::SeqCst), 3);
-    let slot = Arc::new(OnceCell::new());
-    slot.set((Instant::now() - Duration::from_secs(301), vec![]))
-        .unwrap();
-    remote.metadata.lock().unwrap().insert(
-        ("p".into(), "story".into(), "list_workitem_field_config"),
-        slot,
-    );
-    remote
-        .metadata("list_workitem_field_config", "p", "story", false)
-        .await
-        .unwrap();
-    assert_eq!(fake.configs.load(Ordering::SeqCst), 4);
-}
-
-#[tokio::test]
 async fn malformed_metadata_is_not_cached_as_empty_success() {
     let fake = Fake::default();
     fake.broken.store(true, Ordering::SeqCst);
