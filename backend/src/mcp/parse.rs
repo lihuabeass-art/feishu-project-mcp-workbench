@@ -22,16 +22,42 @@ use crate::model::raw::{RawTodoItem, RawTodoPage, RawTodoRecord};
 const TEXT_PREVIEW: usize = 600;
 
 pub fn parse_todo_page(tool: &str, payload: &ToolResultPayload) -> Result<RawTodoPage, BackendError> {
+    let (items, top_level) = parse_todo_page_parts(tool, payload)?;
+    Ok(build_from_parts(tool, items, top_level))
+}
+
+/// 按待办页形状选择响应，保留全部原始条目供同步拒绝统计与排期身份校验。
+/// 第二项为除 list 之外的分页元数据；不能用通用 JSON 入口先选中无 list 的元数据块。
+pub(crate) fn parse_todo_page_parts(
+    tool: &str,
+    payload: &ToolResultPayload,
+) -> Result<(Vec<Value>, Map<String, Value>), BackendError> {
     reject_tool_error(tool, payload)?;
 
     let value = pick_json(tool, payload, &is_page_shape, PAGE_SHAPE_HINT)?;
 
     match value {
-        Value::Object(map) => build_from_object(tool, map),
-        Value::Array(items) => {
-            let (records, rejected) = collect_items(tool, &items);
-            Ok(RawTodoPage { total: None, total_raw: None, items: records, rejected, top_level: Map::new() })
+        Value::Object(mut map) => {
+            let items = match map.remove("list") {
+                Some(Value::Array(items)) => items,
+                Some(other) => return Err(BackendError::parse(
+                    format!("{tool}.result.list"),
+                    format!("list 字段应为数组，实际是 {}", kind_of(&other)),
+                )),
+                None => {
+                    let keys: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
+                    return Err(BackendError::parse(
+                        format!("{tool}.result"),
+                        format!(
+                            "对象里没有 list 字段（顶层键: [{}]）；本轮不猜测其他字段名，请按真实响应补适配",
+                            keys.join(", ")
+                        ),
+                    ));
+                }
+            };
+            Ok((items, map))
         }
+        Value::Array(items) => Ok((items, Map::new())),
         other => Err(BackendError::parse(
             format!("{tool}.result"),
             format!("返回体既不是对象也不是数组，而是 {}", kind_of(&other)),
@@ -178,7 +204,7 @@ fn pick_json(
 }
 
 /// 单个候选的 JSON 解析；文本块里再套一层 JSON 字符串（二次编码）时解开一次。
-/// 这是容错，不是猜测：解出来仍然必须命中 [`build_from_object`] 认可的形状。
+/// 这是容错，不是猜测：解出来仍然必须命中 [`parse_todo_page_parts`] 认可的形状。
 /// **该二次编码路径未在真实响应中观测到。**
 fn parse_json_candidate(text: &str) -> Result<Value, serde_json::Error> {
     let value = match serde_json::from_str::<Value>(text) {
@@ -203,28 +229,7 @@ fn parse_json_candidate(text: &str) -> Result<Value, serde_json::Error> {
     }
 }
 
-fn build_from_object(tool: &str, mut map: Map<String, Value>) -> Result<RawTodoPage, BackendError> {
-    let list = match map.remove("list") {
-        Some(Value::Array(items)) => items,
-        Some(other) => {
-            return Err(BackendError::parse(
-                format!("{tool}.result.list"),
-                format!("list 字段应为数组，实际是 {}", kind_of(&other)),
-            ))
-        }
-        None => {
-            // 不猜字段名，直接把顶层键交出去，便于按真实响应补适配
-            let keys: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
-            return Err(BackendError::parse(
-                format!("{tool}.result"),
-                format!(
-                    "对象里没有 list 字段（顶层键: [{}]）；本轮不猜测其他字段名，请按真实响应补适配",
-                    keys.join(", ")
-                ),
-            ));
-        }
-    };
-
+fn build_from_parts(tool: &str, list: Vec<Value>, mut map: Map<String, Value>) -> RawTodoPage {
     let (total_raw, total) = match map.remove("total") {
         None => (None, None),
         Some(v) => {
@@ -235,7 +240,7 @@ fn build_from_object(tool: &str, mut map: Map<String, Value>) -> Result<RawTodoP
     };
 
     let (items, rejected) = collect_items(tool, &list);
-    Ok(RawTodoPage { total, total_raw, items, rejected, top_level: map })
+    RawTodoPage { total, total_raw, items, rejected, top_level: map }
 }
 
 fn collect_items(tool: &str, list: &[Value]) -> (Vec<RawTodoRecord>, Vec<RejectReason>) {

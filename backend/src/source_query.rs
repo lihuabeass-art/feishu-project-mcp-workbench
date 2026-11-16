@@ -10,7 +10,7 @@ use crate::{
     association::AssociationRule,
     detail,
     error::BackendError,
-    mcp::{parse_tool_json, ConnectionInfo, TodoSource, ToolResultPayload},
+    mcp::{parse::parse_todo_page_parts, parse_tool_json, ConnectionInfo, TodoSource, ToolResultPayload},
     model::{
         domain::WorkItemId,
         source::{SourceKind, WorkSource},
@@ -236,15 +236,9 @@ impl<'a> SourceReader<'a> {
 
     async fn personal_page(&self, args: &Map<String, Value>) -> Result<(Vec<Value>, Option<i64>), BackendError> {
         let payload = self.measured_check().call_list_todo(args).await?;
-        let value = parse_tool_json("list_todo", &payload)?;
         // 原始待办解析器负责逐条拒绝统计；不能在这里把异常条目丢掉。
-        let rows = if let Some(a) = value.as_array() {
-            a.clone()
-        } else {
-            value["list"].as_array()
-                .ok_or_else(|| BackendError::parse("个人待办", "缺少 list 数组"))?.clone()
-        };
-        let total = value.get("total").and_then(|n| {
+        let (rows, metadata) = parse_todo_page_parts("list_todo", &payload)?;
+        let total = metadata.get("total").and_then(|n| {
             n.as_i64().or_else(|| n.as_str().and_then(|s| s.parse().ok()))
         });
         Ok((rows, total))
@@ -463,11 +457,8 @@ impl SourceReader<'_> {
     /// 只取本轮来源原始页，不使用详情缓存，也不更新共享缓存。
     pub(crate) async fn schedule_page(&self, args: &Map<String, Value>) -> Result<(Vec<Value>, Option<i64>), BackendError> {
         let payload = self.measured_check().call_list_todo(args).await?;
-        let value = parse_tool_json("list_todo", &payload)?;
-        let rows = if let Some(rows) = value.as_array() { rows.clone() } else {
-            value["list"].as_array().ok_or_else(|| BackendError::parse("个人待办", "缺少 list 数组"))?.clone()
-        };
-        let total = match value.get("total") {
+        let (rows, metadata) = parse_todo_page_parts("list_todo", &payload)?;
+        let total = match metadata.get("total") {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_i64().or_else(|| value.as_str().and_then(|text| text.parse().ok()))
                 .filter(|number| *number >= 0).ok_or_else(|| BackendError::parse("个人待办", "分页总数无效"))?),
@@ -634,3 +625,7 @@ async fn validate_personnel(
 #[cfg(test)]
 #[path = "source_query_progress_tests.rs"]
 mod progress_tests;
+
+#[cfg(test)]
+#[path = "source_query_todo_tests.rs"]
+mod todo_tests;
