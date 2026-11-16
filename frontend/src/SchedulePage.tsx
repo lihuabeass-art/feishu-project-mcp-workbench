@@ -34,7 +34,6 @@ import {
 } from "./scheduleApi";
 import {
   applyQuickSchedulePreset,
-  cancelSchedule,
   classifyScheduleReview,
   editSchedule,
   hasBaselineSchedule,
@@ -655,7 +654,7 @@ export function SchedulePage({
         type="button"
         className="schedule-group"
         aria-expanded={!collapsed}
-        aria-label={`${collapsed ? "展开" : "收起"}${name}的${area === "calendar" ? "日历安排" : area === "pending" ? "待排期" : "其他周已排"}，共${count}项`}
+        aria-label={`${collapsed ? "展开" : "收起"}${name}的${area === "calendar" ? "日历安排" : area === "pending" ? "待排期" : "已排期"}，共${count}项`}
         onClick={() => {
           const key = collapseKey(area, entry, owner);
           setCollapsedGroups((current) => {
@@ -726,8 +725,6 @@ export function SchedulePage({
   const readUnavailable = !read;
   const canEdit = (entry: Entry) => view === "mine" && isEditableTarget(entry) && !busy && !readUnavailable;
 
-  const baseWeekStart = week;
-  const baseWeekEnd = addDays(week, 6);
   const days = Array.from({ length: daySpan }, (_, index) => addDays(week, index));
   const windowStart = days[0];
   const windowEnd = days[days.length - 1];
@@ -942,12 +939,8 @@ export function SchedulePage({
       ? personRows(pending)
       : pending.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
-  const outside = visible.filter(
-    (entry) =>
-      isCurrentSchedulablePoolNode(entry) &&
-      validSchedule(entry.dates) &&
-      (entry.dates.end < baseWeekStart || entry.dates.start > baseWeekEnd),
-  );
+  // 已排期是稳定清单；日历导航只改变视窗，不改变成员或计数。
+  const outside = visible.filter((entry) => validSchedule(entry.dates));
   const outsideRows =
     view === "people"
       ? personRows(outside)
@@ -1048,7 +1041,7 @@ export function SchedulePage({
   }, [reviewOpen]);
 
   const dateStatus = (entry: Entry) => {
-    if (entry.cancel && scheduleChanged(entry)) return "待清空 · 核对并同步后生效";
+    if (entry.cancel && scheduleChanged(entry)) return "清空草稿已保留 · 暂不可提交";
     if ((!entry.record.cacheKind || entry.record.cacheKind === "node") && !entry.record.sourceAggregate) {
       if (validSchedule(entry.dates))
         return `已排期：${entry.dates.start} ~ ${entry.dates.end}（共 ${scheduleSpanDays(entry.dates)} 个自然日）`;
@@ -1810,7 +1803,7 @@ export function SchedulePage({
                     }}
                     onDrop={poolDrop}
                   >
-                    <div className="schedule-pool-tabs" role="tablist" aria-label="待排与非当前视窗切换">
+                    <div className="schedule-pool-tabs" role="tablist" aria-label="待排期与已排期切换">
                       <button
                         type="button"
                         role="tab"
@@ -1827,7 +1820,7 @@ export function SchedulePage({
                         className={poolTab === "outside" ? "active" : ""}
                         onClick={() => setPoolTab("outside")}
                       >
-                        其他周已排 ({outsideRows.length})
+                        已排期 ({outsideRows.length})
                       </button>
                     </div>
 
@@ -1934,7 +1927,7 @@ export function SchedulePage({
                     ) : (
                       <>
                         <p className="schedule-pool-hint">
-                          点击卡片在右侧调整或直接拖入当前周日历；也可一键排入本周或定位至对应周。
+                          当前筛选下全部已排节点，数量不随日历切周变化。点击卡片查看，或定位到对应周。
                         </p>
                         <div className="schedule-pool-list">
                           {outsideRows.map(({ entry, owner }, index) => (
@@ -1998,7 +1991,7 @@ export function SchedulePage({
                                       </button>
                                     </>
                                   ) : (
-                                    <span>其他周排期</span>
+                                    <span>已排期</span>
                                   )}
                                   <button
                                     type="button"
@@ -2016,7 +2009,7 @@ export function SchedulePage({
                             </Fragment>
                           ))}
                           {outsideRows.length === 0 && (
-                            <p className="schedule-pool-empty">没有散落在其他周的已排事项</p>
+                            <p className="schedule-pool-empty">当前筛选下暂无已排期节点</p>
                           )}
                         </div>
                       </>
@@ -2601,18 +2594,9 @@ export function SchedulePage({
                                 : "撤回待排期"}
                             </button>
                           )}
-                          {canEdit(selectedEntry) && hasBaselineSchedule(selectedEntry.baseline) && !selectedEntry.cancel && (
-                            <button
-                              type="button"
-                              className="secondary schedule-clear-btn"
-                              onClick={() => update(selectedEntry.id, cancelSchedule)}
-                            >
-                              清空排期
-                            </button>
-                          )}
                           {selectedEntry.cancel && scheduleChanged(selectedEntry) && (
                             <p className="schedule-clear-note">
-                              本次将清空开始与结束日期；估分及实际工时按云端原值提交。飞书可能联动调整估分，提交后会核对并提示差异。
+                              清空排期暂不可用，原草稿已保留。请还原云端日期或在飞书中核对处理。
                             </p>
                           )}
                         </section>
@@ -2736,12 +2720,12 @@ export function SchedulePage({
                                 </span>
                                 <strong className="schedule-review-next">
                                   {entry.cancel
-                                    ? "本次提交值：未排期（清空日期；估分及工时带入原值）"
+                                    ? "清空草稿已保留，暂不可提交"
                                     : `本次提交值：${entry.dates.start} ~ ${entry.dates.end}（共 ${scheduleSpanDays(entry.dates)} 天）`}
                                 </strong>
                               </div>
                             )}
-                            {entry.cancel && <p>飞书可能联动调整估分，提交后会核对并单独提示差异。</p>}
+                            {entry.cancel && <p>请先还原云端日期或在飞书中核对处理。</p>}
                           </div>
                         );
                       })}

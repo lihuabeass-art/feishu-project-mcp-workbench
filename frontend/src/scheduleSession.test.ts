@@ -32,8 +32,9 @@ describe("事项安排会话", () => {
   });
   it("清空必须是显式意图，恢复后不再有变化，空基线清空不视为变更", () => {
     const cancelled = cancelSchedule(target());
-    expect(scheduleValidation(cancelled)).toBeNull();
-    expect(scheduleValidation({ ...cancelled, dates: target().dates })).toContain("不能同时提交日期");
+    expect(scheduleValidation(cancelled)).toContain("清空排期暂不可用");
+    expect(scheduleValidation({ ...cancelled, dates: target().dates })).toContain("清空排期暂不可用");
+    expect(scheduleValidation(revertSchedule(cancelled))).toBeNull();
     expect(scheduleValidation(editSchedule(target(), { start: "", end: "" }))).toContain("有效");
     const accepted = settleSchedule(cancelled, cancelled.dates, "accepted");
     expect(accepted.cancel).toBe(false);

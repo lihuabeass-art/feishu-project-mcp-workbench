@@ -1,4 +1,4 @@
-//! 会话内事项安排。普通改期按回执处理；清空日期读取完整值并回读核验，写请求不重试。
+//! 会话内事项安排。普通改期按回执处理；实测有损的清空路径暂时停用，写请求不重试。
 use crate::{
     api::Session,
     detail,
@@ -15,7 +15,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
-mod clear;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Dates {
@@ -709,8 +708,10 @@ impl ScheduleSession {
                 return Err(BackendError::validation(reason.clone()));
             }
             let (start, end) = (date_ms(&change.start), date_ms(&change.end));
-            if change.cancel && (!change.start.is_empty() || !change.end.is_empty()) {
-                return Err(BackendError::validation("清空排期不能同时提交日期"));
+            if change.cancel {
+                // 2026-11-16 实测两种清空路径均丢失已传入的估分，并残留页面计算日期。
+                // 在取得完整业务回读证据前，旧客户端及草稿也不得调用该写入路径。
+                return Err(BackendError::validation("清空排期暂不可用：当前清空接口会清掉估分，且可能保留旧日期。草稿已保留，请在飞书中核对处理"));
             }
             if !change.cancel && (start.is_none() || end.is_none() || start > end) {
                 return Err(BackendError::validation("请填写有效的开始和结束日期"));
@@ -738,15 +739,6 @@ impl ScheduleSession {
                     Ok(access) => access,
                     Err(_) => { result.targets.push(TargetResult { warning: None, id: change.id, result: "unsent", message: "等待事项写入超时，本次未发送" }); continue; }
                 };
-                let clear_before = if change.cancel {
-                    match clear::snapshot(client.as_ref(), &item_id, &target, &self.view.current_user, true).await {
-                        Ok(before) if before.dates == target.baseline => Some(before),
-                        _ => {
-                            result.targets.push(TargetResult { warning: None, id: change.id, result: "unsent", message: "云端排期已变化或完整数据读取失败，本次未清空，请重新读取后核对" });
-                            continue;
-                        }
-                    }
-                } else { None };
                 let request_id = format!("schedule-{}-{}-{}", std::process::id(), self.view.session_id, NEXT.fetch_add(1, Ordering::Relaxed));
                 let record = crate::store::ActionRecord {
                     request_id: request_id.clone(),
@@ -767,18 +759,18 @@ impl ScheduleSession {
                     result.targets.push(TargetResult { warning: None, id: change.id, result: "unsent", message: "本地登记失败，本次未发送" });
                     continue;
                 }
-                let mut patch = if let Some(before) = &clear_before { clear::patch(before) } else { json!({
+                let mut patch = json!({
                     "clear_schedule": false,
                     "is_auto": false,
                     "estimate_start_date": start,
                     "estimate_end_date": end,
-                }) };
+                });
                 let mut args = json!({"project_key":target.identity.project,"work_item_id":target.identity.item,"node_id":target.identity.node});
                 if target.identity.scope == "personal" { patch["owners"] = json!([target.identity.owner]); args["schedules"] = json!([patch]); } else { args["node_schedule"] = patch; }
                 let before_write = rpc_count.load(Ordering::Relaxed);
                 let response = client.call_tool("update_node", args.as_object().unwrap()).await;
                 let connection_error; let mut rejected = false;
-                let (accepted, receipt_note) = match response {
+                let (accepted, _receipt_note) = match response {
                     Ok(payload) => {
                         connection_error = explicit_auth_failure(&payload);
                         let accepted = schedule_receipt_accepted(&payload);
@@ -789,34 +781,6 @@ impl ScheduleSession {
                 };
                 let accepted = accepted && !connection_error;
                 result.write_requests += rpc_count.load(Ordering::Relaxed).saturating_sub(before_write);
-                if let Some(before) = &clear_before {
-                    let after = if rejected { None } else {
-                        clear::snapshot(client.as_ref(), &item_id, &target, &self.view.current_user, false).await
-                            .ok()
-                    };
-                    let verified = after.as_ref().is_some_and(clear::dates_cleared);
-                    let warning = after.as_ref().filter(|_| verified).and_then(|after| clear::warning(before, after));
-                    let message = if verified { if warning.is_some() { "排期日期已清空，节点保持进行中" } else { "排期已清空，估分及工时已回读核对，节点保持进行中" } }
-                        else if rejected { "清空请求未发送或被拒绝，草稿已保留" }
-                        else { "清空结果不确定，草稿已保留，请先在飞书核对并重新读取" };
-                    let status = if verified { "verified" } else if rejected { "failed" } else { "unknown" };
-                    let ledger_detail = [Some(message), warning.as_deref(), receipt_note].into_iter().flatten().collect::<Vec<_>>().join("；");
-                    let ledger_failed = session.store.finish_action(&request_id, status, verified, Some(&ledger_detail), crate::sync::now_ms()).is_err();
-                    if verified {
-                        if let Some(t) = self.view.targets.iter_mut().find(|t| t.id == change.id) {
-                            t.baseline = Dates { start: String::new(), end: String::new() };
-                        }
-                    } else if !rejected {
-                        self.frozen.insert(change.id.clone()); self.frozen_nodes.insert(node.clone()); uncertain_nodes.insert(node);
-                    }
-                    stopped |= connection_error;
-                    result.targets.push(TargetResult {
-                        warning,
-                        id: change.id, result: if verified { "accepted" } else if rejected { "failed" } else { "uncertain" },
-                        message: if ledger_failed { if verified { "排期已清空并回读核验；本地台账记录失败" } else { "清空结果未确认且本地台账记录失败，请先在飞书核对" } } else { message },
-                    });
-                    continue;
-                }
                 let (status, detail) = if accepted { ("unknown", "收到成功回执，未回读核验") }
                     else if rejected { ("failed", if rpc_count.load(Ordering::Relaxed) == before_write { "请求未发送" } else { "请求被权限拒绝" }) }
                     else { ("unknown", "已发送，结果不确定") };

@@ -393,7 +393,7 @@ it("诚实区分撤回待排期与还原云端日期，单端缺失时阻断同�
   // 2. 云端已有日期事项修改后展示云端当前值并提供“还原云端日期”，温和说明飞书清空方式，不暴露假取消排期按钮
   fireEvent.click(screen.getByRole("button", { name: /云端已有任务/ }));
   expect(screen.queryByRole("button", { name: "取消排期" })).toBeNull();
-  expect(screen.getByRole("button", { name: "清空排期" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "清空排期" })).toBeNull();
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "" } });
   expect(screen.getByText(/云端当前值/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: /核对并同步/ }));
@@ -878,8 +878,8 @@ it("其他周分组单独折叠，跨空间相同人员 ID 不串联", async () 
   fireEvent.click(screen.getAllByRole("button", { name: "收起本人的待排期，共1项" })[0]);
   expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
   expect(screen.getByRole("button", { name: /另一空间待排/ })).toBeTruthy();
-  fireEvent.click(screen.getByRole("tab", { name: /其他周已排/ }));
-  fireEvent.click(screen.getByRole("button", { name: "收起本人的其他周已排，共1项" }));
+  fireEvent.click(screen.getByRole("tab", { name: /已排期/ }));
+  fireEvent.click(screen.getByRole("button", { name: "收起本人的已排期，共1项" }));
   expect(screen.queryByRole("button", { name: /其他周任务/ })).toBeNull();
   fireEvent.click(screen.getByRole("tab", { name: /待排期/ }));
   expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
@@ -921,7 +921,7 @@ it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
-it("排期检查器合并当前节点与日期信息，提供清空入口并保留云端日期对比", async () => {
+it("排期检查器合并当前节点与日期信息，隐藏清空入口并保留云端日期对比", async () => {
   const read = data();
   read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
   read.targets[0].fetchedAt = "2026-11-16 09:00";
@@ -941,7 +941,7 @@ it("排期检查器合并当前节点与日期信息，提供清空入口并保�
   expect(nodes.textContent).toContain("方案设计");
   expect(editor.textContent).not.toContain("已排期：");
   expect(editor.querySelectorAll(".schedule-span-info")).toHaveLength(1);
-  expect(within(editor as HTMLElement).getByRole("button", { name: "清空排期" })).toBeTruthy();
+  expect(within(editor as HTMLElement).queryByRole("button", { name: "清空排期" })).toBeNull();
   const readMeta = editor.querySelector(".schedule-read-meta") as HTMLDetailsElement;
   expect(readMeta.open).toBe(false);
   expect(readMeta.textContent).toContain("2026-11-16 09:00");
@@ -970,120 +970,26 @@ it("关闭排期检查器释放日历空间，重新选择节点保留未提交�
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
-it("清空排期先保留为草稿，可还原，核对后只发送该负责人的明确清空意图", async () => {
+it("隐藏清空按钮及常驻说明，正常日期编辑仍可提交", async () => {
   const read = data();
   read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(1) };
   read.targets[0].itemUrl = "https://project.feishu.cn/example/story/detail/1";
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
   fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
-  const editor = document.querySelector(".schedule-editor")!;
-  expect(editor.querySelector(".schedule-editor-meta a")).toBeNull();
-  expect(editor.querySelector(".schedule-editor-actions a")?.textContent).toBe("打开飞书事项");
-  fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
-  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe("");
-  expect(editor.textContent).toContain("待清空");
-  expect(editor.textContent).toContain("估分及实际工时按云端原值提交");
-  expect(submitScheduleTargets).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "还原云端日期" }));
-  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(0));
-  fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
-  fireEvent.click(screen.getAllByRole("button", { name: /核对并同步/ })[0]);
-  const dialog = screen.getByRole("dialog");
-  expect(dialog.textContent).toContain("本次清空");
-  expect(dialog.textContent).toContain("未排期（清空日期；估分及工时带入原值）");
-  vi.mocked(submitScheduleTargets).mockResolvedValue({
-    results: [{ id: "one", result: "accepted", message: "排期已清空，估分及工时已回读核对，节点保持进行中" }],
-    writeRequests: 1,
-  });
-  fireEvent.click(within(dialog).getByRole("button", { name: /确认同步/ }));
-  await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledTimes(1));
-  expect(vi.mocked(submitScheduleTargets).mock.calls[0][1]).toEqual([
-    { id: "one", identity, dates: { start: "", end: "" }, cancel: true },
-  ]);
-  await waitFor(() => expect(document.querySelector(".schedule-inspector-dirty")).toBeNull());
   expect(screen.queryByRole("button", { name: "清空排期" })).toBeNull();
-});
-
-it.each(["uncertain", "accepted"] as const)("清空返回%s时合并反馈，日期已核验后的估分差异单独提示", async (result) => {
-  const read = data();
-  read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
-  vi.mocked(loadScheduleSession).mockResolvedValue(read);
-  await setup();
-  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
-  fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
-  vi.mocked(submitScheduleTargets).mockResolvedValue({
-    results: [{ id: "one", result, message: result === "accepted" ? "排期日期已清空，节点保持进行中" : "清空结果不确定，草稿已保留",
-      ...(result === "accepted" ? { warning: "日期已清空，但估分或计划工期与提交前不一致，请在飞书核对。" } : {}) }],
-    writeRequests: 1,
-  });
-  confirmSync();
-  await waitFor(() => expect(document.querySelectorAll(".schedule-feedback")).toHaveLength(1));
-  const feedback = document.querySelector(".schedule-feedback") as HTMLElement;
-  expect(screen.queryByRole("button", { name: "放弃本次编辑并重新读取" })).toBeNull();
-  if (result === "accepted") {
-    expect(feedback.textContent).toContain("日期已清空");
-    expect(feedback.textContent).toContain("估分或计划工期");
-    expect(feedback.textContent).not.toContain("结果不确定");
-    expect(document.querySelector(".schedule-inspector-dirty")).toBeNull();
-    expect(within(feedback).queryByRole("button", { name: "重新读取" })).toBeNull();
-    expect(screen.queryByRole("status")).toBeNull();
-    // 普通改期没有核验工时或估分，不能清掉上一次清空留下的差异提示。
-    fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(1) } });
-    fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(1) } });
-    vi.mocked(submitScheduleTargets).mockResolvedValueOnce({
-      results: [{ id: "one", result: "accepted", message: "收到成功回执，未回读核验" }], writeRequests: 1,
-    });
-    confirmSync();
-    await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledTimes(2));
-    expect(document.querySelector(".schedule-feedback")?.textContent).toContain("估分或计划工期");
-    fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
-    vi.mocked(submitScheduleTargets).mockResolvedValueOnce({
-      results: [{ id: "one", result: "accepted", message: "日期已清空", warning: "日期已清空，但实际工时与提交前不一致，请核对。" }], writeRequests: 1,
-    });
-    confirmSync();
-    await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledTimes(3));
-    const allText = document.body.textContent || "";
-    expect(allText.split("日期已清空，但估分或计划工期与提交前不一致，请在飞书核对。")).toHaveLength(2);
-    expect(allText.split("日期已清空，但实际工时与提交前不一致，请核对。")).toHaveLength(2);
-  } else {
-    expect(feedback.querySelector("strong")?.textContent).toBe("部分排期尚未核验");
-    expect((feedback.querySelector("details") as HTMLDetailsElement).open).toBe(false);
-    expect(within(feedback).getByRole("button", { name: "重新读取" })).toBeTruthy();
-    expect(document.querySelector(".schedule-inspector-dirty")).toBeTruthy();
-    expect(loadScheduleSession).toHaveBeenCalledTimes(1);
-  }
-});
-
-it.each(["failed", "accepted"] as const)("多目标清空返回%s时，附带警告不重复且混合统计默认折叠", async (otherResult) => {
-  const read = data();
-  read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
-  read.targets.push({ ...read.targets[0], id: "two", title: "另一事项", identity: { ...identity, item: "other" } });
-  vi.mocked(loadScheduleSession).mockResolvedValue(read);
-  await setup();
-  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
-  fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
-  fireEvent.click(screen.getByRole("button", { name: /另一事项/ }));
-  fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
+  expect(screen.queryByText(/当前清空接口会清掉估分/)).toBeNull();
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(0));
+  expect(document.querySelector(".schedule-inspector-dirty")).toBeNull();
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
+  expect(screen.getByRole("link", { name: "打开飞书事项" }).getAttribute("href")).toBe(read.targets[0].itemUrl);
+  fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(2) } });
   vi.mocked(submitScheduleTargets).mockResolvedValueOnce({
-    results: [
-      { id: "one", result: "accepted", message: "日期已清空", warning: "日期已清空，但估分与提交前不一致，请核对。" },
-      { id: "two", result: otherResult, message: otherResult === "failed" ? "无权限修改" : "日期已清空",
-        ...(otherResult === "accepted" ? { warning: "日期已清空，但实际工时与提交前不一致，请核对。" } : {}) },
-    ], writeRequests: 2,
+    results: [{ id: "one", result: "accepted", message: "收到成功回执，未回读核验" }], writeRequests: 1,
   });
   confirmSync();
-  await waitFor(() => expect(document.querySelector(".schedule-feedback")).toBeTruthy());
-  const feedback = document.querySelector(".schedule-feedback")!;
-  expect(feedback.textContent).toContain("估分与提交前不一致");
-  expect(Array.from(feedback.querySelectorAll("p")).filter((p) => p.textContent?.includes("估分与提交前不一致"))).toHaveLength(1);
-  expect((document.body.textContent || "").split("日期已清空，但估分与提交前不一致，请核对。")).toHaveLength(2);
-  if (otherResult === "failed") {
-    expect(feedback.textContent).toContain("失败 1 项");
-    expect((feedback.querySelector("details") as HTMLDetailsElement).open).toBe(false);
-  } else {
-    expect(Array.from(feedback.querySelectorAll("p")).filter((p) => p.textContent?.includes("实际工时与提交前不一致"))).toHaveLength(1);
-  }
+  await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(submitScheduleTargets).mock.calls[0][1][0].cancel).toBe(false);
 });
 
 it("未确认当前账号时禁止编辑", async () => {
@@ -1111,7 +1017,32 @@ it("详情缓存节点保留日期状态与抓取时间，无法编辑或误称�
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
-it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第 2 周拖拽落点）与『其他周已排』一键跳转定位", async () => {
+it("已排期包含当前及多个历史未来周，定位与切周后计数、卡片和选择保持稳定", async () => {
+  const read = data();
+  read.targets = [
+    { ...read.targets[0], dates: { start: currentWeekDay(0), end: currentWeekDay(0) } },
+    { ...read.targets[0], id: "past", title: "过去安排", identity: { ...identity, node: "past" }, dates: { start: currentWeekDay(-14), end: currentWeekDay(-12) } },
+    { ...read.targets[0], id: "future", title: "未来安排", identity: { ...identity, node: "future" }, dates: { start: currentWeekDay(21), end: currentWeekDay(23) } },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("tab", { name: "已排期 (3)" }));
+  const pool = document.querySelector(".schedule-pool-list") as HTMLElement;
+  expect(within(pool).getByRole("button", { name: /任务一/ })).toBeTruthy();
+  fireEvent.click(within(pool).getByRole("button", { name: /未来安排/ }));
+  fireEvent.click(within(screen.getByLabelText("未来安排跨周排期操作")).getByRole("button", { name: /定位该周/ }));
+  expect(screen.getByRole("tab", { name: "已排期 (3)" }).getAttribute("aria-selected")).toBe("true");
+  expect(within(pool).getByRole("button", { name: /未来安排/ }).className).toContain("selected");
+  expect(within(document.querySelector(".schedule-calendar") as HTMLElement).getByRole("button", { name: /未来安排/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "上一周" }));
+  fireEvent.click(screen.getByRole("button", { name: "下一周" }));
+  fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+  expect(screen.getByRole("tab", { name: "已排期 (3)" })).toBeTruthy();
+  expect(within(pool).getAllByRole("button", { name: /任务一|过去安排|未来安排/ })).toHaveLength(3);
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
+});
+
+it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第 2 周拖拽落点）与『已排期』一键跳转定位", async () => {
   const read = data();
   const farStart = currentWeekDay(21);
   const farEnd = currentWeekDay(23);
@@ -1124,13 +1055,13 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   await setup();
 
   expect(document.querySelectorAll(".schedule-days > div")).toHaveLength(7);
-  expect(screen.getByRole("tab", { name: "其他周已排 (2)" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "已排期 (2)" })).toBeTruthy();
   // 单周视图下第 2 周开始的事项不在当前 7 天视窗内
   expect(screen.queryByRole("button", { name: /跨双周右界任务/ })).toBeNull();
 
-  // 切换到双周 14 天后，跨双周右界任务进入视窗（第 9 列至第 14 列，右端裁切显示 ›），且『其他周已排』数量锚定单周口径保持 2 不变
+  // 切换到双周 14 天后，跨双周右界任务进入视窗（第 9 列至第 14 列，右端裁切显示 ›），且『已排期』数量锚定单周口径保持 2 不变
   fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
-  expect(screen.getByRole("tab", { name: "其他周已排 (2)" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "已排期 (2)" })).toBeTruthy();
   const dayHeaders = document.querySelectorAll(".schedule-days > div");
   expect(dayHeaders).toHaveLength(14);
   const biBar = screen.getByRole("button", { name: /跨双周右界任务/ });
@@ -1149,7 +1080,7 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   fireEvent.click(screen.getByRole("button", { name: "单周 7天" }));
   expect(document.querySelectorAll(".schedule-days > div")).toHaveLength(7);
 
-  const outsideTab = screen.getByRole("tab", { name: /其他周已排/ });
+  const outsideTab = screen.getByRole("tab", { name: /已排期/ });
   fireEvent.click(outsideTab);
   const outsideCard = screen.getByRole("button", { name: /三周后专项/ });
   expect(outsideCard.textContent).toContain(`${farStart} ~ ${farEnd}`);
@@ -1161,24 +1092,24 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(farEnd);
   expect(outsideCard.className).toContain("schedule-outside-item");
 
-  // 2. 将其他周已排事项直接拖入当前周日历第 2 列（索引 1），保留其原本 3 天跨度
+  // 2. 将已排期事项直接拖入当前周日历第 2 列（索引 1），保留其原本 3 天跨度
   const singleWeekHeaders = document.querySelectorAll(".schedule-days > div");
   fireEvent.dragStart(outsideCard, { dataTransfer: transfer });
   fireEvent.drop(singleWeekHeaders[1], { dataTransfer: transfer });
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(1));
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(currentWeekDay(3));
-  expect(screen.getByRole("button", { name: /三周后专项/ }).className).toContain("schedule-bar");
+  expect(within(document.querySelector(".schedule-calendar") as HTMLElement).getByRole("button", { name: /三周后专项/ }).className).toContain("schedule-bar");
 
-  // 3. 还原云端日期后回到其他周已排，点击『排入本周』一键排入当前周（保留 3 天跨度）
+  // 3. 还原云端日期后回到已排期，点击『排入本周』一键排入当前周（保留 3 天跨度）
   fireEvent.click(screen.getByRole("button", { name: "还原云端日期" }));
   const outsideQuick = screen.getByLabelText("三周后专项跨周排期操作");
   fireEvent.click(within(outsideQuick).getByRole("button", { name: "排入本周" }));
-  expect(screen.getByRole("button", { name: /三周后专项/ }).className).toContain("schedule-bar");
+  expect(within(document.querySelector(".schedule-calendar") as HTMLElement).getByRole("button", { name: /三周后专项/ }).className).toContain("schedule-bar");
 
   // 4. 还原后点击『定位该周 ↗』跳转到该事项所在周并在日历视窗中显示长条
   fireEvent.click(screen.getByRole("button", { name: "还原云端日期" }));
   fireEvent.click(within(screen.getByLabelText("三周后专项跨周排期操作")).getByRole("button", { name: /定位该周/ }));
-  expect(screen.getByRole("button", { name: /三周后专项/ }).className).toContain("schedule-bar");
+  expect(within(document.querySelector(".schedule-calendar") as HTMLElement).getByRole("button", { name: /三周后专项/ }).className).toContain("schedule-bar");
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(farStart);
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(farEnd);
 });
@@ -1698,9 +1629,9 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
 
-  // 1. 左侧待排期与其他周已排只收纳当前活跃且需要排期的 doing 节点，排除 scheduleRequired === false、已流转完成或未开始的节点
+  // 待排期只收纳当前待安排节点；已排期包含所有有日期的节点，历史节点仍保持只读。
   expect(screen.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
-  expect(screen.getByRole("tab", { name: "其他周已排 (0)" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "已排期 (3)" })).toBeTruthy();
   const pendingPool = document.querySelector(".schedule-pending")!;
   expect(pendingPool.textContent).toContain("灰度联调验收");
   expect(pendingPool.textContent).not.toContain("后端代码合入");
