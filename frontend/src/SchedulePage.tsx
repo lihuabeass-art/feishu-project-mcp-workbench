@@ -200,6 +200,46 @@ function Avatar({ person }: { person?: SchedulePerson }) {
   );
 }
 
+const encouragements = [
+  "把今天安排好，给从容留一点空间。",
+  "一步一步来，认真走过的路都算数。",
+  "先做好眼前的一件事，进展就会发生。",
+  "保持热爱，也记得照顾自己的节奏。",
+  "让重要的事，有一段专属的时间。",
+  "不必填满每一天，留白也是好安排。",
+  "今天的小小推进，也值得为自己鼓掌。",
+  "带着期待出发，按自己的节奏前进。",
+  "专注当下，让努力慢慢开花。",
+  "忙碌之余，也给自己一个深呼吸。",
+  "把大目标拆小，把每一步走稳。",
+  "愿今天的你，有方向，也有好心情。",
+];
+
+function ScheduleGreeting({ person, name }: { person?: SchedulePerson; name: string }) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", weekday: "long", hour: "numeric", hourCycle: "h23",
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((value) => value.type === type)?.value || "";
+  const hour = Number(part("hour"));
+  const greeting = hour < 6 ? "夜深了" : hour < 11 ? "早上好" : hour < 14 ? "午安" : hour < 18 ? "下午好" : "晚上好";
+  const day = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 8) / 86_400_000);
+  return (
+    <div className="schedule-greeting" aria-label="今日问候">
+      <Avatar person={person} />
+      <div className="schedule-greeting-copy">
+        <div className="schedule-greeting-date">{greeting} · {part("month")}月{part("day")}日{part("weekday")}</div>
+        <strong>{name}</strong>
+        <p>{encouragements[day % encouragements.length]}</p>
+      </div>
+    </div>
+  );
+}
+
 function NodeDwellTime({ startedAt }: { startedAt?: number | null }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -234,6 +274,7 @@ export function SchedulePage({
     initialRead ? initialRead.targets.map(createScheduleEntry) : [],
   );
   const [loading, setLoading] = useState(() => !initialRead);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [peopleLoading, setPeopleLoading] = useState(false);
   const [peopleError, setPeopleError] = useState("");
@@ -259,7 +300,6 @@ export function SchedulePage({
   const [poolCollapsed, setPoolCollapsed] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [poolTab, setPoolTab] = useState<"pending" | "outside">("pending");
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [hoveredId, setHoveredId] = useState("");
   const [preview, setPreview] = useState<{ id: string; start: string; end: string } | null>(null);
@@ -352,7 +392,7 @@ export function SchedulePage({
           if (active) setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`);
         })
         .finally(() => {
-          if (active) setLoading(false);
+          if (active) { setLoading(false); setManualRefreshing(false); }
         });
       return () => {
         active = false;
@@ -378,7 +418,7 @@ export function SchedulePage({
         if (active) setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`);
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active) { setLoading(false); setManualRefreshing(false); }
       });
     return () => {
       active = false;
@@ -789,7 +829,6 @@ export function SchedulePage({
 
   const scopeSources = read?.sources || [];
   const scopeErrors = read?.itemErrors || [];
-  const scopeComplete = read?.complete;
 
   const personRows = (items: Entry[]) =>
     items
@@ -1441,7 +1480,7 @@ export function SchedulePage({
                   <CalendarDays size={20} />
                 </span>
                 <div className="schedule-metric">
-                  <span>待排期节点</span>
+                  <span>待排期节点 <small className="schedule-metric-note">含未同步草稿</small></span>
                   <strong>
                     {pending.length}
                     <small>{pending.filter(canEdit).length} 项可排期</small>
@@ -1449,32 +1488,21 @@ export function SchedulePage({
                 </div>
                 <div className="overview-divider" />
                 <div className="schedule-metric">
-                  <span>视窗内已排</span>
+                  <span>视窗内已排 <small className="schedule-metric-note">含未同步草稿</small></span>
                   <strong>
                     {scheduled.length}
                     <small>今日进行 {activeTodayCount}</small>
                   </strong>
                 </div>
-                <div className="overview-divider" />
-                <div className="schedule-metric">
-                  <span>本地排期草稿</span>
-                  <strong>
-                    {changedEntries.length}
-                    <small>
-                      {changedEntries.length > 0
-                        ? `新增 ${addedEntries.length} · 修改 ${modifiedEntries.length}`
-                        : "尚无改动"}
-                    </small>
-                  </strong>
-                </div>
               </div>
 
+              <ScheduleGreeting person={currentUserPerson} name={currentUserDisplayName} />
               <div className="overview-actions schedule-overview-actions">
                 <button
                   type="button"
                   className="secondary"
                   disabled={busy || readRefreshing}
-                  onClick={() => requestReload(() => setEpoch((value) => value + 1))}
+                  onClick={() => requestReload(() => { setManualRefreshing(true); setEpoch((value) => value + 1); })}
                 >
                   <RefreshCw size={14} aria-hidden="true" />
                   {readRefreshing ? "正在刷新…" : "重新读取"}
@@ -1506,50 +1534,14 @@ export function SchedulePage({
               </div>
             </div>
 
-            <ScheduleRefreshNotice refreshing={readRefreshing} />
+            <ScheduleRefreshNotice refreshing={manualRefreshing} />
             {preloadedSession?.refreshError && <p className="banner warning" role="alert">{preloadedSession.refreshError}</p>}
             {error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，可继续编辑，稍后重试。</p>}
-            <div className="schedule-scope">
-              <div className="schedule-scope-summary">
-                <span
-                  className={`schedule-scope-dot ${scopeSources.length === 0 ? "is-idle" : scopeComplete ? "is-ok" : "is-warn"}`}
-                  aria-hidden="true"
-                />
-                <span className="schedule-scope-text">
-                  来源：{scopeSources.map((item) => readableSourceName(item.name || item.id)).join("、") || "无可执行来源"}
-                  {scopeSources.length > 0 && ` · ${scopeComplete ? "完整读取" : "部分读取失败"}`} · 读取时间{" "}
-                  {read.readAt}
-                  {read.readRequests !== undefined && ` · 读取请求 ${read.readRequests} 次`}
-                </span>
-                {view === "mine" && (
-                  <span className="schedule-person">
-                    <Avatar person={currentUserPerson} />
-                    {currentUserDisplayName}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="secondary schedule-diagnostics-toggle"
-                  aria-expanded={diagnosticsOpen}
-                  onClick={() => setDiagnosticsOpen((open) => !open)}
-                >
-                  {diagnosticsOpen ? "收起诊断" : "读取说明"}
-                  <ChevronDown size={13} aria-hidden="true" />
-                </button>
-              </div>
-              {diagnosticsOpen && (
-                <div className="schedule-diagnostics-drawer">
-                  <p>空间和项目筛选仅影响当前展示，不改变排期的读取与同步范围。</p>
-                </div>
-              )}
-              {scopeSources
-                .filter((item) => item.error)
-                .map((item) => (
-                  <p key={item.id} className="schedule-source-error">
-                    {readableSourceName(item.name || item.id)}：{item.error}
-                  </p>
-                ))}
-            </div>
+            {scopeSources.filter((item) => item.error).map((item) => (
+              <p key={item.id} className="banner warning" role="alert">
+                {readableSourceName(item.name || item.id)}：{item.error}
+              </p>
+            ))}
 
             {read.accountError && (
               <div className="banner warning" role="alert">
@@ -1614,6 +1606,7 @@ export function SchedulePage({
                     title="结束本次编辑并重新读取云端排期"
                     onClick={() => requestReload(() => {
                       forceResetRef.current = true;
+                      setManualRefreshing(true);
                       setEpoch((value) => value + 1);
                     })}
                   >
@@ -1787,7 +1780,7 @@ export function SchedulePage({
                 </div>
               </div>
 
-              <div className={`schedule-layout ${poolCollapsed ? "is-pool-collapsed" : ""}`}>
+              <div className={`schedule-layout ${poolCollapsed ? "is-pool-collapsed" : ""} ${!selectedEntry ? "is-inspector-closed" : ""}`}>
                 {!poolCollapsed && (
                   <aside
                     className="schedule-pending"
@@ -2443,14 +2436,24 @@ export function SchedulePage({
                   </div>
                 </div>
 
-                <aside className="schedule-inspector" aria-label="排期检查器">
+                {selectedEntry && <aside className="schedule-inspector" aria-label="排期检查器">
                   <div className="schedule-inspector-head">
                     <strong>排期检查器</strong>
-                    {selectedEntry && scheduleChanged(selectedEntry) && (
-                      <span className="schedule-inspector-dirty">本地草稿</span>
-                    )}
+                    <div className="schedule-inspector-head-actions">
+                      {scheduleChanged(selectedEntry) && (
+                        <span className="schedule-inspector-dirty">本地草稿</span>
+                      )}
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label="关闭排期检查器"
+                        title="关闭排期检查器"
+                        onClick={() => { setSelected(""); setDatePickerOpen(false); }}
+                      >
+                        <X size={16} aria-hidden="true" />
+                      </button>
+                    </div>
                   </div>
-                  {selectedEntry ? (
                     <div className="schedule-editor">
                       <div className="schedule-editor-meta">
                         <span className="schedule-editor-tag">
@@ -2633,7 +2636,9 @@ export function SchedulePage({
                         </details>
                       )}
                       {selectedEntry.readOnlyReason && <p>{selectedEntry.readOnlyReason}</p>}
-                      {selectedEntry.resultMessage && <p>{selectedEntry.resultMessage}</p>}
+                      {selectedEntry.resultMessage?.replace(/^收到成功回执，未回读核验[；;]?\s*/, "") && (
+                        <p>{selectedEntry.resultMessage.replace(/^收到成功回执，未回读核验[；;]?\s*/, "")}</p>
+                      )}
                       {frozenNodes.has(nodeKey(selectedEntry)) && (
                         <p>该节点存在结果不确定的排期，请先在飞书核对并重新读取。</p>
                       )}
@@ -2645,12 +2650,7 @@ export function SchedulePage({
                         <p role="alert">{scheduleValidation(selectedEntry)}</p>
                       )}
                     </div>
-                  ) : (
-                    <div className="schedule-inspector-empty">
-                      <p>点击左侧待排卡片或日历中的排期长条，在此查看和调整节点日期。</p>
-                    </div>
-                  )}
-                </aside>
+                </aside>}
               </div>
             </div>
 

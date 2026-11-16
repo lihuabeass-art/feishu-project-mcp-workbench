@@ -326,6 +326,14 @@
   grid-template-columns: minmax(0, 1fr) 304px;
 }
 
+.schedule-layout.is-inspector-closed {
+  grid-template-columns: 268px minmax(0, 1fr);
+}
+
+.schedule-layout.is-pool-collapsed.is-inspector-closed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 /* 左栏：待排池与其他周已排 */
 .schedule-pending {
   display: flex;
@@ -1231,10 +1239,28 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 11px 16px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--line);
-  font-size: 12px;
+  font-size: 13px;
   color: var(--heading);
+}
+
+.schedule-inspector-head > strong {
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.schedule-inspector-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.schedule-inspector-head-actions .icon-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
 }
 
 .schedule-inspector-dirty {
@@ -1258,7 +1284,7 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 12px;
+  gap: 8px;
   padding: 16px;
   overflow-y: auto;
 }
@@ -1334,7 +1360,7 @@
 
 .schedule-editor-actions.detail-item-link {
   margin: 0;
-  padding-top: 5px;
+  padding-top: 6px;
   align-self: start;
 }
 
@@ -1353,15 +1379,17 @@
 
 .schedule-editor-heading {
   display: grid;
-  gap: 3px;
+  gap: 6px;
+  min-width: 0;
 }
 
 .schedule-editor h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--heading);
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .schedule-editor p {
@@ -1369,6 +1397,12 @@
   font-size: 12px;
   line-height: 1.55;
   margin: 4px 0 0;
+}
+
+.schedule-editor .schedule-editor-heading p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 .schedule-sibling-nodes {
@@ -1841,7 +1875,9 @@
     grid-template-columns: 1fr;
   }
   .schedule-layout,
-  .schedule-layout.is-pool-collapsed {
+  .schedule-layout.is-pool-collapsed,
+  .schedule-layout.is-inspector-closed,
+  .schedule-layout.is-pool-collapsed.is-inspector-closed {
     grid-template-columns: 1fr;
   }
   .schedule-pending {

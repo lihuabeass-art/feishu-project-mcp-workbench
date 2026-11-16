@@ -59,23 +59,28 @@ it("按人待排期显示各节点停留时间，隐藏重复操作说明和权�
 
 it("重新读取使用独立悬浮消息，结束时淡出，连续读取不会被旧计时器关闭", async () => {
   const read = data();
-  const controller: ScheduleSessionController = { read, pending: null, refreshing: false, updateRead: vi.fn(), reload: vi.fn() };
+  let finish!: (value: ScheduleRead) => void;
+  const controller: ScheduleSessionController = { read, pending: null, refreshing: false, updateRead: vi.fn(), reload: vi.fn(() => new Promise<ScheduleRead>((resolve) => { finish = resolve; })) };
   const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload() };
   const page = render(<SchedulePage {...props} preloadedSession={controller} />);
   await screen.findByText("任务一");
   const refresh = (refreshing: boolean) => page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller, refreshing }} />);
   refresh(true);
+  expect(screen.queryByText("正在刷新最新排期")).toBeNull();
+  refresh(false);
+  fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
   const notice = screen.getByRole("status").parentElement!;
   expect(notice.classList.contains("schedule-refresh-notice")).toBe(true);
   expect(notice.parentElement).toBe(document.body);
   expect(page.container.contains(notice)).toBe(false);
-  refresh(false);
+  finish(read);
+  await waitFor(() => expect(notice.classList.contains("is-leaving")).toBe(true));
   expect(notice.classList.contains("is-leaving")).toBe(true);
-  refresh(true);
+  fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
   await new Promise((resolve) => setTimeout(resolve, 220));
   expect(screen.getByRole("status").parentElement).toBe(notice);
   expect(notice.classList.contains("is-leaving")).toBe(false);
-  refresh(false);
+  finish(read);
   await waitFor(() => expect(document.querySelector(".schedule-refresh-notice")).toBeNull());
 });
 
@@ -89,7 +94,7 @@ it.each(["refreshing", "failed"])("后台%s保留有效会话，持续允许编�
   controller.refreshing = true;
   page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller }} />);
   expect(screen.getAllByText("任务一").length).toBeGreaterThan(0);
-  expect(screen.getByRole("status").textContent).toContain("保留上次");
+  expect(screen.queryByText("正在刷新最新排期")).toBeNull();
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
   expect((screen.getByRole("button", { name: "正在刷新…" }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: "2026-11-16" } });
@@ -320,6 +325,7 @@ it("单次读取后筛选和编辑不触发请求，经二次确认后同步差�
   vi.mocked(submitScheduleTargets).mockResolvedValue({ results: [{ id: "one", result: "accepted", message: "收到成功回执，未回读核验" }], writeRequests: 1 });
   confirmSync();
   await screen.findByText("排期已同步");
+  expect(screen.queryByText("收到成功回执，未回读核验")).toBeNull();
   expect(screen.getByText("已保存 1 项节点排期")).toBeTruthy();
   const successBanner = screen.getByRole("status");
   expect(successBanner.className).toContain("success");
@@ -905,6 +911,23 @@ it("排期检查器合并当前节点与日期信息，提供清空入口并保�
   expect(editor.querySelector(".schedule-cloud-baseline")?.textContent).toContain(`${currentWeekDay(0)} ~ ${currentWeekDay(0)}`);
   expect(document.querySelector(".schedule-inspector-dirty")?.textContent).toBe("本地草稿");
   expect(heading.textContent).not.toContain("未同步");
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
+});
+
+it("关闭排期检查器释放日历空间，重新选择节点保留未提交日期", async () => {
+  const read = data();
+  read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
+  fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(1) } });
+  fireEvent.click(screen.getByRole("button", { name: "关闭排期检查器" }));
+  expect(screen.queryByRole("complementary", { name: "排期检查器" })).toBeNull();
+  expect(document.querySelector(".schedule-layout")?.classList.contains("is-inspector-closed")).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
+  expect(screen.getByRole("complementary", { name: "排期检查器" })).toBeTruthy();
+  expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(currentWeekDay(1));
+  expect(document.querySelector(".schedule-inspector-dirty")?.textContent).toBe("本地草稿");
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
