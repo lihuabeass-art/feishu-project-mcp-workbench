@@ -204,6 +204,7 @@ export function SchedulePage({
   const [personQuery, setPersonQuery] = useState("");
   const [editableOnly, setEditableOnly] = useState(false);
   const [poolCollapsed, setPoolCollapsed] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [poolTab, setPoolTab] = useState<"pending" | "outside">("pending");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -534,6 +535,36 @@ export function SchedulePage({
   };
   const groupKey = (entry: Entry, id: string) =>
     JSON.stringify([entry.identity.connection, entry.identity.project, id]);
+  const collapseKey = (area: string, entry: Entry, owner: string) =>
+    JSON.stringify([area, groupKey(entry, owner)]);
+  const groupHidden = (area: string, entry: Entry, owner: string) =>
+    view === "people" && collapsedGroups.has(collapseKey(area, entry, owner));
+  const renderGroupToggle = (area: string, entry: Entry, owner: string, count: number) => {
+    const collapsed = groupHidden(area, entry, owner);
+    const name = owner ? displayPerson(entry, owner) : "负责人不明";
+    return (
+      <button
+        type="button"
+        className="schedule-group"
+        aria-expanded={!collapsed}
+        aria-label={`${collapsed ? "展开" : "收起"}${name}的${area === "calendar" ? "日历安排" : area === "pending" ? "待排期" : "其他周已排"}，共${count}项`}
+        onClick={() => {
+          const key = collapseKey(area, entry, owner);
+          setCollapsedGroups((current) => {
+            const next = new Set(current);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+          });
+        }}
+      >
+        <Avatar person={personFor(entry, resolveOwnerId(entry, owner))} />
+        <span className="schedule-group-name">{name}</span>
+        <span className="schedule-group-count" aria-hidden="true">{count} 项</span>
+        <ChevronDown className="schedule-group-chevron" size={15} aria-hidden="true" />
+      </button>
+    );
+  };
   const ownerLabel = (entry: Entry, owner: string) => {
     const ids =
       entry.identity.scope === "node"
@@ -1728,12 +1759,10 @@ export function SchedulePage({
                                 (index === 0 ||
                                   groupKey(pendingRows[index - 1].entry, pendingRows[index - 1].owner) !==
                                     groupKey(entry, owner)) && (
-                                  <div className="schedule-group">
-                                    <Avatar person={personFor(entry, resolveOwnerId(entry, owner))} />
-                                    <span>{owner ? displayPerson(entry, owner) : "负责人不明"}</span>
-                                  </div>
+                                  renderGroupToggle("pending", entry, owner, pendingRows.filter((row) => groupKey(row.entry, row.owner) === groupKey(entry, owner)).length)
                                 )}
                               <div
+                                hidden={groupHidden("pending", entry, owner)}
                                 className={`schedule-pending-card ${entry.id === selected ? "selected" : ""}`}
                               >
                                 <button
@@ -1830,12 +1859,10 @@ export function SchedulePage({
                                 (index === 0 ||
                                   groupKey(outsideRows[index - 1].entry, outsideRows[index - 1].owner) !==
                                     groupKey(entry, owner)) && (
-                                  <div className="schedule-group">
-                                    <Avatar person={personFor(entry, resolveOwnerId(entry, owner))} />
-                                    <span>{owner ? displayPerson(entry, owner) : "负责人不明"}</span>
-                                  </div>
+                                  renderGroupToggle("outside", entry, owner, outsideRows.filter((row) => groupKey(row.entry, row.owner) === groupKey(entry, owner)).length)
                                 )}
                               <div
+                                hidden={groupHidden("outside", entry, owner)}
                                 className={`schedule-pending-card schedule-outside-card ${entry.id === selected ? "selected" : ""}`}
                               >
                                 <button
@@ -1986,19 +2013,9 @@ export function SchedulePage({
                             (rowIndex === 0 ||
                               groupKey(rows[rowIndex - 1].primaryEntry, rows[rowIndex - 1].owner) !==
                                 groupKey(primaryEntry, owner)) && (
-                              <div className="schedule-group">
-                                <Avatar
-                                  person={personFor(
-                                    primaryEntry,
-                                    resolveOwnerId(primaryEntry, owner),
-                                  )}
-                                />
-                                <span>
-                                  {owner ? displayPerson(primaryEntry, owner) : "负责人不明"}
-                                </span>
-                              </div>
+                              renderGroupToggle("calendar", primaryEntry, owner, rows.filter((item) => groupKey(item.primaryEntry, item.owner) === groupKey(primaryEntry, owner)).length)
                             )}
-                          <div className={`schedule-row ${rowSelected ? "selected" : ""}`}>
+                          <div hidden={groupHidden("calendar", primaryEntry, owner)} className={`schedule-row ${rowSelected ? "selected" : ""}`}>
                             <div
                               className="schedule-row-label"
                               onClick={() => setSelected(primaryEntry.id)}

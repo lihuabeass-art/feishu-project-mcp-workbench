@@ -647,6 +647,56 @@ it("人员有待安排事项但本周无排期时说明本周为空", async () =
   expect(screen.queryByText("当前范围未包含该人员的安排")).toBeNull();
 });
 
+it("人员分组在待排池和日历独立折叠，键盘展开并保留选择与草稿", async () => {
+  const read = data();
+  read.targets.push({ ...read.targets[0], id: "scheduled", title: "已安排任务", identity: { ...identity, item: "scheduled" }, dates: { start: currentWeekDay(0), end: currentWeekDay(0) } });
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
+  const pendingToggle = screen.getByRole("button", { name: "收起本人的待排期，共1项" });
+  fireEvent.click(pendingToggle);
+  expect(pendingToggle.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
+  expect(document.querySelector(".schedule-editor")?.textContent).toContain("任务一");
+  expect(document.querySelector(".schedule-row")?.hasAttribute("hidden")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "收起本人的日历安排，共1项" }));
+  expect(document.querySelector(".schedule-row")?.hasAttribute("hidden")).toBe(true);
+  pendingToggle.focus();
+  await userEvent.keyboard("{Enter}");
+  expect(screen.getByRole("button", { name: /任务一/ })).toBeTruthy();
+  expect(document.querySelector(".schedule-row")?.hasAttribute("hidden")).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
+  fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(1) } });
+  fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(1) } });
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "展开本人的日历安排，共2项" }));
+  fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(1));
+  expect(document.querySelectorAll(".schedule-row[hidden]")).toHaveLength(0);
+});
+
+it("其他周分组单独折叠，跨空间相同人员 ID 不串联", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.targets.push(
+    { ...base, id: "other-space", title: "另一空间待排", identity: { ...identity, project: "q" } },
+    { ...base, id: "outside", title: "其他周任务", identity: { ...identity, item: "outside" }, dates: { start: "2020-01-01", end: "2020-01-01" } },
+  );
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getAllByRole("button", { name: "收起本人的待排期，共1项" })[0]);
+  expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
+  expect(screen.getByRole("button", { name: /另一空间待排/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("tab", { name: /其他周已排/ }));
+  fireEvent.click(screen.getByRole("button", { name: "收起本人的其他周已排，共1项" }));
+  expect(screen.queryByRole("button", { name: /其他周任务/ })).toBeNull();
+  fireEvent.click(screen.getByRole("tab", { name: /待排期/ }));
+  expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
+  expect(screen.getByRole("button", { name: /另一空间待排/ })).toBeTruthy();
+});
+
 it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同排期归属", async () => {
   const read = data();
   read.people = [{ id: "same", name: "张三", avatar: "a.png", connection: "c", project: "p" }, { id: "same", name: "李四", avatar: "b.png", connection: "c", project: "q" }, { id: "other", name: "张三", connection: "c", project: "p" }];

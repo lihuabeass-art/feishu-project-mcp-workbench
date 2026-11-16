@@ -647,11 +647,64 @@
   font-weight: 600;
   color: var(--heading);
   flex-shrink: 0;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none;
+  transition: background-color 140ms ease;
 }
 
-.schedule-group small {
+.schedule-group:hover {
+  background: color-mix(in srgb, var(--green) 8%, var(--surface-soft));
+}
+
+.schedule-group:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -3px;
+}
+
+.schedule-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-group-count {
+  margin-left: auto;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
   color: var(--text-secondary);
-  font-weight: 400;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.schedule-group-chevron {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  transition: transform 140ms ease;
+}
+
+.schedule-group[aria-expanded="false"] .schedule-group-chevron {
+  transform: rotate(-90deg);
+}
+
+.schedule-pending-card[hidden],
+.schedule-row[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .schedule-group,
+  .schedule-group-chevron {
+    transition: none;
+  }
 }
 
 .schedule-row-label {
