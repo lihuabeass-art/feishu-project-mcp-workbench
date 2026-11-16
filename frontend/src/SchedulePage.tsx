@@ -20,7 +20,7 @@ import { Select } from "./Select";
 import { ExternalLink } from "./ExternalLink";
 import { useScrollIsolation } from "./useScrollIsolation";
 import type { Snapshot } from "./types";
-import { asError } from "./model";
+import { asError, itemKey, missingProject, projectFilterOptions, relatedProjectKey } from "./model";
 import { readFailureMessage } from "./readFeedback";
 import { sourceName, sourcePresets } from "./sourcePresets";
 import {
@@ -134,6 +134,7 @@ const initials = (name: string) =>
         .join("")
         .toUpperCase();
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
+const unreadRelatedProject = "unread-related-project";
 const resultLabel = {
   accepted: "上次提交：收到成功回执",
   failed: "上次提交：失败",
@@ -197,9 +198,8 @@ export function SchedulePage({
   const [view, setView] = useState<"mine" | "people">("mine");
   const viewModeRef = useRef(view);
   viewModeRef.current = view;
-  const [source, setSource] = useState("");
   const [project, setProject] = useState("");
-  const [type, setType] = useState("");
+  const [relatedProject, setRelatedProject] = useState("");
   const [person, setPerson] = useState<string[]>([]);
   const [personQuery, setPersonQuery] = useState("");
   const [personSearchRequest, setPersonSearchRequest] = useState(0);
@@ -634,11 +634,27 @@ export function SchedulePage({
       entry.record.title,
     ]);
 
+  const cachedItems = new Map((snapshot?.items || []).map((item) => [itemKey(item), item]));
+  const cachedItemFor = (entry: Entry) => cachedItems.get(JSON.stringify([
+    entry.identity.project, entry.identity.type, entry.identity.item,
+  ]));
+  const projectItems = entries
+    .filter((entry) => !project || entry.identity.project === project)
+    .map(cachedItemFor)
+    .filter((item) => item !== undefined);
+  const relatedProjectOptions = projectFilterOptions(projectItems, snapshot?.workspace_catalog || [], "", "");
+  if (entries.some((entry) => (!project || entry.identity.project === project) && !cachedItemFor(entry))) {
+    relatedProjectOptions.push({ value: unreadRelatedProject, label: "项目信息未读取" });
+  }
+
   const visible = entries.filter(
     (entry) =>
-      (!source || entry.record.sourceIds.includes(source)) &&
       (!project || entry.identity.project === project) &&
-      (!type || JSON.stringify([entry.identity.project, entry.identity.type]) === type) &&
+      (!relatedProject || (relatedProject === unreadRelatedProject
+        ? !cachedItemFor(entry)
+        : relatedProject === missingProject
+          ? !!cachedItemFor(entry) && !cachedItemFor(entry)?.related_projects?.length
+          : cachedItemFor(entry)?.related_projects?.some((item) => relatedProjectKey(entry.identity.project, item) === relatedProject))) &&
       (view !== "people" || person.length === 0 || entry.record.ownerIds.some((id) => person.includes(id))) &&
       (view === "people" ||
         !!read?.accountError ||
@@ -716,14 +732,9 @@ export function SchedulePage({
       }
     : currentUserGlobal;
 
-  const scopeSources = source
-    ? read?.sources.filter((item) => item.id === source) || []
-    : read?.sources || [];
-  const scopeErrors =
-    read?.itemErrors?.filter((item) => !source || item.sources.includes(source)) || [];
-  const scopeComplete = source
-    ? scopeSources.length > 0 && scopeSources.every((item) => item.complete) && scopeErrors.length === 0
-    : read?.complete;
+  const scopeSources = read?.sources || [];
+  const scopeErrors = read?.itemErrors || [];
+  const scopeComplete = read?.complete;
 
   const personRows = (items: Entry[]) =>
     items
@@ -1465,7 +1476,7 @@ export function SchedulePage({
               </div>
               {diagnosticsOpen && (
                 <div className="schedule-diagnostics-drawer">
-                  <p>来源筛选按事项归属；节点不一定都出现在该来源的待办中。</p>
+                  <p>空间和项目筛选仅影响当前展示，不改变排期的读取与同步范围。</p>
                 </div>
               )}
               {scopeSources
@@ -1577,20 +1588,11 @@ export function SchedulePage({
                     </button>
                   </div>
                   <Select
-                    ariaLabel="筛选来源"
-                    value={source}
-                    onChange={setSource}
-                    options={options(
-                      read.sources.map((item) => [item.id, readableSourceName(item.name || item.id)]),
-                      "全部来源",
-                    )}
-                  />
-                  <Select
                     ariaLabel="筛选空间"
                     value={project}
                     onChange={(value) => {
                       setProject(value);
-                      setType("");
+                      setRelatedProject("");
                     }}
                     options={options(
                       entries.map((item) => [item.identity.project, projectLabel(item)]),
@@ -1598,18 +1600,10 @@ export function SchedulePage({
                     )}
                   />
                   <Select
-                    ariaLabel="筛选类型"
-                    value={type}
-                    onChange={setType}
-                    options={options(
-                      entries
-                        .filter((item) => !project || item.identity.project === project)
-                        .map((item) => [
-                          JSON.stringify([item.identity.project, item.identity.type]),
-                          `${projectLabel(item)} · ${typeLabel(item)}`,
-                        ]),
-                      "全部类型",
-                    )}
+                    ariaLabel="筛选所属项目"
+                    value={relatedProject}
+                    onChange={setRelatedProject}
+                    options={[{ value: "", label: "全部项目" }, ...relatedProjectOptions]}
                   />
                   {view === "people" && (
                     <>

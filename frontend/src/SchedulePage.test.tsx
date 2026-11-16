@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SchedulePage, type ScheduleSessionController } from "./SchedulePage";
+import type { Snapshot } from "./types";
 import { closeScheduleSession, loadSchedulePeople, loadScheduleSession, submitScheduleTargets, type ScheduleRead } from "./scheduleApi";
 const loadCss = async (rel: string) => {
   const fsModule = "node:fs";
@@ -14,6 +15,17 @@ const loadCss = async (rel: string) => {
 vi.mock("./scheduleApi", () => ({ loadScheduleSession: vi.fn(), loadSchedulePeople: vi.fn(), closeScheduleSession: vi.fn(), submitScheduleTargets: vi.fn() }));
 const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
 const data = (): ScheduleRead => ({ sessionId: "session", currentUserId: "me", readAt: "today", complete: false, sources: [{ id: "s", name: "我的来源", complete: false, error: "部分事项读取失败" }], people: [{ id: "me", name: "本人" }], targets: [{ id: "one", identity, title: "任务一", nodeName: "开发", ownerId: "me", ownerIds: ["me"], sourceIds: ["s"], projectName: "空间", typeName: "需求", dates: { start: "", end: "" }, mine: true }] });
+const projectSnapshot = (read: ScheduleRead): Snapshot => ({
+  items: read.targets.map((target, index) => ({
+    id: { project_key: target.identity.project, work_item_type_key: target.identity.type, work_item_id: target.identity.item },
+    project_name: target.projectName, name: target.title,
+    related_projects: index === 2 ? [] : [{ field_key: `field-${target.identity.type}`, id: "project-a", name: "AI 应用开发平台" },
+      ...(index === 0 ? [{ field_key: "another", id: "project-b", name: "项目乙" }] : [])],
+    flow: { kind: "none", node_name: null, node_state_key: null, start_state_key_name: null, end_state_key_name: null },
+    schedule: { start_raw: null, end_raw: null }, raw_json: "{}", identity_missing_flags: [], first_seen_at_ms: 0, last_seen_at_ms: 0, seen_count: 1,
+  })),
+  total: read.targets.length, sources: [], runs: [], last_success: null, config_path: "", db_path: "", credential_ready: true, credential_description: "",
+});
 beforeEach(() => { vi.mocked(loadScheduleSession).mockResolvedValue(data()); vi.mocked(closeScheduleSession).mockResolvedValue(); });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const setup = async () => { const guard = vi.fn(); render(<SchedulePage onGuardChange={guard} requestReload={(reload) => reload()} />); await screen.findByText(/部分读取失败/); return guard; };
@@ -151,21 +163,72 @@ it("全部来源成功时显示完整读取", async () => {
   expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("部分读取失败");
 });
 
-it("同名类型按空间与类型的复合身份筛选", async () => {
+it("所属项目按空间和项目身份筛选，跨类型合并且支持多项目及无项目信息", async () => {
   const read = data();
-  read.targets.push({ ...read.targets[0], id: "two", title: "另一空间任务", identity: { ...identity, project: "other", item: "other" }, projectName: "另一空间" });
+  read.targets.push(
+    { ...read.targets[0], id: "two", title: "另一空间任务", identity: { ...identity, project: "other", item: "other" }, projectName: "另一空间" },
+    { ...read.targets[0], id: "missing", title: "无项目任务", identity: { ...identity, item: "missing" } },
+    { ...read.targets[0], id: "issue", title: "同项目缺陷", identity: { ...identity, type: "issue", item: "issue" } },
+  );
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
-  await setup();
-  fireEvent.click(screen.getByRole("combobox", { name: "筛选类型" }));
-  fireEvent.click(screen.getByRole("option", { name: "空间 · 需求" }));
+  render(<SchedulePage snapshot={projectSnapshot(read)} onGuardChange={vi.fn()} requestReload={vi.fn()} />);
+  await screen.findByText("任务一");
+  expect(screen.queryByRole("combobox", { name: "筛选来源" })).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "筛选类型" })).toBeNull();
+  const chooseProject = (name: string) => {
+    fireEvent.click(screen.getByRole("combobox", { name: "筛选所属项目" }));
+    fireEvent.click(screen.getByRole("option", { name }));
+  };
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选空间" }));
+  fireEvent.click(screen.getByRole("option", { name: "空间" }));
+  chooseProject("AI 应用开发平台");
   expect(screen.getByText("任务一")).toBeTruthy();
+  expect(screen.getByText("同项目缺陷")).toBeTruthy();
   expect(screen.queryByText("另一空间任务")).toBeNull();
+  expect(screen.queryByText("无项目任务")).toBeNull();
+  chooseProject("项目乙");
+  expect(screen.getByText("任务一")).toBeTruthy();
+  expect(screen.queryByText("同项目缺陷")).toBeNull();
+  chooseProject("未提供所属项目");
+  expect(screen.getByText("无项目任务")).toBeTruthy();
+  chooseProject("全部项目");
+  expect(screen.getByText("同项目缺陷")).toBeTruthy();
+  chooseProject("项目乙");
   fireEvent.click(screen.getByRole("combobox", { name: "筛选空间" }));
   fireEvent.click(screen.getByRole("option", { name: "另一空间" }));
   expect(screen.getByText("另一空间任务")).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "筛选所属项目" }).textContent).toContain("全部项目");
+  chooseProject("AI 应用开发平台");
+  expect(screen.queryByText("任务一")).toBeNull();
+  expect(loadScheduleSession).toHaveBeenCalledTimes(1);
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
-it("来源筛选只展示所选来源的完整性和关联失败，全部来源恢复整体", async () => {
+it("项目筛选区分缺少事项缓存与已读取但未提供项目，候选仅来自排期事项", async () => {
+  const read = data();
+  read.targets.push(
+    { ...read.targets[0], id: "uncached", title: "未读取项目任务", identity: { ...identity, item: "uncached" } },
+    { ...read.targets[0], id: "missing", title: "无项目任务", identity: { ...identity, item: "missing" } },
+  );
+  const snapshot = projectSnapshot(read);
+  snapshot.items.splice(1, 1);
+  snapshot.items.push({ ...snapshot.items[0], id: { ...snapshot.items[0].id, work_item_id: "outside" }, related_projects: [{ field_key: "project", id: "outside", name: "无排期的项目" }] });
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  render(<SchedulePage snapshot={snapshot} onGuardChange={vi.fn()} requestReload={vi.fn()} />);
+  await screen.findByText("任务一");
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选所属项目" }));
+  expect(screen.queryByRole("option", { name: "无排期的项目" })).toBeNull();
+  fireEvent.click(screen.getByRole("option", { name: "项目信息未读取" }));
+  expect(screen.getByText("未读取项目任务")).toBeTruthy();
+  expect(screen.queryByText("无项目任务")).toBeNull();
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选所属项目" }));
+  fireEvent.click(screen.getByRole("option", { name: "未提供所属项目" }));
+  expect(screen.queryByText("未读取项目任务")).toBeNull();
+  expect(screen.getByText("无项目任务")).toBeTruthy();
+  expect(loadScheduleSession).toHaveBeenCalledTimes(1);
+});
+
+it("移除来源筛选后始终展示整体读取完整性和所有关联失败", async () => {
   const read = data();
   read.sources = [{ id: "a", name: "完整来源", complete: true }, { id: "b", name: "失败来源", complete: false, error: "分页失败" }];
   read.itemErrors = [{ project: "p", type: "t", item: "bad", sources: ["b"], message: "详情失败" }, { project: "p", type: "t", item: "shared", sources: ["a", "b"], message: "共同事项失败" }];
@@ -174,27 +237,16 @@ it("来源筛选只展示所选来源的完整性和关联失败，全部来源�
   read.sources.push({ id: "c", name: "独立完整来源", complete: true });
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
-  const choose = (name: string) => { fireEvent.click(screen.getByRole("combobox", { name: "筛选来源" })); fireEvent.click(screen.getByRole("option", { name })); };
-  expect(screen.getByText(/分页失败/)).toBeTruthy();
-  expect(screen.getByText(/详情失败/)).toBeTruthy();
-  choose("独立完整来源");
-  expect(document.querySelector(".schedule-scope")?.textContent).toContain("来源：独立完整来源 · 完整读取");
-  expect(screen.queryByText(/分页失败|详情失败|共同事项失败/)).toBeNull();
-  choose("完整来源");
-  expect(document.querySelector(".schedule-scope")?.textContent).toContain("部分读取失败");
-  expect(screen.getByText(/共同事项失败/)).toBeTruthy();
-  expect(screen.queryByText(/分页失败|详情失败/)).toBeNull();
-  choose("失败来源");
+  expect(screen.queryByRole("combobox", { name: "筛选来源" })).toBeNull();
   expect(screen.getByText(/分页失败/)).toBeTruthy();
   expect(screen.getByText(/详情失败/)).toBeTruthy();
   expect(screen.getByText(/共同事项失败/)).toBeTruthy();
-  choose("全部来源");
   expect(document.querySelector(".schedule-scope")?.textContent).toContain("部分读取失败");
   expect(screen.getByText(/详情失败/)).toBeTruthy();
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
 });
 
-it("本地来源缓存提示包含可读事项身份和来源，不裸露内部长键，并随来源筛选", async () => {
+it("本地来源缓存提示包含可读事项身份和来源，不裸露内部长键", async () => {
   const read = data();
   read.sources = [{ id: "a", name: "来源甲", complete: false }, { id: "b", name: "来源乙", complete: false }];
   read.itemErrors = [
@@ -210,9 +262,6 @@ it("本地来源缓存提示包含可读事项身份和来源，不裸露内部�
   expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("9000000000000654321");
   expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("space_key_xyz");
   expect(document.querySelector(".schedule-scope")?.textContent).not.toContain("raw_internal_source");
-  fireEvent.click(screen.getByRole("combobox", { name: "筛选来源" }));
-  fireEvent.click(screen.getByRole("option", { name: "来源乙" }));
-  expect(screen.queryByText(/该来源的本地缓存不完整/)).toBeNull();
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
 });
 
@@ -674,16 +723,19 @@ it("人员筛选支持连续多选、取消及清空，并按负责人显示共�
 
 it("筛选排除当前目标时隐藏编辑区，恢复筛选后保留会话", async () => {
   const read = data();
-  read.sources.push({ id: "other", name: "其他来源", complete: true });
-  vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
-  fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
+  read.targets.push({ ...read.targets[0], id: "other", title: "另一项目任务", identity: { ...identity, project: "other", item: "other" }, projectName: "另一空间" });
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  render(<SchedulePage snapshot={projectSnapshot(read)} onGuardChange={vi.fn()} requestReload={vi.fn()} />);
+  await screen.findByText("任务一");
+  fireEvent.click(screen.getByRole("button", { name: /另一项目任务/ }));
   expect(screen.getByLabelText("开始日期")).toBeTruthy();
-  fireEvent.click(screen.getByRole("combobox", { name: "筛选来源" }));
-  fireEvent.click(screen.getByRole("option", { name: "其他来源" }));
+  fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: "2026-11-16" } });
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选所属项目" }));
+  fireEvent.click(screen.getByRole("option", { name: "项目乙" }));
   expect(screen.queryByLabelText("开始日期")).toBeNull();
-  fireEvent.click(screen.getByRole("combobox", { name: "筛选来源" }));
-  fireEvent.click(screen.getByRole("option", { name: "全部来源" }));
-  expect(screen.getByLabelText("开始日期")).toBeTruthy();
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选所属项目" }));
+  fireEvent.click(screen.getByRole("option", { name: "全部项目" }));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe("2026-11-16");
 });
 
 it("人员有待安排事项但本周无排期时说明本周为空", async () => {
@@ -1081,9 +1133,9 @@ it("核对弹层支持 Escape 关闭与全部还原自动关闭，概览卡支�
 
   // 展开与收起读取诊断说明
   fireEvent.click(screen.getByRole("button", { name: "读取说明" }));
-  expect(screen.getByText(/来源筛选按事项归属/)).toBeTruthy();
+  expect(screen.getByText(/空间和项目筛选仅影响当前展示/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "收起诊断" }));
-  expect(screen.queryByText(/来源筛选按事项归属/)).toBeNull();
+  expect(screen.queryByText(/空间和项目筛选仅影响当前展示/)).toBeNull();
 
   // 快捷落位产生草稿后打开弹层，按 Escape 关闭，再点全部还原清空草稿
   const quickBar = screen.getByLabelText(`${read.targets[0].title}快捷排期`);
@@ -1214,9 +1266,7 @@ it("无未保存草稿时若外部预加载会话轮换为新 sessionId，自动
   expect(await screen.findByRole("button", { name: /外部轮换后的新事项/ })).toBeTruthy();
   expect(document.querySelector(".schedule-scope")?.textContent).toContain("逾期待办");
   expect(document.querySelector(".schedule-scope")?.textContent).toContain("我参与的需求");
-  fireEvent.click(screen.getByRole("combobox", { name: "筛选来源" }));
-  expect(screen.getByRole("option", { name: "逾期待办" })).toBeTruthy();
-  expect(screen.getByRole("option", { name: "我参与的需求" })).toBeTruthy();
+  expect(screen.queryByRole("combobox", { name: "筛选来源" })).toBeNull();
 });
 
 it("按需加载全员排期期间若重新读取新会话，旧会话迟到响应不会污染新会话", async () => {
