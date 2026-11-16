@@ -378,18 +378,39 @@ impl ScheduleSession {
     }
 
     pub fn load_all(session: &Session) -> Result<Self, BackendError> {
-        let mut schedule = Self::load_mine(session)?;
-        if session.credential().is_ok() {
-            let sid = schedule.view.session_id.clone();
-            schedule.load_people(session, &sid)?;
-        } else {
-            schedule.view.people_loaded = true;
-        }
-        Ok(schedule)
+        crate::diagnostics::schedule_read(|| {
+            let mut schedule = Self::load_mine(session)?;
+            crate::diagnostics::schedule_stage("schedule_credentials");
+            let credential_started = std::time::Instant::now();
+            match session.credential() {
+                Ok(_) => {
+                    let sid = schedule.view.session_id.clone();
+                    schedule.load_people(session, &sid)?;
+                }
+                Err(error) => {
+                    crate::diagnostics::record("schedule_credentials", credential_started, error.kind().as_str(), false);
+                    crate::diagnostics::schedule_result(schedule.view.targets.len(), schedule.view.failed_items, false);
+                    schedule.view.people_loaded = true;
+                }
+            }
+            Ok(schedule)
+        })
     }
 
     fn load_internal(session: &Session, filter_mine: bool) -> Result<Self, BackendError> {
-        let fingerprint = fingerprint(session).unwrap_or_default();
+        crate::diagnostics::schedule_read(|| Self::load_internal_traced(session, filter_mine))
+    }
+
+    fn load_internal_traced(session: &Session, filter_mine: bool) -> Result<Self, BackendError> {
+        crate::diagnostics::schedule_stage("schedule_credentials");
+        let credential_started = std::time::Instant::now();
+        let fingerprint = match fingerprint(session) {
+            Ok(value) => value,
+            Err(error) => {
+                crate::diagnostics::record("schedule_credentials", credential_started, error.kind().as_str(), false);
+                String::new()
+            }
+        };
         let sid = format!("{}-{}", crate::sync::now_ms(), NEXT.fetch_add(1, Ordering::Relaxed));
         let tables = session.config.source_tables()?;
         let mut sources: Vec<SourceStatus> = session.config.sources.iter()
@@ -434,6 +455,7 @@ impl ScheduleSession {
                         if filter_mine {
                             if !view.current_user.trim().is_empty() {
                                 let mut extra = Vec::new();
+                                crate::diagnostics::schedule_stage("schedule_related_items");
                                 expand_cached_non_todo_items(
                                     session,
                                     client.clone(),
@@ -453,6 +475,7 @@ impl ScheduleSession {
                                 view.failed_items = view.item_errors.len();
                                 if !extra.is_empty() {
                                     view.targets.extend(extra);
+                                    crate::diagnostics::schedule_stage("schedule_people");
                                     finish_person_names_with_details(
                                         session,
                                         &view.current_user,
@@ -473,6 +496,7 @@ impl ScheduleSession {
                                     deferred_targets.push(target);
                                 }
                             }
+                            crate::diagnostics::schedule_stage("schedule_required_fields");
                             resolve_schedule_required_remote(
                                 client.as_ref(),
                                 &mut view.targets,
@@ -480,6 +504,7 @@ impl ScheduleSession {
                                 &mut state.transition_required,
                             )
                             .await;
+                            crate::diagnostics::schedule_stage("schedule_people");
                             backfill_missing_people_remote(
                                 session,
                                 client.as_ref(),
@@ -489,6 +514,7 @@ impl ScheduleSession {
                             )
                             .await;
                         } else {
+                            crate::diagnostics::schedule_stage("schedule_required_fields");
                             resolve_schedule_required_remote(
                                 client.as_ref(),
                                 &mut view.targets,
@@ -497,16 +523,21 @@ impl ScheduleSession {
                             )
                             .await;
                         }
+                        crate::diagnostics::schedule_result(view.targets.len(), view.item_errors.len(),
+                            view.account_error.is_none() && view.item_errors.is_empty()
+                                && sources.iter().all(|s| s.complete && s.error.is_none()) && failed_extra_sources.is_empty());
                         Ok::<(), BackendError>(())
                     },
                 ))?;
                 view.read_requests = count.load(Ordering::Relaxed);
             }
-            Err(_) => {
+            Err(error) => {
+                crate::diagnostics::record("schedule_credentials", credential_started, error.kind().as_str(), false);
                 view.account_error = Some("未能确认当前飞书账号，请检查连接后重试".into());
                 for source in &mut sources {
                     source.error = Some("无法读取个人待办，请检查连接后重试".into());
                 }
+                crate::diagnostics::schedule_result(0, 0, false);
             }
         }
         view.sources = sources;
@@ -536,16 +567,25 @@ impl ScheduleSession {
     }
 
     pub fn load_people(&mut self, session: &Session, session_id: &str) -> Result<(), BackendError> {
+        crate::diagnostics::schedule_read(|| self.load_people_traced(session, session_id))
+    }
+
+    fn load_people_traced(&mut self, session: &Session, session_id: &str) -> Result<(), BackendError> {
+        crate::diagnostics::schedule_stage("schedule_credentials");
         if self.view.session_id != session_id || fingerprint(session)? != self.fingerprint {
             return Err(BackendError::conflict("排期会话或连接已变化，请重新读取"));
         }
         if self.view.people_loaded {
+            crate::diagnostics::schedule_result(self.view.targets.len(), self.view.failed_items,
+                self.view.account_error.is_none() && self.view.failed_items == 0 && self.view.item_errors.is_empty()
+                    && self.view.sources.iter().all(|s| s.complete && s.error.is_none()));
             return Ok(());
         }
         let credential = session.credential()?;
         let client = crate::remote::shared(&session.config, &credential);
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         crate::remote::runtime()?.block_on(crate::mcp::count_schedule_rpcs(count.clone(), async {
+            crate::diagnostics::schedule_stage("schedule_team_items");
             for mut target in std::mem::take(&mut self.deferred_targets) {
                 target.id = format!("{}:{}", self.view.session_id, self.next_target_seq);
                 self.next_target_seq += 1;
@@ -581,6 +621,7 @@ impl ScheduleSession {
                 &self.view.targets,
                 &failed_extra_sources,
             );
+            crate::diagnostics::schedule_stage("schedule_required_fields");
             resolve_schedule_required_remote(
                 client.as_ref(),
                 &mut self.view.targets,
@@ -588,6 +629,7 @@ impl ScheduleSession {
                 &mut self.transition_required,
             )
             .await;
+            crate::diagnostics::schedule_stage("schedule_people");
             finish_person_names_with_details(
                 session,
                 &self.view.current_user,
@@ -605,6 +647,9 @@ impl ScheduleSession {
                 &mut self.detail_avatars,
             )
             .await;
+            crate::diagnostics::schedule_result(self.view.targets.len(), self.view.item_errors.len(),
+                self.view.account_error.is_none() && self.view.item_errors.is_empty()
+                    && self.view.sources.iter().all(|s| s.complete && s.error.is_none()));
             Ok::<(), BackendError>(())
         }))?;
         self.view.people_loaded = true;
@@ -792,6 +837,7 @@ async fn load_remote(
     statuses: &mut [SourceStatus],
     state: &mut LoadState,
 ) -> Result<(), BackendError> {
+    crate::diagnostics::schedule_stage("schedule_account");
     let account = client.call_tool("search_user_info", json!({"user_keys":["current_login_user()"]}).as_object().unwrap()).await
         .and_then(|payload| parse_tool_json("search_user_info", &payload));
     if let Ok(value) = account {
@@ -805,6 +851,7 @@ async fn load_remote(
         view.current_user.clear();
         view.account_error = Some("未能确认当前飞书账号，请检查连接后重试".into());
     }
+    crate::diagnostics::schedule_stage("schedule_todos");
     let mut items: BTreeMap<(String, String, String), (WorkItemId, String, BTreeSet<String>, Vec<(String, Value)>)> = BTreeMap::new();
     for status in statuses.iter_mut() {
         let source = session.config.sources.iter().find(|source| source.id == status.id).unwrap();
@@ -905,6 +952,7 @@ async fn load_remote(
         }
         todo_items.push((id, title, sources, rows, cached_detail));
     }
+    crate::diagnostics::schedule_stage("schedule_nodes");
     let fetched = stream::iter(todo_items)
         .map(|(id, title, sources, rows, cached_detail)| async move {
             let nodes = fetch_nodes(client, &id, session.config.max_pages).await;
@@ -1061,6 +1109,7 @@ async fn load_remote(
         }
     }
     view.failed_items = view.item_errors.len();
+    crate::diagnostics::schedule_stage("schedule_people");
     finish_person_names_with_details(
         session,
         &view.current_user,

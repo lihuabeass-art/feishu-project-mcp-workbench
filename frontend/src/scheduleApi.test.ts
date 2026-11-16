@@ -7,8 +7,8 @@ it("桌面会话先结束旧会话再读取新会话，写入只传目标 ID 和
   const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
   const wire = { session_id: "s1", current_user: "me", current_user_name: "本人", read_at_ms: 1, sources: [{ id: "a", name: "来源", complete: true }], failed_items: 0, targets: [{ id: "1", identity, title: "标题", node_name: "开发", owners: [{ id: "me", name: "本人" }], sources: ["a"], baseline: { start: "", end: "" } }] };
   invoke.mockImplementation(async (command: string) => command === "load_schedule_session" ? wire : command === "sync_schedule_session" ? { targets: [{ id: "1", result: "accepted" }], write_requests: 1 } : undefined);
-  const first = loadScheduleSession(); const closed = closeScheduleSession(first); const second = loadScheduleSession();
-  const read = await first; await closed; await second;
+  const first = loadScheduleSession(); const closed = closeScheduleSession(first);
+  const read = await first; await closed; await loadScheduleSession();
   expect(invoke.mock.calls.map((call) => call[0])).toEqual(["load_schedule_session", "close_schedule_session", "load_schedule_session"]);
   expect(read.targets[0].mine).toBe(true);
   expect(read.targets[0].identity).toEqual(identity);
@@ -182,6 +182,9 @@ it("提交排期与关闭、重置会话按生命周期串行排队，避免 Wou
     },
   ]);
   const closePromise = closeScheduleSession(readPromise);
+  // 先解析会话依赖，再进入 IPC 队列；队列不能被尚未创建的会话占住。
+  await Promise.resolve();
+  await Promise.resolve();
   const resetPromise = resetScheduleSession({ force: true });
 
   await Promise.resolve();
@@ -192,4 +195,29 @@ it("提交排期与关闭、重置会话按生命周期串行排队，避免 Wou
 
   expect(order).toEqual(["sync_schedule_session", "close_schedule_session", "reset_schedule_session"]);
   expect(invoke).toHaveBeenLastCalledWith("reset_schedule_session", { force: true });
+});
+
+it("连续三轮会话替换不会因关闭操作等待尚未入队的读取而死锁", async () => {
+  invoke.mockReset();
+  let finishFirst!: () => void;
+  let reads = 0;
+  invoke.mockImplementation(async (command: string) => {
+    if (command !== "load_schedule_session") return;
+    const index = ++reads;
+    if (index === 1) await new Promise<void>((resolve) => { finishFirst = resolve; });
+    return { session_id: `s${index}`, current_user: "me", current_user_name: "本人", read_at_ms: index, sources: [], failed_items: 0, targets: [] };
+  });
+  const replace = async (previous: ReturnType<typeof loadScheduleSession> | null) => {
+    if (previous) await closeScheduleSession(previous);
+    return loadScheduleSession({ includePeople: false });
+  };
+  const first = replace(null);
+  await vi.waitFor(() => expect(finishFirst).toBeTypeOf("function"));
+  const second = replace(first);
+  const third = replace(second);
+  finishFirst();
+  expect((await Promise.all([first, second, third])).map((read) => read.sessionId)).toEqual(["s1", "s2", "s3"]);
+  expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+    "load_schedule_session", "close_schedule_session", "load_schedule_session", "close_schedule_session", "load_schedule_session",
+  ]);
 });

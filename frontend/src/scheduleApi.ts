@@ -125,10 +125,12 @@ export const loadSchedulePeople = (sessionId: string) => enqueue(async (): Promi
   const result = await invoke<WireRead>("load_schedule_people", { sessionId });
   return mapWireRead(result);
 });
-export const closeScheduleSession = (request: Promise<ScheduleRead>) => enqueue(async () => {
+export const closeScheduleSession = async (request: Promise<ScheduleRead>) => {
+  // 会话可能尚在等待关闭前序会话；不能占住 IPC 队列后再等它，
+  // 否则它后续的 load 会排到本次 close 后面，形成循环等待。
   const read = await request.catch(() => null);
-  if (read) await invoke<void>("close_schedule_session", { sessionId: read.sessionId });
-});
+  if (read) await enqueue(() => invoke<void>("close_schedule_session", { sessionId: read.sessionId }));
+};
 export const resetScheduleSession = (options?: { force?: boolean }) => enqueue(async () => {
   await invoke<void>(
     "reset_schedule_session",

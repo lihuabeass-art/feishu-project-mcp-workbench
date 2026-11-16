@@ -57,6 +57,8 @@ type Drag = { id: string; kind: "new" | "move" | "start" | "end"; grabbed: strin
 export interface ScheduleSessionController {
   read: ScheduleRead | null;
   pending: Promise<ScheduleRead> | null;
+  refreshing?: boolean;
+  refreshError?: string;
   updateRead: (next: ScheduleRead) => void;
   reload: (options?: { includePeople?: boolean; forceReset?: boolean }) => Promise<ScheduleRead>;
 }
@@ -259,8 +261,8 @@ export function SchedulePage({
       currentSessionIdRef.current = "";
       setLoading(true);
       setError("");
-      setRead(null);
-      setEntries([]);
+      setRead(preloadedSession.read);
+      setEntries(preloadedSession.read?.targets.map(createScheduleEntry) || []);
       const forceReset = forceResetRef.current;
       forceResetRef.current = false;
       const request =
@@ -320,6 +322,7 @@ export function SchedulePage({
   }, [epoch]);
 
   const triggerLoadPeople = (currentRead: ScheduleRead) => {
+    if (preloadedSession?.pending || preloadedSession?.refreshError) return;
     if (currentRead.peopleLoaded !== false || peopleLoadingRef.current) return;
     const targetSessionId = currentRead.sessionId;
     currentSessionIdRef.current = targetSessionId;
@@ -564,7 +567,9 @@ export function SchedulePage({
     !isPastTransitionedNode(entry) &&
     normalizeNodeStatus(entry.record.nodeStatus) !== "not_started" &&
     !frozenNodes.has(nodeKey(entry));
-  const canEdit = (entry: Entry) => view === "mine" && isEditableTarget(entry) && !busy;
+  const readRefreshing = Boolean(loading || preloadedSession?.refreshing || preloadedSession?.pending);
+  const readUnavailable = readRefreshing || Boolean(error || preloadedSession?.refreshError);
+  const canEdit = (entry: Entry) => view === "mine" && isEditableTarget(entry) && !busy && !readUnavailable;
 
   const baseWeekStart = week;
   const baseWeekEnd = addDays(week, 6);
@@ -1113,7 +1118,7 @@ export function SchedulePage({
   };
 
   function openReviewOrValidate() {
-    if (busyRef.current) return;
+    if (busyRef.current || readUnavailable) return;
     const changed = entries.filter(
       (entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)),
     );
@@ -1131,7 +1136,7 @@ export function SchedulePage({
   }
 
   async function submit() {
-    if (busyRef.current) return;
+    if (busyRef.current || readUnavailable) return;
     const changed = entries.filter(
       (entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)),
     );
@@ -1268,7 +1273,7 @@ export function SchedulePage({
 
   return (
     <section className="schedule-page" aria-label="事项安排">
-      {loading ? (
+      {loading && !read ? (
         <div className="overview schedule-overview">
           <div className="schedule-overview-metrics">
             <span className="overview-icon">
@@ -1285,7 +1290,7 @@ export function SchedulePage({
             </button>
           </div>
         </div>
-      ) : error ? (
+      ) : error && !read ? (
         <div className="banner warning" role="alert">
           <span>{error}</span>
           <button
@@ -1340,11 +1345,11 @@ export function SchedulePage({
                 <button
                   type="button"
                   className="secondary"
-                  disabled={busy}
+                  disabled={busy || readRefreshing}
                   onClick={() => requestReload(() => setEpoch((value) => value + 1))}
                 >
                   <RefreshCw size={14} aria-hidden="true" />
-                  重新读取
+                  {readRefreshing ? "正在刷新…" : "重新读取"}
                 </button>
                 {changedEntries.length > 0 && (
                   <button
@@ -1360,7 +1365,7 @@ export function SchedulePage({
                 <button
                   type="button"
                   className="primary"
-                  disabled={changedEntries.length === 0 || busy || loading}
+                  disabled={changedEntries.length === 0 || busy || loading || readUnavailable}
                   onClick={openReviewOrValidate}
                 >
                   <Check size={14} aria-hidden="true" />
@@ -1373,6 +1378,9 @@ export function SchedulePage({
               </div>
             </div>
 
+            {readRefreshing && <p role="status">正在刷新最新排期，暂时保留上次读取的内容。</p>}
+            {preloadedSession?.refreshError && <p className="banner warning" role="alert">{preloadedSession.refreshError}</p>}
+            {error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，请重新读取后再编辑。</p>}
             <div className="schedule-scope">
               <div className="schedule-scope-summary">
                 <span

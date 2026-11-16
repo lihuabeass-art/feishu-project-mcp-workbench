@@ -5,7 +5,7 @@ use std::{
     io::{self, BufRead, Read, Write},
     path::Path,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -16,10 +16,13 @@ const FILE_COUNT: usize = 10;
 const RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 static LOCK: Mutex<()> = Mutex::new(());
 static STARTED: OnceLock<()> = OnceLock::new();
+static NEXT_TRACE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
 struct Trace {
     id: u64,
+    schedule: bool,
+    partial: AtomicBool,
     tools: AtomicU64,
     handshakes: AtomicU64,
 }
@@ -43,9 +46,8 @@ where
 pub(crate) async fn workflow<T>(
     future: impl std::future::Future<Output = Result<T, crate::BackendError>>,
 ) -> Result<T, crate::BackendError> {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
     let trace = Arc::new(Trace {
-        id: NEXT.fetch_add(1, Ordering::Relaxed),
+        id: NEXT_TRACE.fetch_add(1, Ordering::Relaxed),
         ..Default::default()
     });
     TRACE
@@ -61,6 +63,44 @@ pub(crate) async fn workflow<T>(
             result
         })
         .await
+}
+
+/// 排期读取与内部工具共享编号，开始记录可定位尚未结束的读取。
+pub(crate) fn schedule_read<T>(
+    work: impl FnOnce() -> Result<T, crate::BackendError>,
+) -> Result<T, crate::BackendError> {
+    // 全员入口包含本人读取和团队补读，内部步骤继续使用同一整轮编号。
+    if TRACE.try_with(|trace| trace.schedule).unwrap_or(false) {
+        return work();
+    }
+    let trace = Arc::new(Trace { id: NEXT_TRACE.fetch_add(1, Ordering::Relaxed), schedule: true, ..Default::default() });
+    TRACE.sync_scope(trace, || {
+        let started = Instant::now();
+        record("schedule_read", started, "started", false);
+        let result = work();
+        record("schedule_read", started, schedule_outcome(&result), false);
+        result
+    })
+}
+
+fn schedule_outcome<T>(result: &Result<T, crate::BackendError>) -> &'static str {
+    result.as_ref().map_or_else(|error| error.kind().as_str(), |_| {
+        if TRACE.try_with(|trace| trace.partial.load(Ordering::Relaxed)).unwrap_or(false) { "partial" } else { "ok" }
+    })
+}
+
+pub(crate) fn schedule_stage(stage: &'static str) {
+    record(stage, Instant::now(), "started", false);
+}
+
+pub(crate) fn schedule_result(targets: usize, failed_items: usize, complete: bool) {
+    if !complete {
+        let _ = TRACE.try_with(|trace| trace.partial.store(true, Ordering::Relaxed));
+    }
+    let mut value = event("schedule_result", Instant::now(), if complete { "ok" } else { "partial" }, false);
+    value["targets"] = targets.into();
+    value["failed_items"] = failed_items.into();
+    write_event("performance", &value);
 }
 
 pub(crate) fn tool_started() {
@@ -184,7 +224,7 @@ fn event(operation: &'static str, started: Instant, outcome: &'static str, reuse
         "duration_ms": started.elapsed().as_millis() as u64, "outcome": outcome, "reused": reused});
     let _ = TRACE.try_with(|trace| {
         value["request_id"] = format!("{}-{}", std::process::id(), trace.id).into();
-        if operation == "workflow_discovery" {
+        if operation == "workflow_discovery" || operation == "schedule_read" {
             value["tool_calls"] = trace.tools.load(Ordering::Relaxed).into();
             value["handshakes"] = trace.handshakes.load(Ordering::Relaxed).into();
         }
@@ -195,6 +235,55 @@ fn event(operation: &'static str, started: Instant, outcome: &'static str, reuse
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schedule_partial_result_reaches_round_summary_without_leaking_to_next_read() {
+        let outcome = schedule_read(|| {
+            schedule_result(1, 1, false);
+            assert_eq!(schedule_outcome(&Err::<(), _>(crate::BackendError::validation("fixture"))), "validation");
+            Ok(schedule_outcome(&Ok(())))
+        }).unwrap();
+        assert_eq!(outcome, "partial");
+        assert!(TRACE.try_with(|_| ()).is_err());
+        assert_eq!(schedule_read(|| Ok(schedule_outcome(&Ok(())))).unwrap(), "ok");
+    }
+
+    #[test]
+    fn schedule_trace_survives_sync_entry_runtime_and_detached_tool() {
+        let mut outer_id = serde_json::Value::Null;
+        let (tool, summary) = schedule_read(|| {
+            outer_id = event("schedule_read", Instant::now(), "started", false)["request_id"].clone();
+            schedule_read(|| crate::remote::runtime()?.block_on(async {
+            let tool = spawn(async {
+                tool_started();
+                event("get_node_detail", Instant::now(), "ok", false)
+            }).await.unwrap();
+            Ok((tool, event("schedule_read", Instant::now(), "ok", false)))
+            }))
+        }).unwrap();
+        assert!(summary.get("request_id").is_some());
+        assert_eq!(tool["request_id"], summary["request_id"]);
+        assert_eq!(summary["request_id"], outer_id);
+        assert_eq!(summary["tool_calls"], 1);
+    }
+
+    #[tokio::test]
+    async fn schedule_trace_links_stages_tools_and_final_counts_without_business_data() {
+        let trace = Arc::new(Trace { id: 73, ..Default::default() });
+        let (stage, tool, summary) = TRACE.scope(trace, async {
+            let stage = event("schedule_nodes", Instant::now(), "started", false);
+            let tool = spawn(async {
+                tool_started();
+                event("get_node_detail", Instant::now(), "ok", false)
+            }).await.unwrap();
+            (stage, tool, event("schedule_read", Instant::now(), "ok", false))
+        }).await;
+        assert_eq!(stage["request_id"], tool["request_id"]);
+        assert_eq!(stage["request_id"], summary["request_id"]);
+        assert_eq!(summary["tool_calls"], 1);
+        assert!(summary.get("arguments").is_none());
+        assert!(summary.get("targets").is_none());
+    }
 
     #[test]
     fn catalog_failure_diagnostics_preserve_context_but_redact_tokens_and_bound_text() {

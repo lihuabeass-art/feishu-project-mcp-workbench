@@ -23,6 +23,51 @@ const confirmSync = () => {
   if (dialog) fireEvent.click(within(dialog).getByRole("button", { name: /确认同步/ }));
 };
 
+it("后台刷新保留预加载内容并暂停编辑，失败保留旧内容且可手动重读，成功后恢复编辑", async () => {
+  const read = data();
+  const controller: ScheduleSessionController = { read, pending: null, refreshing: false, refreshError: "", updateRead: vi.fn(), reload: vi.fn().mockResolvedValue({ ...read, sessionId: "new-session" }) };
+  const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload(), preloadedSession: controller };
+  const page = render(<SchedulePage {...props} />);
+  fireEvent.click(await screen.findByText("任务一"));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
+  controller.refreshing = true;
+  page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller }} />);
+  expect(screen.getAllByText("任务一").length).toBeGreaterThan(0);
+  expect(screen.getByRole("status").textContent).toContain("保留上次");
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "正在刷新…" }) as HTMLButtonElement).disabled).toBe(true);
+  controller.refreshing = false;
+  controller.refreshError = "最新排期读取未完成，已保留上次内容，请重新读取后再编辑。";
+  page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller }} />);
+  expect(screen.getByText(controller.refreshError)).toBeTruthy();
+  expect(screen.getAllByText("任务一").length).toBeGreaterThan(0);
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
+  controller.refreshError = "";
+  controller.read = { ...read, sessionId: "new-session" };
+  page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller }} />);
+  await waitFor(() => expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+  await waitFor(() => expect(controller.reload).toHaveBeenCalledWith({ includePeople: false }));
+});
+
+it("手动重读再次失败仍展示旧快照及恢复入口，不把内容替换成整页错误", async () => {
+  const controller: ScheduleSessionController = { read: data(), pending: null, updateRead: vi.fn(), reload: vi.fn().mockRejectedValue({ kind: "connection" }) };
+  render(<SchedulePage onGuardChange={vi.fn()} requestReload={(reload) => reload()} preloadedSession={controller} />);
+  fireEvent.click(await screen.findByText("任务一"));
+  fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+  await screen.findByText(/读取事项安排失败.*已保留上次内容/);
+  expect(screen.getAllByText("任务一").length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByText("任务一"));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "重新读取" }) as HTMLButtonElement).disabled).toBe(false);
+  vi.mocked(controller.reload).mockResolvedValueOnce({ ...data(), sessionId: "recovered" });
+  fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+  await waitFor(() => expect((screen.getByRole("button", { name: "重新读取" }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByText("任务一"));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
+  expect(screen.queryByText(/读取事项安排失败.*已保留上次内容/)).toBeNull();
+});
+
 it("共同及个人排期区分同空间同名人员并显示身份不明的负责人", async () => {
   const read = data();
   read.people = [{ id: "user-a123456", name: "同名", connection: "c", project: "p" }, { id: "user-b123456", name: "同名", connection: "c", project: "p" }, { id: "other", name: "同名", connection: "c", project: "other" }];
