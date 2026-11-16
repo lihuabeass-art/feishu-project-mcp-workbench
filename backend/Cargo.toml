@@ -38,6 +38,7 @@ sha2 = "0.10"
 sse-stream = "0.2"
 scraper = { version = "0.24", default-features = false }
 encoding_rs = "0.8"
+fs2 = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

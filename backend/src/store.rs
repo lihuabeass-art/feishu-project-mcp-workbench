@@ -1458,6 +1458,19 @@ impl Store {
         Ok(changed == 1)
     }
 
+    /// 调用者须持有同事项的跨进程执行占用，并已成功重新读取远端。
+    /// 旧版无执行占用的 pending 不可据此推断中断，须单独核对。
+    pub(crate) fn recover_interrupted_workflow(&self, item_id: &str, marker: &str, now_ms: i64) -> Result<bool, BackendError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let changed = conn.execute(
+            "UPDATE workflow_action_run SET status='unknown',verified=0,detail=?3,finished_at=?4
+             WHERE item_id=?1 AND status='pending' AND detail=?2
+               AND action_kind IN ('node_confirm','node_rollback','node_progress','node_schedule','state_transition')",
+            params![item_id, marker, "执行进程已中断，远端已重新读取；上次提交结果仍待核对，未重发写入", now_ms],
+        )?;
+        Ok(changed > 0)
+    }
+
     /// 收尾：状态只接受 verified / failed / unknown 三种，`detail` 必须是已脱敏文本。
     ///
     /// 取值在这里就挡掉：台账是判断「这个 request_id 处理过没有」的唯一依据，

@@ -35,6 +35,8 @@ use crate::sync::now_ms;
 mod editing;
 #[path = "workflow_links.rs"]
 mod links;
+#[path = "workflow_execution.rs"]
+mod execution;
 pub use links::{item_url, resolve_item_url};
 #[path = "workflow_editor.rs"]
 pub mod editor;
@@ -1092,7 +1094,13 @@ pub fn execute(
     }
     let _execution = ItemExecution::acquire(&request.item_id, &request.action_id)?;
     let detail_access = crate::remote::runtime()?.block_on(crate::item_access::lock_workflow(&session.store, &request.item_id));
+    let _lease = execution::ExecutionLease::acquire(session.store.path.as_deref(), &item_key(&request.item_id))?;
     let discovery = discover_with_freshness(session, &request.item_id, true)?;
+    // 已取得跨进程占用且完成远端读取，带新协议标记的 pending 已无执行者。
+    // 只收尾为待核对并停止本次请求，不自动重发任何写入。
+    if session.store.recover_interrupted_workflow(&item_key(&request.item_id), execution::OWNER_MARKER, now_ms())? {
+        return Err(BackendError::conflict("上次提交执行已中断，已重新读取云端；请重新读取动作并核对保留的草稿后再提交"));
+    }
     if !matches_version(&discovery, request) {
         return Err(BackendError::conflict(format!(
             "远端流程已变化（当前 {}，界面持有 {}），请重新读取动作后再执行",
@@ -1180,7 +1188,7 @@ pub fn execute(
         version: discovery.version.clone(),
         status: "pending".to_string(),
         verified: false,
-        detail: None,
+        detail: Some(execution::OWNER_MARKER.into()),
         created_at: now_ms(),
         finished_at: None,
     };
@@ -1189,6 +1197,7 @@ pub fn execute(
             "这个请求已提交过，或该事项另有写入尚未结束；不会交错发起写操作，请先核对远端状态与本地动作记录",
         ));
     }
+    let _pending = execution::PendingAction { store: &session.store, request_id: &request.request_id };
 
     session.store.mark_detail_refresh(&request.item_id)?;
 
@@ -1246,6 +1255,8 @@ pub fn execute(
         match check_updated_fields(session, request, entry, &plan) {
             Ok(()) => {
                 let note = finish("verified", true, receipt_error);
+                drop(_pending);
+                drop(_lease);
                 drop(detail_access);
                 let resynced = session.sync_personal_todos(None, crate::store::RunTrigger::Manual).is_ok();
                 return Ok(WorkflowResult {
@@ -1322,6 +1333,8 @@ pub fn execute(
     if entry.ledger_kind == "node_progress" {
         // 字段值与节点仍为 doing 已由 check_updated_fields 回读确认。
         let note = finish("verified", true, None);
+        drop(_pending);
+        drop(_lease);
         drop(detail_access);
         let resynced = session
             .sync_personal_todos(None, crate::store::RunTrigger::Manual)
@@ -1357,6 +1370,8 @@ pub fn execute(
     match verify(session, &request.item_id, &entry.expect) {
         Ok(true) => {
             let note = finish("verified", true, receipt_error);
+            drop(_pending);
+            drop(_lease);
             drop(detail_access);
             let resynced = session
                 .sync_personal_todos(None, crate::store::RunTrigger::Manual)

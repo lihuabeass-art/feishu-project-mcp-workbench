@@ -177,6 +177,71 @@ fn execute_background(session: Arc<Session>, request: WorkflowRequest) -> mpsc::
     receive
 }
 
+#[test]
+fn interrupted_submission_requires_review_before_a_new_write() {
+    let (session, source, _installed, _dir) = setup();
+    let request = request(&session, &source);
+    let item = item_key(&request.item_id);
+    assert!(session.store.begin_action(&crate::store::ActionRecord {
+        request_id: "interrupted".into(), item_id: item.clone(), action_kind: "node_progress".into(),
+        target: "n1".into(), version: request.version.clone(), status: "pending".into(), verified: false,
+        detail: Some(execution::OWNER_MARKER.into()), created_at: now_ms(), finished_at: None,
+    }).unwrap());
+    let error = execute(&session, &request).unwrap_err();
+    assert!(error.to_string().contains("上次提交执行已中断"));
+    assert_eq!(source.writes.load(Ordering::SeqCst), 0);
+    assert_eq!(source.transitions.load(Ordering::SeqCst), 0);
+    let old = session.store.recent_actions(&item, 10).unwrap().into_iter().find(|r| r.request_id == "interrupted").unwrap();
+    assert_eq!(old.status, "unknown");
+    assert!(!old.verified);
+    // 用户重新核对后显式提交才会写入，旧请求身份仍然不能重复使用。
+    assert_eq!(execute(&session, &request).unwrap().outcome, ActionOutcome::Verified);
+    assert_eq!(source.writes.load(Ordering::SeqCst), 1);
+    let mut duplicate = request.clone();
+    duplicate.request_id = "interrupted".into();
+    let options = actions(&session, &duplicate.item_id).unwrap();
+    duplicate.version = options.version;
+    assert!(execute(&session, &duplicate).is_err());
+    assert_eq!(source.writes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn active_execution_lease_and_legacy_pending_are_never_recovered() {
+    let (session, source, _installed, _dir) = setup();
+    let request = request(&session, &source);
+    let item = item_key(&request.item_id);
+    let lease = execution::ExecutionLease::acquire(session.store.path.as_deref(), &item).unwrap();
+    assert!(execute(&session, &request).unwrap_err().to_string().contains("仍有流程提交正在执行"));
+    drop(lease);
+    session.store.begin_action(&crate::store::ActionRecord {
+        request_id: "legacy".into(), item_id: item.clone(), action_kind: "node_confirm".into(),
+        target: "n1".into(), version: request.version.clone(), status: "pending".into(), verified: false,
+        detail: None, created_at: now_ms(), finished_at: None,
+    }).unwrap();
+    assert!(execute(&session, &request).is_err());
+    assert_eq!(session.store.recent_actions(&item, 10).unwrap()[0].status, "pending");
+    assert_eq!(source.writes.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn unwinding_a_registered_submission_preserves_an_unknown_result() {
+    let (session, source, _installed, _dir) = setup();
+    let item = item_key(&identity(&source));
+    session.store.begin_action(&crate::store::ActionRecord {
+        request_id: "panic".into(), item_id: item.clone(), action_kind: "node_confirm".into(),
+        target: "n1".into(), version: "v1".into(), status: "pending".into(), verified: false,
+        detail: Some(execution::OWNER_MARKER.into()), created_at: now_ms(), finished_at: None,
+    }).unwrap();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _pending = execution::PendingAction { store: &session.store, request_id: "panic" };
+        panic!("模拟提交执行中断");
+    }));
+    assert!(result.is_err());
+    let record = &session.store.recent_actions(&item, 10).unwrap()[0];
+    assert_eq!(record.status, "unknown");
+    assert!(!record.verified);
+}
+
 struct IndependentNodes {
     source: Arc<ConcurrentSource>,
     other_progress: AtomicUsize,
