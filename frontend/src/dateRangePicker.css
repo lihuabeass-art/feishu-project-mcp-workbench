@@ -36,7 +36,8 @@
   outline: var(--control-focus-ring);
   outline-offset: var(--control-focus-offset);
 }
-.date-range-picker .date-range-endpoint > input {
+.date-range-picker .date-range-endpoint > input,
+.date-range-picker .date-range-endpoint > input:focus-visible {
   width: 100%;
   min-width: 0;
   height: 22px;
