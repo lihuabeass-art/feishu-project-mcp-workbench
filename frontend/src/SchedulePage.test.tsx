@@ -57,6 +57,28 @@ it("按人待排期显示各节点停留时间，隐藏重复操作说明和权�
   expect(screen.queryByText(/点快捷胶囊一键排期/)).toBeNull();
 });
 
+it("重新读取使用独立悬浮消息，结束时淡出，连续读取不会被旧计时器关闭", async () => {
+  const read = data();
+  const controller: ScheduleSessionController = { read, pending: null, refreshing: false, updateRead: vi.fn(), reload: vi.fn() };
+  const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload() };
+  const page = render(<SchedulePage {...props} preloadedSession={controller} />);
+  await screen.findByText("任务一");
+  const refresh = (refreshing: boolean) => page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller, refreshing }} />);
+  refresh(true);
+  const notice = screen.getByRole("status").parentElement!;
+  expect(notice.classList.contains("schedule-refresh-notice")).toBe(true);
+  expect(notice.parentElement).toBe(document.body);
+  expect(page.container.contains(notice)).toBe(false);
+  refresh(false);
+  expect(notice.classList.contains("is-leaving")).toBe(true);
+  refresh(true);
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  expect(screen.getByRole("status").parentElement).toBe(notice);
+  expect(notice.classList.contains("is-leaving")).toBe(false);
+  refresh(false);
+  await waitFor(() => expect(document.querySelector(".schedule-refresh-notice")).toBeNull());
+});
+
 it.each(["refreshing", "failed"])("后台%s保留有效会话，持续允许编辑、核对与提交", async (phase) => {
   const read = data();
   const controller: ScheduleSessionController = { read, pending: null, refreshing: false, refreshError: "", updateRead: vi.fn(), reload: vi.fn().mockResolvedValue({ ...read, sessionId: "new-session" }) };

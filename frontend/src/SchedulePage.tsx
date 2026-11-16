@@ -151,6 +151,33 @@ const resultLabelFor = (entry: Entry) =>
 const mergeResultWarnings = (previous?: string | null, next?: string | null) =>
   Array.from(new Set([...(previous || "").split("\n"), ...(next || "").split("\n")].filter(Boolean))).join("\n") || undefined;
 
+function ScheduleRefreshNotice({ refreshing }: { refreshing: boolean }) {
+  const [visible, setVisible] = useState(refreshing);
+
+  useEffect(() => {
+    if (refreshing) {
+      setVisible(true);
+      return;
+    }
+    const timeout = window.setTimeout(() => setVisible(false), 180);
+    return () => window.clearTimeout(timeout);
+  }, [refreshing]);
+
+  if (!visible) return null;
+  return createPortal(
+    <div className={`schedule-refresh-notice${refreshing ? "" : " is-leaving"}`}>
+      <div role="status" aria-live="polite" aria-atomic="true">
+        <span className="schedule-refresh-notice-icon" aria-hidden="true"><RefreshCw size={17} /></span>
+        <div>
+          <strong>正在刷新最新排期</strong>
+          <p>暂时保留上次读取的内容，可继续编辑</p>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function Avatar({ person }: { person?: SchedulePerson }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [person?.avatar]);
@@ -1479,7 +1506,7 @@ export function SchedulePage({
               </div>
             </div>
 
-            {readRefreshing && <p role="status">正在刷新最新排期，暂时保留上次读取的内容。</p>}
+            <ScheduleRefreshNotice refreshing={readRefreshing} />
             {preloadedSession?.refreshError && <p className="banner warning" role="alert">{preloadedSession.refreshError}</p>}
             {error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，可继续编辑，稍后重试。</p>}
             <div className="schedule-scope">
