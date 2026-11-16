@@ -813,6 +813,7 @@
 
 /* 5 种语义视觉状态的排期长条 */
 .schedule-bar {
+  --schedule-node-color: hsl(var(--schedule-node-hue, 155) 44% 44%);
   align-self: center;
   position: relative;
   z-index: 1;
@@ -829,15 +830,15 @@
   color: var(--heading);
   background: linear-gradient(
     135deg,
-    color-mix(in srgb, var(--green) 16%, var(--surface-solid)),
-    color-mix(in srgb, var(--green) 7%, var(--surface-solid))
+    color-mix(in srgb, var(--schedule-node-color) 16%, var(--surface-solid)),
+    color-mix(in srgb, var(--schedule-node-color) 7%, var(--surface-solid))
   );
   border: 1px solid var(--border-strong);
   border-style: solid;
-  border-color: color-mix(in srgb, var(--green) 42%, var(--line));
+  border-color: color-mix(in srgb, var(--schedule-node-color) 42%, var(--line));
   border-radius: 9px;
   box-shadow:
-    0 2px 6px color-mix(in srgb, var(--green) 11%, transparent),
+    0 2px 6px color-mix(in srgb, var(--schedule-node-color) 11%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-solid) 65%, transparent);
   font-size: 12px;
   cursor: pointer;
@@ -851,18 +852,18 @@
   bottom: 6px;
   width: 3.5px;
   border-radius: 999px;
-  background: var(--green);
+  background: var(--schedule-node-color);
   pointer-events: none;
 }
 
 :where(:root[data-appearance="pearl"]) .schedule-bar.is-cloud {
   background: linear-gradient(
     115deg,
-    color-mix(in srgb, var(--green) 20%, var(--surface-solid)),
-    color-mix(in srgb, var(--green) 10%, var(--surface-solid)) 56%,
+    color-mix(in srgb, var(--schedule-node-color) 20%, var(--surface-solid)),
+    color-mix(in srgb, var(--schedule-node-color) 10%, var(--surface-solid)) 56%,
     color-mix(in srgb, #9b86c4 12%, var(--surface-solid))
   );
-  border-color: color-mix(in srgb, var(--green) 46%, var(--line));
+  border-color: color-mix(in srgb, var(--schedule-node-color) 46%, var(--line));
   box-shadow:
     0 3px 10px var(--pearl-shadow),
     inset 0 1px 0 var(--pearl-reflection);
@@ -955,34 +956,34 @@
 .schedule-bar.is-readonly {
   color: var(--text-secondary);
   border: 1px solid var(--line);
+  border-color: color-mix(in srgb, var(--schedule-node-color) 28%, var(--line));
   box-shadow: none;
-  background: repeating-linear-gradient(
-    -45deg,
-    var(--surface-soft),
-    var(--surface-soft) 6px,
-    var(--surface-solid) 6px,
-    var(--surface-solid) 12px
-  );
+  background: color-mix(in srgb, var(--schedule-node-color) 8%, var(--surface-solid));
 }
 
 .schedule-bar.is-readonly::before {
   width: 2.5px;
-  background: var(--border-strong);
+  background: var(--schedule-node-color);
 }
 
-.schedule-bar.is-past-node {
-  color: var(--text-secondary);
-  background: var(--surface-soft);
-  background: color-mix(in srgb, var(--surface-soft) 76%, var(--surface-solid));
-  border: 1px dashed var(--border-strong);
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--border-strong) 72%, var(--line));
-  box-shadow: none;
+:root[data-theme="dark"] .schedule-bar,
+:root[data-theme="dark"] .schedule-sibling-chip {
+  --schedule-node-color: hsl(var(--schedule-node-hue, 155) 58% 65%);
 }
 
-.schedule-bar.is-past-node::before {
-  width: 2.5px;
-  background: color-mix(in srgb, var(--muted) 55%, var(--line));
+.schedule-sibling-chip {
+  --schedule-node-color: hsl(var(--schedule-node-hue, 155) 44% 44%);
+}
+
+.schedule-sibling-chip strong::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--schedule-node-color);
+  flex-shrink: 0;
 }
 
 .schedule-bar.is-uncertain {

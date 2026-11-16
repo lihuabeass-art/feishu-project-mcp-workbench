@@ -935,9 +935,9 @@ it("排期检查器合并当前节点与日期信息，提供清空入口并保�
   const editor = document.querySelector(".schedule-editor")!;
   const heading = editor.querySelector(".schedule-editor-heading")!;
   expect(heading.textContent).toBe("任务一本人");
-  const nodes = within(editor as HTMLElement).getByRole("group", { name: "同事项节点" });
+  const nodes = within(editor as HTMLElement).getByRole("group", { name: "事项节点" });
   const currentNode = nodes.querySelector('[aria-pressed="true"]')!;
-  expect(currentNode.textContent).toBe("开发当前可排");
+  expect(currentNode.textContent).toBe(`开发${currentWeekDay(0).slice(5)}`);
   expect(nodes.textContent).toContain("方案设计");
   expect(editor.textContent).not.toContain("已排期：");
   expect(editor.querySelectorAll(".schedule-span-info")).toHaveLength(1);
@@ -1720,11 +1720,11 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
   expect(testBar.getAttribute("draggable")).toBe("false");
   expect(codeBar.classList.contains("is-past-node")).toBe(true);
 
-  // 3. 点击历史已流转节点在右侧检查器查看其只读状态，并通过『同事项节点』切换器切换到当前可编辑节点
+  // 3. 点击历史已流转节点在右侧检查器查看其只读状态，并通过『事项节点』切换器切换到当前可编辑节点
   fireEvent.click(codeBar);
   expect(screen.getByText("该节点已流转完成，排期仅供查看")).toBeTruthy();
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
-  const siblingGroup = screen.getByRole("group", { name: "同事项节点" });
+  const siblingGroup = screen.getByRole("group", { name: "事项节点" });
   expect(siblingGroup.textContent).toContain("后端方案设计");
   expect(siblingGroup.textContent).toContain("灰度联调验收");
   expect(siblingGroup.textContent).not.toContain("后端代码合入");
@@ -1799,7 +1799,7 @@ it("纯成功同步展示悬浮绿色 Toast 并在 3 秒后自动消失，含失
   }
 });
 
-it("同事项节点过滤无关无排期节点、按节点去重多人记录、并按最新时间在最上方倒序排列", async () => {
+it("事项节点过滤无关无排期节点、按节点去重多人记录、并按最新时间在最上方倒序排列", async () => {
   const read = data();
   const base = read.targets[0];
   read.people.push({ id: "peer-1", name: "同事甲" }, { id: "peer-2", name: "同事乙" });
@@ -1899,11 +1899,13 @@ it("同事项节点过滤无关无排期节点、按节点去重多人记录、�
 
   // 选中当前待排节点『集成测试』
   fireEvent.click(screen.getByRole("button", { name: /多阶段研发需求集成测试/ }));
-  const siblingGroup = screen.getByRole("group", { name: "同事项节点" });
-  expect(siblingGroup.querySelector(".schedule-sibling-label")?.textContent).toBe("同事项节点（3）");
+  const siblingGroup = screen.getByRole("group", { name: "事项节点" });
+  expect(siblingGroup.querySelector(".schedule-sibling-label")?.textContent).toBe("事项节点（3）");
 
   const chips = Array.from(siblingGroup.querySelectorAll(".schedule-sibling-chip"));
   expect(chips).toHaveLength(3);
+  expect(chips[0].querySelector("span")?.textContent).toBe("未排期");
+  expect(siblingGroup.textContent).not.toMatch(/只读|当前可排|已流转/);
   // 排序核验：1. 当前待排『集成测试』置顶 -> 2. 较新历史节点『后端设计开发 (11-10~11-16)』 -> 3. 较早历史节点『产品方案评审 (11-01~11-03)』
   expect(chips.map((chip) => chip.querySelector("strong")?.textContent)).toEqual([
     "集成测试",
@@ -2004,7 +2006,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(rowEl.querySelectorAll(".schedule-lane-node")).toHaveLength(0);
     expect(rowEl.querySelectorAll(".schedule-bar-side-label")).toHaveLength(0);
 
-    // 2. 短条（1d/2d）移除重复前置图标：1d 条隐藏尾部角标并启用紧凑双行，2d 条仅隐藏天数与『已流转』文字而保留状态微章；当前可排实线高亮卡片与已流转虚线弱化卡片层级分明
+    // 2. 短条保持紧凑，已流转与其他不可编辑节点统一实线，不重复展示锁标识。
     const envBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端环境准备/ });
     const prdBar = screen.getByRole("button", { name: /排期节点辨识专项 · 产品方案评审/ });
     const feBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
@@ -2014,7 +2016,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(envBar.querySelector(".schedule-bar-clip")?.textContent).toBe("‹");
     expect(getComputedStyle(envBar.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("inline-flex");
     expect(getComputedStyle(envBar.querySelector(".schedule-bar-days") as HTMLElement).display).toBe("none");
-    expect(getComputedStyle(envBar.querySelector(".schedule-bar-past-text") as HTMLElement).display).toBe("none");
+    expect(envBar.querySelector(".schedule-bar-past-text")).toBeNull();
 
     expect(prdBar.classList.contains("is-single-day-bar")).toBe(true);
     expect(prdBar.classList.contains("is-past-node")).toBe(true);
@@ -2022,7 +2024,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(feBar.classList.contains("is-cloud")).toBe(true);
     expect(prdBar.querySelector(".schedule-bar-state-icon")).toBeNull();
     expect(feBar.querySelector(".schedule-bar-state-icon")).toBeNull();
-    expect(prdBar.querySelector(".schedule-bar-badge.is-past")).toBeTruthy();
+    expect(prdBar.querySelector(".schedule-bar-badge.is-past")).toBeNull();
     expect(prdBar.querySelector(".schedule-bar-badge.is-readonly")).toBeNull();
 
     const prdBadges = prdBar.querySelector(".schedule-bar-badges") as HTMLElement;
@@ -2032,7 +2034,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(getComputedStyle(prdBadges).display).toBe("none");
     expect(getComputedStyle(feDays).display).toBe("none");
     expect(getComputedStyle(prdTitle).whiteSpace).toBe("normal");
-    expect(getComputedStyle(prdBar).borderTopStyle).toBe("dashed");
+    expect(getComputedStyle(prdBar).borderTopStyle).toBe("solid");
     expect(getComputedStyle(feBar).borderTopStyle).toBe("solid");
     expect(getComputedStyle(feTitle).fontWeight).toBe("600");
     expect(getComputedStyle(prdTitle).fontWeight).toBe("400");
@@ -2069,7 +2071,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(getComputedStyle(feBarDraft.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("inline-flex");
     document.documentElement.dataset.appearance = "pearl";
     expect(getComputedStyle(feBarDraft).borderTopWidth).toBe("1.5px");
-    expect(getComputedStyle(prdBar).borderTopStyle).toBe("dashed");
+    expect(getComputedStyle(prdBar).borderTopStyle).toBe("solid");
     delete document.documentElement.dataset.appearance;
 
     fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
@@ -2185,9 +2187,9 @@ it("我的排期与个人待办不混入同事项下他人的历史已流转节�
   expect(screen.queryByText(/施伟/)).toBeNull();
   expect(screen.getByRole("tab", { name: "待排期 (2)" })).toBeTruthy();
 
-  // 选中当前用户的『后端方案设计』时，由于同事项下其余节点属于他人，『同事项节点』不混入闫国强/刘悦然的节点
+  // 选中当前用户的『后端方案设计』时，由于同事项下其余节点属于他人，『事项节点』不混入闫国强/刘悦然的节点
   fireEvent.click(screen.getByRole("button", { name: /操作日志页面中新增操作类型：发布后端方案设计/ }));
-  expect(screen.queryByRole("group", { name: "同事项节点" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "事项节点" })).toBeNull();
 
   // 2. 切换到『按人查看』时，闫国强、刘悦然、施伟各自归入本人分组与独立行，绝不把闫国强的『产品方案设计』合并到刘悦然行内
   fireEvent.click(screen.getByRole("button", { name: "按人查看" }));

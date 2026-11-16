@@ -7,7 +7,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Lock,
   Info,
   PanelLeftClose,
   PanelLeftOpen,
@@ -91,6 +90,9 @@ const resolveDefaultReadOnlyReason = (record: ScheduleRecord): string | undefine
   return undefined;
 };
 
+const visibleReadOnlyReason = (reason?: string | null) =>
+  reason === "当前连接尚未验证此状态的排期写入" ? undefined : reason;
+
 const createScheduleEntry = (record: ScheduleRecord): Entry => ({
   id: record.id,
   nodeId: record.identity.node,
@@ -137,6 +139,16 @@ const initials = (name: string) =>
         .join("")
         .toUpperCase();
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
+// 节点实例 ID 随事项变化，使用节点名称保证相同环节跨事项保持同色。
+const nodeColorStyle = (record: ScheduleRecord): React.CSSProperties => {
+  const key = record.nodeName.trim() || record.identity.node;
+  let hash = Array.from(key).reduce((value, char) => (value * 31 + char.codePointAt(0)!) >>> 0, 0);
+  // 混合高低位，避免中文名称直接取模时集中落到同一个颜色。
+  hash = Math.imul(hash ^ (hash >>> 16), 0x45d9f3b);
+  hash = Math.imul(hash ^ (hash >>> 16), 0x45d9f3b);
+  hash = (hash ^ (hash >>> 16)) >>> 0;
+  return { "--schedule-node-hue": hash % 360 } as React.CSSProperties;
+};
 const unreadRelatedProject = "unread-related-project";
 const resultLabel = {
   accepted: "上次提交：收到成功回执",
@@ -986,8 +998,8 @@ export function SchedulePage({
       }
     }
     return Array.from(dedupedByNode.values()).sort((a, b) => {
-      const aPendingActive = !validSchedule(a.dates) && isCurrentSchedulablePoolNode(a);
-      const bPendingActive = !validSchedule(b.dates) && isCurrentSchedulablePoolNode(b);
+      const aPendingActive = !validSchedule(a.dates);
+      const bPendingActive = !validSchedule(b.dates);
       if (aPendingActive !== bPendingActive) {
         return aPendingActive ? -1 : 1;
       }
@@ -1880,7 +1892,7 @@ export function SchedulePage({
                                   {isCurrentSchedulableStatus(entry.record.nodeStatus) && !entry.record.sourceAggregate && (
                                     <NodeDwellTime startedAt={entry.record.nodeStartedAtMs} />
                                   )}
-                                  {entry.readOnlyReason && entry.readOnlyReason !== "仅可编辑明确属于自己的排期" && <small>{entry.readOnlyReason}</small>}
+                                  {visibleReadOnlyReason(entry.readOnlyReason) && entry.readOnlyReason !== "仅可编辑明确属于自己的排期" && <small>{entry.readOnlyReason}</small>}
                                 </button>
                                 {canEdit(entry) && (
                                   <div
@@ -2223,6 +2235,7 @@ export function SchedulePage({
                                           .filter(Boolean)
                                           .join(" ")}
                                         style={{
+                                          ...nodeColorStyle(entry.record),
                                           gridColumn: `${startCol + 1} / ${endCol + 2}`,
                                           gridRow: lane + 1,
                                         }}
@@ -2290,22 +2303,6 @@ export function SchedulePage({
                                               {classifyScheduleReview(entry) === "added"
                                                 ? "新增"
                                                 : "已改"}
-                                            </span>
-                                          )}
-                                          {!editable && !isFrozen && (
-                                            <span
-                                              className={`schedule-bar-badge ${pastNode ? "is-past" : "is-readonly"}`}
-                                            >
-                                              {pastNode ? (
-                                                <>
-                                                  <Check size={11} strokeWidth={2.4} />
-                                                  <span className="schedule-bar-past-text">
-                                                    已流转
-                                                  </span>
-                                                </>
-                                              ) : (
-                                                <Lock size={11} />
-                                              )}
                                             </span>
                                           )}
                                         </span>
@@ -2482,10 +2479,10 @@ export function SchedulePage({
                         <div
                           className="schedule-sibling-nodes"
                           role="group"
-                          aria-label="同事项节点"
+                          aria-label="事项节点"
                         >
                           <span className="schedule-sibling-label">
-                            同事项节点（{siblingNodes.length}）
+                            事项节点（{siblingNodes.length}）
                           </span>
                           <div className="schedule-sibling-list">
                             {siblingNodes.map((node) => {
@@ -2496,17 +2493,13 @@ export function SchedulePage({
                                 ? node.dates.start === node.dates.end
                                   ? node.dates.start.slice(5)
                                   : `${node.dates.start.slice(5)}~${node.dates.end.slice(5)}`
-                                : "待安排";
-                              const stateText = isPast
-                                ? "已流转只读"
-                                : editableNode
-                                  ? "当前可排"
-                                  : "只读";
+                                : "未排期";
                               return (
                                 <button
                                   key={node.id}
                                   type="button"
                                   className={`schedule-sibling-chip ${isCurrent ? "active" : ""} ${hoveredId === node.id ? "is-hovered" : ""} ${isPast ? "is-past" : editableNode ? "is-editable" : "is-readonly"}`}
+                                  style={nodeColorStyle(node.record)}
                                   aria-pressed={isCurrent}
                                   onClick={() => setSelected(node.id)}
                                   onMouseEnter={() => setHoveredId(node.id)}
@@ -2515,9 +2508,7 @@ export function SchedulePage({
                                   }
                                 >
                                   <strong>{node.record.nodeName || node.record.title}</strong>
-                                  <span>
-                                    {isCurrent ? stateText : `${dateText} · ${stateText}`}
-                                  </span>
+                                  <span>{dateText}</span>
                                 </button>
                               );
                             })}
@@ -2635,7 +2626,7 @@ export function SchedulePage({
                           <p>事项详情抓取时间 {selectedEntry.record.fetchedAt}</p>
                         </details>
                       )}
-                      {selectedEntry.readOnlyReason && <p>{selectedEntry.readOnlyReason}</p>}
+                      {visibleReadOnlyReason(selectedEntry.readOnlyReason) && <p>{selectedEntry.readOnlyReason}</p>}
                       {selectedEntry.resultMessage?.replace(/^收到成功回执，未回读核验[；;]?\s*/, "") && (
                         <p>{selectedEntry.resultMessage.replace(/^收到成功回执，未回读核验[；;]?\s*/, "")}</p>
                       )}
