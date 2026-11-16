@@ -940,7 +940,7 @@ export function SchedulePage({
       : pending.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
   // 已排期是稳定清单；日历导航只改变视窗，不改变成员或计数。
-  const outside = visible.filter((entry) => validSchedule(entry.dates));
+  const outside = visible.filter((entry) => view === "mine" && isEditableTarget(entry) && validSchedule(entry.dates));
   const outsideRows =
     view === "people"
       ? personRows(outside)
@@ -1926,9 +1926,6 @@ export function SchedulePage({
                       </>
                     ) : (
                       <>
-                        <p className="schedule-pool-hint">
-                          当前筛选下全部已排节点，数量不随日历切周变化。点击卡片查看，或定位到对应周。
-                        </p>
                         <div className="schedule-pool-list">
                           {outsideRows.map(({ entry, owner }, index) => (
                             <Fragment key={`${entry.id}:${owner}`}>

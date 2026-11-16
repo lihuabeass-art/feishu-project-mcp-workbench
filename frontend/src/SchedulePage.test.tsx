@@ -865,7 +865,7 @@ it("人员分组在待排池和日历独立折叠，键盘展开并保留选择�
   expect(document.querySelectorAll(".schedule-row[hidden]")).toHaveLength(0);
 });
 
-it("其他周分组单独折叠，跨空间相同人员 ID 不串联", async () => {
+it("按人查看隐藏只读已排期，跨空间相同人员 ID 的待排分组不串联", async () => {
   const read = data();
   const base = read.targets[0];
   read.targets.push(
@@ -879,7 +879,8 @@ it("其他周分组单独折叠，跨空间相同人员 ID 不串联", async () 
   expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
   expect(screen.getByRole("button", { name: /另一空间待排/ })).toBeTruthy();
   fireEvent.click(screen.getByRole("tab", { name: /已排期/ }));
-  fireEvent.click(screen.getByRole("button", { name: "收起本人的已排期，共1项" }));
+  expect(screen.getByRole("tab", { name: "已排期 (0)" })).toBeTruthy();
+  expect(screen.getByText("当前筛选下暂无已排期节点")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /其他周任务/ })).toBeNull();
   fireEvent.click(screen.getByRole("tab", { name: /待排期/ }));
   expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
@@ -1629,9 +1630,9 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
 
-  // 待排期只收纳当前待安排节点；已排期包含所有有日期的节点，历史节点仍保持只读。
+  // 待排期只收纳当前待安排节点；只读的已排期节点不进入侧栏。
   expect(screen.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
-  expect(screen.getByRole("tab", { name: "已排期 (3)" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "已排期 (0)" })).toBeTruthy();
   const pendingPool = document.querySelector(".schedule-pending")!;
   expect(pendingPool.textContent).toContain("灰度联调验收");
   expect(pendingPool.textContent).not.toContain("后端代码合入");
