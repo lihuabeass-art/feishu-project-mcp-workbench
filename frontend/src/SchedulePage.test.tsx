@@ -953,6 +953,15 @@ it.each(["uncertain", "accepted"] as const)("清空返回%s时合并反馈，日
     confirmSync();
     await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledTimes(2));
     expect(document.querySelector(".schedule-feedback")?.textContent).toContain("估分或计划工期");
+    fireEvent.click(screen.getByRole("button", { name: "清空排期" }));
+    vi.mocked(submitScheduleTargets).mockResolvedValueOnce({
+      results: [{ id: "one", result: "accepted", message: "日期已清空", warning: "日期已清空，但实际工时与提交前不一致，请核对。" }], writeRequests: 1,
+    });
+    confirmSync();
+    await waitFor(() => expect(submitScheduleTargets).toHaveBeenCalledTimes(3));
+    const allText = document.body.textContent || "";
+    expect(allText.split("日期已清空，但估分或计划工期与提交前不一致，请在飞书核对。")).toHaveLength(2);
+    expect(allText.split("日期已清空，但实际工时与提交前不一致，请核对。")).toHaveLength(2);
   } else {
     expect(feedback.querySelector("strong")?.textContent).toBe("部分排期尚未核验");
     expect((feedback.querySelector("details") as HTMLDetailsElement).open).toBe(false);
@@ -984,6 +993,7 @@ it.each(["failed", "accepted"] as const)("多目标清空返回%s时，附带警
   const feedback = document.querySelector(".schedule-feedback")!;
   expect(feedback.textContent).toContain("估分与提交前不一致");
   expect(Array.from(feedback.querySelectorAll("p")).filter((p) => p.textContent?.includes("估分与提交前不一致"))).toHaveLength(1);
+  expect((document.body.textContent || "").split("日期已清空，但估分与提交前不一致，请核对。")).toHaveLength(2);
   if (otherResult === "failed") {
     expect(feedback.textContent).toContain("失败 1 项");
     expect((feedback.querySelector("details") as HTMLDetailsElement).open).toBe(false);

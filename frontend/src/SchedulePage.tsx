@@ -148,6 +148,8 @@ const resultLabelFor = (entry: Entry) =>
   entry.result === "accepted" && entry.resultMessage?.includes("清空")
     ? "上次提交：日期已清空"
     : entry.result ? resultLabel[entry.result] : "";
+const mergeResultWarnings = (previous?: string | null, next?: string | null) =>
+  Array.from(new Set([...(previous || "").split("\n"), ...(next || "").split("\n")].filter(Boolean))).join("\n") || undefined;
 
 function Avatar({ person }: { person?: SchedulePerson }) {
   const [failed, setFailed] = useState(false);
@@ -244,7 +246,7 @@ export function SchedulePage({
   const dirty = entries.some(scheduleChanged);
   const uncertain = entries.some((entry) => entry.result === "uncertain");
   const persistentWarnings = Array.from(new Set(entries.flatMap((entry) =>
-    entry.resultWarning ? [entry.resultWarning] : [],
+    entry.resultWarning ? entry.resultWarning.split("\n") : [],
   )));
   const nodeKey = (entry: Entry) =>
     JSON.stringify([
@@ -1276,7 +1278,7 @@ export function SchedulePage({
                 ? { ...entry.record, dates: { ...submission.dates } }
                 : entry.record,
             resultMessage: results.get(entry.id)?.message,
-            resultWarning: results.get(entry.id)?.warning ?? entry.resultWarning,
+            resultWarning: mergeResultWarnings(entry.resultWarning, results.get(entry.id)?.warning),
           };
         }),
       );
@@ -1288,7 +1290,7 @@ export function SchedulePage({
             if (!submission) return record;
             const outcome = results.get(record.id)?.result || "uncertain";
             const resultMessage = results.get(record.id)?.message;
-            const resultWarning = results.get(record.id)?.warning ?? record.resultWarning;
+            const resultWarning = mergeResultWarnings(record.resultWarning, results.get(record.id)?.warning);
             if (outcome === "accepted" || outcome === "uncertain") {
               return {
                 ...record,
@@ -1568,7 +1570,13 @@ export function SchedulePage({
                     </>
                   ) : report && <p>{report}</p>}
                   {persistentWarnings.filter((warning) => warning !== report).map((warning) => (
-                    <p key={warning}>{warning}</p>
+                    <p key={warning}>
+                      <span className="schedule-feedback-targets">
+                        {entries.filter((entry) => entry.resultWarning?.split("\n").includes(warning))
+                          .map((entry) => `${entry.record.title} · ${entry.record.nodeName} · ${targetLabel(entry, entry.record.ownerId || "")}`).join("；")}
+                      </span>
+                      {warning}
+                    </p>
                   ))}
                 </div>
                 {uncertain && (
@@ -2599,7 +2607,6 @@ export function SchedulePage({
                       )}
                       {selectedEntry.readOnlyReason && <p>{selectedEntry.readOnlyReason}</p>}
                       {selectedEntry.resultMessage && <p>{selectedEntry.resultMessage}</p>}
-                      {selectedEntry.resultWarning && <p className="schedule-result-warning">{selectedEntry.resultWarning}</p>}
                       {frozenNodes.has(nodeKey(selectedEntry)) && (
                         <p>该节点存在结果不确定的排期，请先在飞书核对并重新读取。</p>
                       )}

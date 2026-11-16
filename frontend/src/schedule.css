@@ -1259,10 +1259,10 @@
   .schedule-feedback > button { margin-left: 27px; }
 }
 
-.schedule-editor .schedule-result-warning {
-  color: var(--text-secondary);
-  padding-left: 9px;
-  border-left: 2px solid var(--line);
+.schedule-feedback-targets {
+  display: block;
+  font-size: 11px;
+  margin-bottom: 2px;
 }
 
 .schedule-editor-meta {
