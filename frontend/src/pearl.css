@@ -170,6 +170,7 @@
   background: var(--glass);
   border-bottom-color: var(--pearl-edge);
   box-shadow: none;
+  -webkit-backdrop-filter: blur(20px);
   backdrop-filter: blur(20px);
 }
 
@@ -233,6 +234,7 @@
 
 :root[data-appearance="pearl"] .work-panel-header {
   border-radius: 18px 18px 0 0;
+  -webkit-backdrop-filter: blur(20px);
   backdrop-filter: blur(20px);
 }
 
@@ -246,6 +248,7 @@
 
 :root[data-appearance="pearl"] :is(.select-menu, .theme-menu) {
   box-shadow: 0 14px 40px var(--pearl-shadow);
+  -webkit-backdrop-filter: blur(24px);
   backdrop-filter: blur(24px);
 }
 

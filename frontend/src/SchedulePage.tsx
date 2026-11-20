@@ -142,13 +142,16 @@ const addDays = (value: string, days: number) => {
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 };
-const today = () =>
-  new Intl.DateTimeFormat("en-CA", {
+const today = () => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Shanghai",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date());
+  }).formatToParts(new Date());
+  const part = (type: string) => parts.find((entry) => entry.type === type)!.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+};
 const monday = (value: string) =>
   addDays(value, -((new Date(`${value}T00:00:00Z`).getUTCDay() + 6) % 7));
 const initials = (name: string) =>

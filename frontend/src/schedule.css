@@ -27,6 +27,7 @@
   border-radius: 16px;
   background: var(--surface-solid);
   color: var(--text);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
   box-shadow: 0 8px 28px color-mix(in srgb, var(--text) 12%, transparent);
 }
 
@@ -485,9 +486,12 @@
 .schedule-pending-item .schedule-dwell-duration {
   display: inline-block;
   padding: 0 7px;
+  border: 1px solid var(--border-strong);
   border: 1px solid color-mix(in srgb, var(--green) 26%, transparent);
   border-radius: 999px;
+  background: var(--surface-selected);
   background: color-mix(in srgb, var(--green) 9%, transparent);
+  color: var(--green);
   color: color-mix(in srgb, var(--green) 75%, var(--text));
   font-weight: 500;
   white-space: nowrap;
@@ -679,6 +683,7 @@
 }
 
 .schedule-days > div.today {
+  background: var(--surface-selected);
   background: color-mix(in srgb, var(--green) 8%, transparent);
 }
 
@@ -724,6 +729,7 @@
 }
 
 .schedule-row-grid .today {
+  background: var(--surface-selected);
   background: color-mix(in srgb, var(--green) 6%, transparent);
 }
 
@@ -735,6 +741,7 @@
 }
 
 .schedule-row.selected {
+  background: var(--surface-selected);
   background: color-mix(in srgb, var(--surface-selected) 55%, transparent);
 }
 
@@ -761,6 +768,7 @@
 }
 
 .schedule-group:hover {
+  background: var(--surface-hover);
   background: color-mix(in srgb, var(--green) 8%, var(--surface-soft));
 }
 
@@ -852,9 +860,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   padding: 1px 6px;
+  border: 1px solid var(--border-strong);
   border: 1px solid color-mix(in srgb, var(--schedule-node-color) 26%, var(--line));
   border-radius: 6px;
   color: var(--heading);
+  background: var(--surface-selected);
   background: color-mix(in srgb, var(--schedule-node-color) 10%, var(--surface-solid));
   font-weight: 600;
   line-height: 1.35;
@@ -918,6 +928,7 @@
   overflow: hidden;
   white-space: nowrap;
   color: var(--heading);
+  background: var(--surface-selected);
   background: linear-gradient(
     135deg,
     color-mix(in srgb, var(--schedule-node-color) 16%, var(--surface-solid)),
@@ -956,6 +967,12 @@
     color-mix(in srgb, var(--focus) 22%, transparent) 62%,
     transparent 84%
   );
+}
+
+@supports not (background: color-mix(in srgb, black, white)) {
+  .schedule-bar.is-schedulable {
+    --schedule-sheen: linear-gradient(110deg, transparent 12%, rgba(120, 170, 150, 0.2) 32%, rgba(255, 255, 255, 0.25) 46%, transparent 84%);
+  }
 }
 
 :root[data-appearance="pearl"] .schedule-bar.is-schedulable {
@@ -1077,6 +1094,7 @@
 }
 
 .schedule-bar.is-draft {
+  background: var(--surface-tint);
   background: linear-gradient(
     135deg,
     color-mix(in srgb, var(--green) 22%, var(--surface-solid)),
@@ -1094,6 +1112,7 @@
   border: 1px solid var(--line);
   border-color: color-mix(in srgb, var(--schedule-node-color) 28%, var(--line));
   box-shadow: none;
+  background: var(--surface-soft);
   background: color-mix(in srgb, var(--schedule-node-color) 8%, var(--surface-solid));
 }
 
@@ -1171,6 +1190,7 @@
 .schedule-bar-days {
   padding: 1px 5px;
   border-radius: 999px;
+  background: var(--surface-selected);
   background: color-mix(in srgb, var(--green) 12%, transparent);
   font-size: 10px;
   font-weight: 600;
@@ -1202,6 +1222,7 @@
 }
 
 .schedule-bar-badge.is-past {
+  background: var(--surface-soft);
   background: color-mix(in srgb, var(--text-secondary) 11%, var(--surface-soft));
   color: var(--text-secondary);
   font-weight: 500;
@@ -1307,6 +1328,7 @@
   width: 1.5px;
   height: 14px;
   border-radius: 999px;
+  background: var(--schedule-node-color);
   background: color-mix(in srgb, var(--schedule-node-color) 75%, var(--heading));
   transform: translate(-50%, -50%);
   pointer-events: none;
@@ -1806,6 +1828,7 @@
   place-items: center;
   padding: 20px;
   background: rgba(15, 23, 20, 0.5);
+  -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
 
@@ -2141,4 +2164,55 @@
   .schedule-pool-tabs button {
     transform: none;
   }
+}
+
+/* var() 中的旧 WebKit 不支持 color-mix 时，计算值阶段不会回退到前一声明。 */
+@supports not (color: color-mix(in srgb, red, blue)) {
+  .schedule-refresh-notice > div { box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12); }
+  .schedule-pending-item .schedule-dwell-duration {
+    border: 1px solid var(--border-strong);
+    background: var(--surface-selected);
+    color: var(--green);
+  }
+  .schedule-days > div.today,
+  .schedule-row-grid .today,
+  .schedule-row.selected { background: var(--surface-selected); }
+  .schedule-group:hover { background: var(--surface-hover); }
+  .schedule-current-node {
+    border: 1px solid var(--border-strong);
+    background: var(--surface-selected);
+  }
+  .schedule-bar {
+    background: var(--surface-selected);
+    border-color: var(--border-strong);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.11);
+  }
+  :where(:root[data-appearance="pearl"]) .schedule-bar.is-cloud {
+    background: var(--surface-selected);
+    border-color: var(--border-strong);
+  }
+  .schedule-bar.is-draft {
+    background: var(--surface-tint);
+    box-shadow: 0 0 0 2px rgba(53, 117, 100, 0.16);
+  }
+  .schedule-bar.is-readonly {
+    background: var(--surface-soft);
+    border-color: var(--line);
+    box-shadow: none;
+  }
+  .schedule-bar.is-uncertain {
+    color: var(--warning-text);
+    background: var(--warning-bg);
+    border: 1px solid var(--warning-border);
+    box-shadow: none;
+  }
+  .schedule-bar.is-failed,
+  .schedule-bar.is-unsent { border-color: var(--error-border); }
+  .schedule-bar.is-hovered {
+    border-color: var(--focus);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
+  }
+  .schedule-bar-days { background: var(--surface-selected); }
+  .schedule-bar-badge.is-past { background: var(--surface-soft); }
+  .schedule-handle::after { background: var(--schedule-node-color); }
 }

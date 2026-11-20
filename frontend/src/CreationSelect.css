@@ -51,9 +51,11 @@
   max-width: 100%;
   padding: 2px 7px;
   overflow: hidden;
+  border: 1px solid var(--line);
   border: 1px solid
     color-mix(in srgb, var(--creation-chip-color) 18%, transparent);
   border-radius: 4px;
+  background: var(--surface-selected);
   background: color-mix(
     in srgb,
     var(--creation-chip-color) 14%,
@@ -144,4 +146,12 @@
 :root[data-theme="dark"] .creation-select-star.is-default,
 :root[data-theme="dark"] .creation-select-star:hover:not(:disabled) {
   color: #edc15b;
+}
+
+@supports not (color: color-mix(in srgb, red, blue)) {
+  .creation-option-chip,
+  :root[data-theme="dark"] .creation-option-chip {
+    border: 1px solid var(--border-strong);
+    background: var(--surface-selected);
+  }
 }

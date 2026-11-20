@@ -43,6 +43,7 @@ export function SettingsPage({
       ...scroller.querySelectorAll<HTMLElement>("[data-settings-section]"),
     ];
     let frame = 0;
+    let scrollEndTimer: number | undefined;
     const update = () => {
       frame = 0;
       const offset = scrollOffset();
@@ -77,8 +78,14 @@ export function SettingsPage({
       if (!frame) frame = window.requestAnimationFrame(update);
     };
     const resumeTracking = () => {
+      window.clearTimeout(scrollEndTimer);
       scrollTarget.current = null;
       schedule();
+    };
+    const onScroll = () => {
+      schedule();
+      window.clearTimeout(scrollEndTimer);
+      scrollEndTimer = window.setTimeout(resumeTracking, 180);
     };
     const endScroll = (event: Event) => {
       if (event.target === scroller) resumeTracking();
@@ -97,7 +104,7 @@ export function SettingsPage({
       )
         resumeTracking();
     };
-    scroller.addEventListener("scroll", schedule, { passive: true });
+    scroller.addEventListener("scroll", onScroll, { passive: true });
     scroller.addEventListener("scrollend", endScroll);
     scroller.addEventListener("wheel", resumeTracking, { passive: true });
     scroller.addEventListener("touchstart", resumeTracking, { passive: true });
@@ -112,7 +119,7 @@ export function SettingsPage({
     groups.forEach((group) => observer?.observe(group));
     update();
     return () => {
-      scroller.removeEventListener("scroll", schedule);
+      scroller.removeEventListener("scroll", onScroll);
       scroller.removeEventListener("scrollend", endScroll);
       scroller.removeEventListener("wheel", resumeTracking);
       scroller.removeEventListener("touchstart", resumeTracking);
@@ -121,6 +128,7 @@ export function SettingsPage({
       scrollTarget.current = null;
       observer?.disconnect();
       window.cancelAnimationFrame(frame);
+      window.clearTimeout(scrollEndTimer);
     };
   }, [active, sectionIds]);
 

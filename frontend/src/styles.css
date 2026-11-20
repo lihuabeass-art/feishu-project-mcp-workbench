@@ -49,7 +49,7 @@
 .field-image-caption { margin-top: 5px; color: var(--muted); font-size: 12px; }
 .field-image-placeholder { min-height: 110px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 16px; border: 1px dashed var(--line); border-radius: 10px; background: var(--surface-soft); color: var(--text-secondary); text-align: center; }
 .field-image-placeholder small { max-width: 100%; overflow-wrap: anywhere; }
-.image-preview-backdrop { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 24px; background: #132010c9; backdrop-filter: blur(9px); }
+.image-preview-backdrop { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 24px; background: #132010c9; -webkit-backdrop-filter: blur(9px); backdrop-filter: blur(9px); }
 .image-preview { display: flex; flex-direction: column; width: min(1200px, 100%); height: min(900px, calc(100dvh - 48px)); min-height: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-soft); box-shadow: 0 24px 100px #0005; overflow: hidden; }
 .image-preview-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .image-preview-toolbar > span { flex: 1; min-width: 80px; overflow-wrap: anywhere; }
@@ -176,6 +176,7 @@ svg {
   box-shadow:
     0 18px 45px rgba(48, 67, 59, 0.16),
     0 3px 10px rgba(48, 67, 59, 0.08);
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }
 .select-option {
@@ -253,6 +254,7 @@ svg {
   height: 20px;
   padding: 0 6px;
   border-radius: 999px;
+  background: var(--surface-selected);
   background: color-mix(in srgb, var(--option-count-ink) 12%, transparent);
   color: var(--option-count-ink);
   font-size: 11px;
@@ -262,6 +264,7 @@ svg {
   white-space: nowrap;
 }
 .select-option.selected .select-option-count {
+  background: var(--surface-selected-hover);
   background: color-mix(in srgb, var(--option-count-ink) 14%, transparent);
 }
 .select-option.has-count .select-option-check {
@@ -297,6 +300,7 @@ input {
   flex-direction: column;
   border-right: 1px solid var(--line);
   background: linear-gradient(165deg, var(--sidebar-start), var(--sidebar-end));
+  -webkit-backdrop-filter: blur(30px);
   backdrop-filter: blur(30px);
 }
 .brand {
@@ -333,6 +337,7 @@ input {
   max-width: calc(100vw - 40px);
   z-index: 20;
   box-shadow: 0 12px 40px #294a2824;
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }
 .workflow-toasts {
@@ -352,6 +357,7 @@ input {
   margin: 0;
   pointer-events: auto;
   box-shadow: 0 12px 40px #294a2824;
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }
 .workflow-toast > div {
@@ -2051,6 +2057,7 @@ input {
   margin: 0;
   max-width: min(560px, calc(100vw - 32px));
   box-shadow: 0 12px 40px #294a2824;
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }
 .settings-save-status > span {
@@ -3087,6 +3094,7 @@ input {
   box-shadow:
     0 10px 28px rgba(31, 45, 39, 0.16),
     0 2px 6px rgba(31, 45, 39, 0.08);
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
   color: var(--text);
   font-size: 13px;
@@ -3193,3 +3201,8 @@ input {
 .detail-field-choices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .detail-field-choices button { max-width: 100%; overflow-wrap: anywhere; }
 .detail-field-choices button[aria-pressed="true"] { border-color: var(--green); color: var(--green); }
+
+@supports not (color: color-mix(in srgb, red, blue)) {
+  .select-option-count { background: var(--surface-selected); }
+  .select-option.selected .select-option-count { background: var(--surface-selected-hover); }
+}

@@ -49,6 +49,7 @@
   max-width: 100%;
   margin: 6px 2px;
   padding: 6px;
+  border: 1px solid var(--line);
   border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   border-radius: 6px;
   background: var(--surface-solid);
@@ -151,4 +152,8 @@
     animation: none;
     transition: none;
   }
+}
+
+@supports not (color: color-mix(in srgb, red, blue)) {
+  .markdown-editor-image { border: 1px solid var(--line); }
 }

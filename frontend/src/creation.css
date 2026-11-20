@@ -468,12 +468,12 @@
 .creation-record-card p { margin: 0; color: var(--muted); font-size: 12px; }
 .creation-record-state { font-size: 11px; color: var(--muted); }
 .creation-review-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-.creation-required-notice { display: flex; align-items: flex-start; gap: 12px; margin: 14px 0; padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--green) 30%, var(--line)); border-left: 3px solid var(--green); border-radius: 10px; color: var(--text); background: color-mix(in srgb, var(--green) 11%, var(--input-bg)); font-size: 12px; }
+.creation-required-notice { display: flex; align-items: flex-start; gap: 12px; margin: 14px 0; padding: 14px 16px; border: 1px solid var(--border-strong); border: 1px solid color-mix(in srgb, var(--green) 30%, var(--line)); border-left: 3px solid var(--green); border-radius: 10px; color: var(--text); background: var(--surface-selected); background: color-mix(in srgb, var(--green) 11%, var(--input-bg)); font-size: 12px; }
 .creation-required-notice > svg { flex-shrink: 0; margin-top: 2px; color: var(--green); }
 .creation-required-notice > div { min-width: 0; }
 .creation-required-notice strong { font-weight: 600; }
 .creation-required-notice p { margin: 5px 0 0; line-height: 1.6; }
-.creation-field-required-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; width: fit-content; max-width: 100%; margin: 0 0 8px; padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--green) 25%, var(--line)); border-radius: 7px; background: color-mix(in srgb, var(--green) 9%, var(--input-bg)); color: var(--text); font-size: 11px; line-height: 1.6; }
+.creation-field-required-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; width: fit-content; max-width: 100%; margin: 0 0 8px; padding: 4px 8px; border: 1px solid var(--border-strong); border: 1px solid color-mix(in srgb, var(--green) 25%, var(--line)); border-radius: 7px; background: var(--surface-selected); background: color-mix(in srgb, var(--green) 9%, var(--input-bg)); color: var(--text); font-size: 11px; line-height: 1.6; }
 .creation-field-required-status > svg { flex-shrink: 0; color: var(--green); }
 .creation-field-required-status > strong { font-weight: 500; }
 .creation-field-required-status > span { color: var(--muted); }
@@ -785,4 +785,14 @@
 .creation-attachment-name small {
   display: block;
   color: var(--text-secondary);
+}
+
+@supports not (color: color-mix(in srgb, red, blue)) {
+  .creation-field-visibility { box-shadow: 0 3px 14px rgba(0, 0, 0, 0.03); }
+  .creation-required-notice,
+  .creation-field-required-status {
+    border: 1px solid var(--border-strong);
+    background: var(--surface-selected);
+  }
+  .creation-required-notice { border-left: 3px solid var(--green); }
 }

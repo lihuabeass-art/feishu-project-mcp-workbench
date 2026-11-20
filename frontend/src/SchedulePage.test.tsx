@@ -33,6 +33,45 @@ const projectSnapshot = (read: ScheduleRead): Snapshot => ({
 beforeEach(() => { vi.mocked(loadScheduleSession).mockResolvedValue(data()); vi.mocked(closeScheduleSession).mockResolvedValue(); });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const setup = async () => { const guard = vi.fn(); render(<SchedulePage onGuardChange={guard} requestReload={(reload) => reload()} />); await screen.findByLabelText("今日问候"); return guard; };
+
+it("日期格式化结果不是 ISO 文本时仍能打开事项安排", async () => {
+  const NativeDateTimeFormat = Intl.DateTimeFormat;
+  const formatter = vi.spyOn(Intl, "DateTimeFormat").mockImplementation((...args) => {
+    const real = new NativeDateTimeFormat(...args);
+    return new Proxy(real, {
+      get(target, property) {
+        if (property === "format") return () => "11/20/2026";
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  });
+  try {
+    await setup();
+    expect(screen.getByLabelText("今日问候")).toBeTruthy();
+  } finally {
+    formatter.mockRestore();
+  }
+});
+
+it("旧版 WebKit 无颜色混合时排期条保留主题背景和边框", async () => {
+  const css = await loadCss("./schedule.css");
+  const bar = css.match(/\.schedule-bar\s*\{([^}]+)\}/)?.[1] ?? "";
+  const node = css.match(/\.schedule-current-node\s*\{([^}]+)\}/)?.[1] ?? "";
+  expect(bar).toMatch(/background:\s*var\(--surface-selected\);[\s\S]*background:\s*linear-gradient/);
+  expect(bar).toMatch(/border:\s*1px solid var\(--border-strong\)/);
+  expect(node).toMatch(/border:\s*1px solid var\(--border-strong\)/);
+  expect(node).toMatch(/background:\s*var\(--surface-selected\)/);
+  expect(css).toContain("@supports not (background: color-mix(in srgb, black, white))");
+  const fallback = css.slice(css.indexOf("@supports not (color: color-mix(in srgb, red, blue))"));
+  expect(fallback).toMatch(/\.schedule-bar\s*\{[^}]*background:\s*var\(--surface-selected\)/);
+  expect(fallback).toMatch(/\.schedule-bar\.is-cloud\s*\{[^}]*background:\s*var\(--surface-selected\)/);
+  expect(fallback).toMatch(/\.schedule-bar\.is-draft\s*\{[^}]*background:\s*var\(--surface-tint\)/);
+  expect(fallback).toMatch(/\.schedule-bar\.is-readonly\s*\{[^}]*background:\s*var\(--surface-soft\)/);
+  expect(fallback).toMatch(/\.schedule-bar\.is-uncertain\s*\{[^}]*background:\s*var\(--warning-bg\)/);
+  expect(css.indexOf("@supports not (color: color-mix(in srgb, red, blue))"))
+    .toBeGreaterThan(css.lastIndexOf("color-mix(in srgb, var("));
+});
 const confirmSync = () => {
   fireEvent.click(within(document.querySelector(".schedule-overview") as HTMLElement).getByRole("button", { name: /核对并同步|同步排期/ }));
   const dialog = screen.queryByRole("dialog", { name: "核对排期变更并同步" });

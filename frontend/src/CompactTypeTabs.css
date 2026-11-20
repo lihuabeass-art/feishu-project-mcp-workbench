@@ -115,6 +115,7 @@
   background: var(--menu-bg);
   color: var(--text);
   box-shadow: 0 8px 28px #0002, 0 2px 6px #0001;
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
   transform-origin: var(--radix-dropdown-menu-content-transform-origin);
   animation: list-mode-type-menu-in 140ms ease-out;

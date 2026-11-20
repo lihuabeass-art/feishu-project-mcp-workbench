@@ -97,6 +97,7 @@
   background: var(--menu-bg);
   color: var(--text);
   box-shadow: var(--menu-shadow, 0 8px 24px #00000020);
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
   font-size: 12px;
 }
