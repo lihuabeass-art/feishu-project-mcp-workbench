@@ -56,6 +56,16 @@ impl Session {
         Ok(Self { config, store })
     }
 
+    /// 桌面启动时在后台回收可重建的缓存和历史同步记录。
+    pub fn clean_local_storage(&self) {
+        let now = crate::sync::now_ms();
+        let _ = self.store.prune_runs(self.config.sync_run_retention);
+        let _ = self.store.prune_interrupted_runs(now);
+        let _ = self.store.prune_item_caches(now);
+        crate::field_images::prune_cache(&self.config.db_path);
+        let _ = self.store.reclaim_unused_pages();
+    }
+
     /// 解析凭证，返回**可安全打印**的来源描述。
     ///
     /// `doctor` 用它确认「凭证到底读到了没有」，回显只有来源与长度。
@@ -788,6 +798,41 @@ todo_scope = "in_progress"
         assert!(session.last_successful_sync().unwrap().is_none(), "没有成功记录时不得凭空给一个");
         assert!(session.query_cached_items(&ItemFilter::default()).unwrap().is_empty());
         assert!(session.recent_runs(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn desktop_cleanup_trims_an_existing_unlimited_ledger_and_keeps_the_last_success() {
+        let mut legacy = tmp_config("legacy-log-cleanup");
+        legacy.sync_run_retention = 0;
+        let session = Session::open(legacy.clone()).unwrap();
+        let conn = rusqlite::Connection::open(&legacy.db_path).unwrap();
+        let now = crate::sync::now_ms();
+        conn.execute("INSERT INTO sync_run (started_at_ms, action, status, rejection_detail)
+            VALUES (1, 'todo', 'success', NULL), (2, 'todo', 'failed', zeroblob(9 * 1024 * 1024)),
+            (3, 'todo', 'running', NULL), (?1, 'todo', 'running', NULL)", [now]).unwrap();
+        let keep = crate::config::DEFAULT_SYNC_RUN_RETENTION;
+        conn.execute("WITH RECURSIVE records(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM records WHERE n<?1)
+            INSERT INTO sync_run (started_at_ms, action, status)
+            SELECT 4, 'todo', 'failed' FROM records", [keep]).unwrap();
+        drop(conn);
+        drop(session);
+        let before = std::fs::metadata(&legacy.db_path).unwrap().len();
+
+        let session = Session::open(legacy.for_desktop()).unwrap();
+        let lease = session.store.hold_sync_run().unwrap();
+        session.clean_local_storage();
+        assert_eq!(session.recent_runs(keep + 4).unwrap().len(), keep as usize + 3);
+        drop(lease);
+        session.clean_local_storage();
+        let remaining = session.recent_runs(keep + 3).unwrap();
+        assert_eq!(remaining.len(), keep as usize + 2);
+        assert!(remaining.iter().any(|run| run.status == crate::store::RunStatus::Running && run.started_at_ms == now));
+        assert!(!remaining.iter().any(|run| matches!(run.started_at_ms, 2 | 3)));
+        assert_eq!(session.last_successful_sync().unwrap().unwrap().started_at_ms, 1);
+        assert!(std::fs::metadata(&session.config.db_path).unwrap().len() < before);
+        let dir = session.config.db_path.parent().unwrap().to_path_buf();
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

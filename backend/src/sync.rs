@@ -160,6 +160,7 @@ pub async fn sync_personal_todos(
     secret: Option<&str>,
     ctx: SyncContext<'_>,
 ) -> Result<SyncReport, BackendError> {
+    let _lease = store.hold_sync_run()?;
     let started = now_ms();
     let clock = Instant::now();
     let query_label = source.query_kind().unwrap_or(query.action.as_str()).to_owned();
@@ -367,7 +368,7 @@ fn fail_run(
     secret: Option<&str>,
 ) -> Result<(), BackendError> {
     // 错误文本落库前用已加载凭证做二次擦除（构造侧已保证凭证不进错误文本，这是第二道防线）
-    let safe = error.safe_message(secret);
+    let safe = truncate(&error.safe_message(secret), 4096);
     store.finish_run(
         run_id,
         RunStatus::Failed,

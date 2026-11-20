@@ -17,6 +17,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
+use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -37,6 +38,8 @@ pub const SCHEMA_VERSION: i64 = 18;
 
 /// 事项离开所有来源后，详情与图片保留七天，期间重新出现则取消清理。
 const ITEM_CACHE_GRACE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const INTERRUPTED_RUN_GRACE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const MIN_RECLAIM_BYTES: u64 = 8 * 1024 * 1024;
 
 /// 一次同步是谁发起的。诊断口径：前端每 2 分钟一轮，日志量比手动大一个数量级，
 /// 排查时必须能按发起方式分开看（也决定是否受 `sync_run_retention` 轮转影响）。
@@ -349,6 +352,10 @@ pub struct DetailCacheState {
 pub struct Store {
     conn: Mutex<Connection>,
     pub path: Option<std::path::PathBuf>,
+}
+
+fn sync_lock_error(error: std::io::Error) -> BackendError {
+    BackendError::Store { detail: format!("无法建立同步运行占用：{error}") }
 }
 
 impl Store {
@@ -1043,11 +1050,10 @@ impl Store {
         Ok(())
     }
 
-    /// 日志轮转：只保留最近 `keep` 条**已结束**的运行记录。
+    /// 保留最近 `keep` 条已结束记录，以及界面使用的最后一次成功记录。
     ///
     /// 自动同步按 2 分钟一轮跑，一天最多 720 条，不清理会无限增长。
-    /// 规则刻意保守：`keep == 0` 表示不清理；`running` 行永不删（那是没收尾的现场，
-    /// 删了就等于抹掉一次异常的证据）。
+    /// `keep <= 0` 关闭轮转；仍在执行的同步由单独的启动维护规则保护。
     pub fn prune_runs(&self, keep: i64) -> Result<i64, BackendError> {
         if keep <= 0 {
             return Ok(0);
@@ -1058,10 +1064,57 @@ impl Store {
             "DELETE FROM sync_run
              WHERE status <> 'running' AND id NOT IN (
                  SELECT id FROM sync_run WHERE status <> 'running' ORDER BY id DESC LIMIT ?1
+             ) AND id NOT IN (
+                 SELECT id FROM sync_run WHERE status = 'success' ORDER BY id DESC LIMIT 1
              )",
             params![keep],
         )? as i64;
         Ok(deleted)
+    }
+
+    fn sync_run_lock_file(&self) -> Result<Option<std::fs::File>, BackendError> {
+        self.path.as_ref().map(|path| {
+            let path = path.canonicalize().map_err(sync_lock_error)?;
+            let mut lock_path = path.into_os_string();
+            lock_path.push(".sync-runs.lock");
+            std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+                .open(lock_path).map_err(sync_lock_error)
+        }).transpose()
+    }
+
+    /// 持有到同步结束。进程退出时系统自动释放；多来源可以同时持有共享锁。
+    pub(crate) fn hold_sync_run(&self) -> Result<Option<std::fs::File>, BackendError> {
+        let file = self.sync_run_lock_file()?;
+        if let Some(file) = &file {
+            FileExt::lock_shared(file).map_err(sync_lock_error)?;
+        }
+        Ok(file)
+    }
+
+    pub(crate) fn prune_interrupted_runs(&self, now_ms: i64) -> Result<(), BackendError> {
+        let Some(file) = self.sync_run_lock_file()? else { return Ok(()); };
+        // 任一进程正在同步时留待后续启动。时间宽限也覆盖旧版没有共享锁的记录。
+        if FileExt::try_lock_exclusive(&file).is_err() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute("DELETE FROM sync_run WHERE status = 'running' AND started_at_ms <= ?1",
+            [now_ms.saturating_sub(INTERRUPTED_RUN_GRACE_MS)])?;
+        Ok(())
+    }
+
+    pub(crate) fn reclaim_unused_pages(&self) -> Result<(), BackendError> {
+        let Some(path) = &self.path else { return Ok(()); };
+        let conn = Connection::open(path)?;
+        // 启动维护让正在使用数据库的操作优先。正常的小量空闲页供 SQLite 复用。
+        conn.busy_timeout(std::time::Duration::ZERO)?;
+        let page_size: u64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        let free: u64 = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+        let pages: u64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+        if free.saturating_mul(page_size) >= MIN_RECLAIM_BYTES && free >= pages.div_ceil(4) {
+            conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
+        }
+        Ok(())
     }
 
     pub fn count_items(&self) -> Result<i64, BackendError> {

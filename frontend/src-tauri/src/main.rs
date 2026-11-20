@@ -736,6 +736,18 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             display_mode::restore(app);
+            tauri::async_runtime::spawn_blocking(|| {
+                if let Ok(config) = Config::load(None, None) {
+                    config.clean_temporary_files();
+                    // 已有缓存才需要启动清理，首次启动由正常会话创建缓存。
+                    let config = config.for_desktop();
+                    if config.db_path.is_file() {
+                        if let Ok(session) = Session::open(config) {
+                            session.clean_local_storage();
+                        }
+                    }
+                }
+            });
             #[cfg(all(windows, not(debug_assertions)))]
             if let Ok(data_dir) = app.path().app_local_data_dir() {
                 update_cleanup::schedule(app.package_info().version.clone(), data_dir);

@@ -13,6 +13,7 @@ use crate::{api::Session, BackendError, WorkItemId};
 const MAX_BYTES: usize = 20 * 1024 * 1024;
 const CACHE_BYTES: u64 = 256 * 1024 * 1024;
 const CACHE_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const TEMP_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn failure(detail: &str) -> BackendError {
     BackendError::parse("业务字段图片", detail)
@@ -150,12 +151,22 @@ fn prune_cache_root(root: &Path, max_bytes: u64, now: SystemTime) {
             entries.push(entry);
         }
     }
-    let mut files: Vec<_> = entries.into_iter()
-        .filter(|f| f.path().extension().is_some_and(|e| e == "img"))
-        .filter_map(|f| {
-            let m = f.metadata().ok()?;
-            Some((f.path(), m.len(), m.modified().ok()?))
-        }).collect();
+    let mut files = Vec::new();
+    for entry in entries {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else { continue; };
+        let Ok(modified) = metadata.modified() else { continue; };
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "img") {
+            files.push((path, metadata.len(), modified));
+        } else if entry.file_name().to_str().is_some_and(is_cache_temporary)
+            && now.duration_since(modified).is_ok_and(|age| age >= TEMP_GRACE)
+        {
+            let _ = std::fs::remove_file(path);
+        }
+    }
     files.sort_by_key(|f| f.2);
     let mut total: u64 = files.iter().map(|f| f.1).sum();
     for (file, size, modified) in files {
@@ -168,6 +179,17 @@ fn prune_cache_root(root: &Path, max_bytes: u64, now: SystemTime) {
     for directory in directories {
         let _ = std::fs::remove_dir(directory); // 只移除空目录。
     }
+}
+
+fn is_cache_temporary(name: &str) -> bool {
+    let Some((digest, nonce)) = name.strip_suffix(".tmp").and_then(|name| name.split_once('.')) else {
+        return false;
+    };
+    digest.len() == 64
+        && digest.bytes().all(|b| b.is_ascii_hexdigit())
+        && nonce.split_once('-').is_some_and(|(pid, time)| {
+            pid.parse::<u32>().is_ok() && time.parse::<u128>().is_ok()
+        })
 }
 
 fn download_metadata(value: &Value) -> Result<(Url, &str), BackendError> {
@@ -399,6 +421,28 @@ mod tests {
         prune_cache_root(&root, 16, now + CACHE_AGE);
         assert!(!files[1].exists() && !files[2].exists());
         assert!(!root.join("first").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cache_cleanup_reclaims_legacy_temporary_files_without_touching_recent_or_unrelated_files() {
+        let root = std::env::temp_dir().join(format!("fstodo-image-temp-{}", std::process::id()));
+        let item = root.join("a".repeat(64));
+        std::fs::create_dir_all(&item).unwrap();
+        let old = item.join(format!("{}.1-1.tmp", "b".repeat(64)));
+        let recent = item.join(format!("{}.1-2.tmp", "b".repeat(64)));
+        let unrelated = item.join("notes.tmp");
+        for path in [&old, &recent, &unrelated] {
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        let now = SystemTime::now();
+        for path in [&old, &unrelated] {
+            std::fs::File::options().write(true).open(path).unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(now - TEMP_GRACE)).unwrap();
+        }
+        prune_cache_root(&root, CACHE_BYTES, now + Duration::from_secs(1));
+        assert!(!old.exists());
+        assert!(recent.exists() && unrelated.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 

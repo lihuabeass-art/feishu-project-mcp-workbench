@@ -31,8 +31,8 @@ pub const DEFAULT_TOKEN_ENV: &str = "FSTODO_MCP_TOKEN";
 /// 0 表示自动翻页直到取完；正数仅供 CLI 显式限制页数。
 pub const DEFAULT_MAX_PAGES: u32 = 0;
 
-/// 默认永久保留同步台账。
-pub const DEFAULT_SYNC_RUN_RETENTION: i64 = 0;
+/// 默认保留最近 1,000 条已结束的同步记录。
+pub const DEFAULT_SYNC_RUN_RETENTION: i64 = 1_000;
 
 /// 分页协议使用 u32 页码；0 不设置业务上限，按远端 total / has_more 收尾。
 pub(crate) fn page_numbers(max_pages: u32) -> impl Iterator<Item = u32> {
@@ -129,10 +129,35 @@ impl Config {
     /// 桌面端接管技术策略；保留既有数据库、凭证来源和用户选择的工作范围。
     pub fn for_desktop(mut self) -> Self {
         self.max_pages = 0;
-        self.sync_run_retention = 0;
+        self.sync_run_retention = DEFAULT_SYNC_RUN_RETENTION;
         self.workflow_enabled = true;
         self.desktop_all_types = true;
         self
+    }
+
+    /// 清理配置保存失败或中断后遗留的临时副本，兼容旧版文件命名。
+    pub fn clean_temporary_files(&self) {
+        let path = self.loaded_from.as_ref().unwrap_or(&self.default_config_path);
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else { return; };
+        let directory = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let now = std::time::SystemTime::now();
+        let grace = std::time::Duration::from_secs(24 * 60 * 60);
+        for entry in std::fs::read_dir(directory).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            let Some((prefix, pid)) = name.to_str()
+                .and_then(|name| name.strip_suffix(".settings.tmp").or_else(|| name.strip_suffix(".sources.tmp")))
+                .and_then(|name| name.rsplit_once('.')) else { continue; };
+            if prefix != stem || pid.parse::<u32>().is_err()
+                || !entry.file_type().is_ok_and(|kind| kind.is_file())
+            {
+                continue;
+            }
+            if entry.metadata().and_then(|meta| meta.modified()).is_ok_and(|modified|
+                now.duration_since(modified).is_ok_and(|age| age >= grace))
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 
     /// 加载配置。
@@ -434,14 +459,37 @@ todo_scope = "in_progress"
         let original = load(&text).unwrap();
         let desktop = original.clone().for_desktop();
         assert_eq!(desktop.max_pages, 0);
-        assert_eq!(desktop.sync_run_retention, 0);
+        assert_eq!(desktop.sync_run_retention, DEFAULT_SYNC_RUN_RETENTION);
         assert!(desktop.workflow_enabled);
         assert!(desktop.desktop_all_types);
         assert!(!original.desktop_all_types);
         assert_eq!(desktop.db_path, original.db_path);
         assert_eq!(desktop.token_env, original.token_env);
         assert_eq!(desktop.token_file, original.token_file);
-        assert_eq!(ConfigFile::default().sync_run_retention, 0);
+        assert_eq!(ConfigFile::default().sync_run_retention, DEFAULT_SYNC_RUN_RETENTION);
+    }
+
+    #[test]
+    fn cleanup_removes_only_expired_config_temporary_files_for_the_selected_path() {
+        use std::time::{Duration, SystemTime};
+
+        let directory = std::env::temp_dir().join(format!("fstodo-config-cleanup-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut config = load(MINIMAL).unwrap();
+        config.loaded_from = Some(directory.join("my.config.toml"));
+        let names = ["my.config.1.settings.tmp", "my.config.2.sources.tmp",
+            "my.config.3.sources.tmp", "other.1.settings.tmp", "my.config.toml"];
+        let old = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
+        for (index, name) in names.iter().enumerate() {
+            let file = std::fs::File::create(directory.join(name)).unwrap();
+            if index != 2 {
+                file.set_times(std::fs::FileTimes::new().set_modified(old)).unwrap();
+            }
+        }
+        config.clean_temporary_files();
+        assert!(names[..2].iter().all(|name| !directory.join(name).exists()));
+        assert!(names[2..].iter().all(|name| directory.join(name).exists()));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     /// 默认配置与缺省配置项都应启用流程操作；用户可以显式关闭。

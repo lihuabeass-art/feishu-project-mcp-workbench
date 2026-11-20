@@ -140,25 +140,31 @@ fn maintain() -> io::Result<()> {
 
 fn prune(dir: &Path, now: SystemTime) -> io::Result<()> {
     // Touch only this logger's fixed filenames; leave unrelated files alone.
+    let mut failed = None;
     for prefix in ["performance", "catalog"] {
         for index in 0..FILE_COUNT {
             let path = dir.join(format!("{prefix}-{index}.jsonl"));
-            if let Ok(meta) = fs::metadata(&path) {
-                if first_record_time(&path)
+            if let Ok(meta) = fs::symlink_metadata(&path) {
+                if meta.is_file() && first_record_time(&path)
                     .or_else(|| meta.modified().ok())
                     .and_then(|at| now.duration_since(at).ok())
                     .is_some_and(|age| age >= RETENTION)
                 {
-                    fs::remove_file(path)?;
+                    if let Err(error) = fs::remove_file(path) {
+                        if error.kind() != io::ErrorKind::NotFound {
+                            failed = Some(error);
+                        }
+                    }
                 }
             }
         }
     }
-    Ok(())
+    failed.map_or(Ok(()), Err)
 }
 
 fn first_record_time(path: &Path) -> Option<SystemTime> {
-    let input = fs::File::open(path).ok()?.take(1024);
+    // A redacted catalog error may contain 4,096 characters before JSON escaping.
+    let input = fs::File::open(path).ok()?.take(32 * 1024);
     let mut line = String::new();
     io::BufReader::new(input).read_line(&mut line).ok()?;
     let data: serde_json::Value = serde_json::from_str(&line).ok()?;
@@ -167,7 +173,6 @@ fn first_record_time(path: &Path) -> Option<SystemTime> {
 
 fn append(dir: &Path, prefix: &str, line: &[u8]) -> io::Result<()> {
     fs::create_dir_all(dir)?;
-    prune(dir, SystemTime::now())?;
     let active = dir.join(format!("{prefix}-0.jsonl"));
     if fs::metadata(&active).map_or(0, |m| m.len()) + line.len() as u64 > FILE_BYTES {
         let oldest = dir.join(format!("{prefix}-{}.jsonl", FILE_COUNT - 1));
@@ -360,7 +365,8 @@ mod tests {
         fs::write(
             dir.join("performance-0.jsonl"),
             format!(
-                "{{\"at_ms\":{old}}}\n{{\"at_ms\":{}}}\n",
+                "{{\"at_ms\":{old},\"error_message\":\"{}\"}}\n{{\"at_ms\":{}}}\n",
+                "测".repeat(4096),
                 crate::sync::now_ms()
             ),
         )
