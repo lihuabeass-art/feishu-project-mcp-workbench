@@ -2365,6 +2365,16 @@
 
 /* var() 中的旧 WebKit 不支持 color-mix 时，计算值阶段不会回退到前一声明。 */
 @supports not (color: color-mix(in srgb, red, blue)) {
+  .schedule-defect-priority {
+    --priority-track: var(--line);
+    background: var(--surface-solid);
+    border-color: var(--priority-a);
+    box-shadow: none;
+  }
+  .schedule-defect-status {
+    border: 1px solid var(--line);
+    background: var(--surface-solid);
+  }
   .schedule-refresh-notice > div { box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12); }
   .schedule-pending-item .schedule-dwell-duration {
     border: 1px solid var(--border-strong);
