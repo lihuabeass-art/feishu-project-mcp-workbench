@@ -2033,7 +2033,7 @@ export function SchedulePage({
                             </Fragment>
                           ))}
                           {pendingRows.length === 0 && (
-                            <p className="schedule-pool-empty">当前筛选下暂无待排期事项</p>
+                            <p className="schedule-pool-empty">日历仅显示所选日期内的排期</p>
                           )}
                         </div>
                       </>
