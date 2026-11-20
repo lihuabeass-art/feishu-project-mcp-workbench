@@ -369,7 +369,7 @@ it.each([true, false])("零来源不再占用常驻说明栏（完整性标记 %
   expect(screen.queryByText(/无可执行来源|完整读取|部分读取失败/)).toBeNull();
 });
 
-it("概览合并头像与今日问候，两项统计标明草稿且保留真实读取失败反馈", async () => {
+it("概览保留头像与今日问候，日期统计标明草稿且保留真实读取失败反馈", async () => {
   const read = data(); read.sources = [{ id: "s", name: "我的来源", complete: true }]; read.complete = true;
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   const page = render(<SchedulePage onGuardChange={vi.fn()} requestReload={vi.fn()} />);
@@ -381,7 +381,9 @@ it("概览合并头像与今日问候，两项统计标明草稿且保留真实�
   expect(greeting.querySelector("p")?.textContent).toBeTruthy();
   expect(screen.queryByText("含未同步草稿")).toBeNull();
   fireEvent.click(within(screen.getByLabelText("任务一快捷排期")).getByRole("button", { name: "今天" }));
-  expect(screen.getAllByText("含未同步草稿")).toHaveLength(2);
+  const summary = within(screen.getByRole("group", { name: "当前日期范围排期统计" }));
+  expect(summary.getByText("含未同步草稿")).toBeTruthy();
+  expect(screen.getAllByText("含未同步草稿")).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "全部还原" }));
   expect(screen.queryByText("含未同步草稿")).toBeNull();
   expect(screen.queryByText("本地排期草稿")).toBeNull();
@@ -1291,6 +1293,26 @@ it("详情缓存节点保留日期状态与抓取时间，无法编辑或误称�
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
+it("在日期范围旁统计排期，翻到其他周时隐藏今日统计", async () => {
+  const read = data();
+  read.targets.push({
+    ...read.targets[0],
+    id: "scheduled",
+    identity: { ...identity, node: "scheduled" },
+    dates: { start: currentWeekDay(0), end: currentWeekDay(6) },
+  });
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+
+  await setup();
+  const summary = screen.getByRole("group", { name: "当前日期范围排期统计" });
+  expect(summary.textContent).toBe("已排 1今日有排期 1");
+  expect(screen.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
+  expect(screen.queryByText(/其中 .* 项可排期/)).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "下一周" }));
+  expect(summary.textContent).toBe("已排 0");
+});
+
 it("已排期包含当前及多个历史未来周，定位与切周后计数、卡片和选择保持稳定", async () => {
   const read = data();
   read.targets = [
@@ -1589,7 +1611,7 @@ it("核对弹层支持 Escape 关闭与全部还原自动关闭，概览卡支�
   // 收起与展开待排池
   fireEvent.click(screen.getByRole("button", { name: "收起待排池" }));
   expect(document.querySelector(".schedule-pending")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "展开待排池" }));
+  fireEvent.click(screen.getByRole("button", { name: /^展开待排池 \(\d+\)$/ }));
   expect(document.querySelector(".schedule-pending")).toBeTruthy();
 
   // 快捷落位产生草稿后打开弹层，按 Escape 关闭，再点全部还原清空草稿
@@ -2184,7 +2206,7 @@ it("事项节点过滤无关无排期节点、按节点去重多人记录、并�
   expect(siblingGroup.textContent).not.toContain("正式发布");
 });
 
-it("通用样式后加载仍保留排期概览三列、正常姓名字号及面板圆角裁切", async () => {
+it("通用样式后加载仍保留排期概览两列、正常姓名字号及面板圆角裁切", async () => {
   const scheduleStyleEl = document.createElement("style");
   scheduleStyleEl.textContent = await loadCss("./schedule.css");
   const stylesStyleEl = document.createElement("style");
@@ -2197,10 +2219,10 @@ it("通用样式后加载仍保留排期概览三列、正常姓名字号及面�
     expect(panel).toBeTruthy();
     expect(getComputedStyle(panel).overflow).toBe("hidden");
     const overview = document.querySelector(".schedule-overview")!;
-    expect(getComputedStyle(overview).gridTemplateColumns).toBe("minmax(0, 1fr) minmax(220px, auto) auto");
+    expect(getComputedStyle(overview).gridTemplateColumns).toBe("minmax(0, 1fr) auto");
     expect(getComputedStyle(screen.getByLabelText("今日问候").querySelector("strong")!).fontSize).toBe("14px");
     expect(Array.from(overview.children).map((child) => child.className)).toEqual([
-      "schedule-overview-metrics", "schedule-greeting", "overview-actions schedule-overview-actions",
+      "schedule-greeting", "overview-actions schedule-overview-actions",
     ]);
   } finally {
     scheduleStyleEl.remove();

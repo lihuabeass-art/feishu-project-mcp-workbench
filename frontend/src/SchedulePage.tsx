@@ -1567,15 +1567,17 @@ export function SchedulePage({
     }
   }
 
-  const activeTodayCount = scheduled.filter(
+  const todayInWindow = currentToday >= windowStart && currentToday <= windowEnd;
+  const scheduledTodayCount = scheduled.filter(
     (entry) => entry.dates.start <= currentToday && entry.dates.end >= currentToday,
   ).length;
+  const editablePendingCount = view === "mine" ? pending.filter(isEditableTarget).length : null;
 
   return (
     <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={() => preloadedSession?.onInteraction?.()} onFocusCapture={() => preloadedSession?.onInteraction?.()}>
       {loading && !read ? (
         <div className="overview schedule-overview">
-          <div className="schedule-overview-metrics">
+          <div className="schedule-overview-loading">
             <span className="overview-icon">
               <CalendarDays size={20} />
             </span>
@@ -1608,27 +1610,6 @@ export function SchedulePage({
         read && (
           <>
             <div className="overview schedule-overview">
-              <div className="schedule-overview-metrics">
-                <span className="overview-icon">
-                  <CalendarDays size={20} />
-                </span>
-                <div className="schedule-metric">
-                  <span>待排期节点 {changedEntries.length > 0 && <small className="schedule-metric-note">含未同步草稿</small>}</span>
-                  <strong>
-                    {pending.length}
-                    <small>{pending.filter(canEdit).length} 项可排期</small>
-                  </strong>
-                </div>
-                <div className="overview-divider" />
-                <div className="schedule-metric">
-                  <span>视窗内已排 {changedEntries.length > 0 && <small className="schedule-metric-note">含未同步草稿</small>}</span>
-                  <strong>
-                    {scheduled.length}
-                    <small>今日进行 {activeTodayCount}</small>
-                  </strong>
-                </div>
-              </div>
-
               <ScheduleGreeting person={currentUserPerson} name={currentUserDisplayName} />
               <div className="overview-actions schedule-overview-actions">
                 <button
@@ -1860,7 +1841,7 @@ export function SchedulePage({
                     ) : (
                       <PanelLeftClose size={14} aria-hidden="true" />
                     )}
-                    {poolCollapsed ? "展开待排池" : "收起待排池"}
+                    {poolCollapsed ? `展开待排池 (${pendingRows.length})` : "收起待排池"}
                   </button>
 
                   <div className="schedule-tabs" role="group" aria-label="时间跨度">
@@ -1910,6 +1891,11 @@ export function SchedulePage({
                       本周
                     </button>
                   </div>
+                  <div className="schedule-range-summary" role="group" aria-label="当前日期范围排期统计">
+                    <span>已排 <strong>{scheduled.length}</strong></span>
+                    {todayInWindow && <span>今日有排期 <strong>{scheduledTodayCount}</strong></span>}
+                    {changedEntries.length > 0 && <span>含未同步草稿</span>}
+                  </div>
                 </div>
               </div>
 
@@ -1954,6 +1940,9 @@ export function SchedulePage({
 
                     {poolTab === "pending" ? (
                       <>
+                        {editablePendingCount !== null && editablePendingCount < pendingRows.length && (
+                          <p className="schedule-pool-editable-count">其中 {editablePendingCount} 项可排期</p>
+                        )}
                         <div className="schedule-pool-list">
                           {pendingRows.map(({ entry, owner }, index) => (
                             <Fragment key={`${entry.id}:${owner}`}>

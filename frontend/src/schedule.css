@@ -65,48 +65,17 @@
 }
 
 .overview.schedule-overview {
-  grid-template-columns: minmax(0, 1fr) minmax(220px, auto) auto;
-  gap: 24px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
   margin-bottom: 0;
 }
 
-.schedule-overview .overview-divider { margin: 0 4px; }
-
-.schedule-overview-metrics {
+.schedule-overview-loading {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 16px;
   min-width: 0;
-}
-
-.schedule-metric {
-  min-width: 0;
-}
-
-.schedule-metric > span {
-  display: block;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.schedule-overview .schedule-metric > strong {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 24px;
-  font-weight: 600;
-  line-height: 1.2;
-  margin-top: 4px;
-  font-variant-numeric: tabular-nums;
-  color: var(--heading);
-}
-
-.schedule-overview .schedule-metric > strong small {
-  font-size: 11px;
-  font-weight: 400;
-  margin-left: 0;
-  color: var(--muted);
 }
 
 .schedule-overview .schedule-overview-actions {
@@ -153,18 +122,6 @@
   font-size: 11px;
   line-height: 1.6;
   color: var(--text-secondary);
-}
-
-.schedule-metric-note {
-  display: inline-block;
-  margin-left: 4px;
-  padding: 1px 5px;
-  border-radius: 5px;
-  background: var(--surface-selected);
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 1.5;
 }
 
 /* 提高优先级以覆盖 styles.css 中后加载的 .work-panel { overflow: visible; }，确保顶部工具栏和三栏底角按面板圆角裁切。 */
@@ -303,6 +260,24 @@
   font-size: 11px;
 }
 
+.schedule-range-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.schedule-range-summary > span {
+  white-space: nowrap;
+}
+
+.schedule-range-summary strong {
+  color: var(--heading);
+  font-variant-numeric: tabular-nums;
+}
+
 /* 常驻三栏工作台布局 */
 .schedule-layout {
   --schedule-board-max-height: max(280px, calc(100dvh - 260px));
@@ -375,6 +350,13 @@
   color: var(--muted);
   margin: 0;
   flex-shrink: 0;
+}
+
+.schedule-pool-editable-count {
+  flex-shrink: 0;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .schedule-pool-list {
@@ -2179,11 +2161,6 @@
 }
 
 @media (max-width: 960px) {
-  .overview.schedule-overview {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 18px;
-  }
-  .schedule-overview > .schedule-overview-actions { grid-column: 1 / -1; }
   .schedule-calendar {
     --schedule-label-width: 176px;
   }
@@ -2202,8 +2179,7 @@
 @media (max-width: 680px) {
   .overview.schedule-overview { grid-template-columns: minmax(0, 1fr); }
   .schedule-overview .schedule-overview-actions { justify-content: flex-start; }
-  .schedule-overview-metrics { gap: 12px; }
-  .schedule-metric-note { display: block; margin: 3px 0 0; }
+  .schedule-overview-loading { gap: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
