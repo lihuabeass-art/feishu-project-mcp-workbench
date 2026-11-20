@@ -15,7 +15,8 @@ const id = { project_key: "space", work_item_type_key: "issue", work_item_id: "1
 const mine = { project: "space", item: "100", title: "导出漏掉筛选条件", status: "待处理", priority: "P1", owners: [{ id: "me", name: "本人" }] };
 const other = { project: "space", item: "200", title: "附件预览空白", status: "处理中", owners: [{ id: "peer", name: "同事", avatar: "https://example.com/avatar.png" }] };
 const read: ScheduleRead = { sessionId: "session", connection: "connection", currentUserId: "me", readAt: "today", complete: true,
-  peopleLoaded: true, people: [{ id: "me", name: "本人" }], sources: [], defectProjects: ["space"], targets: [] };
+  peopleLoaded: true, people: [{ id: "me", name: "本人" }, { id: "peer", name: "同事", project: "space" }],
+  sources: [], defectProjects: ["space"], targets: [] };
 const controller: ScheduleSessionController = { read, pending: null, reload: vi.fn(), updateRead: vi.fn() };
 const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload(), preloadedSession: controller,
   workflow: { context: "context", busy: false, submit: vi.fn() } };
@@ -124,7 +125,9 @@ it("同一人员标识在不同空间保留对应的名字和头像", async () =
     owners: [{ id: "peer", name: "另一位同事", avatar: "https://example.com/other-avatar.png" }] };
   vi.mocked(invoke).mockImplementation(async (command) => command === "load_schedule_defects"
     ? { defects: [other, peerInOtherSpace], failed_projects: [] } : { targets: [], complete: true });
-  render(<SchedulePage {...props} preloadedSession={{ ...controller, read: { ...read, defectProjects: ["space", "other-space"] } }} />);
+  render(<SchedulePage {...props} preloadedSession={{ ...controller, read: { ...read, defectProjects: ["space", "other-space"],
+    people: [...read.people, { id: "peer", name: "另一位同事", project: "other-space" }],
+  } }} />);
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(await screen.findByRole("tab", { name: "未解决缺陷 2" }));
   const groups = within(screen.getByLabelText("未解决缺陷清单"));
@@ -135,4 +138,58 @@ it("同一人员标识在不同空间保留对应的名字和头像", async () =
   fireEvent.click(second);
   expect(groups.getByRole("button", { name: /另一空间的缺陷/ })).toBeTruthy();
   expect(groups.queryByRole("button", { name: /附件预览空白/ })).toBeNull();
+});
+
+it("优先级栏统计当前视图，点击按级别筛选，共同负责缺陷只计算一次", async () => {
+  const shared = { ...mine, owners: [...mine.owners, ...other.owners] };
+  const urgent = { ...other, priority: "P0" };
+  vi.mocked(invoke).mockImplementation(async (command) => command === "load_schedule_defects"
+    ? { defects: [urgent, shared], failed_projects: [] } : { targets: [], complete: true });
+  render(<SchedulePage {...props} />);
+  fireEvent.click(await screen.findByRole("tab", { name: "未解决缺陷 1" }));
+  const filters = within(screen.getByRole("group", { name: "按缺陷优先级查看" }));
+  expect(filters.getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+    "P0，0 条", "P1，1 条", "P2，0 条", "P3，0 条", "P4，0 条",
+  ]);
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const p0 = filters.getByRole("button", { name: "P0，1 条" });
+  expect(filters.getByRole("button", { name: "P1，1 条" })).toBeTruthy();
+  fireEvent.click(p0);
+  expect(p0.getAttribute("aria-pressed")).toBe("true");
+  const list = within(screen.getByLabelText("未解决缺陷清单"));
+  expect(list.queryByRole("button", { name: /本人（我）/ })).toBeNull();
+  fireEvent.click(list.getByRole("button", { name: /同事/ }));
+  expect(list.getByRole("button", { name: /附件预览空白/ })).toBeTruthy();
+  expect(list.queryByRole("button", { name: /导出漏掉筛选条件/ })).toBeNull();
+  fireEvent.click(filters.getByRole("button", { name: "P4，0 条" }));
+  expect(list.getByText("当前筛选下暂无 P4 缺陷")).toBeTruthy();
+  fireEvent.click(filters.getByRole("button", { name: "P4，0 条" }));
+  expect(list.getAllByRole("button", { name: /导出漏掉筛选条件/ })).toHaveLength(2);
+  expect(list.getByRole("button", { name: /附件预览空白/ })).toBeTruthy();
+});
+
+it("负责人分组与全部计数只来自已加载人员，排除跨空间同标识与未分配缺陷", async () => {
+  const outside = { id: "unloaded", name: "未加载同事" };
+  const shared = { ...mine, owners: [...mine.owners, outside] };
+  const defects = [shared, { ...other, priority: "P0" },
+    { ...other, item: "outside", priority: "P0", owners: [outside] },
+    { ...other, item: "unassigned", priority: "P0", owners: [] },
+    { ...other, project: "other-space", title: "不同空间同标识", priority: "P0" }];
+  vi.mocked(invoke).mockImplementation(async (command) => command === "load_schedule_defects"
+    ? { defects, failed_projects: [] } : { targets: [], complete: true });
+  render(<SchedulePage {...props} preloadedSession={{ ...controller, read: { ...read, defectProjects: ["space", "other-space"] } }} />);
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "未解决缺陷 2" }));
+  const priorities = within(screen.getByRole("group", { name: "按缺陷优先级查看" }));
+  expect(priorities.getByRole("button", { name: "P0，1 条" })).toBeTruthy();
+  expect(priorities.getByRole("button", { name: "P1，1 条" })).toBeTruthy();
+  const list = within(screen.getByLabelText("未解决缺陷清单"));
+  expect(list.getByRole("button", { name: /本人（我）.*1 条/ })).toBeTruthy();
+  expect(list.getByRole("button", { name: /^同事.*1 条/ })).toBeTruthy();
+  expect(list.queryByRole("button", { name: /未加载同事|未分配负责人|不同空间同标识/ })).toBeNull();
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
+  expect(screen.queryByRole("option", { name: "未加载同事" })).toBeNull();
+  fireEvent.click(screen.getByRole("option", { name: "同事" }));
+  expect(screen.getByRole("tab", { name: "未解决缺陷 1" })).toBeTruthy();
+  expect(priorities.getByRole("button", { name: "P1，0 条" })).toBeTruthy();
 });

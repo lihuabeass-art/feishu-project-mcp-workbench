@@ -337,6 +337,35 @@
   font-variant-numeric: tabular-nums;
 }
 
+.schedule-defect-priority-filters {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.schedule-defect-priority-filters button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  min-width: 0;
+  padding: 4px 2px;
+  font-size: 11px;
+}
+
+.schedule-defect-priority-filters .schedule-defect-priority[data-level] {
+  padding-inline: 3px;
+  animation: none;
+  box-shadow: none;
+}
+
+.schedule-defect-priority-filters button[aria-pressed="true"] {
+  border-color: var(--focus);
+  background: var(--surface-selected);
+}
+
 .schedule-defect-title > strong {
   min-width: 0;
 }

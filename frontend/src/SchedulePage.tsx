@@ -797,25 +797,32 @@ export function SchedulePage({
       entry.identity.item,
       entry.record.title,
     ]);
+
+  const cachedItems = new Map((snapshot?.items || []).map((item) => [itemKey(item), item]));
   const matchesRelatedProject = (space: string, item: ReturnType<typeof cachedItems.get>) =>
     !relatedProject || (relatedProject === unreadRelatedProject
       ? !item
       : relatedProject === missingProject
         ? !!item && !item.related_projects?.length
         : item?.related_projects?.some((entry) => relatedProjectKey(space, entry) === relatedProject));
-  const spaceDefects = defectRead.defects.filter((defect) => !project || defect.project === project);
-  const defects = spaceDefects.filter((defect) =>
-    matchesRelatedProject(defect.project, cachedItems.get(defectKey(defect))) &&
-    (view === "mine" ? defect.owners.some((owner) => owner.id === read?.currentUserId)
-      : !person.length || defect.owners.some((owner) => person.includes(owner.id))));
+  const loadedSchedulePeople = [...read?.people || [], ...currentHistory?.people || []];
+  const loadedOwnerKeys = new Set(loadedSchedulePeople
+    .filter((owner) => owner.id && (!read?.connection || !owner.connection || owner.connection === read.connection))
+    .map((owner) => JSON.stringify([owner.project || null, owner.id])));
+  const defects = defectRead.defects.flatMap((defect) => {
+    if ((project && defect.project !== project) || !matchesRelatedProject(defect.project, cachedItems.get(defectKey(defect)))) return [];
+    const owners = defect.owners.filter((owner) => view === "mine" ? owner.id === read?.currentUserId
+      : (!person.length || person.includes(owner.id)) && (loadedOwnerKeys.has(JSON.stringify([defect.project, owner.id]))
+        || loadedOwnerKeys.has(JSON.stringify([null, owner.id]))));
+    return owners.length ? [{ ...defect, owners }] : [];
+  });
   const selectedDefectKey = defectSelection ? defectKey(defectSelection.defect) : "";
   const liveDefect = defects.find((defect) => defectKey(defect) === selectedDefectKey);
   const selectedDefect = defectSelection?.auth === defectRead.auth && defectRead.ready
     ? liveDefect || (defectWorkflowInteraction ? defectSelection.defect : undefined) : undefined;
   const defectReadFailed = defectRead.failedProjects.some((space) => !project || project === space);
-  const showDefectCount = defectRead.ready && (defects.length > 0 || (!defectRead.loading && !defectReadFailed));
-
-  const cachedItems = new Map((snapshot?.items || []).map((item) => [itemKey(item), item]));
+  const defectLoading = defectRead.loading || (view === "people" && read?.peopleLoaded === false && !peopleError);
+  const showDefectCount = defectRead.ready && (defects.length > 0 || (!defectLoading && !defectReadFailed));
   const cachedItemFor = (entry: Entry) => cachedItems.get(JSON.stringify([
     entry.identity.project, entry.identity.type, entry.identity.item,
   ]));
@@ -860,7 +867,7 @@ export function SchedulePage({
   })];
 
   const personOptions = new Map<string, Set<string>>();
-  for (const item of [...read?.people || [], ...currentHistory?.people || [], ...spaceDefects.flatMap((defect) => defect.owners)]) {
+  for (const item of loadedSchedulePeople) {
     if (project && item.project && item.project !== project) continue;
     if (!person.includes(item.id) && !`${item.name} ${item.id}`.toLowerCase().includes(personQuery.toLowerCase())) continue;
     const names = personOptions.get(item.id) || new Set<string>();
@@ -940,9 +947,9 @@ export function SchedulePage({
             personFor(b.entry, b.owner)?.name || b.owner,
           ) || groupKey(a.entry, a.owner).localeCompare(groupKey(b.entry, b.owner)),
       );
-    setDefectSelection(null);
 
   const selectPersonRow = (entry: Entry, owner: string) => {
+    setDefectSelection(null);
     setSelected(entry.id);
     setSelectedPerson(view === "people" ? owner : null);
   };
@@ -1323,9 +1330,9 @@ export function SchedulePage({
     { value: "", label: all },
     ...Array.from(new Map(values)).map(([value, label]) => ({ value, label })),
   ];
-    setDefectSelection(null);
 
   const applyQuickPreset = (id: string, preset: ScheduleQuickPreset) => {
+    setDefectSelection(null);
     setSelected(id);
     const target = entries.find((item) => item.id === id);
     const planned =
@@ -1341,9 +1348,9 @@ export function SchedulePage({
       setWeek(monday(planned.start));
     }
   };
-    setDefectSelection(null);
 
   const scheduleIntoViewedWeek = (id: string) => {
+    setDefectSelection(null);
     setSelected(id);
     update(id, (entry) => {
       if (!canEdit(entry)) return entry;
@@ -1381,9 +1388,9 @@ export function SchedulePage({
     drag.current = { id: entry.id, kind, grabbed };
     preloadedSession?.onInteraction?.();
     setDragging(true);
-    setDefectSelection(null);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", entry.id);
+    setDefectSelection(null);
     setSelected(entry.id);
   };
 
@@ -1457,9 +1464,9 @@ export function SchedulePage({
     const invalid = changed
       .map((entry) => ({ entry, message: scheduleValidation(entry) }))
       .filter((entry) => entry.message);
-      setDefectSelection(null);
     if (!changed.length) return;
     if (invalid.length) {
+      setDefectSelection(null);
       setSelected(invalid[0].entry.id);
       setSuccessToast(null);
       setReport(`无法同步：${invalid[0].entry.record.title}：${invalid[0].message}`);
@@ -1481,9 +1488,9 @@ export function SchedulePage({
       .map((entry) => ({ entry, message: scheduleValidation(entry) }))
       .filter((entry) => entry.message);
     if (!changed.length) return;
-      setDefectSelection(null);
     if (invalid.length) {
       setReviewOpen(false);
+      setDefectSelection(null);
       setSelected(invalid[0].entry.id);
       setSuccessToast(null);
       setReport(`无法同步：${invalid[0].entry.record.title}：${invalid[0].message}`);
@@ -1943,20 +1950,20 @@ export function SchedulePage({
                         className={poolTab === "outside" ? "active" : ""}
                         onClick={() => setPoolTab("outside")}
                       >
+                        {read ? `已排期 (${outsideRows.length})` : "已排期"}
+                      </button>
                       <button type="button" role="tab" aria-selected={poolTab === "defects"} aria-label={showDefectCount ? `未解决缺陷 ${defects.length}` : "未解决缺陷"}
                         className={poolTab === "defects" ? "active" : ""} onClick={() => setPoolTab("defects")}>
                         未解决缺陷{showDefectCount && <span className="schedule-defect-count"> ({defects.length})</span>}
                       </button>
-                        {read ? `已排期 (${outsideRows.length})` : "已排期"}
-                      </button>
                     </div>
 
                     {poolTab === "defects" ? (
-                      <ScheduleDefectList defects={defects} currentUser={read?.currentUserId || ""} team={view === "people"} people={person}
-                        knownPeople={read?.people || []}
+                      <ScheduleDefectList defects={defects} currentUser={read?.currentUserId || ""} team={view === "people"}
+                        knownPeople={loadedSchedulePeople}
                         selected={selectedDefectKey} select={(defect) => { setSelected(""); setDatePickerOpen(false); setDefectSelection({ defect, auth: defectRead.auth }); }}
                         groupStates={defectGroups} onGroupChange={(owner, expanded) => setDefectGroups((current) => new Map(current).set(owner, expanded))}
-                        loading={(!read && !error) || defectRead.loading} failed={defectReadFailed || (!read && !!error)} ready={defectRead.ready}
+                        loading={(!read && !error) || defectLoading} failed={defectReadFailed || (!read && !!error)} ready={defectRead.ready}
                         retry={read ? defectRead.retry : () => requestReload(() => { forceResetRef.current = true; setEpoch((value) => value + 1); })} />
                     ) : !read ? (
                       error ? <p className="schedule-pool-empty" role="alert">{error}，可重新读取。</p>

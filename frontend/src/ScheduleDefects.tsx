@@ -28,6 +28,8 @@ function priorityLevel(priority?: string | null) {
   return level === undefined ? undefined : Number(level);
 }
 
+const priorityLevels = [0, 1, 2, 3, 4];
+
 function DefectPriority({ priority }: { priority?: string | null }) {
   if (!priority) return null;
   const level = priorityLevel(priority);
@@ -100,11 +102,10 @@ export function useScheduleDefects(read: ScheduleRead | null, snapshot: Snapshot
   };
 }
 
-export function ScheduleDefectList({ defects, currentUser, team, people, knownPeople, selected, select, groupStates, onGroupChange, loading, failed, ready, retry }: {
+export function ScheduleDefectList({ defects, currentUser, team, knownPeople, selected, select, groupStates, onGroupChange, loading, failed, ready, retry }: {
   defects: ScheduleDefect[];
   currentUser: string;
   team: boolean;
-  people: string[];
   knownPeople: SchedulePerson[];
   selected: string;
   select: (defect: ScheduleDefect) => void;
@@ -115,7 +116,13 @@ export function ScheduleDefectList({ defects, currentUser, team, people, knownPe
   ready: boolean;
   retry: () => void;
 }) {
-  const sorted = [...defects].sort((a, b) =>
+  const [selectedPriority, setSelectedPriority] = useState<number | null>(null);
+  const counts = priorityLevels.map(() => 0);
+  for (const defect of defects) {
+    const level = priorityLevel(defect.priority);
+    if (level !== undefined) counts[level] += 1;
+  }
+  const sorted = defects.filter((defect) => selectedPriority === null || priorityLevel(defect.priority) === selectedPriority).sort((a, b) =>
     (priorityLevel(a.priority) ?? 5) - (priorityLevel(b.priority) ?? 5) || a.title.localeCompare(b.title, "zh-CN"));
   const renderRow = (defect: ScheduleDefect) => {
     const key = defectKey(defect);
@@ -130,9 +137,7 @@ export function ScheduleDefectList({ defects, currentUser, team, people, knownPe
   };
   const groups = new Map<string, { person: SchedulePerson; defects: ScheduleDefect[] }>();
   if (team) for (const defect of sorted) {
-    const owners: SchedulePerson[] = defect.owners.length ? defect.owners : [{ id: "", name: "未分配负责人" }];
-    for (const owner of owners) {
-      if (people.length && !people.includes(owner.id)) continue;
+    for (const owner of defect.owners) {
       const key = JSON.stringify([defect.project, owner.id]);
       const known = knownPeople.find((person) => person.id === owner.id && person.project === defect.project)
         ?? knownPeople.find((person) => person.id === owner.id && !person.project);
@@ -143,31 +148,47 @@ export function ScheduleDefectList({ defects, currentUser, team, people, knownPe
       groups.set(key, group);
     }
   }
-  const rank = (id: string) => id === currentUser ? 0 : id ? 1 : 2;
+  const rank = (id: string) => id === currentUser ? 0 : 1;
   const owners = [...groups].sort(([, first], [, second]) => rank(first.person.id) - rank(second.person.id)
     || first.person.name.localeCompare(second.person.name, "zh-CN"));
-  return <div className="schedule-pool-list" aria-label="未解决缺陷清单">
-    {failed && <p className="schedule-pool-empty" role="status">
-      {defects.length ? "部分缺陷暂未更新，已保留可用清单。" : "暂时无法读取全部缺陷。"}{" "}
-      <button type="button" className="schedule-quick-chip" disabled={loading} onClick={retry}>重试</button>
-    </p>}
-    {!defects.length && !failed && <p className="schedule-pool-empty" role="status">
-      {loading ? "正在读取未解决缺陷…" : ready ? "当前筛选下暂无未解决缺陷" : "暂未取得可读取缺陷的空间"}
-    </p>}
-    {team ? owners.map(([key, group]) => {
-      const mine = group.person.id === currentUser;
-      const expanded = groupStates.get(key) ?? mine;
-      return <div key={key} className="schedule-defect-group">
-        <button type="button" className="schedule-group" aria-expanded={expanded} onClick={() => onGroupChange(key, !expanded)}>
-          <ScheduleAvatar person={group.person.id ? group.person : undefined} />
-          <span className="schedule-group-name">{group.person.name}{mine && "（我）"}</span>
-          <span className="schedule-group-count">{group.defects.length} 条</span>
-          <ChevronDown size={14} className="schedule-group-chevron" aria-hidden="true" />
-        </button>
-        {expanded && group.defects.map(renderRow)}
-      </div>;
-    }) : sorted.map(renderRow)}
-  </div>;
+  return <>
+    {(defects.length > 0 || (ready && !loading && !failed)) && (
+      <div className="schedule-defect-priority-filters" role="group" aria-label="按缺陷优先级查看">
+        {priorityLevels.map((level) => {
+          const label = `P${level}`;
+          const active = selectedPriority === level;
+          return <button key={level} type="button" className="secondary" aria-label={`${label}，${counts[level]} 条`}
+            aria-description={active ? "再次点击查看全部优先级" : undefined} aria-pressed={active}
+            onClick={() => setSelectedPriority(active ? null : level)}>
+            <DefectPriority priority={label} /><span className="schedule-defect-count">{counts[level]}</span>
+          </button>;
+        })}
+      </div>
+    )}
+    <div className="schedule-pool-list" aria-label="未解决缺陷清单">
+      {failed && <p className="schedule-pool-empty" role="status">
+        {defects.length ? "部分缺陷暂未更新，已保留可用清单。" : "暂时无法读取全部缺陷。"}{" "}
+        <button type="button" className="schedule-quick-chip" disabled={loading} onClick={retry}>重试</button>
+      </p>}
+      {!defects.length && !failed && <p className="schedule-pool-empty" role="status">
+        {loading ? "正在读取未解决缺陷…" : ready ? "当前筛选下暂无未解决缺陷" : "暂未取得可读取缺陷的空间"}
+      </p>}
+      {defects.length > 0 && sorted.length === 0 && <p className="schedule-pool-empty" role="status">当前筛选下暂无 P{selectedPriority} 缺陷</p>}
+      {team ? owners.map(([key, group]) => {
+        const mine = group.person.id === currentUser;
+        const expanded = groupStates.get(key) ?? mine;
+        return <div key={key} className="schedule-defect-group">
+          <button type="button" className="schedule-group" aria-expanded={expanded} onClick={() => onGroupChange(key, !expanded)}>
+            <ScheduleAvatar person={group.person} />
+            <span className="schedule-group-name">{group.person.name}{mine && "（我）"}</span>
+            <span className="schedule-group-count">{group.defects.length} 条</span>
+            <ChevronDown size={14} className="schedule-group-chevron" aria-hidden="true" />
+          </button>
+          {expanded && group.defects.map(renderRow)}
+        </div>;
+      }) : sorted.map(renderRow)}
+    </div>
+  </>;
 }
 
 export function ScheduleDefectInspector({ defect, connection, projectName, workflow, stale, onWorkflowRead, onWorkflowNavigation, close }: {
