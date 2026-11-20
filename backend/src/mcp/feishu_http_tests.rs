@@ -99,7 +99,7 @@ impl Server {
                                 let attempt = calls.fetch_add(1, Ordering::SeqCst);
                                 counted = true;
                                 peak.fetch_max(active.fetch_add(1, Ordering::SeqCst)+1, Ordering::SeqCst);
-                                if mode == "expired" { status = "404 Not Found"; }
+                                if mode == "expired" || (mode == "expired_once" && attempt == 0) { status = "404 Not Found"; }
                                 else if mode == "tool429" && attempt == 0 { status = "429 Too Many Requests"; }
                                 else if mode == "slow" { thread::sleep(Duration::from_millis(800)); }
                                 else if mode == "tool429" { thread::sleep(Duration::from_millis(200)); }
@@ -262,8 +262,27 @@ async fn initialization_throttle_cools_all_waiters_then_read_recovers() {
 }
 
 #[tokio::test]
+async fn read_reopens_an_expired_session_and_retries_once() {
+    for (mode, recovered) in [("expired_once", true), ("expired", false)] {
+        let server = Server::new(mode);
+        let mut client = server.client();
+        let args = serde_json::json!({ "work_item_id": "test-item" });
+
+        let result = client.call_tool("get_node_detail", args.as_object().unwrap()).await;
+
+        assert_eq!(result.is_ok(), recovered, "{result:?}");
+        assert_eq!(server.init.load(Ordering::SeqCst), 2);
+        assert_eq!(server.requested.lock().unwrap().as_slice(), [
+            ("get_node_detail".into(), "test-item".into()),
+            ("get_node_detail".into(), "test-item".into()),
+        ]);
+        client.close().await;
+    }
+}
+
+#[tokio::test]
 async fn expired_sessions_do_not_replay_writes_or_unknown_tools() {
-    for tool in ["update_field", "unknown_tool"] {
+    for tool in ["update_field", "update_node", "unknown_tool"] {
         let server = Server::new("expired");
         let mut client = server.client();
         assert!(client.call_tool(tool, &Map::new()).await.is_err());

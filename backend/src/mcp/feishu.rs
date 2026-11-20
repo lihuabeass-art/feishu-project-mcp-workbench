@@ -316,7 +316,9 @@ impl TodoSource for FeishuMcp {
         arguments: &Map<String, Value>,
     ) -> Result<ToolResultPayload, BackendError> {
         let deadline = tokio::time::Instant::now() + OPERATION_TIMEOUT;
+        let can_retry = retryable_read(tool);
         let mut retries = 0;
+        let mut retried_connection = false;
         loop {
             let session = tokio::time::timeout_at(deadline, self.ensure_session_until(deadline))
                 .await
@@ -333,7 +335,7 @@ impl TodoSource for FeishuMcp {
                             code: Some(429),
                             ..
                         }
-                    ) && retryable_read(tool)
+                    ) && can_retry
                         && retries < 2
                     {
                         retries += 1;
@@ -425,13 +427,23 @@ impl TodoSource for FeishuMcp {
             .await
             .map_err(|_| BackendError::config("MCP 请求任务意外结束"))?;
             crate::sync_metrics::request_segments(0, execution_ms);
-            if throttle.is_some()
-                && retryable_read(tool)
+            let connection_failed = result
+                .as_ref()
+                .is_err_and(|error| error.kind() == crate::error::ErrorKind::Connection);
+            if can_retry
                 && retries < 2
                 && tokio::time::Instant::now() < deadline
             {
-                retries += 1;
-                continue;
+                if throttle.is_some() {
+                    retries += 1;
+                    continue;
+                }
+                if connection_failed && !retried_connection {
+                    // 故障会话已作废，补读仍与其他请求共用握手、调度和总时限。
+                    retried_connection = true;
+                    retries += 1;
+                    continue;
+                }
             }
             return result;
         }
