@@ -1727,7 +1727,7 @@ export function SchedulePage({
                         }
                       }}
                     >
-                      按人查看
+                      人员排期
                     </button>
                   </div>
                   <Select

@@ -143,7 +143,7 @@ it("按人待排期显示各节点停留时间，隐藏重复操作说明和权�
   ];
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   await screen.findByText("已停留 3 天");
   expect(screen.getByText("已停留 5 小时")).toBeTruthy();
   expect(screen.getByText("停留时间未知")).toBeTruthy();
@@ -286,7 +286,7 @@ it("共同及个人排期区分同空间同名人员并显示身份不明的负�
   expect(screen.getByText(/同名 \(a123456\) · 待安排/)).toBeTruthy();
   fireEvent.click(screen.getByText("任务一"));
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   expect(screen.getAllByText(/尚有负责人身份不明/).length).toBeGreaterThan(0);
 });
 
@@ -317,7 +317,7 @@ it("概览合并头像与今日问候，两项统计标明草稿且保留真实�
   expect(screen.queryByText("本地排期草稿")).toBeNull();
   expect(screen.queryByText(/完整读取|读取时间|读取请求/)).toBeNull();
   expect(screen.queryByRole("button", { name: "读取说明" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   expect(screen.getByLabelText("今日问候")).toBe(greeting);
   page.unmount();
   vi.mocked(loadScheduleSession).mockResolvedValue(data());
@@ -759,7 +759,7 @@ it.each([false, true])("混合负责人共同排期只读（包含身份不明�
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
-it("默认显示来源聚合日期且保持只读，按人查看不虚构负责人", async () => {
+it("默认显示来源聚合日期且保持只读，人员排期不虚构负责人", async () => {
   const read = data();
   const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   read.targets = [{ ...read.targets[0], id: "aggregate", title: "来源记录", identity: { ...identity, scope: "node", node: "", owner: "" }, ownerId: null, ownerIds: [], mine: false, sourceAggregate: true, readOnlyReason: "详情读取失败，仅供查看", dates: { start: day, end: day } }];
@@ -770,7 +770,7 @@ it("默认显示来源聚合日期且保持只读，按人查看不虚构负责�
   expect(bar.getAttribute("draggable")).toBe("false");
   fireEvent.click(bar);
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   expect(screen.getByText("负责人不明")).toBeTruthy();
   expect(screen.queryByText(/节点共同排期/)).toBeNull();
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
@@ -935,7 +935,7 @@ it("搜索人员时自动展开筛选并显示匹配项", async () => {
   read.people.push({ id: "other", name: "刘同事" });
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   const search = screen.getByLabelText("搜索人员");
   const filter = screen.getByRole("combobox", { name: "筛选人员" });
   fireEvent.change(search, { target: { value: "刘" } });
@@ -955,7 +955,7 @@ it("按人筛选后切回我的排期不会沿用隐藏的人员筛选", async (
   const read = data(); read.people.push({ id: "other", name: "同事" });
   read.targets.push({ ...read.targets[0], id: "two", title: "同事任务", ownerId: "other", ownerIds: ["other"], mine: false, identity: { ...identity, owner: "other", node: "other" } });
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
   fireEvent.click(screen.getByRole("option", { name: "同事" }));
   expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
@@ -972,7 +972,7 @@ it("人员筛选支持连续多选、取消及清空，并按负责人显示共�
     { ...read.targets[0], id: "third", title: "第三人任务", ownerId: "third", ownerIds: ["third"], mine: false, identity: { ...identity, item: "third", owner: "third" } },
   );
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
   fireEvent.click(screen.getByRole("option", { name: "本人" }));
   fireEvent.click(screen.getByRole("option", { name: "同事" }));
@@ -1010,7 +1010,7 @@ it("筛选排除当前目标时隐藏编辑区，恢复筛选后保留会话", a
 
 it("人员有待安排事项但本周无排期时说明本周为空", async () => {
   await setup();
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
   fireEvent.click(screen.getByRole("option", { name: "本人" }));
   expect(screen.getByText("本周暂无可显示的安排")).toBeTruthy();
@@ -1022,7 +1022,7 @@ it("人员分组在待排池和日历独立折叠，键盘展开并保留选择�
   read.targets.push({ ...read.targets[0], id: "scheduled", title: "已安排任务", identity: { ...identity, item: "scheduled" }, dates: { start: currentWeekDay(0), end: currentWeekDay(0) } });
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
   const pendingToggle = screen.getByRole("button", { name: "收起本人的待排期，共1项" });
   fireEvent.click(pendingToggle);
@@ -1039,14 +1039,14 @@ it("人员分组在待排池和日历独立折叠，键盘展开并保留选择�
   fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
   fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(1) } });
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(1) } });
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getByRole("button", { name: "展开本人的日历安排，共2项" }));
   fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(1));
   expect(document.querySelectorAll(".schedule-row[hidden]")).toHaveLength(0);
 });
 
-it("按人查看隐藏只读已排期，跨空间相同人员 ID 的待排分组不串联", async () => {
+it("人员排期隐藏只读已排期，跨空间相同人员 ID 的待排分组不串联", async () => {
   const read = data();
   const base = read.targets[0];
   read.targets.push(
@@ -1055,7 +1055,7 @@ it("按人查看隐藏只读已排期，跨空间相同人员 ID 的待排分组
   );
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getAllByRole("button", { name: "收起本人的待排期，共1项" })[0]);
   expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
   expect(screen.getByRole("button", { name: /另一空间待排/ })).toBeTruthy();
@@ -1079,7 +1079,7 @@ it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同
     { ...base, id: "d", title: "已排期", ownerId: "same", ownerIds: ["same"], identity: { ...identity, project: "q", owner: "same" }, dates: { start: currentWeekDay(0), end: currentWeekDay(0) }, mine: false },
   ];
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   const pending = document.querySelector(".schedule-pending")!;
   expect(pending.querySelectorAll(".schedule-group")).toHaveLength(3);
   expect(pending.textContent).toContain("张三 (same)");
@@ -1296,7 +1296,7 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(farEnd);
 });
 
-it("『仅看可排期』现代滑动开关过滤只读事项且不与按人查看串扰", async () => {
+it("『仅看可排期』现代滑动开关过滤只读事项且不与人员排期串扰", async () => {
   const read = data();
   read.people.push({ id: "other", name: "同事" });
   read.targets = [
@@ -1316,7 +1316,7 @@ it("『仅看可排期』现代滑动开关过滤只读事项且不与按人查�
   expect(screen.queryByRole("button", { name: /多人共同只读项/ })).toBeNull();
   expect(screen.getByRole("button", { name: /任务一/ })).toBeTruthy();
 
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   expect(screen.queryByRole("switch", { name: /仅看可排期/ })).toBeNull();
   expect(screen.getAllByRole("button", { name: /多人共同只读项/ }).length).toBeGreaterThan(0);
 });
@@ -1550,7 +1550,7 @@ it("本人尾号兜底自动替换为真实姓名与头像，纯数字回退名�
   const linkBtn = within(linkWrap as HTMLElement).getByRole("link", { name: /打开飞书事项/ });
   expect(linkBtn.getAttribute("title")).toBe("在浏览器打开飞书事项");
 
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   const pending = document.querySelector(".schedule-pending")!;
   expect(pending.textContent).toContain("王小明");
   expect(pending.textContent).toContain("团队成员");
@@ -1663,7 +1663,7 @@ it("按需加载全员排期期间若重新读取新会话，旧会话迟到响�
   );
 
   // 触发旧会话 s-old 的按需人员加载
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   expect(loadSchedulePeople).toHaveBeenCalledWith("s-old");
 
   // 在旧请求完成前点击『重新读取』切换到新会话 s-new
@@ -1729,8 +1729,8 @@ it("按需加载全员排期并保留未同步草稿，预加载会话在切换�
   fireEvent.click(within(quickBar).getByRole("button", { name: "今天" }));
   expect(screen.getByRole("button", { name: "核对并同步 (1)" })).toBeTruthy();
 
-  // 切换到『按人查看』时按需触发 loadSchedulePeople，完成后合并同事事项且不丢失本人未保存草稿
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  // 切换到『人员排期』时按需触发 loadSchedulePeople，完成后合并同事事项且不丢失本人未保存草稿
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   await waitFor(() => expect(loadSchedulePeople).toHaveBeenCalledWith("session"));
   expect(await screen.findByRole("button", { name: /李同事的开发节点/ })).toBeTruthy();
   expect(screen.getByRole("button", { name: "核对并同步 (1)" })).toBeTruthy();
@@ -2236,7 +2236,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     const feBarBiweekly = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
     expect(feBarBiweekly.classList.contains("is-single-day-bar")).toBe(true);
     expect(getComputedStyle(feBarBiweekly.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("none");
-    fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+    fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
     expect(document.querySelector(".schedule-bar.is-schedulable")).toBeNull();
     for (const title of document.querySelectorAll(".schedule-bar-title")) {
       expect(getComputedStyle(title).fontWeight).toBe("600");
@@ -2355,8 +2355,8 @@ it("我的排期与个人待办不混入同事项下他人的历史已流转节�
   fireEvent.click(screen.getByRole("button", { name: /操作日志页面中新增操作类型：发布后端方案设计/ }));
   expect(screen.queryByRole("group", { name: "事项节点" })).toBeNull();
 
-  // 2. 切换到『按人查看』时，闫国强、刘悦然、施伟各自归入本人分组与独立行，绝不把闫国强的『产品方案设计』合并到刘悦然行内
-  fireEvent.click(screen.getByRole("button", { name: "按人查看" }));
+  // 2. 切换到『人员排期』时，闫国强、刘悦然、施伟各自归入本人分组与独立行，绝不把闫国强的『产品方案设计』合并到刘悦然行内
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   const peopleRows = Array.from(document.querySelectorAll(".schedule-row-label")).map(
     (el) => el.textContent || "",
   );
