@@ -217,7 +217,7 @@ mod tests {
                 }
             }
             let row = json!({"entity_key":"3:10:node_state_0_10", "work_item_info":{"id":10, "name":"示例需求"},
-                "state":{"state_name":"开发", "passed":true}, "page_context_only":false,
+                "state":{"state_id":"state_0", "state_name":"开发", "passed":true}, "page_context_only":false,
                 "time":{"start":"2026-09-30 00:00:00", "end":"2026-10-06 23:59:59"}});
             let context_only = json!({"page_context_only":true, "time":{"start":"2026-10-05", "end":"2026-10-05"}});
             Ok(ToolResultPayload::from_json(json!({
@@ -247,7 +247,8 @@ mod tests {
             assert_eq!(target.baseline.start, "2026-09-30");
             assert_eq!(target.baseline.end, "2026-10-06");
             assert_eq!(target.identity.owner.as_deref(), Some("me"));
-            assert_eq!(target.identity.node, "node_state_0_10");
+            assert_eq!(target.identity.node, "state_0");
+            assert_eq!(target.node_id, "node_state_0_10");
             assert!(target.read_only_reason.is_some());
         }
     }
@@ -381,12 +382,19 @@ fn history_target(
     if item.is_empty() || title.is_empty() {
         return Err(());
     }
-    let node = entity_key
+    let node_uuid = entity_key
         .splitn(3, ':')
         .nth(2)
         .filter(|key| key.starts_with("node_"))
-        .unwrap_or_default()
-        .to_owned();
+        .unwrap_or_default();
+    let state_key = entity["state"]["state_id"].as_str().unwrap_or_default();
+    // get_node_detail exposes both forms. Verify the UUID belongs to this item
+    // before using the same node key as the editable schedule session.
+    let node = if !state_key.is_empty() && node_uuid == format!("node_{state_key}_{item}") {
+        state_key
+    } else {
+        node_uuid
+    };
     let node_name = entity["state"]["state_name"]
         .as_str()
         .or(entity["name"].as_str())
@@ -403,13 +411,13 @@ fn history_target(
                 entity_key
             ])
         ),
-        node_id: node.clone(),
+        node_id: node_uuid.to_owned(),
         identity: Identity {
             connection: connection.to_owned(),
             project: scope.project.clone(),
             r#type: scope.work_item_type.clone(),
             item: item.to_owned(),
-            node,
+            node: node.to_owned(),
             scope: "owner".into(),
             owner: Some(owner.id.clone()),
         },

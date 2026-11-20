@@ -1359,6 +1359,21 @@ it.each(["我的排期", "人员排期"])("%s 预取前一页并在翻周时直�
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
+it("日历按真实节点去重，保留名称相同的不同节点", async () => {
+  const read = data();
+  const current = { ...read.targets[0], nodeName: "开发", dates: { start: currentWeekDay(0), end: currentWeekDay(2) } };
+  read.targets = [current];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], complete: true, targets: [
+    { ...current, id: "history:same-node", readOnlyReason: "仅供查看" },
+    { ...current, id: "history:different-node", readOnlyReason: "仅供查看", identity: { ...current.identity, node: "other-node" } },
+  ] });
+  await setup();
+  const calendar = document.querySelector(".schedule-calendar")!;
+  await waitFor(() => expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(2));
+  expect(calendar.querySelectorAll(".schedule-bar.is-readonly")).toHaveLength(1);
+});
+
 it("快速切周时隔离迟到的日历结果并保留草稿", async () => {
   let finishFirst!: (result: ScheduleHistory) => void;
   let failed = false;
