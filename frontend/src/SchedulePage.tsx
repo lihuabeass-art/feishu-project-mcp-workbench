@@ -358,23 +358,21 @@ export function SchedulePage({
   const windowEnd = days[days.length - 1];
   const thisWeek = read?.recentRange?.start ?? monday(currentToday);
   const viewingHistory = windowStart < thisWeek;
-  const recentEnd = read?.recentRange?.end ?? addDays(thisWeek, 13);
-  const [calendarKey, previousCalendarKey] = useMemo(() => {
-    const request = scheduleHistoryRequest(read, snapshot, view, {
-      start: windowStart, end: windowEnd > recentEnd ? recentEnd : windowEnd,
-    });
-    if (!request || windowStart > recentEnd) return ["", ""];
-    const visibleKey = JSON.stringify([calendarContext, request]);
-    const previousStart = addDays(windowStart, -7);
+  const [calendarKey, preloadCalendarKeys] = useMemo((): [string, string[]] => {
+    const request = scheduleHistoryRequest(read, snapshot, view, { start: windowStart, end: windowEnd });
+    if (!request) return ["", []];
+    const keyForWeek = (offset: number) => {
+      const start = addDays(windowStart, offset);
+      const end = addDays(windowEnd, offset);
+      return JSON.stringify([calendarContext, { ...request, range: { start, end } }]);
+    };
+    const visibleKey = keyForWeek(0);
     const scopeReady = request.connection && request.currentUser && request.scopes.length &&
       !read?.accountError && (view !== "people" || read?.peopleLoaded !== false);
-    if (!scopeReady || previousStart >= thisWeek) return [visibleKey, ""];
-    return [visibleKey, JSON.stringify([calendarContext, {
-      ...request, range: { start: previousStart, end: addDays(windowEnd, -7) },
-    }])];
-  }, [read, snapshot, view, calendarContext, recentEnd, thisWeek, windowStart, windowEnd]);
+    return [visibleKey, scopeReady ? [-7, 7, -14, 14].map(keyForWeek) : []];
+  }, [read, snapshot, view, calendarContext, windowStart, windowEnd]);
   const { data: currentHistory, loading: calendarLoading, failed: calendarFailed, retry: retryCalendar } =
-    useScheduleCalendar(calendarKey, previousCalendarKey);
+    useScheduleCalendar(calendarKey, preloadCalendarKeys);
   const historicalEntries = useMemo(
     () => currentHistory?.targets.map(createScheduleEntry) || [],
     [currentHistory],
@@ -1879,7 +1877,7 @@ export function SchedulePage({
                       type="button"
                       className="icon-button"
                       aria-label="上一周"
-                      onClick={() => setWeek(addDays(week, -7))}
+                      onClick={() => setWeek((current) => addDays(current, -7))}
                     >
                       <ChevronLeft size={16} />
                     </button>
@@ -1890,7 +1888,7 @@ export function SchedulePage({
                       type="button"
                       className="icon-button"
                       aria-label="下一周"
-                      onClick={() => setWeek(addDays(week, 7))}
+                      onClick={() => setWeek((current) => addDays(current, 7))}
                     >
                       <ChevronRight size={16} />
                     </button>

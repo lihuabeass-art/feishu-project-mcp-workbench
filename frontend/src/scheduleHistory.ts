@@ -66,11 +66,23 @@ function preserveHistory(previous?: ScheduleHistory, incoming?: ScheduleHistory)
   return { complete: false, connection: incoming?.connection ?? previous.connection, targets: [...targets.values()], people: [...people.values()] };
 }
 
-export function useScheduleCalendar(visibleKey: string, previousKey: string) {
+const MAX_CACHED_PAGES = 12;
+const MAX_PRELOADS = 2;
+const NAVIGATION_SETTLE_MS = 75;
+
+export function useScheduleCalendar(visibleKey: string, preloadKeys: string[]) {
   const [pages, setPages] = useState(() => new Map<string, HistoryPage>());
   const pending = useRef(new Set<string>());
-  const protectedKeys = useRef([visibleKey, previousKey]);
-  useLayoutEffect(() => { protectedKeys.current = [visibleKey, previousKey]; }, [visibleKey, previousKey]);
+  const preloading = useRef(new Set<string>());
+  const protectedKeys = useRef([visibleKey, ...preloadKeys]);
+  useLayoutEffect(() => { protectedKeys.current = [visibleKey, ...preloadKeys]; }, [visibleKey, preloadKeys]);
+  const [settledKey, setSettledKey] = useState(visibleKey);
+  const navigationSettled = settledKey === visibleKey;
+  useEffect(() => {
+    if (navigationSettled) return;
+    const timeout = window.setTimeout(() => setSettledKey(visibleKey), NAVIGATION_SETTLE_MS);
+    return () => window.clearTimeout(timeout);
+  }, [visibleKey, navigationSettled]);
 
   const updatePage = useCallback((key: string, update: (prior?: HistoryPage) => HistoryPage) => {
     setPages((current) => {
@@ -78,19 +90,21 @@ export function useScheduleCalendar(visibleKey: string, previousKey: string) {
       next.delete(key);
       next.set(key, update(current.get(key)));
       for (const [candidate, page] of next) {
-        if (next.size <= 6) break;
+        if (next.size <= MAX_CACHED_PAGES) break;
         if (candidate !== key && !page.loading && !protectedKeys.current.includes(candidate)) next.delete(candidate);
       }
       return next;
     });
   }, []);
 
-  const load = useCallback((key: string, preloaded: boolean) => {
+  const load = useCallback((key: string, preloaded = false) => {
     if (!key || pending.current.has(key)) return;
     pending.current.add(key);
+    if (preloaded) preloading.current.add(key);
     updatePage(key, (prior) => ({ data: prior?.data, loading: true, preloaded }));
     const finish = (data?: ScheduleHistory) => {
       pending.current.delete(key);
+      preloading.current.delete(key);
       updatePage(key, (prior) => ({ data: preserveHistory(prior?.data, data), loading: false, preloaded }));
     };
     Promise.resolve().then(() => loadScheduleHistory(JSON.parse(key)[1])).then(finish, () => finish());
@@ -105,23 +119,23 @@ export function useScheduleCalendar(visibleKey: string, previousKey: string) {
   const exactBootstrap = compatible && request?.scopes.length && compatible[1].data?.complete &&
     JSON.stringify(JSON.parse(compatible[0])[1].scopes) === JSON.stringify(request.scopes);
   const visible = pages.get(visibleKey) ?? (exactBootstrap ? compatible?.[1] : undefined);
-  const previous = pages.get(previousKey);
   const needsVisibleRead = Boolean(visibleKey && (!visible || (visible.preloaded && !visible.loading && !visible.data?.complete)));
   useEffect(() => {
-    if (needsVisibleRead) load(visibleKey, false);
-  }, [visibleKey, needsVisibleRead, load]);
+    if (navigationSettled && needsVisibleRead) load(visibleKey);
+  }, [visibleKey, needsVisibleRead, navigationSettled, load]);
 
-  const canPreload = Boolean(previousKey && !previous && (!visibleKey || (visible?.data?.complete && !visible.loading)));
   useEffect(() => {
-    if (!canPreload) return;
-    const timer = window.setTimeout(() => load(previousKey, true), 250);
-    return () => window.clearTimeout(timer);
-  }, [previousKey, canPreload, load]);
+    if (!navigationSettled) return;
+    for (const key of preloadKeys) {
+      if (preloading.current.size >= MAX_PRELOADS) break;
+      if (!pages.has(key)) load(key, true);
+    }
+  }, [preloadKeys, pages, navigationSettled, load]);
 
   return {
     data: visible?.data ?? compatible?.[1].data,
     loading: needsVisibleRead || Boolean(visible?.loading),
     failed: Boolean(visible && !visible.preloaded && !visible.loading && !visible.data?.complete),
-    retry: () => load(visibleKey, false),
+    retry: () => load(visibleKey),
   };
 }

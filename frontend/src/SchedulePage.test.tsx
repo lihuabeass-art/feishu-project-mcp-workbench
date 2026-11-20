@@ -540,7 +540,7 @@ it("单次读取后筛选和编辑不触发请求，经二次确认后同步差�
   expect(screen.queryByText("收到成功回执，未回读核验")).toBeNull();
   expect(screen.queryByText(/上次提交：/)).toBeNull();
   expect(screen.getByText("已保存 1 项节点排期")).toBeTruthy();
-  const successBanner = screen.getByRole("status");
+  const successBanner = screen.getByText("排期已同步").closest('[role="status"]')!;
   expect(successBanner.className).toContain("success");
   expect(successBanner.className).toContain("workflow-toast");
   expect(submitScheduleTargets).toHaveBeenCalledWith("session", [{ id: "one", identity, dates: { start: "2026-11-13", end: "2026-11-16" }, cancel: false }]);
@@ -858,7 +858,7 @@ it("默认显示来源聚合日期且保持只读，人员排期不虚构负责�
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
   fireEvent.click(screen.getByRole("option", { name: "本人" }));
   expect(screen.queryByRole("button", { name: /来源记录/ })).toBeNull();
-  expect(screen.getByText("当前范围未包含该人员的安排")).toBeTruthy();
+  expect(await screen.findByText("当前范围未包含该人员的安排")).toBeTruthy();
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
@@ -1099,7 +1099,7 @@ it("人员有待安排事项但本周无排期时说明本周为空", async () =
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
   fireEvent.click(screen.getByRole("option", { name: "本人" }));
-  expect(screen.getByText("本周暂无可显示的安排")).toBeTruthy();
+  expect(await screen.findByText("本周暂无可显示的安排")).toBeTruthy();
   expect(screen.queryByText("当前范围未包含该人员的安排")).toBeNull();
 });
 
@@ -1318,33 +1318,73 @@ it("在日期范围旁统计排期，翻到其他周时隐藏今日统计", asyn
   expect(summary.textContent).toBe("已排 0");
 });
 
-it.each(["我的排期", "人员排期"])("%s 预取前一页并在翻周时直接显示，保留左侧计数且历史只读", async (view) => {
+it.each([
+  { view: "我的排期", weekOffset: 0 },
+  { view: "人员排期", weekOffset: 0 },
+  { view: "人员排期", weekOffset: -14 },
+])("$view 从偏移 $weekOffset 天的日期进入视角即预取两侧，翻页后继续补齐", async ({ view, weekOffset }) => {
   const read = data();
-  const owner = view === "人员排期" ? "peer" : "me";
+  const isPeople = view === "人员排期";
+  const owner = isPeople ? "peer" : "me";
+  const previousStart = currentWeekDay(weekOffset - 7);
   read.people.push({ id: "peer", name: "同事", connection: "c", project: "p" });
   const historyRecord = { ...read.targets[0], id: "history:past", title: "旧周完成事项", nodeName: "历史开发",
     identity: { ...identity, item: "old", owner }, ownerId: owner, ownerIds: [owner], mine: owner === "me",
-    dates: { start: currentWeekDay(-9), end: currentWeekDay(-6) }, readOnlyReason: "历史排期，仅供查看" };
+    dates: { start: currentWeekDay(weekOffset - 9), end: currentWeekDay(weekOffset - 6) }, readOnlyReason: "历史排期，仅供查看" };
+  const laterRecord = { ...historyRecord, id: "history:later", title: "更远一周的安排",
+    dates: { start: currentWeekDay(14), end: currentWeekDay(15) } };
   read.targets.push({ ...historyRecord, id: "recent", title: "当前日期的排期", nodeStatus: "doing", readOnlyReason: undefined,
     dates: { start: currentWeekDay(0), end: currentWeekDay(6) } });
-  vi.mocked(loadScheduleSession).mockResolvedValue(read);
-  vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], targets: [historyRecord], complete: true });
+  let finishPeople: ((result: ScheduleRead) => void) | undefined;
+  vi.mocked(loadScheduleSession).mockResolvedValue(isPeople
+    ? { ...read, peopleLoaded: false, people: read.people.filter((person) => person.id === "me"), targets: read.targets.filter((record) => record.mine) }
+    : read);
+  vi.mocked(loadSchedulePeople).mockImplementation(() => new Promise((resolve) => { finishPeople = resolve; }));
+  let finishTeamCalendar: (() => void) | undefined;
+  vi.mocked(loadScheduleHistory).mockImplementation(async ({ range, scopes }) => {
+    if (isPeople && range.start === currentWeekDay(weekOffset) && scopes.some((scope) => scope.users.includes("peer"))) {
+      await new Promise<void>((resolve) => { finishTeamCalendar = resolve; });
+    }
+    const targets = range.start === previousStart ? [historyRecord] : range.start === currentWeekDay(14) ? [laterRecord] : [];
+    return { people: [], targets, complete: true };
+  });
   await setup();
+  for (let offset = 0; offset > weekOffset; offset -= 7) {
+    fireEvent.click(screen.getByRole("button", { name: "上一周" }));
+  }
   fireEvent.click(screen.getByRole("button", { name: view }));
   expect(screen.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
   const previousRequest = expect.objectContaining({
-    range: { start: currentWeekDay(-7), end: currentWeekDay(-1) },
-    scopes: [{ project: "p", work_item_type: "t", users: view === "人员排期" ? ["peer"] : [] }],
+    range: { start: previousStart, end: currentWeekDay(weekOffset - 1) },
+    scopes: [{ project: "p", work_item_type: "t", users: isPeople ? ["peer"] : [] }],
   });
+  if (isPeople) {
+    expect(loadScheduleHistory).not.toHaveBeenCalledWith(previousRequest);
+    await waitFor(() => expect(finishPeople).toBeTypeOf("function"));
+    await act(async () => { finishPeople?.({ ...read, peopleLoaded: true }); });
+  }
   await waitFor(() => expect(loadScheduleHistory).toHaveBeenCalledWith(previousRequest));
+  await waitFor(() => expect(loadScheduleHistory).toHaveBeenCalledWith(expect.objectContaining({
+    range: { start: currentWeekDay(weekOffset + 7), end: currentWeekDay(weekOffset + 13) },
+    scopes: [{ project: "p", work_item_type: "t", users: isPeople ? ["peer"] : [] }],
+  })));
+  await waitFor(() => expect(loadScheduleHistory).toHaveBeenCalledWith(expect.objectContaining({
+    range: { start: currentWeekDay(weekOffset - 14), end: currentWeekDay(weekOffset - 8) },
+    scopes: [{ project: "p", work_item_type: "t", users: isPeople ? ["peer"] : [] }],
+  })));
+  if (isPeople) expect(finishTeamCalendar).toBeTypeOf("function");
   const calendar = within(document.querySelector(".schedule-calendar") as HTMLElement);
   expect(calendar.queryByRole("button", { name: /旧周完成事项/ })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "上一周" }));
   fireEvent.click(calendar.getByRole("button", { name: /旧周完成事项.*历史开发/ }));
-  expect(screen.queryByText("正在读取历史排期…")).toBeNull();
+  expect(vi.mocked(loadScheduleHistory).mock.calls.filter(([request]) =>
+    request.range.start === previousStart && request.scopes.some((scope) => scope.users.includes("peer")) === isPeople,
+  )).toHaveLength(1);
   await waitFor(() => expect(loadScheduleHistory).toHaveBeenCalledWith(expect.objectContaining({
-    range: { start: currentWeekDay(-14), end: currentWeekDay(-8) },
+    range: { start: currentWeekDay(weekOffset - 21), end: currentWeekDay(weekOffset - 15) },
+    scopes: [{ project: "p", work_item_type: "t", users: isPeople ? ["peer"] : [] }],
   })));
+  expect(screen.queryByText("正在读取历史排期…")).toBeNull();
   expect(screen.getByRole("tab", { name: "已排期 (1)" })).toBeTruthy();
   expect(screen.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
   const inspector = within(screen.getByLabelText("排期检查器"));
@@ -1356,6 +1396,25 @@ it.each(["我的排期", "人员排期"])("%s 预取前一页并在翻周时直�
   }
   fireEvent.click(within(document.querySelector(".schedule-week-nav") as HTMLElement).getByRole("button", { name: "本周" }));
   expect(calendar.queryByRole("button", { name: /旧周完成事项/ })).toBeNull();
+  if (finishTeamCalendar) await act(async () => { finishTeamCalendar?.(); });
+  if (weekOffset === 0) {
+    const next = screen.getByRole("button", { name: "下一周" });
+    fireEvent.click(next);
+    await waitFor(() => expect(loadScheduleHistory).toHaveBeenCalledWith(expect.objectContaining({
+      range: { start: currentWeekDay(14), end: currentWeekDay(20) },
+      scopes: [{ project: "p", work_item_type: "t", users: isPeople ? ["peer"] : [] }],
+    })));
+    fireEvent.click(next);
+    expect(calendar.getByRole("button", { name: /更远一周的安排/ })).toBeTruthy();
+    await waitFor(() => expect(loadScheduleHistory).toHaveBeenCalledWith(expect.objectContaining({
+      range: { start: currentWeekDay(28), end: currentWeekDay(34) },
+      scopes: [{ project: "p", work_item_type: "t", users: isPeople ? ["peer"] : [] }],
+    })));
+    expect(vi.mocked(loadScheduleHistory).mock.calls.filter(([request]) =>
+      request.range.start === currentWeekDay(14) && request.scopes.some((scope) => scope.users.includes("peer")) === isPeople,
+    )).toHaveLength(1);
+    expect(screen.getByRole("tab", { name: "已排期 (1)" })).toBeTruthy();
+  }
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
@@ -1374,12 +1433,47 @@ it("日历按真实节点去重，保留名称相同的不同节点", async () =
   expect(calendar.querySelectorAll(".schedule-bar.is-readonly")).toHaveLength(1);
 });
 
+it("快速往返只补最终日期附近的缓存，后台预取最多同时两页", async () => {
+  const releaseNeighbors = new Map<string, () => void>();
+  const requestedStarts = () => vi.mocked(loadScheduleHistory).mock.calls.map(([request]) => request.range.start);
+  vi.mocked(loadScheduleHistory).mockImplementation(async ({ range }) => {
+    if (range.start === currentWeekDay(-7) || range.start === currentWeekDay(7)) {
+      await new Promise<void>((resolve) => { releaseNeighbors.set(range.start, resolve); });
+    }
+    return { people: [], targets: [], complete: true };
+  });
+  await setup();
+  await waitFor(() => expect(releaseNeighbors.size).toBe(2));
+  expect(requestedStarts()).not.toContain(currentWeekDay(-14));
+  expect(requestedStarts()).not.toContain(currentWeekDay(14));
+  await act(async () => { for (const release of releaseNeighbors.values()) release(); });
+  await waitFor(() => expect(requestedStarts()).toContain(currentWeekDay(14)));
+
+  const next = screen.getByRole("button", { name: "下一周" });
+  const previous = screen.getByRole("button", { name: "上一周" });
+  vi.useFakeTimers();
+  try {
+    for (let i = 0; i < 5; i++) fireEvent.click(next);
+    for (let i = 0; i < 4; i++) fireEvent.click(previous);
+    expect(requestedStarts()).not.toContain(currentWeekDay(21));
+    expect(requestedStarts()).not.toContain(currentWeekDay(35));
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    expect(requestedStarts()).toContain(currentWeekDay(21));
+    expect(requestedStarts()).not.toContain(currentWeekDay(28));
+    expect(requestedStarts()).not.toContain(currentWeekDay(35));
+    const requestKeys = vi.mocked(loadScheduleHistory).mock.calls.map(([request]) => JSON.stringify(request));
+    expect(new Set(requestKeys).size).toBe(requestKeys.length);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("快速切周时隔离迟到的日历结果并保留草稿", async () => {
   let finishFirst!: (result: ScheduleHistory) => void;
-  let failed = false;
+  let olderAttempts = 0;
   vi.mocked(loadScheduleHistory).mockImplementation(async ({ range }) => {
     if (range.start === currentWeekDay(-7)) return new Promise((resolve) => { finishFirst = resolve; });
-    if (range.start === currentWeekDay(-14) && !failed) { failed = true; throw new Error("offline"); }
+    if (range.start === currentWeekDay(-14) && ++olderAttempts <= 2) throw new Error("offline");
     return { people: [], targets: [], complete: true };
   });
   await setup();
@@ -1391,6 +1485,7 @@ it("快速切周时隔离迟到的日历结果并保留草稿", async () => {
   fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(0) } });
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(0) } });
   expect(screen.getByText("本地草稿")).toBeTruthy();
+  await waitFor(() => expect(olderAttempts).toBe(1));
   fireEvent.click(previous);
   const retry = await screen.findByRole("button", { name: "重试历史排期" });
   await act(async () => { finishFirst({ people: [], targets: [], complete: true }); });
@@ -1921,6 +2016,7 @@ it("按需加载全员排期期间若重新读取新会话，旧会话迟到响�
 
   // 在旧请求完成前点击『重新读取』切换到新会话 s-new
   fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+  expect(reload).toHaveBeenCalledWith(expect.objectContaining({ includePeople: true }));
   expect(await screen.findByRole("button", { name: /新会话事项/ })).toBeTruthy();
 
   // 此时旧会话的 loadSchedulePeople 才迟到返回，不得覆盖新会话事项或污染 preloadedSession
@@ -2182,7 +2278,7 @@ it("纯成功同步展示悬浮绿色 Toast 并在 3 秒后自动消失，含失
     });
     confirmSync();
     await act(async () => {});
-    const toast = screen.getByRole("status");
+    const toast = screen.getByText("排期已同步").closest('[role="status"]')!;
     expect(toast.className).toContain("banner");
     expect(toast.className).toContain("success");
     expect(toast.className).toContain("workflow-toast");
@@ -2193,11 +2289,11 @@ it("纯成功同步展示悬浮绿色 Toast 并在 3 秒后自动消失，含失
     await act(async () => {
       vi.advanceTimersByTime(2999);
     });
-    expect(screen.queryByRole("status")).toBeTruthy();
+    expect(screen.queryByText("排期已同步")).toBeTruthy();
     await act(async () => {
       vi.advanceTimersByTime(1);
     });
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText("排期已同步")).toBeNull();
 
     // 2. 存在失败结果：展示持久的局部反馈（role="alert"），3 秒后仍不消失
     fireEvent.click(screen.getByRole("button", { name: /失败排期事项/ }));
