@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
+mod defects;
+pub use defects::{load_defects, Defect, DefectRead};
 mod history;
 pub use history::{load_calendar, CalendarResult, HistoryScope};
 
@@ -101,6 +103,7 @@ pub struct LoadResult {
     pub connection: String,
     pub recent_range: Option<Dates>,
     pub history_scopes: Vec<HistoryScope>,
+    pub defect_projects: Vec<String>,
     pub current_user: String,
     pub current_user_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -462,6 +465,7 @@ impl ScheduleSession {
             connection: fingerprint.clone(),
             recent_range,
             history_scopes: Vec::new(),
+            defect_projects: Vec::new(),
             current_user: String::new(),
             current_user_name: String::new(),
             current_user_avatar: None,
@@ -1010,6 +1014,8 @@ async fn load_remote(
     }
     crate::diagnostics::schedule_stage("schedule_todos");
     let items = read_todo_index(session, client, statuses).await?;
+    view.defect_projects = items.keys().filter(|(_, kind, _)| kind == "issue")
+        .map(|(project, _, _)| project.clone()).collect::<BTreeSet<_>>().into_iter().collect();
     let cached_flow_kinds: HashMap<(String, String, String), crate::model::domain::FlowKind> = session
         .store
         .query_items(&crate::store::ItemFilter {

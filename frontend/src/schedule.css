@@ -314,7 +314,7 @@
 
 .schedule-pool-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr minmax(0, 1.45fr);
   gap: 4px;
   padding: 3px;
   border: 1px solid var(--line);
@@ -324,11 +324,110 @@
 }
 
 .schedule-pool-tabs button {
-  padding: 6px 8px;
+  padding: 6px 3px;
   border-radius: 7px;
   font-size: 12px;
   color: var(--text-secondary);
   background: transparent;
+}
+
+.schedule-defect-count {
+  color: var(--heading);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-defect-title > strong {
+  min-width: 0;
+}
+
+@property --schedule-priority-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 30deg;
+}
+
+.schedule-defect-priority {
+  --priority-a: #87978e;
+  --priority-b: #aab8ae;
+  --priority-tint: 5%;
+  --priority-rim: 42%;
+  --priority-halo: 0%;
+  --priority-speed: 6.2s;
+  --priority-sweep: 44deg;
+  --priority-track: color-mix(in srgb, var(--priority-a) 22%, var(--line));
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  vertical-align: 0.14em;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--heading);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 17px;
+  font-variant-numeric: tabular-nums;
+  background:
+    linear-gradient(115deg, color-mix(in srgb, var(--priority-a) var(--priority-tint), var(--surface-solid)), color-mix(in srgb, var(--priority-b) var(--priority-tint), var(--surface-solid))) padding-box,
+    conic-gradient(from var(--schedule-priority-angle), var(--priority-track),
+      color-mix(in srgb, var(--priority-a) var(--priority-rim), var(--line)) calc(var(--priority-sweep) * 0.3),
+      color-mix(in srgb, var(--priority-b) var(--priority-rim), var(--line)) calc(var(--priority-sweep) * 0.65),
+      var(--priority-track) var(--priority-sweep), var(--priority-track)) border-box;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--priority-a) var(--priority-halo), transparent);
+}
+
+.schedule-defect-priority[data-level="0"] { --priority-a: #bf6d53; --priority-b: #d8a36d; --priority-tint: 12%; --priority-rim: 100%; --priority-halo: 26%; --priority-speed: 2.2s; --priority-sweep: 106deg; }
+.schedule-defect-priority[data-level="1"] { --priority-a: #a68a4f; --priority-b: #99a360; --priority-tint: 10%; --priority-rim: 87%; --priority-halo: 17%; --priority-speed: 3s; --priority-sweep: 88deg; }
+.schedule-defect-priority[data-level="2"] { --priority-a: #659676; --priority-b: #8fb18b; --priority-tint: 8%; --priority-rim: 69%; --priority-halo: 8%; --priority-speed: 4s; --priority-sweep: 68deg; }
+.schedule-defect-priority[data-level="3"] { --priority-a: #87a38e; --priority-b: #94aa91; --priority-tint: 6%; --priority-rim: 53%; --priority-speed: 5.1s; --priority-sweep: 54deg; }
+:root[data-appearance="pearl"] .schedule-defect-priority { --priority-a: #929bb0; --priority-b: #b1b9c7; }
+:root[data-appearance="pearl"] .schedule-defect-priority[data-level="0"] { --priority-a: #d5708a; --priority-b: #a48bdd; }
+:root[data-appearance="pearl"] .schedule-defect-priority[data-level="1"] { --priority-a: #9b83d5; --priority-b: #749dc8; }
+:root[data-appearance="pearl"] .schedule-defect-priority[data-level="2"] { --priority-a: #799ac8; --priority-b: #73b6b4; }
+:root[data-appearance="pearl"] .schedule-defect-priority[data-level="3"] { --priority-a: #7aaba3; --priority-b: #a3bfb4; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .schedule-defect-priority[data-level] {
+    animation: schedule-defect-priority-marquee var(--priority-speed) linear infinite;
+  }
+}
+
+@keyframes schedule-defect-priority-marquee {
+  from { --schedule-priority-angle: 30deg; }
+  to { --schedule-priority-angle: 390deg; }
+}
+
+.schedule-defect-status {
+  --defect-tone: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--defect-tone) 24%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--defect-tone) 9%, var(--surface-solid));
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.schedule-defect-status::before {
+  content: "";
+  inline-size: 5px;
+  block-size: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--defect-tone);
+}
+
+.schedule-defect-status[data-tone="pending"] { --defect-tone: #af8145; }
+.schedule-defect-status[data-tone="active"] { --defect-tone: #558e7d; }
+.schedule-defect-status[data-tone="paused"] { --defect-tone: #82798f; }
+
+.schedule-defect-group > .schedule-group {
+  width: 100%;
 }
 
 .schedule-pool-tabs button:hover:not(:disabled) {
@@ -442,7 +541,7 @@
   font-size: 10px;
 }
 
-.schedule-pending-item span,
+.schedule-pending-item span:not(.schedule-defect-priority, .schedule-defect-status),
 .schedule-pending-item small {
   font-size: 11px;
   color: var(--text-secondary);

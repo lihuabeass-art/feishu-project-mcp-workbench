@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { AppVersion } from "./AppVersion";
 import { AppUpdateDialog, AppUpdateSettings } from "./AppUpdater";
 import { useAppUpdater } from "./useAppUpdater";
-import { SchedulePage, type ScheduleSessionController } from "./SchedulePage";
+import { SchedulePage, type ScheduleGuard, type ScheduleSessionController } from "./SchedulePage";
 import { closeScheduleSession, loadScheduleSession, resetScheduleSession, type ScheduleRead } from "./scheduleApi";
 import { useScrollIsolation } from "./useScrollIsolation";
 import { prepareUpdateInstallation } from "./appUpdateSafety";
@@ -301,18 +301,19 @@ function Workspace() {
   const [view, setView] = useState<View>("work");
   const viewRef = useRef(view);
   viewRef.current = view;
-  const [scheduleGuard, setScheduleGuard] = useState<{ dirty: boolean; busy: boolean; uncertain: boolean; interacting?: boolean }>({ dirty: false, busy: false, uncertain: false });
+  const [scheduleGuard, setScheduleGuard] = useState<ScheduleGuard>({ dirty: false, busy: false, uncertain: false });
   const scheduleGuardRef = useRef(scheduleGuard);
   const scheduleInteractionRevision = useRef(0);
   const [scheduleCandidate, setScheduleCandidate] = useState<ScheduleRead | null>(null);
   const scheduleCandidateRef = useRef<{ read: ScheduleRead; revision: number } | null>(null);
-  const [scheduleExit, setScheduleExit] = useState<{ action?: () => void } | null>(null);
+  const [scheduleExit, setScheduleExit] = useState<{ action?: () => void; defectBusy?: boolean } | null>(null);
   const scheduleExitScrollRef = useScrollIsolation();
   const updateScheduleGuard = useCallback((guard: typeof scheduleGuard) => { scheduleGuardRef.current = guard; setScheduleGuard(guard); }, []);
   const requestScheduleExit = useCallback((action: () => void) => {
     const guard = scheduleGuardRef.current;
+    if (guard.defectWorkflow?.busy) { setScheduleExit({ defectBusy: true }); return; }
     if (guard.busy) { setScheduleExit({}); return; }
-    if (guard.dirty || guard.uncertain) { setScheduleExit({ action }); return; }
+    if (guard.dirty || guard.uncertain || guard.defectWorkflow?.dirty || guard.defectWorkflow?.uncertain) { setScheduleExit({ action }); return; }
     action();
   }, []);
   const navigate = (next: View, after?: () => void) => {
@@ -322,7 +323,7 @@ function Workspace() {
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
       const guard = scheduleGuardRef.current;
-      if (guard.busy || guard.dirty || guard.uncertain) { event.preventDefault(); event.returnValue = ""; }
+      if (guard.busy || guard.dirty || guard.uncertain || guard.defectWorkflow) { event.preventDefault(); event.returnValue = ""; }
     };
     window.addEventListener("beforeunload", beforeUnload);
     if (!desktop) return () => window.removeEventListener("beforeunload", beforeUnload);
@@ -334,10 +335,8 @@ function Workspace() {
         // Tauri's helper otherwise calls window.destroy(), which needs an extra
         // capability. Remove this listener before the existing close command.
         event.preventDefault();
-        const guard = scheduleGuardRef.current;
         const close = () => { void (async () => { await unlisten?.(); unlisten = undefined; await invoke("window_action", { action: "close" }); })(); };
-        if (!guard.busy && !guard.dirty && !guard.uncertain) close();
-        else requestScheduleExit(close);
+        requestScheduleExit(close);
       });
       if (disposed) stop(); else unlisten = stop;
     }).catch(() => {});
@@ -1817,7 +1816,28 @@ function Workspace() {
         <WorkflowSuccessToast key={id} id={id} report={result} dismiss={dismissWorkflowReport} />
       ))}
     </div>
-    {scheduleExit && <div ref={scheduleExitScrollRef} className="schedule-dialog-backdrop scroll-isolation-boundary"><div className="schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="schedule-exit-title" onKeyDown={(event) => { if (event.key === "Escape") setScheduleExit(null); }}><h2 id="schedule-exit-title">{!scheduleExit.action || scheduleGuard.busy ? "排期同步" : "未同步的编辑内容即将丢失"}</h2><p>{scheduleGuard.busy ? "排期正在同步，请等待本次结果。" : !scheduleExit.action ? "同步已结束，请关闭提示后重新操作。" : "离开后将丢弃本次会话中的编辑。"}</p>{scheduleGuard.uncertain && <p>部分排期可能已保存，请在飞书核对。</p>}<div><button autoFocus className="secondary" onClick={() => setScheduleExit(null)}>{!scheduleExit.action || scheduleGuard.busy ? "知道了" : "继续编辑"}</button>{scheduleExit.action && !scheduleGuard.busy && <button className="primary" onClick={() => { if (scheduleGuardRef.current.busy) return; const hadUncertain = scheduleGuardRef.current.uncertain; const action = scheduleExit.action; setScheduleExit(null); if (hadUncertain) invalidateScheduleSession(); updateScheduleGuard({ dirty: false, busy: false, uncertain: false }); action?.(); }}>放弃并继续</button>}</div></div></div>}
+    {scheduleExit && <div ref={scheduleExitScrollRef} className="schedule-dialog-backdrop scroll-isolation-boundary">
+      <div className="schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="schedule-exit-title" onKeyDown={(event) => { if (event.key === "Escape") setScheduleExit(null); }}>
+        <h2 id="schedule-exit-title">{scheduleExit.defectBusy || scheduleGuard.defectWorkflow?.busy ? "缺陷流程提交" : !scheduleExit.action || scheduleGuard.busy ? "排期同步" : scheduleGuard.defectWorkflow ? "离开当前编辑？" : "未同步的编辑内容即将丢失"}</h2>
+        {scheduleGuard.defectWorkflow?.busy ? <p>缺陷流程正在提交，请等待本次结果。</p>
+          : scheduleGuard.busy ? <p>排期正在同步，请等待本次结果。</p>
+          : !scheduleExit.action ? <p>{scheduleExit.defectBusy ? "提交已结束" : "同步已结束"}，请关闭提示后重新操作。</p>
+          : <>{(scheduleGuard.dirty || !scheduleGuard.defectWorkflow) && <p>离开后将丢弃本次会话中的编辑。</p>}{scheduleGuard.defectWorkflow?.dirty && <p>离开后会关闭缺陷流程编辑，本机草稿会保留。</p>}</>}
+        {scheduleGuard.uncertain && <p>部分排期可能已保存，请在飞书核对。</p>}
+        {scheduleGuard.defectWorkflow?.uncertain && <p>缺陷流程提交结果待核实，请在飞书核对。</p>}
+        <div>
+          <button autoFocus className="secondary" onClick={() => setScheduleExit(null)}>{!scheduleExit.action || scheduleGuard.busy || scheduleGuard.defectWorkflow?.busy ? "知道了" : "继续编辑"}</button>
+          {scheduleExit.action && !scheduleGuard.busy && !scheduleGuard.defectWorkflow?.busy && <button className="primary" onClick={() => {
+            if (scheduleGuardRef.current.busy || scheduleGuardRef.current.defectWorkflow?.busy) return;
+            const hadUncertain = scheduleGuardRef.current.uncertain;
+            setScheduleExit(null);
+            if (hadUncertain) invalidateScheduleSession();
+            updateScheduleGuard({ dirty: false, busy: false, uncertain: false });
+            scheduleExit.action?.();
+          }}>{scheduleGuard.dirty || !scheduleGuard.defectWorkflow ? "放弃并继续" : "离开并继续"}</button>}
+        </div>
+      </div>
+    </div>}
     {compact && (
       <CompactWorkspace
         items={compactItems}
@@ -2000,7 +2020,7 @@ function Workspace() {
           )}
           {!compact && alerts}
 
-          {view === "schedule" && !compact && <SchedulePage snapshot={data} calendarContext={scheduleConnectionKey} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit}
+          {view === "schedule" && !compact && <SchedulePage snapshot={data} calendarContext={scheduleConnectionKey} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit} defectRevision={scheduleWorkflowRevision}
             workflow={desktop && data?.credential_ready && data.capabilities?.workflow ? {
               context: scheduleConnectionKey,
               busy: workspaceActionBlocked("workflow", activity),

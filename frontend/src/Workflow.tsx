@@ -42,6 +42,7 @@ import type {
 type Field = WorkflowAction["fields"][number];
 export type WorkflowItem = Pick<CachedItem, "id" | "name" | "detail_revision" | "updated_at_ms">;
 export type WorkflowSubmit = (request: WorkflowRequest, actionLabel: string) => Promise<WorkflowResult | undefined>;
+export type WorkflowNavigationState = { editing: boolean; dirty: boolean; busy: boolean; uncertain: boolean };
 const nodeActionKinds = ["confirm", "rollback", "progress", "schedule"];
 export const nodeWorkflowActionIds = (nodeId: string) => nodeActionKinds.map((kind) => `node:${kind}:${nodeId}`);
 const canSkipConfirmation = (candidate: WorkflowAction) =>
@@ -70,6 +71,7 @@ export function Workflow({
   scheduleNode,
   onEditorChange,
   onInitialReadChange,
+  onNavigationStateChange,
 }: {
   item: WorkflowItem;
   available: boolean;
@@ -78,6 +80,7 @@ export function Workflow({
   scheduleNode?: { id: string; name: string; triggerRef: RefObject<HTMLButtonElement | null>; draftNotice?: string; writeBlocked?: string };
   onEditorChange?: (open: boolean) => void;
   onInitialReadChange?: (loading: boolean) => void;
+  onNavigationStateChange?: (state: WorkflowNavigationState | null) => void;
 }) {
   const skipConfirmation = useWorkflowSkipConfirmation();
   const [options, setOptions] = useState<WorkflowOptions | null>(null);
@@ -233,6 +236,12 @@ export function Workflow({
     onInitialReadChange(true);
     return () => onInitialReadChange(false);
   }, [loading, onInitialReadChange]);
+
+  const navigationDirty = Boolean(onNavigationStateChange && action && (review || Object.keys(changedFields(action, fields, baseFields)).length));
+  useLayoutEffect(() => {
+    onNavigationStateChange?.({ editing: editorOpen, dirty: navigationDirty, busy: executingAction, uncertain: blocked && !executingAction });
+  }, [onNavigationStateChange, editorOpen, navigationDirty, executingAction, blocked]);
+  useLayoutEffect(() => () => onNavigationStateChange?.(null), [onNavigationStateChange]);
 
   useLayoutEffect(() => {
     const workflow = workflowRef.current;

@@ -13,15 +13,16 @@ import {
   PanelLeftOpen,
   RefreshCw,
   RotateCcw,
-  UserRound,
   X,
 } from "lucide-react";
 import { DateRangePicker } from "./DateRangePicker";
 import { Select } from "./Select";
 import { ExternalLink } from "./ExternalLink";
 import { ScheduleDescription } from "./ScheduleDescription";
+import { ScheduleAvatar } from "./ScheduleAvatar";
+import { defectKey, ScheduleDefectInspector, ScheduleDefectList, useScheduleDefects, type ScheduleDefect } from "./ScheduleDefects";
 import { useScrollIsolation } from "./useScrollIsolation";
-import { nodeWorkflowActionIds, Workflow, type WorkflowItem, type WorkflowSubmit } from "./Workflow";
+import { nodeWorkflowActionIds, Workflow, type WorkflowItem, type WorkflowNavigationState, type WorkflowSubmit } from "./Workflow";
 import { draftKey, readDraft } from "./workflowDrafts";
 import { useWorkflowSubmissions, workflowSubmissions } from "./workflowSubmissions";
 import type { Snapshot } from "./types";
@@ -57,7 +58,7 @@ import {
 import "./schedule.css";
 
 type Entry = ScheduleTarget & { record: ScheduleRecord; resultMessage?: string | null; resultWarning?: string | null };
-type Guard = { dirty: boolean; busy: boolean; uncertain: boolean; interacting?: boolean };
+export type ScheduleGuard = { dirty: boolean; busy: boolean; uncertain: boolean; interacting?: boolean; defectWorkflow?: WorkflowNavigationState };
 type Drag = { id: string; kind: "new" | "move" | "start" | "end"; grabbed: string };
 
 function workflowItemFor(entry: Entry): WorkflowItem {
@@ -156,16 +157,6 @@ const today = () => {
 };
 const monday = (value: string) =>
   addDays(value, -((new Date(`${value}T00:00:00Z`).getUTCDay() + 6) % 7));
-const initials = (name: string) =>
-  /[\u3400-\u9fff]/.test(name)
-    ? Array.from(name)[0]
-    : name
-        .trim()
-        .split(/\s+/)
-        .slice(0, 2)
-        .map((part) => part[0])
-        .join("")
-        .toUpperCase();
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
 // 节点实例 ID 随事项变化，使用节点名称保证相同环节跨事项保持同色。
 const nodeColorStyle = (record: ScheduleRecord): React.CSSProperties => {
@@ -215,28 +206,6 @@ function ScheduleRefreshNotice({ refreshing }: { refreshing: boolean }) {
   );
 }
 
-function Avatar({ person }: { person?: SchedulePerson }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [person?.avatar]);
-  const color =
-    Array.from(person?.id || "").reduce(
-      (hash, char) => ((hash * 31 + char.charCodeAt(0)) >>> 0),
-      0,
-    ) % 4;
-  const hasRealInitials = Boolean(person?.name && !/^\d+$/.test(person.name.trim()));
-  return (
-    <span className={`schedule-avatar schedule-avatar-${color}`} aria-hidden="true">
-      {person?.avatar && !failed ? (
-        <img src={person.avatar} alt="" onError={() => setFailed(true)} />
-      ) : hasRealInitials && person?.name ? (
-        initials(person.name)
-      ) : (
-        <UserRound size={16} />
-      )}
-    </span>
-  );
-}
-
 const encouragements = [
   "把今天安排好，给从容留一点空间。",
   "一步一步来，认真走过的路都算数。",
@@ -267,7 +236,7 @@ function ScheduleGreeting({ person, name }: { person?: SchedulePerson; name: str
   const day = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 8) / 86_400_000);
   return (
     <div className="schedule-greeting" aria-label="今日问候">
-      <Avatar person={person} />
+      <ScheduleAvatar person={person} />
       <div className="schedule-greeting-copy">
         <div className="schedule-greeting-date">{greeting} · {part("month")}月{part("day")}日{part("weekday")}</div>
         <strong>{name}</strong>
@@ -316,13 +285,15 @@ export function SchedulePage({
   calendarContext = "",
   preloadedSession,
   workflow,
+  defectRevision = 0,
 }: {
-  onGuardChange: (guard: Guard) => void;
+  onGuardChange: (guard: ScheduleGuard) => void;
   requestReload: (reload: () => void) => void;
   snapshot?: Snapshot | null;
   calendarContext?: string;
   preloadedSession?: ScheduleSessionController;
   workflow?: { context: string; busy: boolean; submit: WorkflowSubmit };
+  defectRevision?: number;
 }) {
   const initialRead = preloadedSession?.read || null;
   const [epoch, setEpoch] = useState(0);
@@ -344,6 +315,10 @@ export function SchedulePage({
   const [report, setReport] = useState("");
   const [successToast, setSuccessToast] = useState<{ id: number; accepted: number } | null>(null);
   const [selected, setSelected] = useState("");
+  const [defectSelection, setDefectSelection] = useState<{ defect: ScheduleDefect; auth: string } | null>(null);
+  const [defectGroups, setDefectGroups] = useState(() => new Map<string, boolean>());
+  const [defectWorkflow, setDefectWorkflow] = useState<WorkflowNavigationState | null>(null);
+  const [defectWorkflowLoading, setDefectWorkflowLoading] = useState(false);
   const [selectedPerson, setSelectedPerson] = useState<string | null>(null);
   const [workflowSelection, setWorkflowSelection] = useState("");
   const [workflowEditorOpen, setWorkflowEditorOpen] = useState(false);
@@ -364,7 +339,8 @@ export function SchedulePage({
   const [editableOnly, setEditableOnly] = useState(false);
   const [poolCollapsed, setPoolCollapsed] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
-  const [poolTab, setPoolTab] = useState<"pending" | "outside">("pending");
+  const [poolTab, setPoolTab] = useState<"pending" | "outside" | "defects">("pending");
+  const defectRead = useScheduleDefects(read, snapshot, defectRevision, calendarContext);
   const [reviewOpen, setReviewOpen] = useState(false);
   const scheduleReviewBlockedIds = useRef("");
   const [hoveredTarget, setHoveredTarget] = useState<{ id: string; owner?: string }>();
@@ -403,7 +379,8 @@ export function SchedulePage({
     () => currentHistory?.targets.map(createScheduleEntry) || [],
     [currentHistory],
   );
-  const workflowInteraction = workflowEditorOpen || workflowLoading;
+  const defectWorkflowInteraction = Boolean(defectWorkflowLoading || defectWorkflow?.editing || defectWorkflow?.busy || defectWorkflow?.uncertain);
+  const workflowInteraction = workflowEditorOpen || workflowLoading || defectWorkflowInteraction;
   const dirty = entries.some(scheduleChanged);
   const uncertain = entries.some((entry) => entry.result === "uncertain");
   const persistentWarnings = Array.from(new Set(entries.flatMap((entry) =>
@@ -420,8 +397,9 @@ export function SchedulePage({
   const frozenNodes = new Set(entries.filter((entry) => entry.result === "uncertain").map(nodeKey));
 
   useLayoutEffect(() => {
-    onGuardChange({ dirty, busy, uncertain, ...(reviewOpen || dragging || peopleLoading || datePickerOpen || workflowInteraction ? { interacting: true } : {}) });
-  }, [dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen, workflowInteraction, onGuardChange]);
+    onGuardChange({ dirty, busy, uncertain, ...(reviewOpen || dragging || peopleLoading || datePickerOpen || workflowInteraction ? { interacting: true } : {}),
+      ...(defectWorkflow && (defectWorkflow.dirty || defectWorkflow.busy || defectWorkflow.uncertain) ? { defectWorkflow } : {}) });
+  }, [dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen, workflowInteraction, defectWorkflow, onGuardChange]);
   useLayoutEffect(() => () => preloadedSession?.endInteraction?.(), []);
 
   useEffect(() => {
@@ -753,7 +731,7 @@ export function SchedulePage({
           });
         }}
       >
-        <Avatar person={personFor(entry, resolveOwnerId(entry, owner))} />
+        <ScheduleAvatar person={personFor(entry, resolveOwnerId(entry, owner))} />
         <span className="schedule-group-name">{name}</span>
         <span className="schedule-group-count" aria-hidden="true">{count} 项</span>
         <ChevronDown className="schedule-group-chevron" size={15} aria-hidden="true" />
@@ -821,6 +799,23 @@ export function SchedulePage({
       entry.identity.item,
       entry.record.title,
     ]);
+  const matchesRelatedProject = (space: string, item: ReturnType<typeof cachedItems.get>) =>
+    !relatedProject || (relatedProject === unreadRelatedProject
+      ? !item
+      : relatedProject === missingProject
+        ? !!item && !item.related_projects?.length
+        : item?.related_projects?.some((entry) => relatedProjectKey(space, entry) === relatedProject));
+  const spaceDefects = defectRead.defects.filter((defect) => !project || defect.project === project);
+  const defects = spaceDefects.filter((defect) =>
+    matchesRelatedProject(defect.project, cachedItems.get(defectKey(defect))) &&
+    (view === "mine" ? defect.owners.some((owner) => owner.id === read?.currentUserId)
+      : !person.length || defect.owners.some((owner) => person.includes(owner.id))));
+  const selectedDefectKey = defectSelection ? defectKey(defectSelection.defect) : "";
+  const liveDefect = defects.find((defect) => defectKey(defect) === selectedDefectKey);
+  const selectedDefect = defectSelection?.auth === defectRead.auth && defectRead.ready
+    ? liveDefect || (defectWorkflowInteraction ? defectSelection.defect : undefined) : undefined;
+  const defectReadFailed = defectRead.failedProjects.some((space) => !project || project === space);
+  const showDefectCount = defectRead.ready && (defects.length > 0 || (!defectRead.loading && !defectReadFailed));
 
   const cachedItems = new Map((snapshot?.items || []).map((item) => [itemKey(item), item]));
   const cachedItemFor = (entry: Entry) => cachedItems.get(JSON.stringify([
@@ -838,11 +833,7 @@ export function SchedulePage({
 
   const matchesFilters = (entry: Entry) =>
       (!project || entry.identity.project === project) &&
-      (!relatedProject || (relatedProject === unreadRelatedProject
-        ? !cachedItemFor(entry)
-        : relatedProject === missingProject
-          ? !!cachedItemFor(entry) && !cachedItemFor(entry)?.related_projects?.length
-          : cachedItemFor(entry)?.related_projects?.some((item) => relatedProjectKey(entry.identity.project, item) === relatedProject))) &&
+      matchesRelatedProject(entry.identity.project, cachedItemFor(entry)) &&
       (view !== "people" || person.length === 0 || entry.record.ownerIds.some((id) => person.includes(id))) &&
       (view === "people" ||
         !!read?.accountError ||
@@ -871,7 +862,7 @@ export function SchedulePage({
   })];
 
   const personOptions = new Map<string, Set<string>>();
-  for (const item of [...read?.people || [], ...currentHistory?.people || []]) {
+  for (const item of [...read?.people || [], ...currentHistory?.people || [], ...spaceDefects.flatMap((defect) => defect.owners)]) {
     if (project && item.project && item.project !== project) continue;
     if (!person.includes(item.id) && !`${item.name} ${item.id}`.toLowerCase().includes(personQuery.toLowerCase())) continue;
     const names = personOptions.get(item.id) || new Set<string>();
@@ -951,6 +942,7 @@ export function SchedulePage({
             personFor(b.entry, b.owner)?.name || b.owner,
           ) || groupKey(a.entry, a.owner).localeCompare(groupKey(b.entry, b.owner)),
       );
+    setDefectSelection(null);
 
   const selectPersonRow = (entry: Entry, owner: string) => {
     setSelected(entry.id);
@@ -1333,6 +1325,7 @@ export function SchedulePage({
     { value: "", label: all },
     ...Array.from(new Map(values)).map(([value, label]) => ({ value, label })),
   ];
+    setDefectSelection(null);
 
   const applyQuickPreset = (id: string, preset: ScheduleQuickPreset) => {
     setSelected(id);
@@ -1350,6 +1343,7 @@ export function SchedulePage({
       setWeek(monday(planned.start));
     }
   };
+    setDefectSelection(null);
 
   const scheduleIntoViewedWeek = (id: string) => {
     setSelected(id);
@@ -1389,6 +1383,7 @@ export function SchedulePage({
     drag.current = { id: entry.id, kind, grabbed };
     preloadedSession?.onInteraction?.();
     setDragging(true);
+    setDefectSelection(null);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", entry.id);
     setSelected(entry.id);
@@ -1464,6 +1459,7 @@ export function SchedulePage({
     const invalid = changed
       .map((entry) => ({ entry, message: scheduleValidation(entry) }))
       .filter((entry) => entry.message);
+      setDefectSelection(null);
     if (!changed.length) return;
     if (invalid.length) {
       setSelected(invalid[0].entry.id);
@@ -1487,6 +1483,7 @@ export function SchedulePage({
       .map((entry) => ({ entry, message: scheduleValidation(entry) }))
       .filter((entry) => entry.message);
     if (!changed.length) return;
+      setDefectSelection(null);
     if (invalid.length) {
       setReviewOpen(false);
       setSelected(invalid[0].entry.id);
@@ -1913,7 +1910,7 @@ export function SchedulePage({
                 </div>
               </div>
 
-              <div className={`schedule-layout ${poolCollapsed ? "is-pool-collapsed" : ""} ${!selectedEntry ? "is-inspector-closed" : ""}`}>
+              <div className={`schedule-layout ${poolCollapsed ? "is-pool-collapsed" : ""} ${!selectedEntry && !selectedDefect ? "is-inspector-closed" : ""}`}>
                 {!poolCollapsed && (
                   <aside
                     className="schedule-pending"
@@ -1931,7 +1928,7 @@ export function SchedulePage({
                     }}
                     onDrop={poolDrop}
                   >
-                    <div className="schedule-pool-tabs" role="tablist" aria-label="待排期与已排期切换">
+                    <div className="schedule-pool-tabs" role="tablist" aria-label="排期与缺陷清单">
                       <button
                         type="button"
                         role="tab"
@@ -1948,11 +1945,22 @@ export function SchedulePage({
                         className={poolTab === "outside" ? "active" : ""}
                         onClick={() => setPoolTab("outside")}
                       >
+                      <button type="button" role="tab" aria-selected={poolTab === "defects"} aria-label={showDefectCount ? `未解决缺陷 ${defects.length}` : "未解决缺陷"}
+                        className={poolTab === "defects" ? "active" : ""} onClick={() => setPoolTab("defects")}>
+                        未解决缺陷{showDefectCount && <span className="schedule-defect-count"> ({defects.length})</span>}
+                      </button>
                         {read ? `已排期 (${outsideRows.length})` : "已排期"}
                       </button>
                     </div>
 
-                    {!read ? (
+                    {poolTab === "defects" ? (
+                      <ScheduleDefectList defects={defects} currentUser={read?.currentUserId || ""} team={view === "people"} people={person}
+                        knownPeople={read?.people || []}
+                        selected={selectedDefectKey} select={(defect) => { setSelected(""); setDatePickerOpen(false); setDefectSelection({ defect, auth: defectRead.auth }); }}
+                        groupStates={defectGroups} onGroupChange={(owner, expanded) => setDefectGroups((current) => new Map(current).set(owner, expanded))}
+                        loading={(!read && !error) || defectRead.loading} failed={defectReadFailed || (!read && !!error)} ready={defectRead.ready}
+                        retry={read ? defectRead.retry : () => requestReload(() => { forceResetRef.current = true; setEpoch((value) => value + 1); })} />
+                    ) : !read ? (
                       error ? <p className="schedule-pool-empty" role="alert">{error}，可重新读取。</p>
                         : <p className="schedule-pool-empty" role="status">正在读取事项清单…</p>
                     ) : poolTab === "pending" ? (
@@ -2221,7 +2229,7 @@ export function SchedulePage({
                               className="schedule-row-label"
                               onClick={() => selectPersonRow(primaryEntry, owner)}
                             >
-                              <Avatar
+                              <ScheduleAvatar
                                 person={personFor(
                                   primaryEntry,
                                   resolveOwnerId(primaryEntry, owner),
@@ -2511,7 +2519,11 @@ export function SchedulePage({
                   </div>
                 </div>
 
-                {selectedEntry && <aside className="schedule-inspector" aria-label="排期检查器">
+                {selectedDefect && <ScheduleDefectInspector key={`${read?.connection}:${selectedDefectKey}`} defect={selectedDefect}
+                  connection={read?.connection || workflow?.context || ""} projectName={projectNames.get(selectedDefect.project) || selectedDefect.project}
+                  workflow={workflow} stale={!liveDefect} onWorkflowRead={setDefectWorkflowLoading} onWorkflowNavigation={setDefectWorkflow}
+                  close={() => setDefectSelection(null)} />}
+                {!selectedDefect && selectedEntry && <aside className="schedule-inspector" aria-label="排期检查器">
                   <div className="schedule-inspector-head">
                     <strong>排期检查器</strong>
                     <div className="schedule-inspector-head-actions">

@@ -101,6 +101,11 @@ async fn load_schedule_calendar(
 }
 
 #[tauri::command]
+async fn load_schedule_defects(connection: String, projects: Vec<String>) -> Result<fstodo_backend::schedule::DefectRead, UiError> {
+    blocking(move || fstodo_backend::schedule::load_defects(&open_session()?, &connection, projects)).await
+}
+
+#[tauri::command]
 async fn load_schedule_people(session_id: String) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
     blocking(move || {
         let mut guard = lock_schedule(&SCHEDULE_SESSION)?;
@@ -826,6 +831,7 @@ fn main() {
             load_schedule_session,
             load_schedule_calendar,
             load_schedule_people,
+            load_schedule_defects,
             sync_schedule_session,
             close_schedule_session,
             reset_schedule_session

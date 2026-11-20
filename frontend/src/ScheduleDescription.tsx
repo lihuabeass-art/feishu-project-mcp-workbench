@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import { BusinessField } from "./BusinessField";
+import { ExternalLink } from "./ExternalLink";
+import { ArrowUpRight } from "lucide-react";
 import { isEmpty } from "./detailFields";
 import { useDetailFieldIdentity } from "./useDetailFieldIdentity";
 import type { ItemDetail } from "./types";
 
-export function ScheduleDescription({ project, type, item, connection }: { project: string; type: string; item: string; connection: string }) {
+export function ScheduleDescription({ project, type, item, connection, showItemLink }: { project: string; type: string; item: string; connection: string; showItemLink?: boolean }) {
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -46,7 +48,11 @@ export function ScheduleDescription({ project, type, item, connection }: { proje
   }, [project, type, item, connection, attempt]);
   const descriptions = fields.filter((field) => identities.descriptions.includes(field.key));
   const title = type === "story" ? "需求说明" : type === "issue" ? "缺陷描述" : "事项说明";
-  return <section className="schedule-description" aria-label={title}>
+  return <>
+  {showItemLink && detail?.item_url && <div className="schedule-editor-actions workflow-manual-fill detail-item-link">
+    <ExternalLink href={detail.item_url} title="在浏览器打开飞书事项">打开飞书事项 <ArrowUpRight size={13} aria-hidden="true" /></ExternalLink>
+  </div>}
+  <section className="schedule-description" aria-label={title}>
     <strong>{title}</strong>
     {descriptions.map((field, index) => <div key={`${field.key}-${index}`}>
       {descriptions.length > 1 && <b>{field.name || title}</b>}
@@ -55,5 +61,5 @@ export function ScheduleDescription({ project, type, item, connection }: { proje
     </div>)}
     {!descriptions.length && <p className="hint">{loading ? "正在读取说明…" : failed ? "暂时无法读取说明。" : "详情未返回已识别的说明字段，可在飞书中查看。"}</p>}
     {failed && <p className="hint">{detail ? "暂时无法获取最新说明，已保留缓存。" : "请稍后重试。"} <button type="button" className="secondary" onClick={() => setAttempt((value) => value + 1)}>重试</button></p>}
-  </section>;
+  </section></>;
 }

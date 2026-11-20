@@ -21,6 +21,7 @@ export interface ScheduleRead {
   connection?: string;
   recentRange?: ScheduleDates | null;
   historyScopes?: ScheduleHistoryScope[];
+  defectProjects?: string[];
   sources: ScheduleSource[]; people: SchedulePerson[]; targets: ScheduleRecord[];
   currentUserId?: string | null; currentUserAvatar?: string | null; peopleLoaded?: boolean;
   accountError?: string | null; readAt: string; complete: boolean; readRequests?: number;
@@ -36,7 +37,7 @@ export interface ScheduleWriteResult {
 }
 
 interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; node_status?: string; node_started_at_ms?: number | null; node_order?: number; schedule_required?: boolean; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
-interface WireRead { session_id: string; connection?: string; recent_range?: ScheduleDates | null; history_scopes?: ScheduleHistoryScope[]; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
+interface WireRead { session_id: string; connection?: string; recent_range?: ScheduleDates | null; history_scopes?: ScheduleHistoryScope[]; defect_projects?: string[]; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
 interface WireResult { targets: ScheduleWriteResult["results"]; write_requests: number }
 let lifecycle: Promise<unknown> = Promise.resolve();
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -118,6 +119,7 @@ function mapWireRead(result: WireRead): ScheduleRead {
     connection: result.connection,
     recentRange: result.recent_range,
     historyScopes: result.history_scopes,
+    defectProjects: result.defect_projects,
     currentUserId: result.current_user,
     currentUserAvatar: result.current_user_avatar,
     peopleLoaded: result.people_loaded ?? true,
