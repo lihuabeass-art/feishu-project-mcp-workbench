@@ -304,10 +304,13 @@
 
 /* 常驻三栏工作台布局 */
 .schedule-layout {
+  --schedule-board-max-height: max(280px, calc(100dvh - 260px));
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr) 304px;
+  grid-template-rows: minmax(0, 1fr);
   align-items: stretch;
-  min-height: 520px;
+  min-height: min(520px, var(--schedule-board-max-height));
+  max-height: var(--schedule-board-max-height);
 }
 
 .schedule-layout.is-pool-collapsed {
@@ -554,7 +557,9 @@
 /* 中栏：甘特时间轴矩阵 */
 .schedule-main {
   min-width: 0;
-  overflow-x: auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -1294,10 +1299,12 @@
   border-left: 1px solid var(--line);
   background: var(--surface-raised);
   min-width: 0;
+  min-height: 0;
 }
 
 .schedule-inspector-head {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -1349,6 +1356,7 @@
   gap: 8px;
   padding: 16px;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 
 .schedule-feedback {
@@ -1986,6 +1994,13 @@
   .schedule-layout.is-inspector-closed,
   .schedule-layout.is-pool-collapsed.is-inspector-closed {
     grid-template-columns: 1fr;
+  }
+  .schedule-layout {
+    grid-template-rows: none;
+    max-height: none;
+  }
+  .schedule-main {
+    max-height: var(--schedule-board-max-height);
   }
   .schedule-pending {
     border-right: 0;
