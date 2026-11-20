@@ -37,6 +37,7 @@ import {
   type ScheduleRead,
   type ScheduleRecord,
 } from "./scheduleApi";
+import { scheduleHistoryRequest, useScheduleHistory } from "./scheduleHistory";
 import {
   applyQuickSchedulePreset,
   classifyScheduleReview,
@@ -374,6 +375,25 @@ export function SchedulePage({
   const reviewScrollRef = useScrollIsolation(reviewBackdropRef);
 
   const currentToday = today();
+  const days = Array.from({ length: daySpan }, (_, index) => addDays(week, index));
+  const windowStart = days[0];
+  const windowEnd = days[days.length - 1];
+  const thisWeek = read?.recentRange?.start ?? monday(currentToday);
+  const viewingHistory = windowStart < thisWeek;
+  const [historyKey, previousHistoryKey] = useMemo(() => {
+    const keyFor = (start: string, end: string) => {
+      if (start >= thisWeek) return "";
+      const request = scheduleHistoryRequest(read, snapshot, view, { start, end: end < thisWeek ? end : addDays(thisWeek, -1) });
+      return request ? JSON.stringify(request) : "";
+    };
+    return [keyFor(windowStart, windowEnd), keyFor(addDays(windowStart, -7), addDays(windowEnd, -7))];
+  }, [read, snapshot, view, thisWeek, windowStart, windowEnd]);
+  const { data: currentHistory, loading: historyLoading, failed: historyFailed, retry: retryHistory } =
+    useScheduleHistory(historyKey, previousHistoryKey);
+  const historicalEntries = useMemo(
+    () => currentHistory?.targets.map(createScheduleEntry) || [],
+    [currentHistory],
+  );
   const workflowInteraction = workflowEditorOpen || workflowLoading;
   const dirty = entries.some(scheduleChanged);
   const uncertain = entries.some((entry) => entry.result === "uncertain");
@@ -603,12 +623,12 @@ export function SchedulePage({
   const people = useMemo(
     () =>
       new Map(
-        read?.people.map((item) => [
+        [...currentHistory?.people || [], ...read?.people || []].map((item) => [
           JSON.stringify([item.connection || null, item.project || null, item.id]),
           item,
-        ]) || [],
+        ]),
       ),
-    [read],
+    [read, currentHistory],
   );
   const personFor = (entry: Entry, id: string): SchedulePerson | undefined => {
     if (!id) return undefined;
@@ -779,10 +799,6 @@ export function SchedulePage({
   const readUnavailable = !read;
   const canEdit = (entry: Entry) => view === "mine" && isEditableTarget(entry) && !busy && !readUnavailable;
 
-  const days = Array.from({ length: daySpan }, (_, index) => addDays(week, index));
-  const windowStart = days[0];
-  const windowEnd = days[days.length - 1];
-
   const itemIdentityKey = (entry: Entry) =>
     JSON.stringify([
       entry.identity.connection,
@@ -796,17 +812,17 @@ export function SchedulePage({
   const cachedItemFor = (entry: Entry) => cachedItems.get(JSON.stringify([
     entry.identity.project, entry.identity.type, entry.identity.item,
   ]));
-  const projectItems = entries
+  const filterEntries = [...entries, ...historicalEntries];
+  const projectItems = filterEntries
     .filter((entry) => !project || entry.identity.project === project)
     .map(cachedItemFor)
     .filter((item) => item !== undefined);
   const relatedProjectOptions = projectFilterOptions(projectItems, snapshot?.workspace_catalog || [], "", "");
-  if (entries.some((entry) => (!project || entry.identity.project === project) && !cachedItemFor(entry))) {
+  if (filterEntries.some((entry) => (!project || entry.identity.project === project) && !cachedItemFor(entry))) {
     relatedProjectOptions.push({ value: unreadRelatedProject, label: "项目信息未读取" });
   }
 
-  const visible = entries.filter(
-    (entry) =>
+  const matchesFilters = (entry: Entry) =>
       (!project || entry.identity.project === project) &&
       (!relatedProject || (relatedProject === unreadRelatedProject
         ? !cachedItemFor(entry)
@@ -821,11 +837,27 @@ export function SchedulePage({
         (!isPastTransitionedNode(entry) &&
           (entry.record.unknownOwner ||
             (!entry.identity.owner && !entry.record.ownerIds.some(Boolean))))) &&
-      (view !== "mine" || !editableOnly || isEditableTarget(entry)),
-  );
+      (view !== "mine" || !editableOnly || isEditableTarget(entry));
+  const visible = entries.filter(matchesFilters);
+  const liveDates = new Set<string>();
+  const locallyChanged = new Set<string>();
+  const calendarOwnerKey = (entry: Entry, owner?: string | null) => JSON.stringify([nodeKey(entry), owner]);
+  const calendarDatesKey = (ownerKey: string, entry: Entry) => JSON.stringify([ownerKey, entry.dates.start, entry.dates.end]);
+  for (const entry of visible) {
+    if (!entry.identity.node) continue;
+    for (const owner of entry.record.ownerIds) {
+      const ownerKey = calendarOwnerKey(entry, owner);
+      if (validSchedule(entry.dates)) liveDates.add(calendarDatesKey(ownerKey, entry));
+      if (scheduleChanged(entry) || entry.result === "accepted") locallyChanged.add(ownerKey);
+    }
+  }
+  const calendarEntries = [...visible, ...historicalEntries.filter((entry) => {
+    const ownerKey = calendarOwnerKey(entry, entry.record.ownerId);
+    return matchesFilters(entry) && !locallyChanged.has(ownerKey) && !liveDates.has(calendarDatesKey(ownerKey, entry));
+  })];
 
   const personOptions = new Map<string, Set<string>>();
-  for (const item of read?.people || []) {
+  for (const item of [...read?.people || [], ...currentHistory?.people || []]) {
     if (project && item.project && item.project !== project) continue;
     if (!person.includes(item.id) && !`${item.name} ${item.id}`.toLowerCase().includes(personQuery.toLowerCase())) continue;
     const names = personOptions.get(item.id) || new Set<string>();
@@ -913,7 +945,7 @@ export function SchedulePage({
   const personItemKey = (entry: Entry, owner: string) =>
     JSON.stringify([groupKey(entry, owner), itemIdentityKey(entry)]);
 
-  const scheduled = visible.filter(
+  const scheduled = calendarEntries.filter(
     (entry) =>
       validSchedule(entry.dates) &&
       entry.dates.start <= windowEnd &&
@@ -1022,7 +1054,7 @@ export function SchedulePage({
       ? personRows(outside)
       : outside.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
-  const selectedEntry = visible.find((entry) => entry.id === selected);
+  const selectedEntry = calendarEntries.find((entry) => entry.id === selected);
   const selectedScopeLabel = selectedEntry ? targetScopeLabel(selectedEntry) : "";
   const selectedPeopleRows = view === "people" && selectedEntry ? personRows([selectedEntry]) : [];
   const activePerson = selectedPeopleRows.find(({ owner }) => owner === selectedPerson)?.owner
@@ -1038,7 +1070,7 @@ export function SchedulePage({
     );
   };
   const selectedNodeKey = selectedEntry ? nodeKey(selectedEntry) : "";
-  const workflowKey = workflow && selectedEntry && selectedEntry.identity.node.trim() &&
+  const workflowKey = workflow && selectedEntry && !selectedEntry.id.startsWith("history:") && selectedEntry.identity.node.trim() &&
     selectedEntry.identity.project.trim() && selectedEntry.identity.type.trim() && selectedEntry.identity.item.trim()
     ? JSON.stringify([workflow.context, selectedNodeKey]) : "";
   const workflowOpen = !!workflowKey && workflowSelection === workflowKey;
@@ -1050,7 +1082,7 @@ export function SchedulePage({
   const siblingNodes = (() => {
     if (!selectedEntry) return [];
     const targetItemKey = itemIdentityKey(selectedEntry);
-    const candidates = visible.filter(
+    const candidates = calendarEntries.filter(
       (item) =>
         itemIdentityKey(item) === targetItemKey &&
         (view !== "people" ||
@@ -1781,7 +1813,7 @@ export function SchedulePage({
                       setRelatedProject("");
                     }}
                     options={options(
-                      entries.map((item) => [item.identity.project, projectLabel(item)]),
+                      filterEntries.map((item) => [item.identity.project, projectLabel(item)]),
                       "全部空间",
                     )}
                   />
@@ -2121,6 +2153,16 @@ export function SchedulePage({
                 )}
 
                 <div className="schedule-main">
+                  {historyLoading && <div className="banner" role="status">正在读取历史排期…</div>}
+                  {historyFailed && (
+                    <div className="banner" role="status">
+                      <span>{currentHistory?.targets.length ? "历史排期读取未完成，当前显示已取得的安排。" : "暂时无法读取历史排期。"}</span>
+                      <button type="button" className="secondary" onClick={retryHistory}>重试历史排期</button>
+                    </div>
+                  )}
+                  {viewingHistory && !historyKey && !peopleLoading && (
+                    <div className="banner" role="status">当前还没有可查询历史排期的空间、类型或人员范围。</div>
+                  )}
                   <div
                     className={`schedule-calendar is-${view}`}
                     style={{ "--schedule-cols": days.length } as React.CSSProperties}
@@ -2475,10 +2517,10 @@ export function SchedulePage({
                           ref={blankGridRef}
                           className="schedule-empty-grid"
                         />
-                        {rows.length === 0 && <p className="schedule-empty">
+                        {rows.length === 0 && (!viewingHistory || (historyKey && !historyLoading && !historyFailed)) && <p className="schedule-empty">
                           {view === "people" && person.length > 0 && visible.length === 0
                             ? "当前范围未包含该人员的安排"
-                            : "本周暂无可显示的安排"}
+                            : viewingHistory ? "所选日期暂无可显示的安排" : "本周暂无可显示的安排"}
                         </p>}
                       </div>
                     </div>

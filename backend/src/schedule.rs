@@ -16,10 +16,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
+mod history;
+pub use history::{load_history, HistoryResult, HistoryScope};
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Dates {
     pub start: String,
     pub end: String,
+}
+impl Dates {
+    fn overlaps(&self, range: &Self) -> bool {
+        !self.start.is_empty() && !self.end.is_empty()
+            && self.start <= self.end && self.start <= range.end && self.end >= range.start
+    }
+
+    fn outside(&self, range: &Self) -> bool {
+        !self.start.is_empty() && !self.end.is_empty()
+            && self.start <= self.end && !self.overlaps(range)
+    }
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Identity {
@@ -84,6 +98,9 @@ pub struct FailedItem {
 #[derive(Clone, Debug, Serialize)]
 pub struct LoadResult {
     pub session_id: String,
+    pub connection: String,
+    pub recent_range: Option<Dates>,
+    pub history_scopes: Vec<HistoryScope>,
     pub current_user: String,
     pub current_user_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,7 +143,10 @@ struct LoadState {
     transition_required: BTreeMap<(String, String, String, String), Option<Value>>,
     detail_names: BTreeMap<(String, String), String>,
     detail_avatars: BTreeMap<(String, String), String>,
+    deferred_todos: Vec<TodoItem>,
 }
+
+type TodoItem = (WorkItemId, String, BTreeSet<String>, Vec<(String, Value)>, Option<detail::ItemDetail>);
 
 pub struct ScheduleSession {
     pub view: LoadResult,
@@ -134,6 +154,7 @@ pub struct ScheduleSession {
     frozen: HashSet<String>,
     frozen_nodes: HashSet<(String, String, String, String)>,
     deferred_targets: Vec<Target>,
+    deferred_todos: Vec<TodoItem>,
     processed_items: HashSet<(String, String, String)>,
     schedule_configs: BTreeMap<(String, String), Result<bool, ()>>,
     transition_required: BTreeMap<(String, String, String, String), Option<Value>>,
@@ -144,17 +165,14 @@ pub struct ScheduleSession {
 
 fn fingerprint(session: &Session) -> Result<String, BackendError> {
     let credential = session.credential()?;
-    Ok(format!(
+    Ok(connection_fingerprint(&session.config.endpoint, credential.token().expose()))
+}
+
+fn connection_fingerprint(endpoint: &str, token: &str) -> String {
+    format!(
         "{:x}",
-        Sha256::digest(
-            format!(
-                "{}\0{}",
-                session.config.endpoint,
-                credential.token().expose()
-            )
-            .as_bytes()
-        )
-    ))
+        Sha256::digest(format!("{endpoint}\0{token}").as_bytes())
+    )
 }
 fn txt(v: &Value) -> String {
     detail::text(v).unwrap_or_default()
@@ -381,6 +399,24 @@ impl ScheduleSession {
         Self::load_internal(session, true)
     }
 
+    pub fn load_recent(session: &Session, include_people: bool) -> Result<Self, BackendError> {
+        let now = chrono::Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap());
+        let monday = now.date_naive().week(chrono::Weekday::Mon).first_day();
+        let range = Dates { start: monday.to_string(), end: (monday + chrono::Days::new(13)).to_string() };
+        crate::diagnostics::schedule_read(|| {
+            let mut schedule = Self::load_internal_traced(session, true, Some(range))?;
+            if include_people {
+                if session.credential().is_ok() {
+                    let sid = schedule.view.session_id.clone();
+                    schedule.load_people(session, &sid)?;
+                } else {
+                    schedule.view.people_loaded = true;
+                }
+            }
+            Ok(schedule)
+        })
+    }
+
     pub fn load_all(session: &Session) -> Result<Self, BackendError> {
         crate::diagnostics::schedule_read(|| {
             let mut schedule = Self::load_mine(session)?;
@@ -402,10 +438,10 @@ impl ScheduleSession {
     }
 
     fn load_internal(session: &Session, filter_mine: bool) -> Result<Self, BackendError> {
-        crate::diagnostics::schedule_read(|| Self::load_internal_traced(session, filter_mine))
+        crate::diagnostics::schedule_read(|| Self::load_internal_traced(session, filter_mine, None))
     }
 
-    fn load_internal_traced(session: &Session, filter_mine: bool) -> Result<Self, BackendError> {
+    fn load_internal_traced(session: &Session, filter_mine: bool, recent_range: Option<Dates>) -> Result<Self, BackendError> {
         crate::diagnostics::schedule_stage("schedule_credentials");
         let credential_started = std::time::Instant::now();
         let fingerprint = match fingerprint(session) {
@@ -425,6 +461,9 @@ impl ScheduleSession {
                 complete: false, error: None, pages: 0 }).collect();
         let mut view = LoadResult {
             session_id: sid,
+            connection: fingerprint.clone(),
+            recent_range,
+            history_scopes: Vec::new(),
             current_user: String::new(),
             current_user_name: String::new(),
             current_user_avatar: None,
@@ -456,6 +495,7 @@ impl ScheduleSession {
                             &mut state,
                         )
                         .await?;
+                        retain_recent_targets(&mut view);
                         if filter_mine {
                             if !view.current_user.trim().is_empty() {
                                 let mut extra = Vec::new();
@@ -479,6 +519,7 @@ impl ScheduleSession {
                                 view.failed_items = view.item_errors.len();
                                 if !extra.is_empty() {
                                     view.targets.extend(extra);
+                                    retain_recent_targets(&mut view);
                                     crate::diagnostics::schedule_stage("schedule_people");
                                     finish_person_names_with_details(
                                         session,
@@ -561,6 +602,7 @@ impl ScheduleSession {
             frozen: HashSet::new(),
             frozen_nodes: HashSet::new(),
             deferred_targets,
+            deferred_todos: state.deferred_todos,
             processed_items: state.processed_items,
             schedule_configs: state.schedule_configs,
             transition_required: state.transition_required,
@@ -597,6 +639,33 @@ impl ScheduleSession {
             }
             let mut extra_targets = Vec::new();
             let mut failed_extra_sources = BTreeMap::new();
+            let deferred_todos = std::mem::take(&mut self.deferred_todos);
+            if let Some(range) = self.view.recent_range.as_ref().filter(|_| !deferred_todos.is_empty()) {
+                let (recent_todos, _, failed) = history::matching_recent_todos(
+                    client.as_ref(), range, deferred_todos, session.config.max_pages, |project| {
+                        self.view.history_scopes.iter().filter(|scope| scope.project == project)
+                            .flat_map(|scope| scope.users.iter().cloned())
+                            .chain(self.view.targets.iter().filter(|target| target.identity.project == project)
+                                .flat_map(|target| target.owners.iter().map(|owner| owner.id.clone())))
+                            .filter(|owner| owner != &self.view.current_user && !owner.is_empty())
+                            .collect::<BTreeSet<_>>().into_iter().collect()
+                    },
+                ).await;
+                flag_recent_incomplete(&mut self.view.sources, &failed);
+                let mut state = LoadState {
+                    schedule_configs: std::mem::take(&mut self.schedule_configs),
+                    detail_names: std::mem::take(&mut self.detail_names),
+                    detail_avatars: std::mem::take(&mut self.detail_avatars),
+                    ..Default::default()
+                };
+                let mut source_statuses = std::mem::take(&mut self.view.sources);
+                read_todo_nodes(session, client.as_ref(), &self.fingerprint, &mut self.view, &mut source_statuses, &mut state, recent_todos).await;
+                self.view.sources = source_statuses;
+                self.schedule_configs = state.schedule_configs;
+                self.detail_names = state.detail_names;
+                self.detail_avatars = state.detail_avatars;
+                self.next_target_seq = self.view.targets.len().max(self.next_target_seq);
+            }
             expand_cached_non_todo_items(
                 session,
                 client.clone(),
@@ -619,6 +688,7 @@ impl ScheduleSession {
                 self.next_target_seq += 1;
                 self.view.targets.push(target);
             }
+            retain_recent_targets(&mut self.view);
             ensure_target_sources_in_view(
                 session,
                 &mut self.view.sources,
@@ -840,6 +910,36 @@ fn is_mine_target(target: &Target, current_user: &str) -> bool {
         || target.owners.iter().any(|p| p.id == current_user)
 }
 
+fn retain_recent_targets(view: &mut LoadResult) {
+    if let Some(range) = &view.recent_range {
+        for target in view.targets.iter().filter(|target| target.baseline.outside(range)) {
+            add_history_scope(&mut view.history_scopes, &target.identity.project, &target.identity.r#type,
+                target.owners.iter().map(|owner| owner.id.as_str()));
+        }
+        view.targets.retain(|target| !target.baseline.outside(range));
+    }
+}
+
+fn flag_recent_incomplete(statuses: &mut [SourceStatus], failed: &BTreeSet<String>) {
+    for status in statuses.iter_mut().filter(|status| failed.contains(&status.id)) {
+        status.complete = false;
+        status.error.get_or_insert_with(|| "近两周排期读取未完成，请重试".into());
+    }
+}
+
+fn add_history_scope<'a>(scopes: &mut Vec<HistoryScope>, project: &str, kind: &str, users: impl Iterator<Item = &'a str>) {
+    let index = scopes.iter().position(|scope| scope.project == project && scope.work_item_type == kind)
+        .unwrap_or_else(|| {
+            scopes.push(HistoryScope { project: project.to_owned(), work_item_type: kind.to_owned(), users: Vec::new() });
+            scopes.len() - 1
+        });
+    for user in users {
+        if !user.is_empty() && !scopes[index].users.iter().any(|existing| existing == user) {
+            scopes[index].users.push(user.to_owned());
+        }
+    }
+}
+
 async fn load_remote(
     session: &Session,
     client: &dyn TodoSource,
@@ -963,6 +1063,33 @@ async fn load_remote(
         }
         todo_items.push((id, title, sources, rows, cached_detail));
     }
+    if let Some(range) = &view.recent_range {
+        for (id, _, _, _, detail) in &todo_items {
+            let (project, kind, _) = id.key_tuple();
+            let owners: Vec<_> = detail.as_ref().and_then(|detail| detail.data["work_item_current_node"].as_array())
+                .into_iter().flatten().filter_map(|node| node["owners"].as_array()).flatten()
+                .filter_map(|owner| owner.as_str().or_else(|| owner["user_key"].as_str()).or_else(|| owner["key"].as_str()))
+                .collect();
+            add_history_scope(&mut view.history_scopes, &project, &kind, owners.into_iter());
+        }
+        let (recent, deferred, failed) = history::prioritize_recent_todos(client, range, &view.current_user, todo_items, session.config.max_pages).await;
+        flag_recent_incomplete(statuses, &failed);
+        todo_items = recent;
+        state.deferred_todos = deferred;
+    }
+    read_todo_nodes(session, client, fingerprint, view, statuses, state, todo_items).await;
+    Ok(())
+}
+
+async fn read_todo_nodes(
+    session: &Session,
+    client: &dyn TodoSource,
+    fingerprint: &str,
+    view: &mut LoadResult,
+    statuses: &mut [SourceStatus],
+    state: &mut LoadState,
+    todo_items: Vec<TodoItem>,
+) {
     crate::diagnostics::schedule_stage("schedule_nodes");
     let fetched = stream::iter(todo_items)
         .map(|(id, title, sources, rows, cached_detail)| async move {
@@ -1136,7 +1263,6 @@ async fn load_remote(
         &state.detail_avatars,
         &mut view.targets,
     );
-    Ok(())
 }
 
 async fn expand_cached_non_todo_items(

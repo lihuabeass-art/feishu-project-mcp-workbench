@@ -82,16 +82,21 @@ async fn load_schedule_session(include_people: Option<bool>) -> Result<fstodo_ba
         // 网络读取独立于现有会话的写锁，后台慢请求不能阻塞当前节点提交。
         drop(lock_schedule(&SCHEDULE_SESSION)?);
         let session = open_session()?;
-        let schedule = if include_people == Some(true) {
-            fstodo_backend::schedule::ScheduleSession::load_all(&session)?
-        } else {
-            fstodo_backend::schedule::ScheduleSession::load_mine(&session)?
-        };
+        let schedule = fstodo_backend::schedule::ScheduleSession::load_recent(&session, include_people == Some(true))?;
         let view = schedule.view.clone();
         let mut guard = SCHEDULE_SESSION.lock().map_err(|_| BackendError::conflict("上次排期任务中断，结果可能不确定，请先在飞书核对并结束当前会话"))?;
         guard.push(schedule);
         Ok(view)
     }).await
+}
+
+#[tauri::command]
+async fn load_schedule_history(
+    connection: String,
+    range: fstodo_backend::schedule::Dates,
+    scopes: Vec<fstodo_backend::schedule::HistoryScope>,
+) -> Result<fstodo_backend::schedule::HistoryResult, UiError> {
+    blocking(move || fstodo_backend::schedule::load_history(&open_session()?, &connection, &range, scopes)).await
 }
 
 #[tauri::command]
@@ -818,6 +823,7 @@ fn main() {
             acknowledge_creation_recovery,
             execute_workflow_action,
             load_schedule_session,
+            load_schedule_history,
             load_schedule_people,
             sync_schedule_session,
             close_schedule_session,

@@ -18,11 +18,17 @@ export interface ScheduleRecord {
 }
 export interface ScheduleRead {
   sessionId: string;
+  connection?: string;
+  recentRange?: ScheduleDates | null;
+  historyScopes?: ScheduleHistoryScope[];
   sources: ScheduleSource[]; people: SchedulePerson[]; targets: ScheduleRecord[];
   currentUserId?: string | null; currentUserAvatar?: string | null; peopleLoaded?: boolean;
   accountError?: string | null; readAt: string; complete: boolean; readRequests?: number;
   itemErrors?: Array<{ project: string; type: string; item: string; title?: string; sources: string[]; message: string }>;
 }
+export interface ScheduleHistoryScope { project: string; work_item_type: string; users: string[] }
+export interface ScheduleHistoryRequest { connection: string; range: ScheduleDates; scopes: ScheduleHistoryScope[]; currentUser: string }
+export interface ScheduleHistory { people: SchedulePerson[]; targets: ScheduleRecord[]; complete: boolean }
 export interface ScheduleWriteTarget { id: string; identity: ScheduleIdentity; dates: ScheduleDates; cancel: boolean }
 export interface ScheduleWriteResult {
   results: Array<{ id: string; result: ScheduleResult; message?: string | null; warning?: string | null }>;
@@ -30,7 +36,7 @@ export interface ScheduleWriteResult {
 }
 
 interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; node_status?: string; node_started_at_ms?: number | null; node_order?: number; schedule_required?: boolean; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
-interface WireRead { session_id: string; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
+interface WireRead { session_id: string; connection?: string; recent_range?: ScheduleDates | null; history_scopes?: ScheduleHistoryScope[]; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
 interface WireResult { targets: ScheduleWriteResult["results"]; write_requests: number }
 let lifecycle: Promise<unknown> = Promise.resolve();
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -47,7 +53,7 @@ function isFallbackPersonName(name: string | undefined | null, id: string): bool
     (id.length >= 6 && trimmed === Array.from(id).slice(-6).join(""))
   );
 }
-function mapWireRead(result: WireRead): ScheduleRead {
+function mapScheduleRecords(result: Pick<WireRead, "targets" | "current_user" | "current_user_name" | "current_user_avatar">) {
   const people = new Map<string, SchedulePerson>();
   const currentHasRealName =
     Boolean(result.current_user) &&
@@ -92,18 +98,8 @@ function mapWireRead(result: WireRead): ScheduleRead {
     });
   }
   return {
-    sessionId: result.session_id,
-    currentUserId: result.current_user,
-    currentUserAvatar: result.current_user_avatar,
-    peopleLoaded: result.people_loaded ?? true,
-    accountError: result.account_error,
-    readAt: new Date(result.read_at_ms).toLocaleString(),
-    sources: result.sources,
-    readRequests: result.read_requests,
-    itemErrors: result.item_errors,
-    complete: result.sources.length > 0 && result.failed_items === 0 && result.sources.every((item) => item.complete),
     people: [...people.values()],
-    targets: result.targets.map((target) => ({
+    targets: result.targets.map((target): ScheduleRecord => ({
       id: target.id, identity: target.identity, title: target.title, nodeName: target.node_name,
       nodeStatus: target.node_status ?? "", nodeOrder: target.node_order ?? 0, scheduleRequired: target.schedule_required !== false,
       nodeStartedAtMs: target.node_started_at_ms,
@@ -115,6 +111,29 @@ function mapWireRead(result: WireRead): ScheduleRead {
       cacheKind: target.cache_kind, startState: target.start_state, endState: target.end_state, fetchedAt: target.fetched_at_ms ? new Date(target.fetched_at_ms).toLocaleString() : null,
     })),
   };
+}
+function mapWireRead(result: WireRead): ScheduleRead {
+  return {
+    sessionId: result.session_id,
+    connection: result.connection,
+    recentRange: result.recent_range,
+    historyScopes: result.history_scopes,
+    currentUserId: result.current_user,
+    currentUserAvatar: result.current_user_avatar,
+    peopleLoaded: result.people_loaded ?? true,
+    accountError: result.account_error,
+    readAt: new Date(result.read_at_ms).toLocaleString(),
+    sources: result.sources,
+    readRequests: result.read_requests,
+    itemErrors: result.item_errors,
+    complete: result.sources.length > 0 && result.failed_items === 0 && result.sources.every((item) => item.complete),
+    ...mapScheduleRecords(result),
+  };
+}
+
+export async function loadScheduleHistory({ currentUser, ...request }: ScheduleHistoryRequest): Promise<ScheduleHistory> {
+  const result = await invoke<{ targets: WireTarget[]; complete: boolean }>("load_schedule_history", request);
+  return { complete: result.complete, ...mapScheduleRecords({ targets: result.targets, current_user: currentUser, current_user_name: "" }) };
 }
 // 候选读取不占编辑会话的串行队列；当前会话的提交无需等待后台网络读取。
 export const loadScheduleSession = async (options?: { includePeople?: boolean }): Promise<ScheduleRead> => {
