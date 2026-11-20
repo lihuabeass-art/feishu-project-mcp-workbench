@@ -14,7 +14,7 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { itemKey, localTime, nodeScopeLabel, typeColorStyle } from "./model";
+import { itemKey, localTime, nodeScopeLabel, typeColorStyle, workItemStatusName } from "./model";
 import { CompactTypeTabs, compactTypeTabId, type CompactTypeOption } from "./CompactTypeTabs";
 import { Select, selectOptionLabel } from "./Select";
 import {
@@ -41,16 +41,17 @@ function keyboardFocus(element: HTMLElement) {
 
 function FlowLine({ item }: { item: CachedItem }) {
   const f = item.flow;
-  const fallbackStatus = item.status_name?.trim() || (item.is_completed === true ? "已完成" : "");
+  const done = item.is_completed === true;
+  const fallbackStatus = workItemStatusName(item);
   return (
     <span className="list-mode-flow">
-      {(f.kind === "node" || f.kind === "both") && (
+      {!done && (f.kind === "node" || f.kind === "both") && (
         <span title={nodeScopeLabel(item)}>
           <i className="status-dot" />
           {f.node_name || "名称未提供"}
         </span>
       )}
-      {(f.kind === "state" || f.kind === "both") && (
+      {!done && (f.kind === "state" || f.kind === "both") && (
         <span>
           <i className="status-dot amber" />
           状态 · {f.start_state_key_name || "未提供"}
@@ -62,10 +63,10 @@ function FlowLine({ item }: { item: CachedItem }) {
           )}
         </span>
       )}
-      {f.kind === "none" && (
+      {(done || f.kind === "none") && (
         fallbackStatus ? (
           <span>
-            <i className="status-dot done" />
+            <i className={done ? "status-dot done" : "status-dot"} />
             {fallbackStatus}
           </span>
         ) : (

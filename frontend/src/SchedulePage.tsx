@@ -23,7 +23,7 @@ import { nodeWorkflowActionIds, Workflow, type WorkflowItem, type WorkflowSubmit
 import { draftKey, readDraft } from "./workflowDrafts";
 import { useWorkflowSubmissions, workflowSubmissions } from "./workflowSubmissions";
 import type { Snapshot } from "./types";
-import { asError, itemKey, missingProject, projectFilterOptions, relatedProjectKey } from "./model";
+import { asError, itemKey, missingProject, projectFilterOptions, relatedProjectKey, workItemStatusName } from "./model";
 import { readFailureMessage } from "./readFeedback";
 import { sourceName, sourcePresets } from "./sourcePresets";
 import {
@@ -2187,6 +2187,8 @@ export function SchedulePage({
                       const rowSelected = (view !== "people" || owner === activePerson) &&
                         bars.some((b) => b.entry.id === selected);
                       const currentNode = currentNodeByPersonItem.get(personItemKey(primaryEntry, owner))?.record;
+                      const cachedItem = cachedItemFor(primaryEntry);
+                      const completedStatus = cachedItem?.is_completed === true ? workItemStatusName(cachedItem) : null;
                       return (
                         <Fragment key={key}>
                           {view === "people" &&
@@ -2208,7 +2210,11 @@ export function SchedulePage({
                               />
                               <span>
                                 <strong>{primaryEntry.record.title}</strong>
-                                {currentNode && (
+                                {completedStatus ? (
+                                  <small className="schedule-row-current" title={`事项状态：${completedStatus}`}>
+                                    {completedStatus}
+                                  </small>
+                                ) : currentNode && (
                                   <small className="schedule-row-current" title={`当前节点：${currentNode.nodeName}`}>
                                     <span className="schedule-current-node" style={nodeColorStyle(currentNode)}>
                                       {currentNode.nodeName}

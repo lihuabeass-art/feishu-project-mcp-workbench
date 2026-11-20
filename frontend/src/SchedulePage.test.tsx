@@ -2487,3 +2487,17 @@ it("节点身份缺失时不把多条进行中记录合并成一个当前节点"
   expect(row).toBeTruthy();
   expect(row?.querySelector(".schedule-row-current")).toBeNull();
 });
+
+it("缓存确认事项已完成后，仍在当前排期会话中的行展示终态", async () => {
+  const read = data();
+  read.targets[0].nodeStatus = "doing";
+  read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
+  const snapshot = projectSnapshot(read);
+  snapshot.items[0].is_completed = true;
+  snapshot.items[0].status_name = "需求上线";
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  render(<SchedulePage snapshot={snapshot} onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
+  const row = (await screen.findByRole("button", { name: "任务一 · 开发" })).closest(".schedule-row");
+  expect(row?.querySelector(".schedule-row-current")?.textContent).toBe("需求上线");
+  expect(row?.querySelector(".schedule-current-node")).toBeNull();
+});

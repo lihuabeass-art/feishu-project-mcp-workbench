@@ -304,6 +304,26 @@ it("状态与唯一节点相同时只显示一次，并保留节点负责人", a
   expect(screen.getByText("甲")).toBeTruthy();
 });
 
+it("完整详情确认终态时使用事项状态，旧个人节点不再显示为当前", async () => {
+  vi.mocked(refreshItemDetail).mockResolvedValue({ ...detail, data: { ...detail.data,
+    work_item_attribute: { work_item_status: { name: "需求上线" } },
+    work_item_fields: [...detail.data.work_item_fields, { key: "finish_status", value: "true" }],
+  } });
+  render(<WorkItemDetails item={{ ...item, is_completed: false, node_scope: "personal" }} enabled />);
+  await screen.findByText("需求上线");
+  expect(document.querySelector(".detail-node-overview")).toBeNull();
+  expect(screen.queryByText(/我的待办/)).toBeNull();
+});
+
+it("详情已终止却未带状态名时显示已终止，隐藏旧节点", async () => {
+  vi.mocked(refreshItemDetail).mockResolvedValue({ ...detail, data: { ...detail.data,
+    work_item_attribute: { is_aborted: true },
+  } });
+  render(<WorkItemDetails item={{ ...item, is_completed: false }} enabled />);
+  await screen.findByText("已终止");
+  expect(document.querySelector(".detail-node-overview")).toBeNull();
+});
+
 it("同事项刷新保留更多信息展开，换事项收起；未知个人节点保留独立范围", async () => {
   const view = render(<WorkItemDetails item={{ ...item, node_scope: "personal", flow: { ...item.flow, node_state_key: "other" } }} enabled />);
   await screen.findByText("正文内容");

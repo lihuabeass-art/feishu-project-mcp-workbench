@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import type { AppError, CachedItem, FlowKind, RelatedProject, SpaceCatalog } from "./types";
+import type { AppError, CachedItem, FlowKind, ItemDetail, RelatedProject, SpaceCatalog } from "./types";
 
 export const missingProject = "missing-project";
 export type FilterSelection = string | readonly string[];
@@ -10,12 +10,31 @@ const matchesFilter = (value: string | null, selection: FilterSelection) => {
   return !values.length || (value !== null && values.includes(value));
 };
 export const currentNodeNames = (item: CachedItem): string[] =>
-  item.flow.kind === "node" || item.flow.kind === "both"
+  item.is_completed !== true && (item.flow.kind === "node" || item.flow.kind === "both")
     ? [...new Set((item.current_node_names ?? (item.flow.node_name ? [item.flow.node_name] : []))
       .filter((name) => name.trim()))] : [];
 
 export const nodeScopeLabel = (item: CachedItem) =>
   item.node_scope === "personal" ? "我的待办节点" : "事项当前节点";
+
+export function workItemStatusName(item: CachedItem): string | null {
+  const status = item.status_name?.trim();
+  if (item.is_completed === true) return status || "已完成";
+  return item.flow.start_state_key_name?.trim() || status || null;
+}
+
+export function detailTerminalStatus(detail: ItemDetail | undefined, item: CachedItem): string | null {
+  const isAborted = detail?.data.work_item_attribute.is_aborted;
+  const abortReason = detail?.data.work_item_attribute.abort_reason;
+  if (isAborted === true || (typeof abortReason === "string" && abortReason.trim())) return "已终止";
+  const finishField = detail?.data.work_item_fields.find((field) => field.key === "finish_status");
+  const values = [finishField?.value, detail?.data.work_item_attribute.finish_status];
+  for (const value of values) {
+    if (value === true || value === "true") return "已完成";
+    if (value === false || value === "false") return null;
+  }
+  return item.is_completed === true ? "已完成" : null;
+}
 
 const nodeNamePrefix = "\u0000fstodo.node-name:";
 // 含展示分隔符的真实名称使用独立值，避免与旧方案保存的组合文案混淆。
@@ -212,9 +231,9 @@ export function filterItems(
         ? !item.related_projects?.length
         : item.related_projects?.some((p) => relatedProjectKey(item.id.project_key, p) === selectedProject))) &&
       matchesFilter(item.flow.kind, flowKind) &&
-      matchesFilter(item.flow.start_state_key_name || item.status_name || null, stateName) &&
+      matchesFilter(workItemStatusName(item), stateName) &&
       (!text ||
-        [item.name, item.id.work_item_id, item.project_name, item.status_name, ...(item.related_projects || []).map((p) => p.name)].some((v) =>
+        [item.name, item.id.work_item_id, item.project_name, workItemStatusName(item), ...(item.related_projects || []).map((p) => p.name)].some((v) =>
           v?.toLocaleLowerCase().includes(text),
         )),
   );
@@ -269,7 +288,7 @@ export function workflowFacets(
     ),
     state: valueFacet(
       filterItems(items, query, type, project, flowKind, nodeName, "", relatedProject),
-      (item) => [item.flow.start_state_key_name || item.status_name || null],
+      (item) => [workItemStatusName(item)],
       stateName,
     ),
   };

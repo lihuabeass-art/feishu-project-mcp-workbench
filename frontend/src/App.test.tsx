@@ -2052,9 +2052,9 @@ describe("所有来源调度与清单 patch", () => {
         is_completed: true,
         status_name: "需求上线",
         flow: {
-          kind: "none",
-          node_name: null,
-          node_state_key: null,
+          kind: "node",
+          node_name: "过期开发节点",
+          node_state_key: "stale",
           start_state_key_name: null,
           end_state_key_name: null,
         },
@@ -2072,8 +2072,15 @@ describe("所有来源调度与清单 patch", () => {
           end_state_key_name: null,
         },
       },
+      {
+        ...item("space-a", "未完成的事项", "story"),
+        id: { project_key: "space-a", work_item_type_key: "story", work_item_id: "story-in-progress" },
+        is_completed: false,
+        status_name: "待确认状态",
+        flow: { kind: "none", node_name: null, node_state_key: null, start_state_key_name: null, end_state_key_name: null },
+      },
     ];
-    data.total = 2;
+    data.total = 3;
     vi.mocked(loadSnapshot).mockResolvedValue(data);
     render(<App />);
     expect(await screen.findByText("终态上线需求")).toBeTruthy();
@@ -2083,6 +2090,9 @@ describe("所有来源调度与清单 patch", () => {
     );
     expect(doneDots).toContain("需求上线");
     expect(doneDots).toContain("已完成");
+    expect(doneDots).not.toContain("待确认状态");
+    expect(screen.getByText("待确认状态")).toBeTruthy();
+    expect(screen.queryByText("过期开发节点")).toBeNull();
     expect(screen.queryByText("流程信息未提供")).toBeNull();
 
     fireEvent.change(screen.getByRole("textbox", { name: "搜索工作" }), {
@@ -2090,5 +2100,12 @@ describe("所有来源调度与清单 patch", () => {
     });
     expect(screen.getByText("终态上线需求")).toBeTruthy();
     expect(screen.queryByText("普通已完成事项")).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索工作" }), { target: { value: "已完成" } });
+    expect(screen.getByText("普通已完成事项")).toBeTruthy();
+    expect(screen.queryByText("终态上线需求")).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索工作" }), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "切换到清单模式" }));
+    expect(document.querySelector(".list-mode-flow .status-dot.done")?.parentElement).toBeTruthy();
+    expect(screen.queryByText("过期开发节点")).toBeNull();
   });
 });

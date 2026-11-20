@@ -59,6 +59,7 @@ import {
   orderTypeKeys,
   orderWorkItems,
   typeColorStyle,
+  workItemStatusName,
 } from "./model";
 import { typeReorderHint, useTypeReorder } from "./useTypeReorder";
 import { applySourceTypeNames, typeNameConnection, typeNameSource, useSourceTypeNames } from "./useSourceTypeNames";
@@ -156,19 +157,20 @@ type ManualSync = {
 
 function Flow({ item }: { item: CachedItem }) {
   const f = item.flow;
-  const fallbackStatus = item.status_name?.trim() || (item.is_completed === true ? "已完成" : "");
+  const done = item.is_completed === true;
+  const fallbackStatus = workItemStatusName(item);
   return <div className="flow-lines">
-    {(f.kind === "node" || f.kind === "both") && <span title={nodeScopeLabel(item)}>
+    {!done && (f.kind === "node" || f.kind === "both") && <span title={nodeScopeLabel(item)}>
       <i className="status-dot" />{f.node_name || "名称未提供"}
     </span>}
-    {(f.kind === "state" || f.kind === "both") && <span>
+    {!done && (f.kind === "state" || f.kind === "both") && <span>
       <i className="status-dot amber" />状态 · {f.start_state_key_name || "未提供"}
       {f.end_state_key_name && <><ArrowRight size={12} />{f.end_state_key_name}</>}
     </span>}
-    {f.kind === "none" && (
+    {(done || f.kind === "none") && (
       fallbackStatus ? (
         <span>
-          <i className="status-dot done" />{fallbackStatus}
+          <i className={done ? "status-dot done" : "status-dot"} />{fallbackStatus}
         </span>
       ) : (
         <span className="muted">流程信息未提供</span>
@@ -1587,7 +1589,7 @@ function Workspace() {
         : item.source_ids.includes(sourceId);
     }).map((item) => {
       const personal = item.personal_flows?.[sourceId];
-      const usePersonal = personal?.kind === "node" && item.flow.kind === "node";
+      const usePersonal = item.is_completed !== true && personal?.kind === "node" && item.flow.kind === "node";
       const name = item.id.project_key ? sourceProjectNames.get(item.id.project_key) : null;
       return { ...item, project_name: name || item.project_name,
         schedule: item.personal_schedules?.[sourceId] || item.schedule,

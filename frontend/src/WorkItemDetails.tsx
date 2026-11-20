@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowUpRight, Check, ChevronDown, ChevronRight, Plus, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
-import { asError, itemKey, localTime } from "./model";
+import { asError, detailTerminalStatus, itemKey, localTime } from "./model";
 import { readFailureMessage } from "./readFeedback";
 import type { CachedItem, ItemDetail } from "./types";
 import { BusinessField } from "./BusinessField";
@@ -132,6 +132,7 @@ export function FieldValue({ value }: { value: unknown }) {
 }
 
 function NodeOverview({ item, detail, mergedStatusNode }: { item: CachedItem; detail?: ItemDetail; mergedStatusNode?: boolean }) {
+  if (detailTerminalStatus(detail, item)) return null;
   const nodes = detail?.data.work_item_current_node;
   const flow = item.flow;
   const personal = item.node_scope === "personal";
@@ -171,7 +172,11 @@ function DetailBody({ detail, item, display, verified, children }: { detail: Ite
   );
   const created = actorAt(attribute.create_by, attribute.create_time);
   const updated = actorAt(attribute.updated_by, attribute.update_time);
-  const nodes = detail.data.work_item_current_node;
+  const terminalStatus = detailTerminalStatus(detail, item);
+  const nodes = terminalStatus ? undefined : detail.data.work_item_current_node;
+  const statusValue = isEmpty(attribute.work_item_status) && terminalStatus
+    ? (item.is_completed === true && terminalStatus === "已完成" ? item.status_name?.trim() : null) || terminalStatus
+    : attribute.work_item_status;
   const statusNode = nodes?.length === 1 && nodes[0].name === readable(attribute.work_item_status) ? nodes[0] : undefined;
   const statusNodeOwners = statusNode && !isEmpty(statusNode.owners) &&
     JSON.stringify(statusNode.owners) !== JSON.stringify(summary.operators?.value) ? statusNode.owners : undefined;
@@ -195,7 +200,7 @@ function DetailBody({ detail, item, display, verified, children }: { detail: Ite
       <dl className="detail-summary">
         <dt>当前状态</dt>
         <dd>
-          <FieldValue value={attribute.work_item_status} />
+          <FieldValue value={statusValue} />
           {statusNode && item.node_scope === "personal" && statusNode.id === item.flow?.node_state_key && statusNode.name === item.flow.node_name && <span className="muted">（我的待办）</span>}
           {statusNodeOwners !== undefined && <div><FieldValue value={statusNodeOwners} /></div>}
         </dd>

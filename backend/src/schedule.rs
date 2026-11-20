@@ -1010,6 +1010,15 @@ async fn load_remote(
                     });
                     continue;
                 }
+                let detail = match cached_detail {
+                    Some(detail) => Some(detail),
+                    None => crate::detail::fetch(client, &id, session.config.max_pages).await.ok(),
+                };
+                if detail.as_ref().is_some_and(|d| {
+                    is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data)
+                }) {
+                    continue;
+                }
                 let project = id.project_key.as_deref().unwrap_or_default();
                 let kind = id.work_item_type_key.as_deref().unwrap_or_default();
                 let config_key = (project.to_owned(), kind.to_owned());
@@ -1032,10 +1041,6 @@ async fn load_remote(
                         status.error = Some("节点排期字段配置读取未完成，请重试".into());
                     }
                 }
-                let detail = match cached_detail {
-                    Some(detail) => Some(detail),
-                    None => crate::detail::fetch(client, &id, session.config.max_pages).await.ok(),
-                };
                 if let Some(detail) = &detail {
                     if title.trim().is_empty() {
                         title = txt(&detail.data["work_item_attribute"]["work_item_name"]);
@@ -1283,6 +1288,17 @@ async fn expand_cached_non_todo_items(
                 continue;
             }
         };
+        let detail = match cached_detail {
+            Some(d) => Some(d),
+            None => crate::detail::fetch(client.as_ref(), &id, session.config.max_pages)
+                .await
+                .ok(),
+        };
+        if detail.as_ref().is_some_and(|d| {
+            is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data)
+        }) {
+            continue;
+        }
         let project = id.project_key.as_deref().unwrap_or_default();
         let kind = id.work_item_type_key.as_deref().unwrap_or_default();
         let config_key = (project.to_owned(), kind.to_owned());
@@ -1303,12 +1319,6 @@ async fn expand_cached_non_todo_items(
                     .insert(sid.clone(), "节点排期字段配置读取未完成，请重试".into());
             }
         }
-        let detail = match cached_detail {
-            Some(d) => Some(d),
-            None => crate::detail::fetch(client.as_ref(), &id, session.config.max_pages)
-                .await
-                .ok(),
-        };
         if let Some(detail) = &detail {
             if title.trim().is_empty() {
                 title = txt(&detail.data["work_item_attribute"]["work_item_name"]);
@@ -3849,9 +3859,14 @@ mod tests {
                         {
                             "project_key": "p",
                             "work_item_info": { "work_item_id": "3", "work_item_type_key": "issue", "work_item_name": "兜底过滤缺陷" }
+                        },
+                        {
+                            "project_key": "p",
+                            "work_item_info": { "work_item_id": "4", "work_item_type_key": "story", "work_item_name": "已结束的需求" },
+                            "node_info": { "node_name": "旧开发节点" }
                         }
                     ],
-                    "total": 3
+                    "total": 4
                 }),
                 "get_node_detail" => {
                     let wid = args["work_item_id"].as_str().unwrap_or_default();
@@ -3875,10 +3890,10 @@ mod tests {
                 }
                 "get_workitem_brief" => {
                     let wid = args["work_item_id"].as_str().unwrap_or_default();
-                    let (type_key, work_item_mod, name) = if wid == "1" {
-                        ("story", "节点流", "节点流需求")
-                    } else {
-                        ("issue", "状态流", "兜底过滤缺陷")
+                    let (type_key, work_item_mod, name, fields) = match wid {
+                        "1" => ("story", "节点流", "节点流需求", json!([])),
+                        "4" => ("story", "节点流", "已结束的需求", json!([{"key": "finish_status", "value": "true"}])),
+                        _ => ("issue", "状态流", "兜底过滤缺陷", json!([])),
                     };
                     json!({
                         "work_item_attribute": {
@@ -3888,7 +3903,7 @@ mod tests {
                             "work_item_mod": work_item_mod,
                             "work_item_name": name
                         },
-                        "work_item_fields": [],
+                        "work_item_fields": fields,
                         "pagination": { "has_more": false }
                     })
                 }
@@ -3906,7 +3921,7 @@ mod tests {
     }
 
     #[test]
-    fn state_flow_items_are_skipped_without_node_detail_errors() {
+    fn state_flow_and_completed_items_are_skipped_without_node_detail_errors() {
         let (session, dir) = fixture();
         let fake = Arc::new(StateFlowScenario {
             calls: Mutex::new(vec![]),
@@ -3924,14 +3939,14 @@ mod tests {
         assert_eq!(plan.view.targets[0].identity.item, "1");
         assert!(plan.view.targets[0].read_only_reason.is_none());
         let calls = fake.calls.lock().unwrap();
-        // Item 2 was pre-filtered via state_info, so get_node_detail was only called for items 1 and 3.
+        // Item 2 is pre-filtered; item 4 is excluded by its detail despite having node records.
         let mut node_calls: Vec<_> = calls
             .iter()
             .filter(|(t, _)| t == "get_node_detail")
             .map(|(_, a)| a["work_item_id"].as_str().unwrap_or_default().to_string())
             .collect();
         node_calls.sort();
-        assert_eq!(node_calls, vec!["1".to_string(), "3".to_string()]);
+        assert_eq!(node_calls, vec!["1".to_string(), "3".to_string(), "4".to_string()]);
         drop(calls);
         drop(installed);
         drop(session);
