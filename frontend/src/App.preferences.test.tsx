@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
-import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import { cachedItemDetail, loadSnapshot, refreshItemDetail, refreshSourceTypes } from "./api";
 import { flushSourceTypePreferences } from "./preferences";
 import type { Snapshot } from "./types";
@@ -98,7 +98,7 @@ it("需求研发详情可打开关联缺陷并携带当前需求新建，需求�
     return undefined;
   });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await user.click(await screen.findByText("需求甲"));
   await waitFor(() => expect(vi.mocked(refreshItemDetail).mock.calls.some(([id]) => id.work_item_id === "123")).toBe(true));
   const requirementReads = vi.mocked(refreshItemDetail).mock.calls.filter(([id]) => id.work_item_id === "123").length;
@@ -126,7 +126,7 @@ it("只在当前已开启新建的类型显示入口，关闭的类型不能借�
     if(command==="get_creation_form")return {target:(args as {target:unknown}).target,context:"account",version:"v1",fields:[],pending:null};
     return undefined;
   });
-  const user=userEvent.setup();render(<App />);
+  const user=userEvent.setup();renderMyWork();
   await screen.findByRole("button",{name:/全部工作/});
   expect(screen.queryByRole("button",{name:"新建工作事项"})).toBeNull();
   const tabs=within(document.querySelector(".tabs") as HTMLElement);
@@ -142,7 +142,7 @@ it("只在当前已开启新建的类型显示入口，关闭的类型不能借�
 
 it("升级后界面缓存丢失时，清单显示和别名从数据库恢复，同步选择保持独立", async () => {
   vi.mocked(loadSnapshot).mockResolvedValue(snapshot());
-  render(<App />);
+  renderMyWork();
   await openTypes();
   expect(
     (
@@ -183,7 +183,7 @@ it("切换和别名修改落库后，清空界面缓存并重启仍保留最新�
     }
     return undefined;
   });
-  let app = render(<App />);
+  let app = renderMyWork();
   const user = await openTypes();
   await user.click(screen.getByRole("switch", { name: "研发在清单中显示" }));
   await user.type(
@@ -198,7 +198,7 @@ it("切换和别名修改落库后，清空界面缓存并重启仍保留最新�
   expect(data.sources[0].type_scope!.types[0].selected).toBe(false);
   app.unmount();
   localStorage.clear();
-  app = render(<App />);
+  app = renderMyWork();
   await openTypes();
   expect(
     (
@@ -216,10 +216,12 @@ it("切换和别名修改落库后，清空界面缓存并重启仍保留最新�
 
 it("数据库保存失败时恢复已确认的开关状态，之后可以重试", async () => {
   vi.mocked(loadSnapshot).mockResolvedValue(snapshot());
-  vi.mocked(invoke)
-    .mockRejectedValueOnce(new Error("磁盘不可写"))
-    .mockResolvedValue(undefined);
-  render(<App />);
+  const savePreferences = vi.fn().mockRejectedValueOnce(new Error("磁盘不可写")).mockResolvedValue(undefined);
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "save_source_type_preferences") return savePreferences();
+    return undefined;
+  });
+  renderMyWork();
   const user = await openTypes();
   await user.click(screen.getByRole("switch", { name: "研发在清单中显示" }));
   await screen.findByText("类型偏好保存失败，请检查本机存储后重试。");
@@ -231,7 +233,7 @@ it("数据库保存失败时恢复已确认的开关状态，之后可以重试"
     ).checked,
   ).toBe(false);
   await user.click(screen.getByRole("switch", { name: "研发在清单中显示" }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(savePreferences).toHaveBeenCalledTimes(2));
   expect(
     (
       screen.getByRole("switch", {
@@ -252,7 +254,7 @@ it("已停用来源的清单显示和别名仍可保存，新建默认关闭", a
   });
   vi.mocked(loadSnapshot).mockResolvedValue(data);
   vi.mocked(invoke).mockResolvedValue(undefined);
-  render(<App />);
+  renderMyWork();
   const user = await openTypes();
   await user.click(screen.getByRole("radio", { name: "已停用来源" }));
   await user.click(screen.getByRole("switch", { name: "需求在清单中显示" }));
@@ -286,7 +288,7 @@ it("配置回读期间的新选择不会被较早读取的数据库状态覆盖"
     failed: [],
   });
   vi.mocked(invoke).mockResolvedValue(undefined);
-  render(<App />);
+  renderMyWork();
   const user = await openTypes();
   await user.click(screen.getByRole("button", { name: "发现类型" }));
   await waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(2));

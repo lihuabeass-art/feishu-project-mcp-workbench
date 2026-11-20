@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import { checkConnection, discoverSpaces, executeWorkflowAction, getWorkflowActions, loadSnapshot, refreshSourceTypes, saveConnectionSettings, saveToken, saveTypeOrder, syncTodos } from "./api";
 import type { CreationForm } from "./creation";
 import type { ConnectionInfo, Snapshot, WorkflowResult } from "./types";
@@ -73,7 +74,8 @@ function selectStory(mode: "full" | "compact") {
 }
 async function ready(mode: "full" | "compact" = "full") {
   localStorage.setItem("fstodo.display-mode.v1", JSON.stringify({ mode }));
-  render(<App />);
+  if (mode === "full") renderMyWork();
+  else render(<App />);
   await act(async () => {});
   selectStory(mode);
   await act(async () => {});

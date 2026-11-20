@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import { cachedItemDetail, getWorkflowActions, loadSnapshot, refreshItemDetail, syncTodos } from "./api";
 import type { CachedItem, ItemDetail, Snapshot, SyncReport } from "./types";
 
@@ -46,7 +46,7 @@ it.each([true, false])("同步后当前详情自动回读，其他事项不干�
     ...(incremental ? { patch: { added: [], modified, removed: [] } } : {}),
   });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await user.click(await screen.findByRole("button", { name: /需求甲.*需求/ }));
   await screen.findByText("初始正文");
   await waitFor(() => expect(screen.getByRole("button", { name: "刷新详情" })).toBeTruthy());

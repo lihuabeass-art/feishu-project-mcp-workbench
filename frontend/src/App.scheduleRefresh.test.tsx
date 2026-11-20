@@ -25,6 +25,29 @@ beforeEach(() => {
   vi.mocked(closeScheduleSession).mockResolvedValue();
 });
 
+it("完整模式首屏先显示问候，排期读完后在同一张卡片补上姓名和头像", async () => {
+  let finishRead!: (read: ScheduleRead) => void;
+  vi.mocked(loadScheduleSession).mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+
+  render(<App />);
+  const page = screen.getByRole("region", { name: "事项安排" });
+  const greeting = within(page).getByLabelText("今日问候");
+  expect(greeting.textContent).toMatch(/\d+月\d+日星期/);
+  expect(greeting.querySelector("p")?.textContent).toBeTruthy();
+  expect(greeting.querySelector("strong, img")).toBeNull();
+  expect(within(page).queryByText("事项安排", { exact: true })).toBeNull();
+
+  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(1));
+  await act(async () => finishRead({
+    sessionId: "greeting", currentUserId: "me", peopleLoaded: false, readAt: "刚刚", complete: true,
+    sources: [], people: [{ id: "me", name: "测试用户", avatar: "https://example.com/avatar.png" }], targets: [],
+  }));
+  expect(within(page).getByLabelText("今日问候")).toBe(greeting);
+  expect(within(greeting).getByText("测试用户")).toBeTruthy();
+  expect(greeting.querySelector("img")?.getAttribute("src")).toBe("https://example.com/avatar.png");
+  expect(loadScheduleSession).toHaveBeenCalledTimes(1);
+});
+
 it("事项安排的流程确认成功后重新读取排期并保持周视图和节点选择", async () => {
   const snapshot = await loadSnapshot();
   vi.mocked(loadSnapshot).mockResolvedValue({ ...snapshot, capabilities: { ...snapshot.capabilities, workflow: true } });
@@ -41,7 +64,7 @@ it("事项安排的流程确认成功后重新读取排期并保持周视图和�
   vi.mocked(executeWorkflowAction).mockResolvedValue({ outcome: "verified", verified: true, message: "流程已完成", request_id: "r", action_id: "node:confirm:n", resynced: true });
 
   render(<App />);
-  fireEvent.click(await screen.findByText("事项安排"));
+  fireEvent.click(await screen.findByRole("button", { name: "事项安排" }));
   const nextWeek = await screen.findByRole("button", { name: "下一周" });
   fireEvent.click(nextWeek);
   const range = nextWeek.parentElement!.querySelector("strong")!.textContent;
@@ -76,7 +99,7 @@ it.each(["success", "partial", "rejected"])("真实页面在后台%s期间编辑
   vi.mocked(submitScheduleTargets).mockImplementationOnce(() => new Promise((resolve) => { finishWrite = resolve; }));
   render(<App />);
   await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(1));
-  fireEvent.click(await screen.findByText("事项安排"));
+  fireEvent.click(await screen.findByRole("button", { name: "事项安排" }));
   fireEvent.click(await screen.findByText("当前节点"));
   now += 300_000;
   fireEvent(window, new Event("focus"));

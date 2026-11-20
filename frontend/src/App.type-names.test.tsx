@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import { loadSnapshot, refreshSourceTypes, saveSourceTypes, syncTodos } from "./api";
 import type { CachedItem, Snapshot, SourceTypeScope, SyncReport } from "./types";
 
@@ -57,7 +57,7 @@ afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 it.each([null, typeKey, "远端改名前名称"])("启动时自动刷新旧缓存名称 %s，直接更新侧栏与事项", async (oldName) => {
   vi.mocked(loadSnapshot).mockResolvedValue(snapshot(oldName));
-  render(<App />);
+  renderMyWork();
   await waitFor(() => expect(named("需求反馈").length).toBeGreaterThan(0));
   expect(screen.getByRole("button", { name: /反馈事项需求反馈/ })).toBeTruthy();
   expect(refreshSourceTypes).toHaveBeenCalledExactlyOnceWith("a");
@@ -67,7 +67,7 @@ it.each([null, typeKey, "远端改名前名称"])("启动时自动刷新旧缓�
 });
 
 it("事项无业务变化的手动刷新仍取得远端新名称，不产生事项更新计数", async () => {
-  render(<App />);
+  renderMyWork();
   await waitFor(() => expect(named("需求反馈").length).toBeGreaterThan(0));
   vi.mocked(refreshSourceTypes).mockResolvedValue(discovery("产品反馈"));
   await userEvent.click(screen.getByRole("button", { name: "立即刷新" }));
@@ -80,7 +80,7 @@ it("事项无业务变化的手动刷新仍取得远端新名称，不产生事�
 
 it("自动同步同样跟随远端改名，不弹出同步成功提示", async () => {
   vi.useFakeTimers();
-  render(<App />);
+  renderMyWork();
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   expect(named("需求反馈").length).toBeGreaterThan(0);
   vi.mocked(refreshSourceTypes).mockResolvedValue(discovery("自动改名"));
@@ -95,7 +95,7 @@ it("远端改名保留显示别名，清空别名后立即使用最新远端名�
     [typeKey]: { enabled: true, alias: "个人反馈" },
   } }));
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await waitFor(() => expect(refreshSourceTypes).toHaveBeenCalledOnce());
   await waitFor(() => expect(named("个人反馈").length).toBeGreaterThan(0));
   vi.mocked(refreshSourceTypes).mockResolvedValue(discovery("产品反馈"));
@@ -114,7 +114,7 @@ it("后台失败不覆盖缓存或操作反馈，下一次成功同步补齐新�
   vi.mocked(loadSnapshot).mockResolvedValue(snapshot("原名称"));
   vi.mocked(refreshSourceTypes).mockRejectedValueOnce({ kind: "connection", message: "RPC diagnostic" });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await waitFor(() => expect(refreshSourceTypes).toHaveBeenCalledOnce());
   expect(named("原名称").length).toBeGreaterThan(0);
   expect(screen.queryByRole("alert")).toBeNull();
@@ -143,7 +143,7 @@ it("较早发起的缓存回读不覆盖后取得的新名称，旧同步范围�
   const user = userEvent.setup();
   const fullReport=report();delete fullReport.patch;
   vi.mocked(syncTodos).mockResolvedValueOnce(fullReport);
-  render(<App />);
+  renderMyWork();
   await screen.findByText("反馈事项");
   await user.click(screen.getByRole("button", { name: "立即刷新" }));
   await waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(2));
@@ -161,7 +161,7 @@ it("较早发起的缓存回读不覆盖后取得的新名称，旧同步范围�
 it.each(["auth", "permission", "config"])("类型目录 %s 错误在对应来源说明，恢复后清除且不改变同步结论", async (kind) => {
   vi.mocked(refreshSourceTypes).mockRejectedValueOnce({ kind, message: "RPC hidden technical detail" });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByText("反馈事项");
   expect(screen.queryByRole("alert")).toBeNull();
   await user.click(screen.getByRole("button", { name: "工作来源" }));
@@ -179,7 +179,7 @@ it("部分空间需要权限处理时保留成功名称，并给出来源内说�
   vi.mocked(refreshSourceTypes).mockResolvedValue({ ...discovery("需求反馈"),
     failed: [["hidden-space", "RPC hidden diagnostic"]], failure_kinds: ["permission"] });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await waitFor(() => expect(named("需求反馈").length).toBeGreaterThan(0));
   expect(screen.queryByRole("alert")).toBeNull();
   await user.click(screen.getByRole("button", { name: "工作来源" }));

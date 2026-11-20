@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import { loadSnapshot } from "./api";
 import { emptyWorkFilters } from "./workFilters";
 import type { CachedItem, Snapshot } from "./types";
@@ -71,7 +71,7 @@ it.each(["full", "compact"])("%s 模式下方案与类型独立，旧方案和�
       ],
     } };
   });
-  const user = userEvent.setup(); render(<App />);
+  const user = userEvent.setup(); renderMyWork();
   await screen.findByText("space-a-story");
   await waitFor(() => expect(screen.getByRole("button", { name: "筛选方案" }).textContent).toContain("空间甲方案"));
   expect(screen.getByText("space-a-issue")).toBeTruthy();
@@ -118,7 +118,7 @@ it("从其他页面通过侧栏类型进入时，默认方案保留刚选的类�
         filters: { ...emptyWorkFilters, type: ["story"], space: ["space-a"] } }],
     } };
   });
-  const user = userEvent.setup(); render(<App />);
+  const user = userEvent.setup(); renderMyWork();
   await screen.findByText("space-a-issue");
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(within(screen.getByRole("group", { name: "我的类型" })).getByRole("button", { name: /缺陷跟踪/ }));
@@ -130,7 +130,7 @@ it("从其他页面通过侧栏类型进入时，默认方案保留刚选的类�
 
 it.each(["full", "compact"])("%s 模式将默认设置结果交给统一消息提示，并支持关闭及再次提示", async (mode) => {
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("load_filter_schemes"));
   if (mode === "compact") {
     await user.click(screen.getByRole("button", { name: "切换到清单模式" }));

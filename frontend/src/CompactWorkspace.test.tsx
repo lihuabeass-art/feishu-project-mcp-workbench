@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import { CompactWorkspace } from "./CompactWorkspace";
 import { emptyWorkFilters, workFilterOptions } from "./workFilters";
 import { executeWorkflowAction, getWorkflowActions, loadSnapshot, syncTodos } from "./api";
@@ -140,7 +141,7 @@ afterEach(() => {
 describe("清单模式", () => {
   it("在同一窗口切换为紧凑清单，隐藏完整布局，并在重新打开时恢复所选模式", async () => {
     const user = userEvent.setup();
-    const view = render(<App />);
+    const view = renderMyWork();
     const list = await enterListMode(user);
 
     expect(screen.queryByRole("navigation", { name: "主要导航" })).toBeNull();
@@ -161,7 +162,7 @@ describe("清单模式", () => {
 
   it("切到清单以 Tab 继承类型，搜索独立显示，返回完整模式继续使用", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await user.type(screen.getByRole("textbox", { name: "搜索工作" }), "缺陷");
     await user.click(screen.getAllByRole("button", { name: /^缺陷\s*1$/ })[1]);
@@ -189,7 +190,7 @@ describe("清单模式", () => {
   it("筛选从空间开始联动项目，更多条件默认收起并可组合使用", async () => {
     vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     const list = await enterListMode(user);
     const toggle = screen.getByRole("button", { name: "清单筛选" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
@@ -226,7 +227,7 @@ describe("清单模式", () => {
   it("支持流程筛选和未提供所属项目，无匹配时可一键清除", async () => {
     vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     const list = await enterListMode(user);
     await user.click(screen.getByRole("button", { name: "清单筛选" }));
     await user.click(screen.getByText("更多条件"));
@@ -246,7 +247,7 @@ describe("清单模式", () => {
   it("切换空间或项目会清除下层条件，项目内可继续筛流程和状态", async () => {
     vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     const list = await enterListMode(user);
     await user.click(screen.getByRole("button", { name: "清单筛选" }));
     await chooseFilter(user, "清单空间", "空间甲");
@@ -275,7 +276,7 @@ describe("清单模式", () => {
     data.items[2].flow.node_name = "测试";
     vi.mocked(loadSnapshot).mockResolvedValue(data);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     const list = await enterListMode(user);
     await user.click(screen.getByRole("button", { name: "清单筛选" }));
     if (field === "流程类型") {
@@ -300,7 +301,7 @@ describe("清单模式", () => {
   it("本次打开期间两种模式共用搜索和流程条件，重开后全部重置", async () => {
     vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
     const user = userEvent.setup();
-    const view = render(<App />);
+    const view = renderMyWork();
     await screen.findByText("需求甲");
     await user.type(screen.getByRole("textbox", { name: "搜索工作" }), "需求");
     await user.click(screen.getByRole("button", { name: "切换到清单模式" }));
@@ -343,7 +344,7 @@ describe("清单模式", () => {
   it("多选空间再次点击可取消，重新打开后重置为空间全部", async () => {
     vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
     const user = userEvent.setup();
-    const view = render(<App />);
+    const view = renderMyWork();
     let list = await enterListMode(user);
     await user.click(screen.getByRole("button", { name: "清单筛选" }));
     await user.click(screen.getByRole("combobox", { name: "清单空间" }));
@@ -372,7 +373,7 @@ describe("清单模式", () => {
   it("切换模式保留当前组合条件，零结果时条件仍可见并可清除", async () => {
     vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await chooseFilter(user, "空间", "空间甲");
     await chooseFilter(user, "空间", "空间乙");
@@ -407,7 +408,7 @@ describe("清单模式", () => {
 
   it("清单 Tab 可切换继承的类型并同步到完整模式，全部 Tab 恢复所有类型", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await user.click(within(screen.getByRole("group", { name: "我的类型" })).getByRole("button", { name: /^需求\s*1$/ }));
     const list = await enterListMode(user);
@@ -433,7 +434,7 @@ describe("清单模式", () => {
     data.total = data.items.length;
     vi.mocked(loadSnapshot).mockResolvedValue(data);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     const list = await enterListMode(user);
     const panel = within(list).getByRole("tabpanel");
     const first = rowNamed(list, "需求甲");
@@ -475,7 +476,7 @@ describe("清单模式", () => {
     }));
     vi.mocked(loadSnapshot).mockResolvedValue(data);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     const sidebarTypes = within(screen.getByRole("group", { name: "我的类型" })).getAllByRole("button")
       .map((button) => button.textContent?.replace(/\s+/g, ""));
@@ -497,7 +498,7 @@ describe("清单模式", () => {
 
   it("类型 Tab 支持方向键循环和 Home/End，并关联当前清单面板", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     const list = await enterListMode(user);
     const tabs = within(screen.getByRole("tablist", { name: "事项类型" })).getAllByRole("tab");
     const expectActive = (index: number) => {
@@ -525,7 +526,7 @@ describe("清单模式", () => {
   it("切换类型保留普通筛选，清除筛选及调整空间项目保留当前类型", async () => {
     vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     const list = await enterListMode(user);
     await user.click(screen.getByRole("button", { name: "清单筛选" }));
     await chooseFilter(user, "清单空间", "空间甲");
@@ -556,7 +557,7 @@ describe("清单模式", () => {
   it("切换模式和事项类型使用相同项目候选，不显示其他类型的项目", async () => {
     vi.mocked(loadSnapshot).mockResolvedValue(filterSnapshot());
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await enterListMode(user);
     await user.click(screen.getByRole("tab", { name: /^缺陷\s*2$/ }));
     await user.click(screen.getByRole("button", { name: "清单筛选" }));
@@ -581,7 +582,7 @@ describe("清单模式", () => {
       type: ["missing"], flowKind: ["node"], nodeName: ["旧节点"], stateName: ["旧状态"], completion });
     localStorage.setItem(storageKey, saved);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     expect(screen.getByText("已完成缺陷")).toBeTruthy();
     expect(screen.getByText("未归项目缺陷")).toBeTruthy();
@@ -601,7 +602,7 @@ describe("清单模式", () => {
 
   it("键盘 Esc 先关闭下拉，再收起筛选并恢复入口焦点", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await enterListMode(user);
     const toggle = screen.getByRole("button", { name: "清单筛选" });
     await user.click(toggle);
@@ -617,7 +618,7 @@ describe("清单模式", () => {
 
   it("在小窗内打开详情，Esc 或返回按钮回到清单并把焦点还给原事项", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     const list = await enterListMode(user);
 
     await user.click(rowNamed(list, "缺陷乙"));
@@ -639,7 +640,7 @@ describe("清单模式", () => {
 
   it("置顶按钮首次默认开启，切换后记住选择", async () => {
     const user = userEvent.setup();
-    const view = render(<App />);
+    const view = renderMyWork();
     await enterListMode(user);
     const pin = screen.getByRole("button", { name: "窗口置顶" });
     expect(pin.getAttribute("aria-pressed")).toBe("true");
@@ -673,7 +674,7 @@ describe("清单模式", () => {
         action_id: "confirm", resynced: outcome === "verified",
       });
       const user = userEvent.setup();
-      render(<App />);
+      renderMyWork();
       const list = await enterListMode(user);
       await user.click(rowNamed(list, "需求甲"));
       await user.click(await screen.findByRole("button", { name: "完成研发节点" }));
@@ -709,7 +710,7 @@ describe("清单模式", () => {
 
   it("只有被截断的标题在悬停 300ms 后原位展开，按 Esc 收起，提前移开不展开", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     const list = await enterListMode(user);
     vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
       return this.textContent === "需求甲" ? 60 : 20;

@@ -221,7 +221,7 @@ const encouragements = [
   "愿今天的你，有方向，也有好心情。",
 ];
 
-function ScheduleGreeting({ person, name }: { person?: SchedulePerson; name: string }) {
+function ScheduleGreeting({ person, name }: { person?: SchedulePerson; name?: string }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
@@ -239,7 +239,7 @@ function ScheduleGreeting({ person, name }: { person?: SchedulePerson; name: str
       <ScheduleAvatar person={person} />
       <div className="schedule-greeting-copy">
         <div className="schedule-greeting-date">{greeting} · {part("month")}月{part("day")}日{part("weekday")}</div>
-        <strong>{name}</strong>
+        {name && <strong>{name}</strong>}
         <p>{encouragements[day % encouragements.length]}</p>
       </div>
     </div>
@@ -282,6 +282,7 @@ export function SchedulePage({
   onGuardChange,
   requestReload,
   snapshot,
+  waitingForSnapshot = false,
   calendarContext = "",
   preloadedSession,
   workflow,
@@ -290,6 +291,7 @@ export function SchedulePage({
   onGuardChange: (guard: ScheduleGuard) => void;
   requestReload: (reload: () => void) => void;
   snapshot?: Snapshot | null;
+  waitingForSnapshot?: boolean;
   calendarContext?: string;
   preloadedSession?: ScheduleSessionController;
   workflow?: { context: string; busy: boolean; submit: WorkflowSubmit };
@@ -409,6 +411,7 @@ export function SchedulePage({
   }, [successToast]);
 
   useEffect(() => {
+    if (waitingForSnapshot) return;
     let active = true;
     if (!preloadedSession?.read) setSelected("");
     setHoveredTarget(undefined);
@@ -496,7 +499,7 @@ export function SchedulePage({
       peopleLoadingRef.current = false;
       void closeScheduleSession(request).catch(() => {});
     };
-  }, [epoch]);
+  }, [epoch, waitingForSnapshot]);
 
   const triggerLoadPeople = (currentRead: ScheduleRead) => {
     if (currentRead.peopleLoaded !== false || peopleLoadingRef.current) return;
@@ -1626,7 +1629,7 @@ export function SchedulePage({
     <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={() => preloadedSession?.onInteraction?.()} onFocusCapture={() => preloadedSession?.onInteraction?.()}>
           <>
             <div className="overview schedule-overview">
-              {read ? <ScheduleGreeting person={currentUserPerson} name={currentUserDisplayName} /> : <strong>事项安排</strong>}
+              <ScheduleGreeting person={currentUserPerson} name={read?.currentUserId ? currentUserDisplayName : undefined} />
               <div className="overview-actions schedule-overview-actions">
                 <button
                   type="button"

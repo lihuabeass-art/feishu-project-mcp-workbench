@@ -3,13 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
-  render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import {
   discoverSourceFields,
   loadSnapshot,
@@ -138,7 +137,7 @@ it("来源的类型、显示偏好、别名和同步范围互不串用，全部�
     return keys.length;
   });
   const user = userEvent.setup();
-  let app = render(<App />);
+  let app = renderMyWork();
   await screen.findByText("共有事项");
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   expect(screen.getByText(/请先选择上方的一个工作来源/)).toBeTruthy();
@@ -179,7 +178,7 @@ it("来源的类型、显示偏好、别名和同步范围互不串用，全部�
   expect(screen.getByRole("button", { name: /共有事项乙需求/ })).toBeTruthy();
   expect(screen.getByText("仅乙事项")).toBeTruthy();
   app.unmount();
-  app = render(<App />);
+  app = renderMyWork();
   await screen.findByText("共有事项");
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("radio", { name: "甲来源" }));
@@ -207,7 +206,7 @@ it("来源的类型、显示偏好、别名和同步范围互不串用，全部�
     project_key: "space-a",
     work_item_type_key: "story",
   };
-  render(<App />);
+  renderMyWork();
   await screen.findByText("旧缓存事项");
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("radio", { name: "乙来源 · 空间甲" }));
@@ -309,7 +308,7 @@ describe("工作来源配置与同步互不阻塞", () => {
         await user.click(screen.getByRole("combobox", { name: label }));
         await user.click(screen.getByRole("option", { name: option }));
       };
-      render(<App />);
+      renderMyWork();
       await screen.findByRole("combobox", { name: "显示来源" });
       await user.click(screen.getByRole("button", { name: "工作来源" }));
       await user.click(screen.getByRole("button", { name: "立即刷新" }));

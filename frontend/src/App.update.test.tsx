@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import { loadSnapshot, saveConnectionSettings } from "./api";
 import { invoke } from "@tauri-apps/api/core";
 import type { Snapshot } from "./types";
@@ -37,7 +37,7 @@ afterEach(cleanup);
 
 it.each(["invalid", "failed"])("关闭 %s 保存提示后仍阻止更新退出，恢复原值后可准备安装", async (kind) => {
   vi.mocked(saveConnectionSettings).mockRejectedValue({ kind: "storage", message: "写盘失败" });
-  render(<App />);
+  renderMyWork();
   await screen.findByText("工作，从这里汇合");
   fireEvent.click(screen.getByRole("button", { name: "连接与配置" }));
   const endpoint = await screen.findByLabelText("MCP 服务地址");

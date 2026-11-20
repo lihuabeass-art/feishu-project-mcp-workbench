@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import { loadSnapshot } from "./api";
 import { emptyWorkFilters } from "./workFilters";
 import type { CachedItem, Snapshot } from "./types";
@@ -65,7 +65,7 @@ async function nodeFilters(user: ReturnType<typeof userEvent.setup>, mode: strin
 }
 
 it.each(["full", "compact"])("%s 模式按独立节点筛选，多来源和多节点命中不重复，同号跨空间事项仍保留", async (mode) => {
-  const user = userEvent.setup(); render(<App />);
+  const user = userEvent.setup(); renderMyWork();
   await screen.findByText("共同需求");
   const label = await nodeFilters(user, mode);
   const list = screen.getByRole("region", { name: "工作清单" });
@@ -90,7 +90,7 @@ it.each(["full", "compact"])("%s 模式按独立节点筛选，多来源和多�
 });
 
 it("切换来源时节点保持各自范围，两种模式直接展示节点名并保留范围提示", async () => {
-  const user = userEvent.setup(); render(<App />);
+  const user = userEvent.setup(); renderMyWork();
   await screen.findByText("共同需求");
   await choose(user, "显示来源", "我的待办");
   expect(screen.getByText(back).getAttribute("title")).toBe("我的待办节点");
@@ -117,7 +117,7 @@ it.each(["full", "compact"])("%s 模式恢复旧组合筛选方案且保留原�
         filters: { ...emptyWorkFilters, nodeName: [combined] } }],
     } };
   });
-  const user = userEvent.setup(); render(<App />);
+  const user = userEvent.setup(); renderMyWork();
   await screen.findByText("共同需求");
   const label = await nodeFilters(user, mode);
   await waitFor(() => expect(screen.queryByText("评审需求")).toBeNull());
@@ -137,7 +137,7 @@ it.each(["full", "compact"])("%s 模式选择真实含斜线节点时只匹配�
   data.items[2] = { ...data.items[2], name: "独立斜线节点需求", current_node_names: [combined],
     flow: { ...data.items[2].flow, node_name: combined } };
   vi.mocked(loadSnapshot).mockResolvedValue(data);
-  const user = userEvent.setup(); render(<App />);
+  const user = userEvent.setup(); renderMyWork();
   await screen.findByText("共同需求");
   const label = await nodeFilters(user, mode);
   await choose(user, label, `${combined}（1）`);

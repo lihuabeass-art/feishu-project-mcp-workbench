@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import { discoverSpaces, loadSnapshot, refreshWorkspaceCatalog, saveWorkSource, setWorkSourceEnabled, syncTodos } from "./api";
 import type { CachedItem, CatalogRefresh, Snapshot, SpaceCatalog, SpaceDiscovery, SyncReport } from "./types";
 
@@ -63,7 +63,7 @@ it.each([true, false])(
   const found = deferred<SpaceDiscovery>();
   vi.mocked(discoverSpaces).mockReturnValue(found.promise);
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByRole("combobox", { name: "显示来源" });
   if (credentialReady) await waitFor(() => expect(refreshWorkspaceCatalog).toHaveBeenCalledOnce());
   await user.click(screen.getByRole("button", { name: "工作来源" }));
@@ -101,7 +101,7 @@ it.each([
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
   vi.mocked(discoverSpaces).mockRejectedValueOnce({ kind, message: "RPCError private" }).mockResolvedValueOnce({ spaces: catalog, has_remote_spaces: true });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByRole("combobox", { name: "显示来源" });
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
@@ -134,7 +134,7 @@ it("远端空结果提示后仍可手动填写并保存空间", async () => {
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: [], warnings: [] });
   vi.mocked(discoverSpaces).mockResolvedValue({ spaces: [], has_remote_spaces: false });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByRole("combobox", { name: "显示来源" });
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
@@ -157,7 +157,7 @@ it("发现空间会补充已有候选并保留手填草稿", async () => {
   const discovered: SpaceCatalog = { project_key: "new-space", name: "新发现空间", simple_name: null, projects: [] };
   vi.mocked(discoverSpaces).mockResolvedValue({ spaces: [...initial.workspace_catalog, discovered], has_remote_spaces: true });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByRole("combobox", { name: "显示来源" });
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
@@ -179,7 +179,7 @@ it("空间发现读取失败在表单说明原因，保留草稿并允许重试"
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
   vi.mocked(discoverSpaces).mockRejectedValue({ kind: "connection", message: "RPCError secret; log_id: private-log" });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByRole("combobox", { name: "显示来源" });
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
@@ -198,7 +198,7 @@ it("发现空间成功不清除已有的项目目录失败提示", async () => {
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: ["项目目录失败"], warning_kinds: ["permission"] });
   vi.mocked(discoverSpaces).mockResolvedValue({ spaces: catalog, has_remote_spaces: true });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   expect(await screen.findByText(/空间与项目目录未刷新/)).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
@@ -219,7 +219,7 @@ it("较早的手动发现结果不能覆盖后续刷新取得的空间目录", a
   vi.mocked(discoverSpaces).mockReturnValue(pending.promise);
   vi.mocked(syncTodos).mockResolvedValue(report(true));
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   expect(await screen.findAllByText("空间：正式研发空间")).toHaveLength(2);
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("button", { name: "添加内置来源" }));
@@ -242,7 +242,7 @@ it("较早的快照回读不能覆盖手动发现的空间", async () => {
   const found: SpaceCatalog = { project_key: "new-space", name: "新发现的空间", simple_name: null, projects: [] };
   vi.mocked(discoverSpaces).mockResolvedValue({ spaces: [found], has_remote_spaces: true });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByText("需求0");
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("switch", { name: "启用todo" }));
@@ -272,7 +272,7 @@ it("较早的快照回读不能覆盖自动刷新取得的空间目录", async (
   vi.mocked(setWorkSourceEnabled).mockResolvedValue(undefined);
   vi.mocked(syncTodos).mockResolvedValue(report(true));
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   expect(await screen.findAllByText("空间：正式研发空间")).toHaveLength(2);
   await user.click(screen.getByRole("button", { name: "工作来源" }));
   await user.click(screen.getByRole("switch", { name: "启用todo" }));
@@ -287,7 +287,7 @@ it("全部来源的重叠事项只出现一次，空间统一命名，所属项�
   vi.mocked(loadSnapshot).mockResolvedValue(snapshot());
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await waitFor(() => expect(refreshWorkspaceCatalog).toHaveBeenCalledOnce());
   const list = screen.getByRole("region", { name: "工作清单" });
   expect(within(list).getAllByText("需求0")).toHaveLength(1);
@@ -307,7 +307,7 @@ it("项目筛选支持连续多选、再次点击取消及全部清空", async (
   vi.mocked(loadSnapshot).mockResolvedValue({ ...snapshot(), workspace_catalog: catalog });
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   const list = await screen.findByRole("region", { name: "工作清单" });
   await within(list).findByText("需求0");
   await user.click(screen.getByRole("combobox", { name: "所属项目" }));
@@ -333,7 +333,7 @@ it.each([false, true])("目录刷新失败时保留筛选，通过统一入口�
     .mockResolvedValue({ spaces: catalog, warnings: [] });
   vi.mocked(syncTodos).mockResolvedValue(report(incremental));
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   expect(await screen.findByText(/空间与项目目录未刷新/)).toBeTruthy();
   expect(screen.getByText(/空间与项目目录未刷新/).textContent).toContain("暂时无法连接服务");
   expect(document.body.textContent).not.toMatch(/RPCError|service\.example|log_id|example-log/);
@@ -356,7 +356,7 @@ it.each([
   const directory = deferred<CatalogRefresh>();
   vi.mocked(refreshWorkspaceCatalog).mockReturnValue(directory.promise);
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByText("需求0");
   await choose(user, "所属项目", "医生平台");
   const diagnostic = "空间 sample-space 的项目选项未刷新：RPCError search_by_mql https://search.example.invalid; log_id: example-log";
@@ -380,7 +380,7 @@ it.each([false, true])("目录自动读取未完成时立即刷新复用请求�
   vi.mocked(refreshWorkspaceCatalog).mockReturnValue(directory.promise);
   vi.mocked(syncTodos).mockReturnValue(sync.promise);
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByText("需求0");
   await choose(user, "所属项目", "医生平台");
   await user.click(screen.getByRole("button", { name: "立即刷新" }));
@@ -407,7 +407,7 @@ it("同步发现新空间后读取新目录，旧范围的迟到结果不会覆�
   const added = { ...data.items[0], name: "新空间事项", id: { ...data.items[0].id, project_key: "new-space" } };
   vi.mocked(syncTodos).mockResolvedValue({ ...report(true), patch: { added: [added], modified: [], removed: [] } });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await user.click(await screen.findByRole("button", { name: "立即刷新" }));
   expect(await screen.findByText("空间：新空间")).toBeTruthy();
   expect(refreshWorkspaceCatalog).toHaveBeenCalledTimes(2);
@@ -423,7 +423,7 @@ it.each([false, true])("两种模式都只显示有工作的空间与项目（�
   vi.mocked(loadSnapshot).mockResolvedValue({ ...data, workspace_catalog: directory });
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: directory, warnings: [] });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByText("需求0");
   if (compact) {
     await user.click(screen.getByRole("button", { name: "切换到清单模式" }));
@@ -443,7 +443,7 @@ it("同步移除已选项目的最后一条工作后保留可取消条件，取�
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
   vi.mocked(syncTodos).mockResolvedValue({ ...report(true), patch: { added: [], modified: [], removed: [data.items[1].id] } });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByText("需求0");
   await choose(user, "所属项目", "医生平台");
   await user.click(screen.getByRole("button", { name: "立即刷新" }));
@@ -462,7 +462,7 @@ it("目录不可用且同项目缓存名称不同时，两种模式使用同一�
     related_projects: [{ ...projects[0], name: index === 0 ? "旧项目名" : "新项目名" }] }));
   vi.mocked(loadSnapshot).mockResolvedValue(data);
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByText("需求0");
   await user.click(screen.getByRole("combobox", { name: "所属项目" }));
   const options = screen.getAllByRole("option").map((option) => option.textContent);
@@ -481,7 +481,7 @@ it.each([false, true])("流程候选随搜索联动，零结果已选条件仍�
   vi.mocked(loadSnapshot).mockResolvedValue(data);
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByText("需求0");
   if (compact) {
     await user.click(screen.getByRole("button", { name: "切换到清单模式" }));
@@ -513,7 +513,7 @@ it.each([false, true])("调整上层筛选清理下层条件的规则一致（�
   vi.mocked(loadSnapshot).mockResolvedValue({ ...data, workspace_catalog: catalog });
   vi.mocked(refreshWorkspaceCatalog).mockResolvedValue({ spaces: catalog, warnings: [] });
   const user = userEvent.setup();
-  render(<App />);
+  renderMyWork();
   await screen.findByText("需求0");
   if (compact) {
     await user.click(screen.getByRole("button", { name: "切换到清单模式" }));

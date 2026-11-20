@@ -4,13 +4,12 @@ import {
   act,
   cleanup,
   fireEvent,
-  render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import App from "./App";
+import { renderMyWork } from "./renderMyWork";
 import { typeColor } from "./model";
 import {
   executeWorkflowAction,
@@ -110,7 +109,7 @@ it.each([false, true])("完整检查期间先显示分批补丁，最终反馈�
     receive = progress!.receive;
     return new Promise((resolve) => { finish = resolve; });
   });
-  render(<App />);
+  renderMyWork();
   const user = userEvent.setup();
   await screen.findByText("需求甲");
   await user.click(await screen.findByRole("button", { name: "立即刷新" }));
@@ -163,7 +162,7 @@ describe("连接检查与可重复查看的教程", () => {
 
   async function openSettings() {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await user.click(screen.getByRole("button", { name: "连接与配置" }));
     return user;
@@ -292,7 +291,7 @@ describe("连接检查与可重复查看的教程", () => {
 describe("工作台交互", () => {
   it("连接与配置默认新窗口，切换打开方式后自动保存并在重开时恢复", async () => {
     const user = userEvent.setup();
-    const view = render(<App />);
+    const view = renderMyWork();
     await screen.findByText("需求甲");
     await user.click(screen.getByRole("button", { name: "连接与配置" }));
     expect(screen.getByRole("combobox", { name: "链接打开方式" }).textContent).toContain("新窗口");
@@ -301,7 +300,7 @@ describe("工作台交互", () => {
     expect(screen.getByText("设置已保存并生效。")).toBeTruthy();
     expect(screen.queryByText(/选择后自动保存在本机/)).toBeNull();
     view.unmount();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await user.click(screen.getByRole("button", { name: "连接与配置" }));
     expect(screen.getByRole("combobox", { name: "链接打开方式" }).textContent).toContain("已有浏览器");
@@ -324,7 +323,7 @@ describe("工作台交互", () => {
     );
     vi.mocked(loadSnapshot).mockResolvedValue(data);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("个人待办事项");
     expect(screen.getByText("关联需求事项")).toBeTruthy();
     expect(screen.getAllByText("共同事项")).toHaveLength(1);
@@ -380,7 +379,7 @@ describe("工作台交互", () => {
     data.total = 3;
     vi.mocked(loadSnapshot).mockResolvedValue(data);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("合入任务");
     await chooseOption(user, "空间", "空间甲");
     await user.click(screen.getByRole("combobox", { name: "节点" }));
@@ -401,7 +400,7 @@ describe("工作台交互", () => {
 
   it("手动立即刷新并移除已离开当前范围的事项", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("缺陷乙");
     await chooseOption(user, "显示来源", "source-a");
     vi.mocked(syncTodos).mockResolvedValue(successfulReport);
@@ -420,7 +419,7 @@ describe("工作台交互", () => {
     data.items[0].project_name = "研发空间";
     vi.mocked(loadSnapshot).mockResolvedValue(data);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await chooseOption(user, "显示来源", "source-a");
     await chooseOption(user, "空间", "研发空间");
@@ -444,7 +443,7 @@ describe("工作台交互", () => {
       id: initial.items[0].id, fetched_at_ms: 1,
       data: { work_item_attribute: {}, work_item_fields: [] }, pages: [],
     });
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await chooseOption(user, "显示来源", "source-a");
     let resolveOld!: (value: Snapshot) => void;
@@ -463,7 +462,7 @@ describe("工作台交互", () => {
 
   it("工作来源与连接配置独立显示各自内容，侧栏去掉工作台标签", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     expect(screen.queryByText("个人工作台")).toBeNull();
     expect(screen.queryByText("LOCAL")).toBeNull();
@@ -519,7 +518,7 @@ describe("工作台交互", () => {
     data.sources.reverse();
     vi.mocked(loadSnapshot).mockResolvedValue(data);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("专项事项");
     expect(screen.getAllByRole("button", { name: /^专项需求/ }).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /专项事项专项需求/ })).toBeTruthy();
@@ -570,7 +569,7 @@ describe("工作台交互", () => {
       failed: [["space-b", "读取失败"]],
     });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await chooseOption(user, "显示来源", "source-a");
     await user.click(screen.getByRole("button", { name: "工作来源" }));
@@ -589,7 +588,7 @@ describe("工作台交互", () => {
 
   it("保存 token 后清空密码框，切换页面只回显后端脱敏摘要", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await user.click(screen.getByRole("button", { name: "连接与配置" }));
     const input = screen.getByLabelText("MCP Token") as HTMLInputElement;
@@ -627,7 +626,7 @@ describe("工作台交互", () => {
     const data = { ...snapshot(), settings };
     vi.mocked(loadSnapshot).mockResolvedValue(data);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await user.click(screen.getByRole("button", { name: "连接与配置" }));
     expect((screen.getByLabelText("MCP 服务地址") as HTMLInputElement).value).toBe(settings.endpoint);
@@ -666,7 +665,7 @@ describe("工作台交互", () => {
       .mockRejectedValueOnce({ kind: "store", message: "目标缓存暂时被占用" });
     vi.mocked(saveConnectionSettings).mockResolvedValueOnce();
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await user.click(screen.getByRole("button", { name: "连接与配置" }));
     fireEvent.change(screen.getByLabelText("MCP 服务地址"), { target: { value: "https://next.example.com/mcp" } });
@@ -692,7 +691,7 @@ describe("工作台交互", () => {
     vi.mocked(loadSnapshot).mockResolvedValue({ ...snapshot(), settings });
     vi.mocked(saveConnectionSettings).mockResolvedValue();
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await user.click(screen.getByRole("button", { name: "连接与配置" }));
     fireEvent.change(screen.getByLabelText("MCP 服务地址"), { target: { value: next.endpoint } });
@@ -709,7 +708,7 @@ describe("工作台交互", () => {
 
   it("保存失败不显示成功，保留旧凭证摘要，离开配置页清空输入", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await user.click(screen.getByRole("button", { name: "连接与配置" }));
     const input = screen.getByLabelText("MCP Token") as HTMLInputElement;
@@ -737,7 +736,7 @@ describe("工作台交互", () => {
   });
   it("从其他页面按 Ctrl K 返回清单并聚焦搜索", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await user.click(screen.getByRole("button", { name: "工作来源" }));
     await user.keyboard("{Control>}k{/Control}");
@@ -747,7 +746,7 @@ describe("工作台交互", () => {
   });
   it("多个来源时要求选择，未完成报告不显示成功且回读缓存", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     const sync = await screen.findByRole("button", { name: "立即刷新" });
     expect((sync as HTMLButtonElement).disabled).toBe(true);
     await chooseOption(user, "显示来源", "source-b");
@@ -772,7 +771,7 @@ describe("工作台交互", () => {
 
   it("异常时回读部分结果和失败记录，保留旧缓存", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await chooseOption(user, "显示来源", "source-a");
     vi.mocked(syncTodos).mockRejectedValue({
@@ -790,7 +789,7 @@ describe("工作台交互", () => {
 
   it("相同事项编号不会串空间，详情分别显示节点与状态，搜索可清除", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: /缺陷乙/ }));
     const detail = screen.getByRole("complementary", { name: "事项详情" });
     expect(detail.textContent).toContain("space-b");
@@ -809,7 +808,7 @@ describe("工作台交互", () => {
 
   it.each(["侧边栏", "顶部栏"])("仅通过%s切换类型不显示清除筛选，清除普通条件保留当前类型", async (entry) => {
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     const list = screen.getByRole("region", { name: "工作清单" });
     const navigation = entry === "侧边栏"
@@ -838,7 +837,7 @@ describe("工作台交互", () => {
 
   it("侧栏类型可拖动或用 Alt+方向键排序，并按类型标识着色", async () => {
     vi.mocked(saveTypeOrder).mockResolvedValue(undefined);
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     const nav = () => screen.getByRole("group", { name: "我的类型" });
     const sidebarType = (name: RegExp) =>
@@ -871,7 +870,7 @@ describe("工作台交互", () => {
 
   it("类型别名持久化且不改变原始标识，取消勾选仅隐藏相应类型", async () => {
     const user = userEvent.setup();
-    const app = render(<App />);
+    const app = renderMyWork();
     await screen.findByText("需求甲");
     await user.click(screen.getByRole("button", { name: "工作来源" }));
     await user.click(screen.getByRole("radio", { name: "source-a" }));
@@ -886,7 +885,7 @@ describe("工作台交互", () => {
     expect(detail.textContent).toContain("story");
     expect(getWorkflowActions).not.toHaveBeenCalled();
     app.unmount();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await chooseOption(user, "显示来源", "source-a");
     expect(screen.queryByText("缺陷乙")).toBeNull();
@@ -925,7 +924,7 @@ describe("工作台交互", () => {
       resynced: true,
     });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: /需求甲/ }));
     await user.click(
       await screen.findByRole("button", { name: "回滚研发节点" }),
@@ -985,7 +984,7 @@ describe("工作台交互", () => {
       resynced: false,
     });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: /需求甲/ }));
     await user.click(
       await screen.findByRole("button", { name: "流转到已关闭" }),
@@ -1004,7 +1003,7 @@ describe("工作台交互", () => {
       capabilities: { workflow: false },
     });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: /需求甲/ }));
     const detail = screen.getByRole("complementary", { name: "事项详情" });
     expect(detail.textContent).toContain("请更新桌面应用后重试");
@@ -1036,7 +1035,7 @@ describe("工作台交互", () => {
       resynced: false,
     });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: /需求甲/ }));
     await user.click(
       await screen.findByRole("button", { name: "流转到已关闭" }),
@@ -1081,7 +1080,7 @@ describe("工作台交互", () => {
       resynced: false,
     });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: /需求甲/ }));
     await user.click(
       await screen.findByRole("button", { name: "流转到已关闭" }),
@@ -1113,7 +1112,7 @@ async function tick(ms: number) {
 }
 async function timedApp() {
   vi.useFakeTimers();
-  render(<App />);
+  renderMyWork();
   await act(async () => {});
   await act(async () => {
     fireEvent.click(screen.getByRole("combobox", { name: "显示来源" }));
@@ -1173,7 +1172,7 @@ describe("同步与流程独立执行", () => {
     vi.mocked(syncTodos).mockReturnValueOnce(sync.promise).mockResolvedValue(successfulReport);
     vi.mocked(executeWorkflowAction).mockReturnValue(workflow.promise);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     if (syncFirst) await user.click(screen.getByRole("button", { name: "立即刷新" }));
     await submit(user);
@@ -1211,7 +1210,7 @@ describe("同步与流程独立执行", () => {
     vi.mocked(syncTodos).mockReturnValueOnce(sync.promise).mockResolvedValue(successfulReport);
     vi.mocked(executeWorkflowAction).mockResolvedValue(workflowResult);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: "立即刷新" }));
     await submit(user);
     await waitFor(() => expect(screen.getByText("节点推进已核验").closest('[role="status"]')).toBeTruthy());
@@ -1229,7 +1228,7 @@ describe("同步与流程独立执行", () => {
     const message = "流程结果不确定，请先核对飞书状态";
     vi.mocked(executeWorkflowAction).mockResolvedValue({ ...workflowResult, outcome: "unknown", verified: false, message });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     if (action === "order") {
       fireEvent.keyDown(within(document.querySelector(".type-nav")!).getByRole("button", { name: /^需求/ }), { key: "ArrowDown", altKey: true });
@@ -1257,7 +1256,7 @@ describe("同步与流程独立执行", () => {
     const message = outcome === "unknown" ? "写入结果不确定，请先核对飞书状态" : workflowResult.message;
     vi.mocked(executeWorkflowAction).mockResolvedValue({ ...workflowResult, outcome, message, verified: outcome === "verified" });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await submit(user);
     const conclusion = () => screen.getByText(message).closest('[role]')?.textContent;
@@ -1283,7 +1282,7 @@ describe("同步与流程独立执行", () => {
     vi.mocked(executeWorkflowAction).mockReturnValue(workflow.promise);
     vi.mocked(syncTodos).mockResolvedValue(successfulReport);
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /需求甲/ })));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "完成研发节点" })));
@@ -1317,7 +1316,7 @@ describe("同步与流程独立执行", () => {
     };
     vi.mocked(refreshItemDetail).mockResolvedValue(detail);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: "立即刷新" }));
     await user.click(screen.getByRole("button", { name: /需求甲/ }));
     expect(await screen.findByText("独立取得的事项详情")).toBeTruthy();
@@ -1406,7 +1405,7 @@ describe("栏目切换回顶过渡", () => {
   });
 
   it("已在顶部时立即切换，侧栏将应用版本与飞书 MCP 驱动分行显示", async () => {
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     fireEvent.click(screen.getAllByRole("button", { name: /^缺陷\s*1$/ })[1]);
     expect(screen.queryByText("需求甲")).toBeNull();
@@ -1420,7 +1419,7 @@ describe("栏目切换回顶过渡", () => {
 
   it("系统要求减少动态效果时立即回顶并切换", async () => {
     vi.stubGlobal("matchMedia", () => ({ matches: true }));
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     document.documentElement.scrollTop = 1200;
     fireEvent.click(screen.getAllByRole("button", { name: /^缺陷\s*1$/ })[0]);
@@ -1525,7 +1524,7 @@ describe("自动同步与提示时序", () => {
     await tick(480000);
     expect(syncTodos).toHaveBeenCalledTimes(5);
     cleanup();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await act(async () => {
       fireEvent.click(screen.getByRole("combobox", { name: "显示来源" }));
@@ -1650,7 +1649,7 @@ describe("所有来源调度与清单 patch", () => {
       error_message: "个人待办：缺少 list 数组；log_id: diagnostic-example" };
     vi.mocked(syncTodos).mockResolvedValue({ ...report, status: "failed", complete: false });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: "立即刷新" }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("我的待办：已收到服务响应，但内容无法完整解析");
@@ -1669,7 +1668,7 @@ describe("所有来源调度与清单 patch", () => {
       remote_total: null, stop_reason: "error", error_kind: "tool",
       error_message: "missing project_key; log_id: historical-example", rejection_detail: null }];
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: "连接与配置" }));
     expect(screen.queryByText(/同步诊断|historical-example/)).toBeNull();
     expect(syncTodos).not.toHaveBeenCalled();
@@ -1682,7 +1681,7 @@ describe("所有来源调度与清单 patch", () => {
     report.checks = [failedCheck("source-a"), failedCheck("source-b")];
     vi.mocked(syncTodos).mockResolvedValue({ ...report, status: "failed", complete: false });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: "立即刷新" }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("工作来源 1：");
@@ -1697,7 +1696,7 @@ describe("所有来源调度与清单 patch", () => {
     vi.mocked(syncTodos).mockResolvedValue({ ...report,
       patch: { added: [], modified: [{ ...data.items[0], name: "后台更新的需求" }], removed: [] } });
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await act(async () => fireEvent.click(screen.getByRole("combobox", { name: "显示来源" })));
     await act(async () => fireEvent.click(screen.getByRole("option", { name: "source-a" })));
@@ -1716,7 +1715,7 @@ describe("所有来源调度与清单 patch", () => {
     scheduledData();
     vi.mocked(syncTodos).mockRejectedValue({ kind, message: "RPCError: unavailable; log_id: sample-log" });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: "立即刷新" }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain(message);
@@ -1728,7 +1727,7 @@ describe("所有来源调度与清单 patch", () => {
     let finish!: (value: ReturnType<typeof patchReport>) => void;
     vi.mocked(syncTodos).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await act(async () => fireEvent.click(screen.getByRole("combobox", { name: "显示来源" })));
     await act(async () => fireEvent.click(screen.getByRole("option", { name: "source-a" })));
@@ -1753,7 +1752,7 @@ describe("所有来源调度与清单 patch", () => {
     vi.mocked(syncTodos).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }))
       .mockResolvedValue(patchReport(["source-b"]));
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await tick(120000);
     fireEvent.click(screen.getByRole("button", { name: "正在同步" }));
@@ -1773,7 +1772,7 @@ describe("所有来源调度与清单 patch", () => {
     let finish!: (value: ReturnType<typeof patchReport>) => void;
     vi.mocked(syncTodos).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await act(async () => fireEvent.click(screen.getByRole("combobox", { name: "显示来源" })));
     await act(async () => fireEvent.click(screen.getByRole("option", { name: "source-a" })));
@@ -1794,7 +1793,7 @@ describe("所有来源调度与清单 patch", () => {
     vi.mocked(syncTodos).mockRejectedValueOnce({ kind: "connection", message: "RPCError: unavailable" })
       .mockResolvedValue(patchReport());
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await tick(120000);
     expect(screen.getByText("工作清单加载未完成")).toBeTruthy();
@@ -1815,7 +1814,7 @@ describe("所有来源调度与清单 patch", () => {
     report.checks[1] = failedCheck("source-b", "connection");
     vi.mocked(syncTodos).mockResolvedValueOnce(report).mockResolvedValue(patchReport(["source-b"]));
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await act(async () => fireEvent.click(screen.getByRole("combobox", { name: "显示来源" })));
     await act(async () => fireEvent.click(screen.getByRole("option", { name: "source-a" })));
@@ -1842,7 +1841,7 @@ describe("所有来源调度与清单 patch", () => {
       .mockResolvedValueOnce(patchReport(["source-b"]))
       .mockResolvedValueOnce(transient);
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await tick(120000);
     expect(screen.getByRole("alert").textContent).toContain("连接凭证已失效");
@@ -1860,7 +1859,7 @@ describe("所有来源调度与清单 patch", () => {
     // 来源写库统计可以包含中间过程，用户提示以最终 patch 为准。
     vi.mocked(syncTodos).mockResolvedValue({ ...patchReport(), items_updated: 14 });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await chooseOption(user, "显示来源", "source-a");
     await user.click(screen.getByRole("button", { name: "立即刷新" }));
@@ -1877,7 +1876,7 @@ describe("所有来源调度与清单 patch", () => {
     data.capabilities!.incremental_sync = false;
     vi.mocked(syncTodos).mockResolvedValue(successfulReport);
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: "立即刷新" }));
     expect(syncTodos).toHaveBeenCalledWith("*", false);
   });
@@ -1890,7 +1889,7 @@ describe("所有来源调度与清单 patch", () => {
       .mockResolvedValueOnce({...patchReport(),patch:{added:[],modified:[{...shared,
         personal_schedules:{"source-a":{start_raw:"2026-10-20",end_raw:"2026-10-25"}}}],removed:[],updated_count:1}});
     const user=userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("需求甲");
     await chooseOption(user,"显示来源","source-a");
     await user.click(screen.getByRole("button",{name:"立即刷新"}));
@@ -1914,7 +1913,7 @@ describe("所有来源调度与清单 patch", () => {
     shared.flow = { ...shared.flow, kind: "node", node_name: "本人节点 / 其他节点" };
     shared.personal_flows = { "source-a": { ...shared.flow, node_name: "本人节点" } };
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await screen.findByText("本人节点 / 其他节点");
     await chooseOption(user, "显示来源", "source-a");
     expect(screen.getByText("本人节点")).toBeTruthy();
@@ -1932,7 +1931,7 @@ describe("所有来源调度与清单 patch", () => {
     const data = scheduledData();
     data.sources[1] = { ...data.sources[1], enabled: false, executable: false };
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: "工作来源" }));
     await user.click(screen.getByRole("radio", { name: "source-b" }));
     expect((screen.getByRole("button", { name: "立即刷新" }) as HTMLButtonElement).disabled).toBe(true);
@@ -1942,7 +1941,7 @@ describe("所有来源调度与清单 patch", () => {
     scheduledData();
     vi.mocked(syncTodos).mockResolvedValue(patchReport());
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await act(async () => fireEvent.click(screen.getByRole("combobox", { name: "显示来源" })));
     await act(async () => fireEvent.click(screen.getByRole("option", { name: "source-a" })));
@@ -1967,7 +1966,7 @@ describe("所有来源调度与清单 patch", () => {
       .mockResolvedValueOnce(patchReport(["source-b"]))
       .mockResolvedValue(patchReport(["source-a"]));
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await tick(120000);
     await tick(120000);
@@ -1990,7 +1989,7 @@ describe("所有来源调度与清单 patch", () => {
     }));
     vi.mocked(syncTodos).mockResolvedValue(patchReport());
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     const policies = JSON.parse(localStorage.getItem("fstodo.sync-policy.v1") || "{}");
     expect(policies["source-a"].lastSuccessAt).toBe(123);
@@ -2011,7 +2010,7 @@ describe("所有来源调度与清单 patch", () => {
     vi.mocked(syncTodos).mockReturnValueOnce(new Promise((done) => { resolve = done; }))
       .mockResolvedValue(patchReport());
     vi.useFakeTimers();
-    render(<App />);
+    renderMyWork();
     await act(async () => {});
     await tick(120000);
     expect(syncTodos).toHaveBeenCalledWith("*", true, ["source-a"]);
@@ -2028,7 +2027,7 @@ describe("所有来源调度与清单 patch", () => {
     vi.mocked(syncTodos).mockResolvedValue({ ...patchReport(),
       patch: { added: [], modified: [changed], removed: [data.items[0].id] } });
     const user = userEvent.setup();
-    render(<App />);
+    renderMyWork();
     await user.click(await screen.findByRole("button", { name: "立即刷新" }));
     expect(await screen.findByText("缺陷已更新")).toBeTruthy();
     expect(screen.queryByText("需求甲")).toBeNull();
@@ -2074,7 +2073,7 @@ describe("所有来源调度与清单 patch", () => {
     ];
     data.total = 3;
     vi.mocked(loadSnapshot).mockResolvedValue(data);
-    render(<App />);
+    renderMyWork();
     expect(await screen.findByText("终态上线需求")).toBeTruthy();
     expect(screen.getByText("需求上线")).toBeTruthy();
     const doneDots = Array.from(document.querySelectorAll(".status-dot.done")).map(

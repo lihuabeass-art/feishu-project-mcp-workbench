@@ -298,7 +298,7 @@ export default function App() {
 function Workspace() {
   const desktopSettings = useDesktopSettings();
   const [data, setData] = useState<Snapshot | null>(null);
-  const [view, setView] = useState<View>("work");
+  const [view, setView] = useState<View>("schedule");
   const viewRef = useRef(view);
   viewRef.current = view;
   const [scheduleGuard, setScheduleGuard] = useState<ScheduleGuard>({ dirty: false, busy: false, uncertain: false });
@@ -496,7 +496,7 @@ function Workspace() {
     .join(";");
   const scheduleDataRevision = `${scheduleBusinessRevision.current}:${defectRevision}:${scheduleWorkflowRevision}`;
   const schedulePreloadFingerprint =
-    desktop && !loading && data?.credential_ready && !compact
+    desktop && displayMode.ready && !loading && data?.credential_ready && !compact
       ? `${scheduleConnectionKey}|${scheduleSourcesSignature}|${scheduleDataRevision}`
       : "";
   const scheduleConnectionKeyRef = useRef(scheduleConnectionKey);
@@ -1006,7 +1006,7 @@ function Workspace() {
   }, [policies]);
   const automaticReady =
     desktop &&
-    view !== "schedule" &&
+    (compact || view !== "schedule") &&
     !!data?.credential_ready &&
     !!data?.sources.some((s) => (incremental || s.id === sourceId || (sourceId === "*" && data.capabilities?.source_queries)) && s.executable) &&
     !loading;
@@ -1142,7 +1142,7 @@ function Workspace() {
   }
 
   async function run(action: "sync" | "check", automatic = false, requestedIds?: string[], afterWrite = false): Promise<AppError | null | undefined> {
-    if (automatic && viewRef.current === "schedule") return;
+    if (automatic && !compactRef.current && viewRef.current === "schedule") return;
     const ids = requestedIds || (incremental
       ? sourceId === "*" ? enabledIds : enabledIds.filter((id) => id === sourceId)
       : [sourceId]);
@@ -1866,7 +1866,10 @@ function Workspace() {
         refresh={{ run: () => void run("sync"), disabled: syncDisabled, syncing: syncBusy }}
         pinned={displayMode.pinned}
         pin={displayMode.pin}
-        expand={() => displayMode.change("full")}
+        expand={() => {
+          setView("work");
+          displayMode.change("full");
+        }}
         windowControls={displayMode.desktop}
         windowAction={displayMode.windowAction}
         modeBusy={displayMode.busy}
@@ -2020,7 +2023,7 @@ function Workspace() {
           )}
           {!compact && alerts}
 
-          {view === "schedule" && !compact && <SchedulePage snapshot={data} calendarContext={scheduleConnectionKey} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit} defectRevision={scheduleWorkflowRevision}
+          {view === "schedule" && !compact && <SchedulePage snapshot={data} waitingForSnapshot={desktop && loading && !data} calendarContext={scheduleConnectionKey} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit} defectRevision={scheduleWorkflowRevision}
             workflow={desktop && data?.credential_ready && data.capabilities?.workflow ? {
               context: scheduleConnectionKey,
               busy: workspaceActionBlocked("workflow", activity),
