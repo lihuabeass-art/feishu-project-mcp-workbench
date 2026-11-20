@@ -1423,6 +1423,18 @@
   overscroll-behavior-y: contain;
 }
 
+.schedule-description {
+  min-width: 0;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.schedule-description > strong { color: var(--heading); }
+.schedule-description p { margin: 6px 0; }
+.schedule-description img { max-width: 100%; }
+
 .schedule-feedback {
   display: flex;
   align-items: flex-start;

@@ -34,7 +34,7 @@ export function useDetailFieldIdentity(fields: Field[], account: string | null, 
   const identities = useMemo(() => {
     const previous = readIdentities(storageKey);
     const descriptions = fields.filter((field) => field.key === "description" ||
-      ["需求说明", "缺陷描述", "事项说明"].includes(field.name?.trim() ?? "")).map((field) => field.key);
+      ["需求说明", "缺陷描述", "缺陷说明", "事项说明"].includes(field.name?.trim() ?? "")).map((field) => field.key);
     return {
       descriptions: [...new Set([...previous.descriptions, ...descriptions])],
       versions: [...new Set([...previous.versions, ...defaultPinnedKeys(fields)])],

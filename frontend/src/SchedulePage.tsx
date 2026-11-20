@@ -18,6 +18,7 @@ import {
 import { DateRangePicker } from "./DateRangePicker";
 import { Select } from "./Select";
 import { ExternalLink } from "./ExternalLink";
+import { ScheduleDescription } from "./ScheduleDescription";
 import { useScrollIsolation } from "./useScrollIsolation";
 import { nodeWorkflowActionIds, Workflow, type WorkflowItem, type WorkflowSubmit } from "./Workflow";
 import { draftKey, readDraft } from "./workflowDrafts";
@@ -2534,6 +2535,8 @@ export function SchedulePage({
                           </div>
                         )}
                       </div>
+                      <ScheduleDescription key={JSON.stringify([selectedEntry.identity.connection, selectedEntry.identity.project, selectedEntry.identity.type, selectedEntry.identity.item])}
+                        connection={selectedEntry.identity.connection} project={selectedEntry.identity.project} type={selectedEntry.identity.type} item={selectedEntry.identity.item} />
                       {(siblingNodes.length > 1 || workflowKey) && (
                         <div
                           className="schedule-sibling-nodes"
