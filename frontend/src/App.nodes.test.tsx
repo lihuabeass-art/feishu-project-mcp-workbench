@@ -98,7 +98,7 @@ it("切换来源时节点保持各自范围，两种模式直接展示节点名�
   await user.click(screen.getByRole("button", { name: "切换到清单模式" }));
   expect(within(screen.getByRole("region", { name: "工作清单" })).getByText(back).getAttribute("title")).toBe("我的待办节点");
   await user.click(screen.getByRole("button", { name: "切换到完整模式" }));
-  await choose(user, "显示来源", "我参与的需求 · 空间甲");
+  await choose(user, "显示来源", "我参与的需求 空间甲");
   expect(screen.getByText(combined).getAttribute("title")).toBe("事项当前节点");
   await choose(user, "节点", `${back}（2）`);
   expect(screen.getByText("2 条结果")).toBeTruthy();

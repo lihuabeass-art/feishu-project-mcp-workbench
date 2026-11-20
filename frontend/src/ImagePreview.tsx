@@ -309,7 +309,7 @@ export function ImagePreview({
           </button>
         </div>
         <p id="image-preview-hint" className={styles["image-preview-hint"]}>
-          滚轮缩放 · 双击放大 / 还原 · 放大后拖动 · Esc 关闭
+          滚轮缩放 双击放大 / 还原 放大后拖动 Esc 关闭
         </p>
       </div>
     </div>,

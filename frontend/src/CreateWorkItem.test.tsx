@@ -1688,7 +1688,7 @@ describe("通用创建表单", () => {
     await user.click(screen.getByRole("option", { name: "缺陷跟踪" }));
     await screen.findByRole("textbox", { name: "标题" });
     expect(screen.queryByRole("combobox", { name: "测试负责人" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: /显示字段 ·/ }));
+    await user.click(screen.getByRole("button", { name: /显示字段/ }));
     await user.click(screen.getByRole("button", { name: "显示测试负责人" }));
     expect(screen.getByRole("combobox", { name: "测试负责人" }).getAttribute("aria-required")).toBe("false");
   });
@@ -1732,10 +1732,10 @@ describe("通用创建表单", () => {
     expect(JSON.parse(localStorage.getItem(key)!).reviewFieldKeys).toEqual(["tester", "description"]);
     expect(JSON.parse(localStorage.getItem(key)!).requiredFieldKeys).toEqual(["tester", "description"]);
     expect(loadCreationVisibility(next)).toContain("tester");
-    await user.click(screen.getByRole("button", { name: /显示字段 ·/ }));
+    await user.click(screen.getByRole("button", { name: /显示字段/ }));
     expect(screen.getByRole("button", { name: "隐藏测试负责人" })).toHaveProperty("disabled", true);
-    expect(screen.getByText("本次创建必填 · 已显示")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: /显示字段 ·/ }));
+    expect(screen.getByText("本次创建必填 已显示")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /显示字段/ }));
     mounted.unmount();
     render(<CreateWorkItem {...props} />);
     await screen.findByText("已自动显示本次创建必填字段");

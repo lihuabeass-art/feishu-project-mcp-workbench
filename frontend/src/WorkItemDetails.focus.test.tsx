@@ -327,7 +327,7 @@ it("详情已终止却未带状态名时显示已终止，隐藏旧节点", asyn
 it("同事项刷新保留更多信息展开，换事项收起；未知个人节点保留独立范围", async () => {
   const view = render(<WorkItemDetails item={{ ...item, node_scope: "personal", flow: { ...item.flow, node_state_key: "other" } }} enabled />);
   await screen.findByText("正文内容");
-  expect(document.querySelector(".detail-node-overview")?.textContent).toContain("我的待办节点 · 联调");
+  expect(document.querySelector(".detail-node-overview")?.textContent).toContain("我的待办节点 联调");
   await userEvent.click(screen.getByText("更多信息", { exact: true }));
   await waitFor(() => expect(document.querySelector(".detail-more-information")?.hasAttribute("open")).toBe(true));
   await userEvent.click(screen.getByRole("button", { name: "刷新详情" }));

@@ -42,7 +42,7 @@ it("字段卡片、搜索和空结果共用抽屉正文滚动，正文边界不�
   content.scrollTop = 100;
   expect(fireEvent.wheel(card, { deltaY: 50 })).toBe(true);
   expect(fireEvent.wheel(card, { deltaY: -50 })).toBe(true);
-  for (const area of [screen.getByRole("textbox", { name: "搜索可选字段" }), screen.getByText("本机保存 · 升级保留")])
+  for (const area of [screen.getByRole("textbox", { name: "搜索可选字段" }), screen.getByText("本机保存 升级保留")])
     expect(fireEvent.wheel(area, { deltaY: 50 })).toBe(true);
   await user.type(screen.getByRole("textbox", { name: "搜索可选字段" }), "没有此字段");
   expect(fireEvent.wheel(screen.getByRole("status"), { deltaY: 50 })).toBe(true);

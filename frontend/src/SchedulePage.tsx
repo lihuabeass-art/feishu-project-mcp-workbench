@@ -236,7 +236,7 @@ function ScheduleGreeting({ person, name }: { person?: SchedulePerson; name?: st
     <div className="schedule-greeting" aria-label="今日问候">
       <ScheduleAvatar person={person} />
       <div className="schedule-greeting-copy">
-        <div className="schedule-greeting-date">{greeting} · {part("month")}月{part("day")}日{part("weekday")}</div>
+        <div className="schedule-greeting-date">{greeting} {part("month")}月{part("day")}日{part("weekday")}</div>
         {name && <strong>{name}</strong>}
         <p>{encouragements[day % encouragements.length]}</p>
       </div>
@@ -755,7 +755,7 @@ export function SchedulePage({
           ? "节点共同排期"
           : "";
   const targetLabel = (entry: Entry, owner: string) =>
-    [targetScopeLabel(entry), ownerLabel(entry, owner)].filter(Boolean).join(" · ");
+    [targetScopeLabel(entry), ownerLabel(entry, owner)].filter(Boolean).join(" ");
   const projectNames = new Map(
     (snapshot?.workspace_catalog || []).map((item) => [
       item.project_key,
@@ -1197,7 +1197,7 @@ export function SchedulePage({
   }, [reviewOpen]);
 
   const dateStatus = (entry: Entry) => {
-    if (entry.cancel && scheduleChanged(entry)) return "清空草稿已保留 · 暂不可提交";
+    if (entry.cancel && scheduleChanged(entry)) return "清空草稿已保留 暂不可提交";
     if ((!entry.record.cacheKind || entry.record.cacheKind === "node") && !entry.record.sourceAggregate) {
       if (validSchedule(entry.dates))
         return `已排期：${entry.dates.start} ~ ${entry.dates.end}（共 ${scheduleSpanDays(entry.dates)} 个自然日）`;
@@ -1215,7 +1215,7 @@ export function SchedulePage({
   };
   const pendingCardDetails = (entry: Entry, owner: string) => {
     const status = dateStatus(entry);
-    if (view === "mine") return `${targetLabel(entry, owner)} · ${status}`;
+    if (view === "mine") return `${targetLabel(entry, owner)} ${status}`;
     return [
       entry.record.cacheKind === "detail_node"
         ? "事项详情缓存节点"
@@ -1223,7 +1223,7 @@ export function SchedulePage({
       entry.record.sourceAggregate && "来源聚合日期",
       entry.record.unknownOwner && "尚有负责人身份不明",
       status !== "待安排" && status,
-    ].filter(Boolean).join(" · ");
+    ].filter(Boolean).join(" ");
   };
   const projectLabel = (entry: Entry) =>
     projectNames.get(entry.identity.project) || entry.record.projectName || entry.identity.project;
@@ -1325,7 +1325,7 @@ export function SchedulePage({
         : catalogType;
     const sourceLabels = Array.from(new Set(item.sources.map(readableSourceName).filter(Boolean)));
     const sourceSuffix = sourceLabels.length > 0 ? `（${sourceLabels.join("、")}）` : "";
-    return `${spaceLabel} · ${itemLabel}${sourceSuffix}：${item.message}`;
+    return `${spaceLabel} ${itemLabel}${sourceSuffix}：${item.message}`;
   };
 
   const update = (id: string, fn: (entry: Entry) => ScheduleTarget) => {
@@ -1735,7 +1735,7 @@ export function SchedulePage({
                     <p key={warning}>
                       <span className="schedule-feedback-targets">
                         {entries.filter((entry) => entry.resultWarning?.split("\n").includes(warning))
-                          .map((entry) => `${entry.record.title} · ${entry.record.nodeName} · ${targetLabel(entry, entry.record.ownerId || "")}`).join("；")}
+                          .map((entry) => `${entry.record.title} ${entry.record.nodeName} ${targetLabel(entry, entry.record.ownerId || "")}`).join("；")}
                       </span>
                       {warning}
                     </p>
@@ -2361,7 +2361,7 @@ export function SchedulePage({
                                   const ariaName = `${entry.record.title}${
                                     entry.record.nodeName &&
                                     entry.record.nodeName !== entry.record.title
-                                      ? ` · ${entry.record.nodeName}`
+                                      ? ` ${entry.record.nodeName}`
                                       : ""
                                   }`;
                                   return (
@@ -2563,7 +2563,7 @@ export function SchedulePage({
                     <div className="schedule-editor">
                       <div className="schedule-editor-meta">
                         <span className="schedule-editor-tag">
-                          {projectLabel(selectedEntry)} · {typeLabel(selectedEntry)}
+                          {projectLabel(selectedEntry)} {typeLabel(selectedEntry)}
                         </span>
                       </div>
                       <ScheduleDescription key={JSON.stringify([selectedEntry.identity.connection, selectedEntry.identity.project, selectedEntry.identity.type, selectedEntry.identity.item])}
@@ -2820,7 +2820,7 @@ export function SchedulePage({
                                   <strong>{entry.record.title}</strong>
                                 </div>
                                 <small>
-                                  {projectLabel(entry)} · {entry.record.nodeName} ·{" "}
+                                  {projectLabel(entry)} {entry.record.nodeName}{" "}
                                   {targetLabel(entry, entry.record.ownerId || "")}
                                 </small>
                               </div>
@@ -2863,7 +2863,7 @@ export function SchedulePage({
 
                       {unchangedEntries.length > 0 && (
                         <div className="schedule-review-unchanged">
-                          <h3>沿用云端（{unchangedEntries.length} 项 · 本次不发送写请求）</h3>
+                          <h3>沿用云端（{unchangedEntries.length} 项 本次不发送写请求）</h3>
                           {unchangedEntries.map((entry) => (
                             <div key={entry.id} className="schedule-review-unchanged-row">
                               <div>
@@ -2872,7 +2872,7 @@ export function SchedulePage({
                                 </span>
                                 <strong>{entry.record.title}</strong>
                                 <small>
-                                  {entry.record.nodeName} ·{" "}
+                                  {entry.record.nodeName}{" "}
                                   {targetLabel(entry, entry.record.ownerId || "")}
                                 </small>
                               </div>

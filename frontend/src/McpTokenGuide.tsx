@@ -130,7 +130,7 @@ export function McpTokenGuide({ open, onOpenChange, inputId, children }: {
           <p className="mcp-guide-footnote">页面布局可能随飞书版本变化；企业专用部署请从你所在的飞书项目环境进入。</p>
         </details>
         <div className="mcp-guide-footer">
-          <span>图片可离线查看 · 示例 Token 已隐藏</span>
+          <span>图片可离线查看 示例 Token 已隐藏</span>
           <ExternalLink href={documentationUrl}>官方使用说明<ArrowUpRight size={13} aria-hidden="true" /></ExternalLink>
         </div>
       </section>

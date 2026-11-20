@@ -54,7 +54,7 @@ const estimates = (first: string, second: string, version = "v1") => {
   const next = options("", version);
   next.actions[0].fields = [first, second].map((value, index) => ({
     key: `points:${index}`,
-    label: `估分 · ${index === 0 ? "甲" : "乙"}`,
+    label: `估分 ${index === 0 ? "甲" : "乙"}`,
     kind: "number",
     required: false,
     initial_value: value,
@@ -120,7 +120,7 @@ it.each(["1", "0"])(
     await user.click(await screen.findByRole("button", { name: "完成节点" }));
     const edited = String(Number(value) + 0.5);
     for (const owner of ["甲", "乙"]) {
-      const label = `估分 · ${owner}`;
+      const label = `估分 ${owner}`;
       expect(
         screen.queryByRole("group", { name: `${label}云端对照` }),
       ).toBeNull();
@@ -142,22 +142,22 @@ it.each(["1", "0"])(
     await user.click(await screen.findByRole("button", { name: "完成节点" }));
     for (const owner of ["甲", "乙"]) {
       expect(
-        screen.getByRole("group", { name: `估分 · ${owner}云端对照` })
+        screen.getByRole("group", { name: `估分 ${owner}云端对照` })
           .textContent,
       ).toContain(`原值 ${value}`);
     }
     await user.click(
-      screen.getByRole("button", { name: "将估分 · 甲恢复为原值" }),
+      screen.getByRole("button", { name: "将估分 甲恢复为原值" }),
     );
-    expect((screen.getByLabelText("估分 · 甲") as HTMLInputElement).value).toBe(
+    expect((screen.getByLabelText("估分 甲") as HTMLInputElement).value).toBe(
       value,
     );
     expect(readDraft(key)?.fields["points:0"]).toBe(value);
     expect(
-      screen.queryByRole("group", { name: "估分 · 甲云端对照" }),
+      screen.queryByRole("group", { name: "估分 甲云端对照" }),
     ).toBeNull();
     expect(
-      screen.getByRole("group", { name: "估分 · 乙云端对照" }),
+      screen.getByRole("group", { name: "估分 乙云端对照" }),
     ).toBeTruthy();
     expect(submit).not.toHaveBeenCalled();
   },
@@ -183,14 +183,14 @@ it.each([
     scope: "assignee" as const,
     kind: "number" as const,
     step: 0.5,
-    label: "估分 · 甲",
+    label: "估分 甲",
     remote: "1",
     local: "1.5",
   },
   {
     scope: "assignee" as const,
     kind: "date" as const,
-    label: "排期 · 开始日期",
+    label: "排期 开始日期",
     remote: "2026-10-27",
     local: "2026-10-28",
   },
@@ -311,10 +311,10 @@ it("云端估分原本为空时，填写本机值不提示云端修改", async (
   const user = userEvent.setup();
   render(<Workflow item={item} available busy={false} submit={vi.fn()} />);
   await user.click(await screen.findByRole("button", { name: "完成节点" }));
-  fireEvent.change(screen.getByLabelText("估分 · 甲"), {
+  fireEvent.change(screen.getByLabelText("估分 甲"), {
     target: { value: "1.5" },
   });
-  expect(screen.queryByRole("group", { name: "估分 · 甲冲突处理" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "估分 甲冲突处理" })).toBeNull();
 });
 
 it.each([
@@ -336,7 +336,7 @@ it.each([
     render(<Workflow item={item} available busy={false} submit={submit} />);
     await user.click(await screen.findByRole("button", { name: "完成节点" }));
     for (const owner of ["甲", "乙"]) {
-      fireEvent.change(screen.getByLabelText(`估分 · ${owner}`), {
+      fireEvent.change(screen.getByLabelText(`估分 ${owner}`), {
         target: { value: "1.5" },
       });
     }
@@ -345,13 +345,13 @@ it.each([
     else fireEvent(document, new Event("visibilitychange"));
     if (value.trim()) {
       const conflict = await screen.findByRole("group", {
-        name: "估分 · 甲冲突处理",
+        name: "估分 甲冲突处理",
       });
       expect(conflict.textContent).toContain("云端也有修改");
       expect(conflict.textContent).toContain(`云端最新值：${value}`);
       expect(
         within(conflict).getByRole("button", {
-          name: "复制估分 · 甲的云端最新值",
+          name: "复制估分 甲的云端最新值",
         }),
       ).toBeTruthy();
       expect(
@@ -362,19 +362,19 @@ it.each([
         expect(readDraft(key)?.base_fields?.["points:0"]).toBe(value),
       );
       expect(
-        screen.queryByRole("group", { name: "估分 · 甲冲突处理" }),
+        screen.queryByRole("group", { name: "估分 甲冲突处理" }),
       ).toBeNull();
       expect(screen.queryByText(/云端已清空此字段/)).toBeNull();
     }
     expect(readDraft(key)?.fields["points:0"]).toBe("1.5");
     expect(
-      screen.queryByRole("group", { name: "估分 · 乙冲突处理" }),
+      screen.queryByRole("group", { name: "估分 乙冲突处理" }),
     ).toBeNull();
     expect(
-      screen.queryByRole("group", { name: "估分 · 乙云端对照" }),
+      screen.queryByRole("group", { name: "估分 乙云端对照" }),
     ).toBeNull();
     expect(
-      (screen.getByLabelText("估分 · 甲") as HTMLInputElement).value,
+      (screen.getByLabelText("估分 甲") as HTMLInputElement).value,
     ).toBe("1.5");
     expect(
       screen.queryByRole("region", { name: "提交前二次确认" }),

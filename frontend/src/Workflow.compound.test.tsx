@@ -11,10 +11,10 @@ const item = { id: { project_key: "p", work_item_type_key: "story", work_item_id
 const key = (owner: string, field: string) => JSON.stringify({ Compound: { work_item: false, path: [{ field_key: "review", owner }], field } });
 const options: WorkflowOptions = { version: "compound-v1", actions: [{
   id: "node:confirm:acceptance", label: "完成产品经理验收", kind: "node", fields: [
-    { key: key("a", "decision"), label: "验收信息 · 结论 · 甲", kind: "select", required: true, scope: "assignee", owner: "甲", column: "验收信息 · 结论",
+    { key: key("a", "decision"), label: "验收信息 结论 甲", kind: "select", required: true, scope: "assignee", owner: "甲", column: "验收信息 结论",
       options: [{ value: "pass", label: "已通过" }, { value: "reject", label: "未通过" }] },
-    { key: key("a", "opinion"), label: "验收信息 · 意见 · 甲", kind: "textarea", required: true, scope: "assignee", owner: "甲", column: "验收信息 · 意见" },
-    { key: key("b", "decision"), label: "验收信息 · 结论 · 乙", kind: "select", required: false, scope: "assignee", owner: "乙", column: "验收信息 · 结论",
+    { key: key("a", "opinion"), label: "验收信息 意见 甲", kind: "textarea", required: true, scope: "assignee", owner: "甲", column: "验收信息 意见" },
+    { key: key("b", "decision"), label: "验收信息 结论 乙", kind: "select", required: false, scope: "assignee", owner: "乙", column: "验收信息 结论",
       initial_value: "reject", options: [{ value: "pass", label: "已通过" }, { value: "reject", label: "未通过" }] },
   ],
 }] };
@@ -27,13 +27,13 @@ it("负责人复合字段恢复草稿、按名称确认云端值，并保留路�
   const submit = vi.fn().mockResolvedValue({ outcome: "verified", verified: true });
   const view = render(<Workflow item={item} available busy={false} submit={submit} />);
   await user.click(await screen.findByRole("button", { name: "完成产品经理验收" }));
-  await user.click(screen.getByRole("combobox", { name: "验收信息 · 结论 · 甲" }));
+  await user.click(screen.getByRole("combobox", { name: "验收信息 结论 甲" }));
   await user.click(screen.getByRole("option", { name: "已通过" }));
-  fireEvent.change(screen.getByLabelText("验收信息 · 意见 · 甲（必填）"), { target: { value: "功能验收通过\n补充说明" } });
+  fireEvent.change(screen.getByLabelText("验收信息 意见 甲（必填）"), { target: { value: "功能验收通过\n补充说明" } });
   view.unmount();
   render(<Workflow item={item} available busy={false} submit={submit} />);
   await user.click(await screen.findByRole("button", { name: "完成产品经理验收" }));
-  expect((screen.getByLabelText("验收信息 · 意见 · 甲（必填）") as HTMLTextAreaElement).value).toBe("功能验收通过\n补充说明");
+  expect((screen.getByLabelText("验收信息 意见 甲（必填）") as HTMLTextAreaElement).value).toBe("功能验收通过\n补充说明");
   await user.click(screen.getByRole("button", { name: "提交" }));
   const review = await screen.findByRole("region", { name: "提交前二次确认" });
   expect(review.querySelectorAll("dt")).toHaveLength(3);

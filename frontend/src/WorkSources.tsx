@@ -124,7 +124,7 @@ export function WorkSources({
             !!preset && source.kind === "work_item_type" && !source.project_key;
           const label = `${sourceName(source)}${
             source.project_key
-              ? ` · ${projects.get(source.project_key) || source.project_key}`
+              ? ` ${projects.get(source.project_key) || source.project_key}`
               : ""
           }`;
           return (
@@ -158,7 +158,7 @@ export function WorkSources({
                   <span>
                     {preset?.description ||
                       (source.action
-                        ? `${actionLabel[source.action] || source.action} · ${scopeLabel[source.todo_scope || ""] || "飞书默认进度"}`
+                        ? `${actionLabel[source.action] || source.action} ${scopeLabel[source.todo_scope || ""] || "飞书默认进度"}`
                         : sourceKindName[source.kind] || source.kind)}
                   </span>
                   {source.project_key && (

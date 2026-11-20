@@ -213,7 +213,7 @@ export function ScheduleDefectInspector({ defect, connection, projectName, workf
       <button type="button" className="icon-button" aria-label="关闭缺陷详情" onClick={close}><X size={16} aria-hidden="true" /></button>
     </div>
     <div className="schedule-editor">
-      <div className="schedule-editor-meta"><span className="schedule-editor-tag">{projectName} · 缺陷跟踪</span></div>
+      <div className="schedule-editor-meta"><span className="schedule-editor-tag">{projectName} 缺陷跟踪</span></div>
       <ScheduleDescription connection={connection} project={defect.project} type="issue" item={defect.item}
         heading={<h3 className="schedule-defect-title">{defect.title} <DefectPriority priority={defect.priority} /></h3>} />
       {stale && <p className="hint" role="status">该缺陷已移出当前清单，已保留当前流程编辑。</p>}

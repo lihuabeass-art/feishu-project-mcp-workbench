@@ -375,7 +375,7 @@ export function SourceEditor({
                   { value: "", label: "请选择空间，或手动填写标识" },
                   ...Array.from(projects, ([value, label]) => ({
                     value,
-                    label: label === value ? value : `${label} · ${value}`,
+                    label: label === value ? value : `${label} ${value}`,
                   })),
                 ]}
               />
@@ -490,7 +490,7 @@ export function SourceEditor({
                         aria-pressed={fields.includes(f.field_key)}
                         onClick={() => setFields(toggle(fields, f.field_key))}
                       >
-                        {f.field_name} · {f.field_key}
+                        {f.field_name} {f.field_key}
                       </button>
                     ))}
                   {(metadata?.roles || []).map((r) => (

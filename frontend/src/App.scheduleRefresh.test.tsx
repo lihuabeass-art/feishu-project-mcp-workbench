@@ -74,7 +74,7 @@ it("事项安排的流程确认成功后重新读取排期并保持周视图和�
   expect(getWorkflowActions).not.toHaveBeenCalled();
   fireEvent.click(inspector.getByRole("button", { name: "查看可用流程动作" }));
   fireEvent.click(await inspector.findByRole("button", { name: "完成开发" }));
-  const dialog = within(screen.getByRole("dialog", { name: "开发 · 流程操作" }));
+  const dialog = within(screen.getByRole("dialog", { name: "开发 流程操作" }));
   fireEvent.click(dialog.getByRole("button", { name: "提交" }));
   const review = within(await dialog.findByRole("region", { name: "提交前二次确认" }));
   fireEvent.click(review.getByRole("button", { name: /我已核对/ }));

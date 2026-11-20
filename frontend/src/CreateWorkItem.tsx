@@ -935,7 +935,7 @@ export function CreateWorkItem({
           {recordsOverview ? <div className="creation-records"><p className="hint">共 {recoveryLocations.length} 条需要处理的创建记录。选择一条查看提交内容与结果。</p>{recoveryLocations.map((entry) => {
             const pending = entry.pending_form!.pending!;
             const failed = pending.result.outcome === "not_submitted";
-            return <article className="creation-record-card" key={pending.request.request_id}><span className="creation-record-state">{failed ? "创建未成功" : "结果待核验"}</span><h3>{String(pending.request.fields.name || "未填写标题")}</h3><p>{entry.space} · {entry.name}</p><button className="secondary" onClick={() => { setLocationKey(creationTargetKey(entry)); setRecordsOverview(false); setStage("result"); }}>{failed ? "查看失败并恢复草稿" : "查看并核验结果"}</button></article>;
+            return <article className="creation-record-card" key={pending.request.request_id}><span className="creation-record-state">{failed ? "创建未成功" : "结果待核验"}</span><h3>{String(pending.request.fields.name || "未填写标题")}</h3><p>{entry.space} {entry.name}</p><button className="secondary" onClick={() => { setLocationKey(creationTargetKey(entry)); setRecordsOverview(false); setStage("result"); }}>{failed ? "查看失败并恢复草稿" : "查看并核验结果"}</button></article>;
           })}{!recoveryLocations.length && <p>没有待处理的创建记录。</p>}</div> : <>
           {stage === "edit" && (
             <div className="creation-location">
@@ -1098,7 +1098,7 @@ export function CreateWorkItem({
                     : draft.result?.message ||
                       "提交结果尚未确认，草稿已保留。请先在飞书核对，避免重复创建。"}
                 </p></div></div>
-                <div className="creation-result-summary"><FileText size={18} /><div><span>本次草稿 · {location?.name || "工作事项"}</span><strong>{String(draft.values.name || "未填写标题")}</strong><small>{location?.space}</small></div></div>
+                <div className="creation-result-summary"><FileText size={18} /><div><span>本次草稿 {location?.name || "工作事项"}</span><strong>{String(draft.values.name || "未填写标题")}</strong><small>{location?.space}</small></div></div>
                 {draft.result?.warning && <p className="hint">{draft.result.warning}</p>}
                 {preparingNext && (
                   <p className="hint" role="status">

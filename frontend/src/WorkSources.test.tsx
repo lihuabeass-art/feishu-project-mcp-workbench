@@ -55,7 +55,7 @@ it("内置与自定义有平级添加入口，内置不可编辑，自定义可�
   const { user } = setup();
   expect(screen.queryByRole("button", { name: "编辑我的待办" })).toBeNull();
   await user.click(
-    screen.getByRole("button", { name: "编辑我的视图 · space" }),
+    screen.getByRole("button", { name: "编辑我的视图 space" }),
   );
   expect(screen.getByRole("textbox", { name: "来源名称" })).toHaveProperty(
     "value",
@@ -145,7 +145,7 @@ it("来源卡片与空间选择显示中文名称，保存时仍使用空间标�
   await user.click(screen.getByRole("button", { name: "添加我参与的需求" }));
   expect(saveWorkSource).not.toHaveBeenCalled();
   await user.click(screen.getByRole("combobox", { name: "来源空间" }));
-  await user.click(screen.getByRole("option", { name: "研发空间 · space" }));
+  await user.click(screen.getByRole("option", { name: "研发空间 space" }));
   await user.click(screen.getByRole("button", { name: "保存工作来源" }));
   await waitFor(() =>
     expect(saveWorkSource).toHaveBeenCalledWith(
@@ -194,7 +194,7 @@ it("空缓存仍显示空间选择，发现失败可重试，候选到达后保�
   await act(async () => finish(true));
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
   await user.click(screen.getByRole("combobox", { name: "来源空间" }));
-  await user.click(screen.getByRole("option", { name: "发现的空间 · found-space" }));
+  await user.click(screen.getByRole("option", { name: "发现的空间 found-space" }));
   await user.click(screen.getByRole("button", { name: "保存工作来源" }));
   await waitFor(() => expect(saveWorkSource).toHaveBeenCalledWith(expect.objectContaining({ project_key: "found-space" })));
   expect(discoverSpaces).toHaveBeenCalledTimes(2);
@@ -213,7 +213,7 @@ it("远端未返回空间时保留旧候选和手填入口并明确说明", asyn
   expect(screen.getByRole("combobox", { name: "来源空间" })).toBeTruthy();
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "");
   await user.click(screen.getByRole("combobox", { name: "来源空间" }));
-  expect(screen.getByRole("option", { name: "上次成功目录 · cached-space" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "上次成功目录 cached-space" })).toBeTruthy();
   expect(saveWorkSource).not.toHaveBeenCalled();
 });
 
@@ -221,7 +221,7 @@ it("未知空间名称回退到标识，编辑已有来源保留空间", async (
   const { user } = setup();
   expect(screen.getByText("空间：space")).toBeTruthy();
   await user.click(
-    screen.getByRole("button", { name: "编辑我的视图 · space" }),
+    screen.getByRole("button", { name: "编辑我的视图 space" }),
   );
   expect(screen.getByRole("combobox", { name: "来源空间" }).textContent).toBe(
     "space",
@@ -296,24 +296,24 @@ it("多空间同名来源的选择、启停与移除均明确操作空间", asyn
   });
   const { user } = setup([todo, story("space-a"), story("space-b")]);
   expect(
-    screen.getByRole("radio", { name: "我参与的需求 · space-a" }),
+    screen.getByRole("radio", { name: "我参与的需求 space-a" }),
   ).toBeTruthy();
   expect(
-    screen.getByRole("radio", { name: "我参与的需求 · space-b" }),
+    screen.getByRole("radio", { name: "我参与的需求 space-b" }),
   ).toBeTruthy();
   await user.click(
-    screen.getByRole("switch", { name: "启用我参与的需求 · space-b" }),
+    screen.getByRole("switch", { name: "启用我参与的需求 space-b" }),
   );
   await waitFor(() =>
     expect(setWorkSourceEnabled).toHaveBeenCalledWith("stories-space-b", false),
   );
   await user.click(
-    screen.getByRole("button", { name: "移除我参与的需求 · space-b" }),
+    screen.getByRole("button", { name: "移除我参与的需求 space-b" }),
   );
   expect(
-    screen.getByRole("group", { name: "确认移除我参与的需求 · space-b" }),
+    screen.getByRole("group", { name: "确认移除我参与的需求 space-b" }),
   ).toBeTruthy();
-  expect(screen.getByText("移除“我参与的需求 · space-b”？")).toBeTruthy();
+  expect(screen.getByText("移除“我参与的需求 space-b”？")).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "确认移除" }));
   await waitFor(() =>
     expect(removeWorkSource).toHaveBeenCalledWith("stories-space-b"),

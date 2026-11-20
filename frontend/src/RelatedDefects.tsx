@@ -33,7 +33,7 @@ export function RelatedDefects({ item, canCreate, open, create, revision }: {
       <div className="related-defects-tools"><div className="related-defects-filters" role="group" aria-label="关联缺陷筛选"><button type="button" aria-pressed={!mine} onClick={() => setMine(false)}>全部</button><button type="button" aria-pressed={mine} disabled={!result.mine_available} onClick={() => setMine(true)}>与我相关</button></div></div>
       {!rows.length && <p className="hint">暂无与我相关的缺陷。</p>}
       {rows.map((entry) => <button type="button" className="related-defect-row" key={entry.item.id.work_item_id} onClick={() => open(entry.item)}>
-        <strong>{entry.item.name || "名称未提供"}</strong><span>#{entry.item.id.work_item_id}{entry.status ? ` · ${entry.status}` : ""}{entry.operators.length ? ` · 当前负责人：${entry.operators.join("、")}` : ""}</span></button>)}
+        <strong>{entry.item.name || "名称未提供"}</strong><span>#{entry.item.id.work_item_id}{entry.status ? ` ${entry.status}` : ""}{entry.operators.length ? ` 当前负责人：${entry.operators.join("、")}` : ""}</span></button>)}
     </>}
   </section>;
 }

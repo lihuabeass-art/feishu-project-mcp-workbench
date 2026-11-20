@@ -48,7 +48,7 @@ function options(): WorkflowOptions {
           },
           {
             key: "points:a",
-            label: "估分 · 甲",
+            label: "估分 甲",
             kind: "number",
             required: false,
             initial_value: "1",
@@ -57,7 +57,7 @@ function options(): WorkflowOptions {
           },
           {
             key: "points:b",
-            label: "估分 · 乙",
+            label: "估分 乙",
             kind: "number",
             required: false,
             initial_value: "1",
@@ -66,7 +66,7 @@ function options(): WorkflowOptions {
           },
           {
             key: "hours:a",
-            label: "工时 · 甲",
+            label: "工时 甲",
             kind: "number",
             required: false,
             initial_value: "0",
@@ -74,7 +74,7 @@ function options(): WorkflowOptions {
           },
           {
             key: "start:a",
-            label: "排期 · 甲 · 开始日期",
+            label: "排期 甲 开始日期",
             kind: "date",
             required: false,
             initial_value: "2026-10-27",
@@ -82,7 +82,7 @@ function options(): WorkflowOptions {
           },
           {
             key: "end:a",
-            label: "排期 · 甲 · 结束日期",
+            label: "排期 甲 结束日期",
             kind: "date",
             required: false,
             initial_value: "2026-10-27",
@@ -156,7 +156,7 @@ it("修改部分字段后完整展示两位负责人的未改估分、零值工�
   fireEvent.change(screen.getByLabelText("进度（必填）"), {
     target: { value: "100" },
   });
-  fireEvent.change(screen.getByLabelText("排期 · 甲 · 开始日期"), {
+  fireEvent.change(screen.getByLabelText("排期 甲 开始日期"), {
     target: { value: "2026-10-28" },
   });
   await user.click(screen.getByRole("button", { name: "提交" }));
@@ -165,13 +165,13 @@ it("修改部分字段后完整展示两位负责人的未改估分、零值工�
     options().actions[0].fields.length,
   );
   for (const owner of ["甲", "乙"]) {
-    const row = within(reviewRow(`估分 · ${owner}`));
+    const row = within(reviewRow(`估分 ${owner}`));
     expect(row.getByText("1")).toBeTruthy();
     expect(row.getByText("沿用云端")).toBeTruthy();
   }
-  expect(within(reviewRow("工时 · 甲")).getByText("0")).toBeTruthy();
+  expect(within(reviewRow("工时 甲")).getByText("0")).toBeTruthy();
   expect(
-    within(reviewRow("排期 · 甲 · 结束日期")).getByText("2026-10-27"),
+    within(reviewRow("排期 甲 结束日期")).getByText("2026-10-27"),
   ).toBeTruthy();
   expect(within(reviewRow("解决结果")).getByText("已修复")).toBeTruthy();
   expect(reviewRow("说明").textContent).toContain(notes);
@@ -221,7 +221,7 @@ it("短值、长值和多行内容使用相同的字段、数值、状态结构�
   fireEvent.change(screen.getByLabelText("代码版本号（必填）"), {
     target: { value: long },
   });
-  fireEvent.change(screen.getByLabelText("估分 · 甲"), {
+  fireEvent.change(screen.getByLabelText("估分 甲"), {
     target: { value: "1.5" },
   });
   fireEvent.change(screen.getByLabelText("说明"), {
@@ -229,10 +229,10 @@ it("短值、长值和多行内容使用相同的字段、数值、状态结构�
   });
   await user.click(screen.getByRole("button", { name: "提交" }));
   await screen.findByRole("region", { name: "提交前二次确认" });
-  const points = reviewRow("估分 · 甲");
+  const points = reviewRow("估分 甲");
   expect(points.className).toContain("is-changed");
   expect(points.querySelector(".workflow-review-arrow")).not.toBeNull();
-  for (const label of ["估分 · 甲", "代码版本号", "说明"]) {
+  for (const label of ["估分 甲", "代码版本号", "说明"]) {
     const row = reviewRow(label);
     expect(row.className).toBe("workflow-review-row is-changed");
     for (const valueLabel of ["云端当前值：", "本次提交值"])
@@ -243,7 +243,7 @@ it("短值、长值和多行内容使用相同的字段、数值、状态结构�
     expect(within(row).getByText("本次修改").closest("dt")).toBeNull();
   }
   expect(reviewRow("代码版本号").textContent).toContain(long);
-  const unchanged = reviewRow("估分 · 乙");
+  const unchanged = reviewRow("估分 乙");
   expect(unchanged.className).not.toContain("is-changed");
   expect(unchanged.querySelector(".workflow-review-arrow")).toBeNull();
 });
@@ -267,18 +267,18 @@ it.each([undefined, "", " \n "])(
     await user.click(
       await screen.findByRole("button", { name: "完成开发节点" }),
     );
-    fireEvent.change(screen.getByLabelText("排期 · 甲 · 结束日期"), {
+    fireEvent.change(screen.getByLabelText("排期 甲 结束日期"), {
       target: { value: "2026-10-28" },
     });
-    fireEvent.change(screen.getByLabelText("估分 · 甲"), {
+    fireEvent.change(screen.getByLabelText("估分 甲"), {
       target: { value: "1" },
     });
     await user.click(screen.getByRole("button", { name: "提交" }));
     await screen.findByRole("region", { name: "提交前二次确认" });
-    const date = reviewRow("排期 · 甲 · 结束日期");
+    const date = reviewRow("排期 甲 结束日期");
     expect(
       within(date).queryByRole("group", {
-        name: "排期 · 甲 · 结束日期云端当前值",
+        name: "排期 甲 结束日期云端当前值",
       }),
     ).toBeNull();
     expect(date.querySelector(".workflow-review-comparison")).toBeNull();
@@ -287,15 +287,15 @@ it.each([undefined, "", " \n "])(
     expect(within(date).queryByText("本次修改")).toBeNull();
     expect(
       within(date).getByRole("group", {
-        name: "排期 · 甲 · 结束日期本次提交值",
+        name: "排期 甲 结束日期本次提交值",
       }).textContent,
     ).toContain("2026-10-28");
     expect(
-      within(reviewRow("估分 · 甲")).getByRole("group", {
-        name: "估分 · 甲云端当前值",
+      within(reviewRow("估分 甲")).getByRole("group", {
+        name: "估分 甲云端当前值",
       }).textContent,
     ).toContain("0");
-    expect(within(reviewRow("估分 · 甲")).getByText("本次修改")).toBeTruthy();
+    expect(within(reviewRow("估分 甲")).getByText("本次修改")).toBeTruthy();
     const summary = screen.getByLabelText("核对概览");
     expect(summary.textContent).toContain("1 项新增");
     expect(summary.textContent).toContain("1 项修改");
@@ -336,7 +336,7 @@ it.each(["node", "state"] as const)(
       current.actions[0].fields.length,
     );
     expect(within(reviewRow("代码版本号")).getByText("旧版本")).toBeTruthy();
-    expect(within(reviewRow("估分 · 甲")).getByText("1")).toBeTruthy();
+    expect(within(reviewRow("估分 甲")).getByText("1")).toBeTruthy();
     expect(within(reviewRow("解决结果")).getByText("已修复")).toBeTruthy();
     expect(review.textContent).toContain("字段无修改，仅执行流程操作。");
     await confirm(user);
@@ -424,10 +424,10 @@ it("确认页使用当前完整编辑快照，迟到的后台响应不改写未�
   await user.click(screen.getByRole("button", { name: "提交" }));
   await screen.findByRole("region", { name: "提交前二次确认" });
   expect(getWorkflowActions).toHaveBeenCalledTimes(2);
-  expect(within(reviewRow("估分 · 甲")).getByText("1")).toBeTruthy();
+  expect(within(reviewRow("估分 甲")).getByText("1")).toBeTruthy();
   await act(async () => resolve(latest));
-  expect(within(reviewRow("估分 · 甲")).getByText("1")).toBeTruthy();
-  expect(within(reviewRow("估分 · 甲")).queryByText("2")).toBeNull();
+  expect(within(reviewRow("估分 甲")).getByText("1")).toBeTruthy();
+  expect(within(reviewRow("估分 甲")).queryByText("2")).toBeNull();
   await confirm(user);
   await waitFor(() => expect(submit).toHaveBeenCalledOnce());
   expect(submit.mock.calls[0][0]).toMatchObject({

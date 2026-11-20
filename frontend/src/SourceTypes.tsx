@@ -121,7 +121,7 @@ export function SourceTypes({
                   {label(key)}
                 </strong>
                 <span className="type-original">
-                  {typeName(key) !== label(key) && <>{typeName(key)} · </>}
+                  {typeName(key) !== label(key) && <>{typeName(key)} </>}
                   {key}
                 </span>
                 {projects.length > 0 && (

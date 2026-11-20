@@ -35,7 +35,7 @@ export function AppVersion({ notes = __RELEASE_NOTES__ }: { notes?: ReleaseNotes
         <dialog ref={scrollBoundary} className="release-notes-dialog scroll-isolation-boundary" aria-labelledby="release-notes-title" onCancel={(event) => { event.preventDefault(); setOpen(false); }} onClose={() => setOpen(false)} onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
           <div className="release-notes-shell">
           <div className="release-notes-header">
-            <div><h2 id="release-notes-title">更新记录</h2><p>当前安装 v{notes.version} · 共 {entries.length} 个版本</p></div>
+            <div><h2 id="release-notes-title">更新记录</h2><p>当前安装 v{notes.version} 共 {entries.length} 个版本</p></div>
             <button type="button" className="icon-button" aria-label="关闭更新记录" onClick={() => setOpen(false)} autoFocus><X size={18} /></button>
           </div>
           <div className="release-notes-body">

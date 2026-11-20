@@ -218,7 +218,7 @@ it("人员字段和角色使用发现的原始标识保存，并支持全部条�
   await chooseOption(user, "本人关联规则", "指定人员字段或角色包含我");
   await user.click(screen.getByRole("button", { name: "发现人员字段与角色" }));
   await user.click(
-    await screen.findByRole("button", { name: "修复人 · fixer" }),
+    await screen.findByRole("button", { name: "修复人 fixer" }),
   );
   await user.click(screen.getByRole("button", { name: "角色：后端研发" }));
   await user.click(screen.getByRole("switch", { name: "全部条件同时满足" }));
@@ -514,7 +514,7 @@ it("详情按用途分层：概要提炼负责人，空字段合并，系统字�
   expect(summary.textContent).toContain("处理中");
   expect(summary.textContent).toContain("当前负责人施伟");
   expect(summary.textContent).toContain("优先级P0");
-  expect(summary.textContent).toContain("创建施伟 · ");
+  expect(summary.textContent).toContain("创建施伟 ");
   expect(screen.getByText("必现")).toBeTruthy();
   expect(screen.getByText("未填写：报告人、发现版本")).toBeTruthy();
   expect(screen.getByText("未指派：产品经理")).toBeTruthy();

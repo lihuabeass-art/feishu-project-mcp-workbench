@@ -251,7 +251,7 @@ impl NodeForm {
             }
             let root = if work_field { schema::root_for(work_configs, row)? } else { None };
             if root.is_none() && row["_path"].as_array().is_some_and(|path| path.len() > 1) {
-                let path = row["_path"].as_array().unwrap().iter().map(text).collect::<Vec<_>>().join(" · ");
+                let path = row["_path"].as_array().unwrap().iter().map(text).collect::<Vec<_>>().join(" ");
                 form.block_manual_fill(format!("{path}（缺少支持完整路径的字段配置）"));
                 continue;
             }
@@ -437,7 +437,7 @@ impl NodeForm {
             if node_owners.is_some_and(|known| !known.contains(owner)) {
                 if relevant.iter().any(|row| schema::owners_at(row, &path)
                     .any(|rows| rows.as_array().is_some_and(|rows| rows.iter().any(|v| v == owner)))) {
-                    self.block_manual_fill(format!("{label} · {owner_label}（不是当前节点负责人）"));
+                    self.block_manual_fill(format!("{label} {owner_label}（不是当前节点负责人）"));
                 }
                 continue;
             }
@@ -472,8 +472,8 @@ impl NodeForm {
                 child_path.push(child_key.clone());
                 let needed = schema::needed(&owner_required, &child_path, work_item).is_some();
                 let child_label = text(&child["field_name"]).if_empty(&child_key);
-                let column = format!("{} · {child_label}", labels.join(" · "));
-                let caption = if multiple { format!("{column} · {owner_label}") } else { column.clone() };
+                let column = format!("{} {child_label}", labels.join(" "));
+                let caption = if multiple { format!("{column} {owner_label}") } else { column.clone() };
                 let previous = self.inputs.len();
                 let route = Route::Compound {
                     work_item, path: next_steps.clone(), field: child_key,
@@ -546,7 +546,7 @@ impl NodeForm {
             }
             let root = schema::root_for(if work_field { work_configs } else { node_configs }, req)?;
             if root.is_none() && req["_path"].as_array().is_some_and(|path| path.len() > 1) {
-                let path = req["_path"].as_array().unwrap().iter().map(text).collect::<Vec<_>>().join(" · ");
+                let path = req["_path"].as_array().unwrap().iter().map(text).collect::<Vec<_>>().join(" ");
                 form.block_manual_fill(format!("{path}（缺少支持完整路径的字段配置）"));
                 continue;
             }
@@ -666,7 +666,7 @@ impl NodeForm {
                     let suffix = owner
                         .as_ref()
                         .filter(|_| show_owner)
-                        .map(|o| format!(" · {}", owner_labels[o]))
+                        .map(|o| format!(" {}", owner_labels[o]))
                         .unwrap_or_default();
                     let schedule = schedule_source(node, owner.as_deref());
                     let required = needed.is_some() && missing_owners.as_ref()
@@ -678,7 +678,7 @@ impl NodeForm {
                             ("estimate_end_date", "结束日期"),
                         ] {
                             form.add(
-                                format!("{label}{suffix} · {caption}"),
+                                format!("{label}{suffix} {caption}"),
                                 FieldKind::Date,
                                 required,
                                 Route::Schedule {
@@ -695,7 +695,7 @@ impl NodeForm {
                                 None,
                                 None,
                             );
-                            form.set_owner_column(owner_label.clone(), format!("{label} · {caption}"));
+                            form.set_owner_column(owner_label.clone(), format!("{label} {caption}"));
                         }
                     } else {
                         let property = if key == "point" {
@@ -1490,7 +1490,7 @@ mod tests {
         let (node, required, nc, wc) = example();
         let form = NodeForm::build(&node, &required, &nc, &wc, &json!({})).unwrap();
         assert!(form.blocked.is_empty());
-        assert!(form.fields().iter().any(|f| f.label == "实际工时 · 乙"));
+        assert!(form.fields().iter().any(|f| f.label == "实际工时 乙"));
         for input in &form.inputs {
             let scope = match &input.route {
                 Route::WorkItem(_) | Route::Role(_) => "work_item",
@@ -1529,11 +1529,11 @@ mod tests {
             let field = fields.iter().find(|f| f.label == label).unwrap();
             (field.settings.owner.as_deref(), field.settings.column.as_deref())
         };
-        assert_eq!(layout("实际工时 · 甲"), (Some("甲"), Some("实际工时")));
-        assert_eq!(layout("实际工时 · 乙"), (Some("乙"), Some("实际工时")));
-        assert_eq!(layout("估分 · 甲"), (Some("甲"), Some("估分")));
-        assert_eq!(layout("排期 · 甲 · 开始日期"), (Some("甲"), Some("排期 · 开始日期")));
-        assert_eq!(layout("排期 · 甲 · 结束日期"), (Some("甲"), Some("排期 · 结束日期")));
+        assert_eq!(layout("实际工时 甲"), (Some("甲"), Some("实际工时")));
+        assert_eq!(layout("实际工时 乙"), (Some("乙"), Some("实际工时")));
+        assert_eq!(layout("估分 甲"), (Some("甲"), Some("估分")));
+        assert_eq!(layout("排期 甲 开始日期"), (Some("甲"), Some("排期 开始日期")));
+        assert_eq!(layout("排期 甲 结束日期"), (Some("甲"), Some("排期 结束日期")));
         assert_eq!(layout("进度"), (None, None));
         assert_eq!(layout("前端设计文档"), (None, None));
         let encoded = serde_json::to_value(&fields).unwrap();
@@ -1560,11 +1560,11 @@ mod tests {
         for (label, expected) in [
             ("前端设计文档", "https://example.test/current"),
             ("进度", "50"),
-            ("估分 · 甲", "1"),
-            ("实际工时 · 甲", "0"),
-            ("实际工时 · 乙", ""),
-            ("排期 · 甲 · 开始日期", "2026-10-23"),
-            ("排期 · 甲 · 结束日期", "2026-10-24"),
+            ("估分 甲", "1"),
+            ("实际工时 甲", "0"),
+            ("实际工时 乙", ""),
+            ("排期 甲 开始日期", "2026-10-23"),
+            ("排期 甲 结束日期", "2026-10-24"),
         ] {
             assert_eq!(
                 fields
@@ -1612,8 +1612,8 @@ mod tests {
         for (label, expected) in [
             ("估分", "0"),
             ("实际工时", "2.5"),
-            ("排期 · 开始日期", "2026-10-23"),
-            ("排期 · 结束日期", ""),
+            ("排期 开始日期", "2026-10-23"),
+            ("排期 结束日期", ""),
         ] {
             assert_eq!(
                 fields
@@ -1658,8 +1658,8 @@ mod tests {
             let value = match field.label.as_str() {
                 "point" => "2.5",
                 "actual_work_time" => "3",
-                "schedule · 开始日期" => "2026-10-24",
-                "schedule · 结束日期" => "2026-10-25",
+                "schedule 开始日期" => "2026-10-24",
+                "schedule 结束日期" => "2026-10-25",
                 _ => panic!("unexpected field: {}", field.label),
             };
             assert!(!field.settings.initial_value.as_deref().unwrap().is_empty());
@@ -1690,15 +1690,15 @@ mod tests {
         let form = NodeForm::build(&node, &required, &nc, &wc, &json!({})).unwrap();
         let fields = form.fields();
         for (label, expected) in [
-            ("估分 · 甲", "1"),
-            ("实际工时 · 甲", "0"),
-            ("排期 · 甲 · 开始日期", "2026-10-23"),
+            ("估分 甲", "1"),
+            ("实际工时 甲", "0"),
+            ("排期 甲 开始日期", "2026-10-23"),
         ] {
             let field = fields.iter().find(|f| f.label == label).unwrap();
             assert!(!field.required);
             assert_eq!(field.settings.initial_value.as_deref(), Some(expected));
         }
-        let missing = fields.iter().find(|f| f.label == "实际工时 · 乙").unwrap();
+        let missing = fields.iter().find(|f| f.label == "实际工时 乙").unwrap();
         assert!(missing.required);
         assert_ne!(missing.settings.read_only, Some(true));
         assert!(form.blocked.is_empty());
@@ -1853,7 +1853,7 @@ mod tests {
         let fields = form.fields();
         for name in ["张三", "李四"] {
             for caption in ["实际工时", "估分", "排期"] {
-                let label = format!("{caption} · {name}");
+                let label = format!("{caption} {name}");
                 assert!(fields.iter().any(|f| f.required && f.label.starts_with(&label)));
             }
         }
@@ -1914,7 +1914,7 @@ mod tests {
         let config = [json!({"field_key":"point","field_name":"估分","field_type":"number"})];
         let node = json!({"assignees":{"owners":[{"user_key":owners[1]},{"user_key":owners[0]}]}});
         let form = NodeForm::build(&node, &required, &config, &[], &json!({})).unwrap();
-        assert_eq!(form.fields().iter().map(|f| f.label.as_str()).collect::<Vec<_>>(), ["估分 · 负责人 1", "估分 · 负责人 2"]);
+        assert_eq!(form.fields().iter().map(|f| f.label.as_str()).collect::<Vec<_>>(), ["估分 负责人 1", "估分 负责人 2"]);
         let plan = form.plan(&BTreeMap::from([
             (form.fields()[0].key.clone(), "1".into()),
             (form.fields()[1].key.clone(), "2".into()),

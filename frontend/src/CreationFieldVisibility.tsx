@@ -80,7 +80,7 @@ export function CreationFieldVisibility({ form, selected, values, disabled, onCh
   const fixed = form.fields.filter((field) => fixedCreationField(field) && matches(field));
   return <div className="creation-field-visibility" ref={containerRef}>
     <button type="button" className="creation-field-toggle" ref={triggerRef}
-      aria-label={`显示字段 · ${visible.length}/${form.fields.length}`} aria-expanded={open}
+      aria-label={`显示字段 ${visible.length}/${form.fields.length}`} aria-expanded={open}
       aria-controls={panelId} disabled={disabled} onClick={() => setOpen(!open)}>
       <span className="creation-field-toggle-icon" aria-hidden="true"><SlidersHorizontal size={18} /></span>
       <span className="creation-field-toggle-copy"><strong>显示字段</strong><small>常用字段与人员角色，按需显示</small></span>
@@ -114,7 +114,7 @@ export function CreationFieldVisibility({ form, selected, values, disabled, onCh
           const shown = visible.includes(field);
           const filled = !creationEmpty(values[field.key]);
           const requiredHere = requiredKeys.includes(field.key);
-          const status = requiredHere ? "本次创建必填 · 已显示" : filled ? "已填写" : shown ? "已显示" : "点击添加";
+          const status = requiredHere ? "本次创建必填 已显示" : filled ? "已填写" : shown ? "已显示" : "点击添加";
           const Icon = fieldGroup(field) === "people" ? UsersRound : fieldGroup(field) === "relation" ? Link2 : SlidersHorizontal;
           return <button type="button" key={field.key} className={`creation-field-card${requiredHere ? " is-current-required" : ""}`}
             aria-label={`${shown ? "隐藏" : "显示"}${field.label}`} aria-pressed={shown}
@@ -138,7 +138,7 @@ export function CreationFieldVisibility({ form, selected, values, disabled, onCh
         </span>)}
       </div>}
       <div className="creation-field-config-note">
-        <span><Check size={13} aria-hidden="true" />本机保存 · 升级保留</span>
+        <span><Check size={13} aria-hidden="true" />本机保存 升级保留</span>
         <p>必填和已有内容的字段保留显示。选择仅用于当前账号、空间和类型。</p>
       </div>
     </div>}

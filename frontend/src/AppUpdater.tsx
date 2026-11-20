@@ -335,8 +335,8 @@ export function AppUpdateDialog({
             <p>
               {bytes(downloaded)}
               {total
-                ? ` / ${bytes(total)} · ${Math.floor(progress || 0)}%`
-                : " · 正在下载并校验"}
+                ? ` / ${bytes(total)} ${Math.floor(progress || 0)}%`
+                : " 正在下载并校验"}
             </p>
           </div>
         )}

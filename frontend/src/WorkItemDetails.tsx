@@ -79,7 +79,7 @@ function CurrentNodes({ nodes, personalId }: { nodes: Array<Record<string, unkno
 }
 
 function actorAt(actor: unknown, time: unknown) {
-  return [readable(actor), isoTime(time)].filter(Boolean).join(" · ");
+  return [readable(actor), isoTime(time)].filter(Boolean).join(" ");
 }
 
 export function FieldValue({ value }: { value: unknown }) {
@@ -145,8 +145,8 @@ function NodeOverview({ item, detail, mergedStatusNode }: { item: CachedItem; de
   if ((!nodes?.length || mergedStatusNode) && !showSummary && (!state || state === status)) return null;
   return <section className="detail-node-overview">
     {!!nodes?.length && !mergedStatusNode && <><h4>当前节点</h4><CurrentNodes nodes={nodes} personalId={personalMatch ? flow.node_state_key : undefined} /></>}
-    {showSummary && <p className="hint">{personal ? "我的待办节点" : "当前节点"} · <span>{flow.node_name || "名称未提供"}</span></p>}
-    {!!state && state !== status && <p className="hint">状态 · {state}</p>}
+    {showSummary && <p className="hint">{personal ? "我的待办节点" : "当前节点"} <span>{flow.node_name || "名称未提供"}</span></p>}
+    {!!state && state !== status && <p className="hint">状态 {state}</p>}
   </section>;
 }
 
@@ -279,7 +279,7 @@ function DetailBody({ detail, item, display, verified, children }: { detail: Ite
             </button>;
           })}{!matches.length && <p className="creation-field-empty" role="status">没有找到匹配的字段。</p>}</div>}
           {!display.available && !display.busy && !display.error && <p className="hint">当前连接暂不能保存常显设置。</p>}
-          <div className="creation-field-config-note"><span><Check size={13} aria-hidden="true" />本机保存 · 升级保留</span>
+          <div className="creation-field-config-note"><span><Check size={13} aria-hidden="true" />本机保存 升级保留</span>
             <p>选择仅用于当前账号、空间和事项类型。</p></div>
         </div>}
         {display.error && <p className="error-text" role="alert">{display.error}<button className="text-button" onClick={display.retry}>重新读取设置</button></p>}
@@ -451,7 +451,7 @@ function WorkItemDetailsInner({
     : error
       ? "检查失败"
       : detail
-        ? `${hasChecked ? "已检查" : "上次获取"} · ${localTime(detail.fetched_at_ms)}`
+        ? `${hasChecked ? "已检查" : "上次获取"} ${localTime(detail.fetched_at_ms)}`
         : "尚未检查";
   return (
     <div className="detail-section remote-details">

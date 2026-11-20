@@ -1686,11 +1686,6 @@ input {
   align-items: center;
   gap: 4px;
 }
-.item-meta > span + span:before {
-  content: "·";
-  margin-right: 4px;
-  color: var(--muted);
-}
 .flow-lines {
   display: flex;
   flex-direction: column;

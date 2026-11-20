@@ -163,7 +163,7 @@ function Flow({ item }: { item: CachedItem }) {
       <i className="status-dot" />{f.node_name || "名称未提供"}
     </span>}
     {!done && (f.kind === "state" || f.kind === "both") && <span>
-      <i className="status-dot amber" />状态 · {f.start_state_key_name || "未提供"}
+      <i className="status-dot amber" />状态 {f.start_state_key_name || "未提供"}
       {f.end_state_key_name && <><ArrowRight size={12} />{f.end_state_key_name}</>}
     </span>}
     {(done || f.kind === "none") && (
@@ -242,7 +242,7 @@ function Detail({
         </span>
         <h2>{item.name || "名称未提供"}</h2>
         <p className="item-id">
-          #{item.id.work_item_id} · {item.project_name || "空间名称未提供"}
+          #{item.id.work_item_id} {item.project_name || "空间名称未提供"}
         </p>
         {(item.schedule.start_raw || item.schedule.end_raw) && (
           <div className="detail-section">
@@ -1709,7 +1709,7 @@ function Workspace() {
         <div className="banner error" role="alert">
           <Unplug size={18} />
           <div>
-            <strong>操作未完成 · {errorKindLabel(error.kind)}</strong>
+            <strong>操作未完成 {errorKindLabel(error.kind)}</strong>
             <p>{error.message}</p>
           </div>
           <button
@@ -1724,7 +1724,7 @@ function Workspace() {
       {Object.entries(workflowReports).filter(([, result]) => result.error).map(([id, result]) => (
         <div className="banner error" role="alert" key={id}>
           <Unplug size={18} />
-          <div><strong>{result.item} · {errorKindLabel(result.error!.kind)}</strong><p>{result.message}</p></div>
+          <div><strong>{result.item} {errorKindLabel(result.error!.kind)}</strong><p>{result.message}</p></div>
           <button className="icon-button" aria-label={`关闭${result.item}的流程操作提示`}
             onClick={() => setWorkflowReports((current) => { const next = { ...current }; delete next[id]; return next; })}><X size={16} /></button>
         </div>
@@ -1734,7 +1734,7 @@ function Workspace() {
         const title = action === "order" ? "类型排序未保存" : "类型发现未完成";
         return failure && <div className="banner error" role="alert" key={action}>
           <Unplug size={18} />
-          <div><strong>{title} · {errorKindLabel(failure.kind)}</strong><p>{failure.message}</p></div>
+          <div><strong>{title} {errorKindLabel(failure.kind)}</strong><p>{failure.message}</p></div>
           <button className="icon-button" aria-label={`关闭${title}提示`}
             onClick={() => setTypeOperationErrors((current) => ({ ...current, [action]: undefined }))}><X size={16} /></button>
         </div>;
@@ -1742,7 +1742,7 @@ function Workspace() {
       {recoveryFeedback && <div className={`banner ${recoveryFeedback.result === "failed" ? "error" : "success"}`}
         role={recoveryFeedback.result === "failed" ? "alert" : "status"}>
         {recoveryFeedback.result === "failed" ? <Unplug size={18} /> : <Check size={17} />}
-        {recoveryFeedback.result === "failed" ? <div><strong>创建记录读取未完成 · {errorKindLabel(recoveryFeedback.error.kind)}</strong>
+        {recoveryFeedback.result === "failed" ? <div><strong>创建记录读取未完成 {errorKindLabel(recoveryFeedback.error.kind)}</strong>
           <p>{recoveryFeedback.error.message}</p></div> : <span>没有待核验的创建记录。</span>}
         {recoveryFeedback.result === "failed" && <button className="secondary" disabled={creationDisabled}
           onClick={() => void openCreationRecovery()}>重试读取创建记录</button>}
@@ -2018,7 +2018,7 @@ function Workspace() {
           {!desktop && (
             <div className="banner preview">
               <CircleHelp size={17} />
-              <span>浏览器预览 · 通过桌面应用读取本地缓存与连接飞书。</span>
+              <span>浏览器预览 通过桌面应用读取本地缓存与连接飞书。</span>
             </div>
           )}
           {!compact && alerts}
@@ -2043,7 +2043,7 @@ function Workspace() {
                     {incremental
                       ? !automaticReady ? "自动同步等待来源和连接就绪"
                         : enabledIds.some((id) => policies[id]?.failures)
-                          ? "各来源独立检查 · 失败来源持续退避重试"
+                          ? "各来源独立检查 失败来源持续退避重试"
                           : "所有已启用来源每 2 分钟自动检查"
                       : !automaticReady
                         ? "自动同步等待来源和连接就绪"
@@ -2069,7 +2069,7 @@ function Workspace() {
                         : []),
                       ...(data?.sources.map((s) => ({
                         value: s.id,
-                        label: `${sourceName(s)}${s.project_key ? ` · ${sourceProjectNames.get(s.project_key) || s.project_key}` : ""}${!s.executable ? "（不可用）" : ""}`,
+                        label: `${sourceName(s)}${s.project_key ? ` ${sourceProjectNames.get(s.project_key) || s.project_key}` : ""}${!s.executable ? "（不可用）" : ""}`,
                         disabled: !s.executable,
                       })) || []),
                     ]}
@@ -2215,7 +2215,7 @@ function Workspace() {
                 <div className="list-footer">
                   <ShieldCheck size={13} />
                   <span>
-                    未完成优先 · 按飞书更新时间倒序
+                    未完成优先 按飞书更新时间倒序
                   </span>
                 </div>
               </section>
@@ -2255,7 +2255,7 @@ function Workspace() {
                   ...source.type_scope,
                   types: sourceTypes(source),
                 } }}
-                sourceLabel={`${sourceName(source)}${source.project_key ? ` · ${sourceProjectNames.get(source.project_key) || source.project_key}` : ""}`}
+                sourceLabel={`${sourceName(source)}${source.project_key ? ` ${sourceProjectNames.get(source.project_key) || source.project_key}` : ""}`}
                 disabled={!desktop || !source?.executable || workspaceActionBlocked("discovery", activity) || loading}
                 canReorder={desktop && !workspaceActionBlocked("order", activity) && !loading}
                 label={displayType}

@@ -148,11 +148,11 @@ it("单节点可填写并二次确认，保留排期草稿且仅提交当前流�
     const trigger = inspector.getByRole("button", { name: "查看可用流程动作" });
     fireEvent.click(trigger);
     fireEvent.click(await inspector.findByRole("button", { name: "完成开发" }));
-    const form = () => screen.getByRole("dialog", { name: "开发 · 流程操作" });
+    const form = () => screen.getByRole("dialog", { name: "开发 流程操作" });
     const dialog = within(form());
     expect(dialog.getByText(/此节点有未同步的排期草稿/)).toBeTruthy();
     fireEvent.change(dialog.getByLabelText(/设计文档/), { target: { value: "更新后的设计" } });
-    const heading = dialog.getByRole("heading", { name: "开发 · 流程操作" });
+    const heading = dialog.getByRole("heading", { name: "开发 流程操作" });
     const wheel = createEvent.wheel(heading, { deltaY: 60, cancelable: true });
     fireEvent(heading, wheel);
     expect(wheel.defaultPrevented).toBe(true);
@@ -171,7 +171,7 @@ it("单节点可填写并二次确认，保留排期草稿且仅提交当前流�
     await waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       action_id: "node:confirm:n", version: "node-v1", fields: { doc: "更新后的设计" },
     }), "完成开发"));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "开发 · 流程操作" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "开发 流程操作" })).toBeNull());
     expect(inspector.getByText("本地草稿")).toBeTruthy();
     expect(submitScheduleTargets).not.toHaveBeenCalled();
   } finally {
@@ -358,7 +358,7 @@ it("共同及个人排期区分同空间同名人员并显示身份不明的负�
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
   expect(screen.getByText(/同名 \(a123456\)、同名 \(b123456\)、尚有负责人身份不明/)).toBeTruthy();
-  expect(screen.getByText(/同名 \(a123456\) · 待安排/)).toBeTruthy();
+  expect(screen.getByText(/同名 \(a123456\) 待安排/)).toBeTruthy();
   fireEvent.click(screen.getByText("任务一"));
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
@@ -409,13 +409,13 @@ it("今日问候跨上海午夜及午后时段更新，卸载后清理计时器"
     const page = render(<SchedulePage preloadedSession={{ read: data(), pending: null, updateRead: vi.fn(), reload: vi.fn() }} onGuardChange={vi.fn()} requestReload={vi.fn()} />);
     const greeting = screen.getByLabelText("今日问候");
     const quote = greeting.querySelector("p")!.textContent;
-    expect(greeting.textContent).toContain("晚上好 · 11月16日星期一");
+    expect(greeting.textContent).toContain("晚上好 11月16日星期一");
     act(() => { vi.advanceTimersByTime(60_000); });
-    expect(greeting.textContent).toContain("夜深了 · 11月17日星期二");
+    expect(greeting.textContent).toContain("夜深了 11月17日星期二");
     expect(greeting.querySelector("p")!.textContent).not.toBe(quote);
     vi.setSystemTime(new Date("2026-11-17T13:59:30+08:00"));
     act(() => { vi.advanceTimersByTime(60_000); });
-    expect(greeting.textContent).toContain("下午好 · 11月17日星期二");
+    expect(greeting.textContent).toContain("下午好 11月17日星期二");
     page.unmount();
     expect(vi.getTimerCount()).toBe(0);
   } finally {
@@ -516,9 +516,9 @@ it("本地来源缓存提示包含可读事项身份和来源，不裸露内部�
   ];
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
-  expect(screen.getByText("空间甲 · 需求 #123（来源甲）：该来源的本地缓存不完整")).toBeTruthy();
-  expect(screen.getByText("当前空间 · 缺陷「登录异常修复」#456（个人待办）：读取超时")).toBeTruthy();
-  expect(screen.getByText("当前空间 · 事项 #789（工作来源）：连接中断")).toBeTruthy();
+  expect(screen.getByText("空间甲 需求 #123（来源甲）：该来源的本地缓存不完整")).toBeTruthy();
+  expect(screen.getByText("当前空间 缺陷「登录异常修复」#456（个人待办）：读取超时")).toBeTruthy();
+  expect(screen.getByText("当前空间 事项 #789（工作来源）：连接中断")).toBeTruthy();
   expect(document.body.textContent).not.toContain("9000000000000654321");
   expect(document.body.textContent).not.toContain("space_key_xyz");
   expect(document.body.textContent).not.toContain("raw_internal_source");
@@ -765,15 +765,15 @@ it("提交结果保留汇总与不确定保护，排期条、行标题和待排�
   confirmSync();
   await screen.findByText(/收到成功回执 1 项，失败 1 项，结果不确定 1 项，未发送 1 项/);
   for (const suffix of ["一", "二", "三", "四"]) {
-    const bar = screen.getByRole("button", { name: `任务${suffix} · 开发` });
+    const bar = screen.getByRole("button", { name: `任务${suffix} 开发` });
     expect(bar.querySelector(".schedule-bar-title")?.textContent).toBe("开发");
     expect(bar.closest(".schedule-row")?.textContent).not.toContain("上次提交");
   }
   expect(screen.queryByText(/上次提交：/)).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "任务三 · 开发" }));
+  fireEvent.click(screen.getByRole("button", { name: "任务三 开发" }));
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
   expect(screen.getByText("该节点存在结果不确定的排期，请先在飞书核对并重新读取。")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "任务一 · 开发" }));
+  fireEvent.click(screen.getByRole("button", { name: "任务一 开发" }));
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "" } });
   expect(screen.getByRole("button", { name: /任务一/ }).className).toContain("schedule-pending-item");
   expect(screen.queryByText(/上次提交：/)).toBeNull();
@@ -820,7 +820,7 @@ it("没有进行中节点时隐藏日历副标题，待安排仍显示负责人"
   expect(document.querySelector(".schedule-row-current")).toBeNull();
   const pending = screen.getByRole("button", { name: /任务一/ });
   expect(pending.querySelector(".schedule-current-node.is-pending")?.textContent).toBe("开发");
-  expect(pending.querySelector(".schedule-pending-details")?.textContent).toBe("本人 · 待安排");
+  expect(pending.querySelector(".schedule-pending-details")?.textContent).toBe("本人 待安排");
   fireEvent.click(screen.getByRole("button", { name: /共同任务/ }));
   expect(screen.getByText("仅可编辑明确属于自己的排期")).toBeTruthy();
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
@@ -866,14 +866,14 @@ it("单端来源聚合日期在待安排中标明来源并保留原值", async (
   const read = data();
   read.targets = [{ ...read.targets[0], title: "聚合记录", identity: { ...identity, scope: "node", owner: "" }, ownerId: null, ownerIds: [], mine: false, sourceAggregate: true, readOnlyReason: "详情读取失败，仅供查看", dates: { start: "2026-11-12", end: "" } }];
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
-  expect(screen.getByText(/来源聚合日期 · 负责人不明 · 开始：2026-11-12；结束：未知/)).toBeTruthy();
+  expect(screen.getByText(/来源聚合日期 负责人不明 开始：2026-11-12；结束：未知/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: /聚合记录/ }));
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe("2026-11-12");
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   const pending = screen.getByRole("button", { name: /聚合记录/ });
   expect(pending.querySelector(".schedule-pending-details")?.textContent)
-    .toBe("来源聚合日期 · 开始：2026-11-12；结束：未知");
+    .toBe("来源聚合日期 开始：2026-11-12；结束：未知");
 });
 
 it.each([
@@ -1068,7 +1068,7 @@ it("人员筛选支持连续多选、取消及清空，并按负责人显示共�
   expect(pending.textContent).toContain("本人");
   expect(pending.textContent).toContain("同事");
   expect(pending.textContent).not.toContain("第三人任务");
-  expect(pending.textContent).not.toContain("第三人 ·");
+  expect(pending.textContent).not.toContain("第三人");
   fireEvent.click(screen.getByRole("option", { name: "本人" }));
   expect(pending.textContent).not.toContain("任务一");
   expect(pending.textContent).toContain("同事");
@@ -1154,7 +1154,7 @@ it("人员排期计入当前周和其他周的只读排期，跨空间相同人�
   const otherWeekCard = pool.getByRole("button", { name: /其他周任务/ }).closest<HTMLElement>(".schedule-outside-card")!;
   expect(within(otherWeekCard).queryByRole("button", { name: "排入本周" })).toBeNull();
   fireEvent.click(within(otherWeekCard).getByRole("button", { name: /定位该周/ }));
-  expect(screen.getByRole("button", { name: /其他周任务 · 开发/ })).toBeTruthy();
+  expect(screen.getByRole("button", { name: /其他周任务 开发/ })).toBeTruthy();
   expect(screen.getByRole("tab", { name: "已排期 (2)" })).toBeTruthy();
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
   fireEvent.click(screen.getByRole("option", { name: "同事" }));
@@ -2253,8 +2253,8 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
   const ganttRows = document.querySelectorAll(".schedule-row");
   expect(ganttRows).toHaveLength(1);
   expect(ganttRows[0].querySelector(".schedule-row-current")).toBeNull();
-  const codeBar = screen.getByRole("button", { name: /核心架构演进专项 · 后端代码研发/ });
-  const testBar = screen.getByRole("button", { name: /核心架构演进专项 · 联调与自测/ });
+  const codeBar = screen.getByRole("button", { name: /核心架构演进专项 后端代码研发/ });
+  const testBar = screen.getByRole("button", { name: /核心架构演进专项 联调与自测/ });
   expect(codeBar.querySelector(".schedule-bar-title")?.textContent).toBe("研发");
   expect(testBar.querySelector(".schedule-bar-title")?.textContent).toBe("联调");
   expect(codeBar.style.gridRow).toBe("1");
@@ -2279,7 +2279,7 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
   fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(3) } });
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(4) } });
   expect(document.querySelectorAll(".schedule-row")).toHaveLength(1);
-  const stageBar = screen.getByRole("button", { name: /核心架构演进专项 · 灰度联调验收/ });
+  const stageBar = screen.getByRole("button", { name: /核心架构演进专项 灰度联调验收/ });
   expect(stageBar.querySelector(".schedule-bar-title")?.textContent).toBe("验收");
   expect(stageBar.getAttribute("draggable")).toBe("true");
   expect(stageBar.style.gridRow).toBe("1");
@@ -2550,9 +2550,9 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(rowEl.querySelectorAll(".schedule-bar-side-label")).toHaveLength(0);
 
     // 2. 短条保持紧凑，已流转与其他不可编辑节点统一实线，不重复展示锁标识。
-    const envBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端环境准备/ });
-    const prdBar = screen.getByRole("button", { name: /排期节点辨识专项 · 产品方案评审/ });
-    const feBar = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
+    const envBar = screen.getByRole("button", { name: /排期节点辨识专项 前端环境准备/ });
+    const prdBar = screen.getByRole("button", { name: /排期节点辨识专项 产品方案评审/ });
+    const feBar = screen.getByRole("button", { name: /排期节点辨识专项 前端代码开发/ });
     expect(envBar.classList.contains("is-narrow-bar")).toBe(true);
     expect(envBar.classList.contains("is-single-day-bar")).toBe(false);
     expect(envBar.classList.contains("is-clipped-start")).toBe(true);
@@ -2613,7 +2613,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(3) } });
     // 先把结束日期改为周三使之仍为 2d 草稿：开始周二、结束周三但与原 baseline 不同（把开始改为周三、结束周四）
     fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(2) } });
-    const feBarDraft = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
+    const feBarDraft = screen.getByRole("button", { name: /排期节点辨识专项 前端代码开发/ });
     expect(feBarDraft.classList.contains("is-narrow-bar")).toBe(true);
     expect(feBarDraft.classList.contains("is-draft")).toBe(true);
     expect(getComputedStyle(feBarDraft.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("inline-flex");
@@ -2623,7 +2623,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     delete document.documentElement.dataset.appearance;
 
     fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
-    const feBarBiweekly = screen.getByRole("button", { name: /排期节点辨识专项 · 前端代码开发/ });
+    const feBarBiweekly = screen.getByRole("button", { name: /排期节点辨识专项 前端代码开发/ });
     expect(feBarBiweekly.classList.contains("is-single-day-bar")).toBe(true);
     expect(getComputedStyle(feBarBiweekly.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("none");
     fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
@@ -2748,14 +2748,14 @@ it("我的排期与个人待办不混入同事项下他人的历史已流转节�
 
   // 2. 切换到『人员排期』时，闫国强、刘悦然、施伟各自归入本人分组与独立行，绝不把闫国强的『产品方案设计』合并到刘悦然行内
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
-  const peopleFrontend = screen.getByRole("button", { name: /发布 · 前端方案设计/ }).closest(".schedule-row");
-  const peopleProduct = screen.getByRole("button", { name: /发布 · 产品方案设计/ }).closest(".schedule-row");
-  const peopleTesting = screen.getByRole("button", { name: /平台操作记录 · 需求测试/ }).closest(".schedule-row");
+  const peopleFrontend = screen.getByRole("button", { name: /发布 前端方案设计/ }).closest(".schedule-row");
+  const peopleProduct = screen.getByRole("button", { name: /发布 产品方案设计/ }).closest(".schedule-row");
+  const peopleTesting = screen.getByRole("button", { name: /平台操作记录 需求测试/ }).closest(".schedule-row");
   expect(peopleFrontend).not.toBe(peopleProduct);
   for (const row of [peopleFrontend, peopleProduct, peopleTesting]) {
     expect(row?.querySelector(".schedule-row-current")).toBeNull();
   }
-  fireEvent.click(screen.getByRole("button", { name: /发布 · 前端方案设计/ }));
+  fireEvent.click(screen.getByRole("button", { name: /发布 前端方案设计/ }));
   expect(screen.queryByRole("group", { name: "事项节点" })).toBeNull();
 
   // 3. 即便在账号未确认的回退只读模式（accountError）下展示全部目标，『我的排期』也按负责人分别成行，不把闫国强节点挂在刘悦然名下
@@ -2767,8 +2767,8 @@ it("我的排期与个人待办不混入同事项下他人的历史已流转节�
   };
   vi.mocked(loadScheduleSession).mockResolvedValue(fallbackRead);
   await setup();
-  const fallbackFrontend = screen.getByRole("button", { name: /发布 · 前端方案设计/ }).closest(".schedule-row");
-  const fallbackProduct = screen.getByRole("button", { name: /发布 · 产品方案设计/ }).closest(".schedule-row");
+  const fallbackFrontend = screen.getByRole("button", { name: /发布 前端方案设计/ }).closest(".schedule-row");
+  const fallbackProduct = screen.getByRole("button", { name: /发布 产品方案设计/ }).closest(".schedule-row");
   expect(fallbackFrontend).not.toBe(fallbackProduct);
   expect(fallbackFrontend?.querySelector(".schedule-row-current")).toBeNull();
 });
@@ -2807,11 +2807,11 @@ it("人员排期的副标题、排期条及详情只显示当前行负责人的�
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
 
   for (const [mine, other] of [["前端研发", "后端研发"], ["后端研发", "前端研发"]]) {
-    const row = screen.getByRole("button", { name: `任务一 · ${mine}` }).closest(".schedule-row") as HTMLElement;
+    const row = screen.getByRole("button", { name: `任务一 ${mine}` }).closest(".schedule-row") as HTMLElement;
     expect(row.querySelector(".schedule-row-current")?.getAttribute("title"))
       .toBe(`当前节点：${mine}`);
-    expect(within(row).queryByRole("button", { name: `任务一 · ${other}` })).toBeNull();
-    const sharedBar = within(row).getByRole("button", { name: "任务一 · 共同联调" });
+    expect(within(row).queryByRole("button", { name: `任务一 ${other}` })).toBeNull();
+    const sharedBar = within(row).getByRole("button", { name: "任务一 共同联调" });
     fireEvent.mouseEnter(sharedBar);
     expect(row.querySelector(".schedule-bar-popover")?.textContent).toContain("共同联调");
     expect(document.querySelectorAll(".schedule-bar-popover")).toHaveLength(1);
@@ -2847,7 +2847,7 @@ it("节点身份缺失时不把多条进行中记录合并成一个当前节点"
   ];
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
-  const row = screen.getByRole("button", { name: "任务一 · 开发" }).closest(".schedule-row");
+  const row = screen.getByRole("button", { name: "任务一 开发" }).closest(".schedule-row");
   expect(row).toBeTruthy();
   expect(row?.querySelector(".schedule-row-current")).toBeNull();
 });
@@ -2861,7 +2861,7 @@ it("缓存确认事项已完成后，仍在当前排期会话中的行展示终�
   snapshot.items[0].status_name = "需求上线";
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   render(<SchedulePage snapshot={snapshot} onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
-  const row = (await screen.findByRole("button", { name: "任务一 · 开发" })).closest(".schedule-row");
+  const row = (await screen.findByRole("button", { name: "任务一 开发" })).closest(".schedule-row");
   expect(row?.querySelector(".schedule-row-current")?.getAttribute("title")).toBe("事项已完成：需求上线");
   const badge = row?.querySelector(".schedule-completed-status");
   expect(badge?.textContent).toBe("需求上线");

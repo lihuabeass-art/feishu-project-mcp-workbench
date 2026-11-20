@@ -34,7 +34,7 @@ it("点击版本默认显示当前记录，可离线切换全部历史版本，�
   expect(screen.getByRole("dialog", { name: "更新记录" })).toBeTruthy();
   expect(screen.getByText("修复版本归属说明")).toBeTruthy();
   expect(screen.getByText("所有版本记录均可离线查看")).toBeTruthy();
-  expect(screen.getByText("当前安装 v1.2.3 · 共 3 个版本")).toBeTruthy();
+  expect(screen.getByText("当前安装 v1.2.3 共 3 个版本")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "查看 v1.2.2 的更新记录" }));
   expect(screen.getByText("保留历史草稿")).toBeTruthy();
   expect(screen.queryByText("修复版本归属说明")).toBeNull();

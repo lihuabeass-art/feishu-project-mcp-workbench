@@ -10,8 +10,8 @@ const modes = [
 ] as const;
 
 const appearances = [
-  { value: "classic", label: "经典绿意", description: "柔和自然 · 专注工作" },
-  { value: "pearl", label: "珍珠全息", description: "虹彩光晕 · 通透玻璃" },
+  { value: "classic", label: "经典绿意", description: "柔和自然 专注工作" },
+  { value: "pearl", label: "珍珠全息", description: "虹彩光晕 通透玻璃" },
 ] as const;
 
 export function ThemeControl() {
@@ -19,7 +19,7 @@ export function ThemeControl() {
   const { theme, setTheme, appearance, setAppearance, error } = useTheme();
   const current = modes.find((mode) => mode.value === theme)!;
   const Icon = current.Icon;
-  const description = `外观：${current.label}${appearance === "pearl" ? " · 珍珠全息" : ""}`;
+  const description = `外观：${current.label}${appearance === "pearl" ? " 珍珠全息" : ""}`;
 
   return (
     <div className="theme-control">

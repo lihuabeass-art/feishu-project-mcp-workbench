@@ -81,7 +81,7 @@ it.each([true, false])(
   await act(async () => found.resolve({ spaces: catalog, has_remote_spaces: true }));
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
   await user.click(screen.getByRole("combobox", { name: "来源空间" }));
-  await user.click(await screen.findByRole("option", { name: "正式研发空间 · space" }));
+  await user.click(await screen.findByRole("option", { name: "正式研发空间 space" }));
   await user.click(screen.getByRole("button", { name: "保存工作来源" }));
   await waitFor(() => expect(saveWorkSource).toHaveBeenCalledWith(expect.objectContaining({
     builtin_key: "issues", project_key: "space",
@@ -112,7 +112,7 @@ it.each([
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
   expect(document.body.textContent).not.toMatch(/RPCError private/);
   await user.click(screen.getByRole("combobox", { name: "来源空间" }));
-  expect(screen.getByRole("option", { name: "正式研发空间 · space" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "正式研发空间 space" })).toBeTruthy();
   await user.keyboard("{Escape}");
   await user.click(screen.getByRole("button", { name: "发现空间" }));
   await waitFor(() => expect(screen.queryByText(/空间发现未完成：/)).toBeNull());
@@ -166,8 +166,8 @@ it("发现空间会补充已有候选并保留手填草稿", async () => {
   await user.click(screen.getByRole("button", { name: "发现空间" }));
   expect(screen.getByLabelText("来源空间标识")).toHaveProperty("value", "draft-space");
   await user.click(screen.getByRole("combobox", { name: "来源空间" }));
-  expect(screen.getByRole("option", { name: "上次成功目录 · cached-space" })).toBeTruthy();
-  await user.click(screen.getByRole("option", { name: "新发现空间 · new-space" }));
+  expect(screen.getByRole("option", { name: "上次成功目录 cached-space" })).toBeTruthy();
+  await user.click(screen.getByRole("option", { name: "新发现空间 new-space" }));
   await user.click(screen.getByRole("button", { name: "保存工作来源" }));
   await waitFor(() => expect(saveWorkSource).toHaveBeenCalledWith(expect.objectContaining({
     builtin_key: "issues", project_key: "new-space",
@@ -253,11 +253,11 @@ it("较早的快照回读不能覆盖手动发现的空间", async () => {
   await user.click(screen.getByRole("button", { name: "添加我参与的缺陷" }));
   await user.click(screen.getByRole("button", { name: "发现空间" }));
   await user.click(screen.getByRole("combobox", { name: "来源空间" }));
-  expect(await screen.findByRole("option", { name: "新发现的空间 · new-space" })).toBeTruthy();
+  expect(await screen.findByRole("option", { name: "新发现的空间 new-space" })).toBeTruthy();
   await user.keyboard("{Escape}");
   await act(async () => oldSnapshot.resolve(initial));
   await user.click(screen.getByRole("combobox", { name: "来源空间" }));
-  expect(screen.getByRole("option", { name: "新发现的空间 · new-space" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "新发现的空间 new-space" })).toBeTruthy();
 });
 
 it("较早的快照回读不能覆盖自动刷新取得的空间目录", async () => {

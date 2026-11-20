@@ -390,7 +390,7 @@ it("珍珠全息独立于明暗模式，保存后重载并继续跟随系统", a
   mounted.unmount();
   mount();
   expect(
-    screen.getByRole("button", { name: "外观：暗黑模式 · 珍珠全息" }),
+    screen.getByRole("button", { name: "外观：暗黑模式 珍珠全息" }),
   ).toBeTruthy();
   await choose("跟随系统");
   systemChanges(true);

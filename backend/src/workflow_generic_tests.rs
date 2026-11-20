@@ -495,8 +495,8 @@ fn missing_schedule_metadata_keeps_summary_or_personal_values_readonly() {
         for (label, expected) in [
             ("实际工时", if personal { "0" } else { "99" }),
             ("估分", if personal { "3" } else { "99" }),
-            ("排期 · 开始日期", if personal { "2024-01-01" } else { "2024-01-03" }),
-            ("排期 · 结束日期", if personal { "2024-01-02" } else { "2024-01-04" }),
+            ("排期 开始日期", if personal { "2024-01-01" } else { "2024-01-03" }),
+            ("排期 结束日期", if personal { "2024-01-02" } else { "2024-01-04" }),
         ] {
             let field = fields.iter().find(|field| field.label == label).unwrap();
             assert_eq!(field.settings.initial_value.as_deref(), Some(expected));

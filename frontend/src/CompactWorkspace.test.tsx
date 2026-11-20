@@ -148,7 +148,7 @@ describe("清单模式", () => {
     expect(screen.getByRole("heading", { name: "我的工作2" })).toBeTruthy();
     expect(within(list).getAllByRole("button").map((row) => row.textContent)).toEqual([
       "需求需求甲研发中",
-      "缺陷缺陷乙状态 · 待处理",
+      "缺陷缺陷乙状态 待处理",
     ]);
     expect(screen.queryByRole("button", { name: "关闭" })).toBeNull();
 

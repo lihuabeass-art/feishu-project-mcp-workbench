@@ -54,7 +54,7 @@ function options(start = "", end = "", owners: string[] = []): WorkflowOptions {
       { property: "estimate_end_date", column: "结束日期", value: end },
     ].map(({ property, column, value }) => ({
       key: scheduleKey(property, owner),
-      label: `排期${owner ? ` · ${owner}` : ""} · ${column}`,
+      label: `排期${owner ? ` ${owner}` : ""} ${column}`,
       kind: "date" as const,
       required: true,
       initial_value: value,
@@ -134,10 +134,10 @@ afterEach(() => {
 it("日期入口带入开始和结束，其他必填缺失不阻塞，确认只提交日期且保留完整表单草稿", async () => {
   const submit = vi.fn().mockResolvedValue(result);
   const { user } = await open(submit);
-  fireEvent.change(screen.getByLabelText("排期 · 开始日期（必填）"), {
+  fireEvent.change(screen.getByLabelText("排期 开始日期（必填）"), {
     target: { value: "2026-10-28" },
   });
-  fireEvent.change(screen.getByLabelText("排期 · 结束日期（必填）"), {
+  fireEvent.change(screen.getByLabelText("排期 结束日期（必填）"), {
     target: { value: "2026-10-30" },
   });
   fireEvent.change(screen.getByRole("slider"), { target: { value: "100" } });
@@ -148,11 +148,11 @@ it("日期入口带入开始和结束，其他必填缺失不阻塞，确认只�
   ).toBe(true);
   await user.click(screen.getByRole("button", { name: "仅同步此日期" }));
   expect(
-    (screen.getByLabelText("排期 · 开始日期（必填）") as HTMLInputElement)
+    (screen.getByLabelText("排期 开始日期（必填）") as HTMLInputElement)
       .value,
   ).toBe("2026-10-28");
   expect(
-    (screen.getByLabelText("排期 · 结束日期（必填）") as HTMLInputElement)
+    (screen.getByLabelText("排期 结束日期（必填）") as HTMLInputElement)
       .value,
   ).toBe("2026-10-30");
   expect(screen.queryByLabelText("设计文档（必填）")).toBeNull();
@@ -191,14 +191,14 @@ it("仅修改开始日期时完整核对两个日期，结束日期沿用云端�
   );
   const submit = vi.fn().mockResolvedValue(result);
   const { user } = await open(submit);
-  fireEvent.change(screen.getByLabelText("排期 · 开始日期（必填）"), {
+  fireEvent.change(screen.getByLabelText("排期 开始日期（必填）"), {
     target: { value: "2026-10-28" },
   });
   await user.click(screen.getByRole("button", { name: "仅同步此日期" }));
   await user.click(screen.getByRole("button", { name: "同步日期" }));
   const review = await screen.findByRole("region", { name: "提交前二次确认" });
   const end = within(review)
-    .getByText("排期 · 结束日期", { selector: "dt > span" })
+    .getByText("排期 结束日期", { selector: "dt > span" })
     .closest("div")!;
   expect(end.textContent).toContain("2026-10-30");
   expect(end.textContent).toContain("沿用云端");
@@ -217,7 +217,7 @@ it.each(["开始日期", "结束日期"])(
     const submit = vi.fn();
     const { user } = await open(submit);
     const filled = missing === "开始日期" ? "结束日期" : "开始日期";
-    fireEvent.change(screen.getByLabelText(`排期 · ${filled}（必填）`), {
+    fireEvent.change(screen.getByLabelText(`排期 ${filled}（必填）`), {
       target: { value: "2026-10-28" },
     });
     await user.click(screen.getByRole("button", { name: "仅同步此日期" }));
@@ -240,10 +240,10 @@ it("多负责人日期表仅有一个日期入口，完整带入每位负责人�
   expect(screen.getAllByRole("button", { name: "仅同步此日期" })).toHaveLength(
     1,
   );
-  fireEvent.change(screen.getByLabelText("排期 · 甲 · 开始日期（必填）"), {
+  fireEvent.change(screen.getByLabelText("排期 甲 开始日期（必填）"), {
     target: { value: "2026-10-28" },
   });
-  fireEvent.change(screen.getByLabelText("排期 · 乙 · 结束日期（必填）"), {
+  fireEvent.change(screen.getByLabelText("排期 乙 结束日期（必填）"), {
     target: { value: "2026-10-31" },
   });
   await user.click(screen.getByRole("button", { name: "仅同步此日期" }));
@@ -252,7 +252,7 @@ it("多负责人日期表仅有一个日期入口，完整带入每位负责人�
       expect(
         (
           screen.getByLabelText(
-            `排期 · ${owner} · ${column}（必填）`,
+            `排期 ${owner} ${column}（必填）`,
           ) as HTMLInputElement
         ).value,
       ).toBe(
@@ -300,7 +300,7 @@ it("紧凑单月连续选起止，原子保存草稿且只通过日期动作提�
   );
   const submit = vi.fn().mockResolvedValue(result);
   const { user } = await open(submit);
-  await user.click(screen.getByLabelText("排期 · 开始日期（必填）"));
+  await user.click(screen.getByLabelText("排期 开始日期（必填）"));
   await user.click(screen.getByRole("button", { name: /^2026年11月5日，/ }));
   expect(readDraft(draftKey(itemKey(item), completeId))?.fields).toMatchObject({
     [startKey]: "2026-11-05",
@@ -324,19 +324,19 @@ it("多位负责人各自连续选择排期，修改一个人的起止不会影�
     options("2026-11-02", "2026-11-03", ["甲", "乙"]),
   );
   const { user } = await open();
-  await user.click(screen.getByLabelText("排期 · 甲 · 开始日期（必填）"));
+  await user.click(screen.getByLabelText("排期 甲 开始日期（必填）"));
   await user.click(screen.getByRole("button", { name: /^2026年11月5日，/ }));
   await user.click(screen.getByRole("button", { name: /^2026年11月8日，/ }));
   expect(
-    (screen.getByLabelText("排期 · 甲 · 结束日期（必填）") as HTMLInputElement)
+    (screen.getByLabelText("排期 甲 结束日期（必填）") as HTMLInputElement)
       .value,
   ).toBe("2026-11-08");
   expect(
-    (screen.getByLabelText("排期 · 乙 · 开始日期（必填）") as HTMLInputElement)
+    (screen.getByLabelText("排期 乙 开始日期（必填）") as HTMLInputElement)
       .value,
   ).toBe("2026-11-02");
   expect(
-    (screen.getByLabelText("排期 · 乙 · 结束日期（必填）") as HTMLInputElement)
+    (screen.getByLabelText("排期 乙 结束日期（必填）") as HTMLInputElement)
       .value,
   ).toBe("2026-11-03");
   expect(screen.getAllByRole("button", { name: "仅同步此日期" })).toHaveLength(

@@ -1434,7 +1434,7 @@ export function Workflow({
           }}>
           <div className="schedule-review-header">
             <div>
-              <h2 id={`${fieldId}-schedule-title`} ref={editorHeading} tabIndex={-1}>{scheduleNode.name} · 流程操作</h2>
+              <h2 id={`${fieldId}-schedule-title`} ref={editorHeading} tabIndex={-1}>{scheduleNode.name} 流程操作</h2>
               <p>{item.name || item.id.work_item_id}</p>
             </div>
             <button type="button" className="icon-button" disabled={navigationLocked}
@@ -1714,7 +1714,7 @@ export function Workflow({
                         </div>
                       ) : standalonePair(segment.field) ? (
                         <div className="workflow-field workflow-date-range" key={segment.field.key}>
-                          <span className="workflow-field-label">排期{segment.field.owner ? ` · ${segment.field.owner}` : ""}{standalonePair(segment.field)!.start.required || standalonePair(segment.field)!.end.required ? "（必填）" : ""}</span>
+                          <span className="workflow-field-label">排期{segment.field.owner ? ` ${segment.field.owner}` : ""}{standalonePair(segment.field)!.start.required || standalonePair(segment.field)!.end.required ? "（必填）" : ""}</span>
                           {dateRange(standalonePair(segment.field)!)}
                           {[standalonePair(segment.field)!.start, standalonePair(segment.field)!.end].map((field) => <div key={field.key}>{cloudNote(field)}{retainedNote(field)}</div>)}
                           {[...new Set([standalonePair(segment.field)!.start.hint, standalonePair(segment.field)!.end.hint].filter(Boolean))].map((hint) => <small className="hint" key={hint}>{hint}</small>)}

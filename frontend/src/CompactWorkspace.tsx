@@ -54,7 +54,7 @@ function FlowLine({ item }: { item: CachedItem }) {
       {!done && (f.kind === "state" || f.kind === "both") && (
         <span>
           <i className="status-dot amber" />
-          状态 · {f.start_state_key_name || "未提供"}
+          状态 {f.start_state_key_name || "未提供"}
           {f.end_state_key_name && (
             <>
               <ArrowRight size={11} />

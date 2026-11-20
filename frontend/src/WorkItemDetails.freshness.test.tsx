@@ -47,7 +47,7 @@ it("打开已有缓存仍检查远端，无变化也在真实读取结束后显�
   expect(refreshItemDetail).toHaveBeenCalledOnce();
 
   await act(async () => remote.resolve(detail(120_000)));
-  expect(screen.getByRole("status").textContent).toBe(`已检查 · ${localTime(120_000)}`);
+  expect(screen.getByRole("status").textContent).toBe(`已检查 ${localTime(120_000)}`);
   expect(screen.getByRole("button", { name: "刷新详情" })).toHaveProperty("disabled", false);
   expect(screen.getByText("事项正文")).toBeTruthy();
 });
@@ -71,7 +71,7 @@ it("联网失败后迟到的缓存不能变成检查成功，手动重试成功�
   await userEvent.setup().click(screen.getByRole("button", { name: "刷新详情" }));
   await screen.findByText("最新正文");
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(screen.getByRole("status").textContent).toBe(`已检查 · ${localTime(180_000)}`);
+  expect(screen.getByRole("status").textContent).toBe(`已检查 ${localTime(180_000)}`);
   expect(refreshItemDetail).toHaveBeenCalledTimes(2);
 });
 
@@ -79,13 +79,13 @@ it("缓存暂不可读但远端成功时展示已检查，后续同步只回读�
   vi.mocked(cachedItemDetail).mockRejectedValueOnce({ message: "缓存暂不可读" });
   vi.mocked(refreshItemDetail).mockResolvedValue(detail(120_000));
   const view = render(<WorkItemDetails item={item} enabled />);
-  await screen.findByText(`已检查 · ${localTime(120_000)}`);
+  await screen.findByText(`已检查 ${localTime(120_000)}`);
   expect(screen.queryByRole("alert")).toBeNull();
 
   vi.mocked(cachedItemDetail).mockResolvedValue(detail(240_000, "后台取得的新正文"));
   view.rerender(<WorkItemDetails item={{ ...item, detail_revision: "v2" }} enabled />);
   await screen.findByText("后台取得的新正文");
-  expect(screen.getByRole("status").textContent).toBe(`已检查 · ${localTime(240_000)}`);
+  expect(screen.getByRole("status").textContent).toBe(`已检查 ${localTime(240_000)}`);
   expect(refreshItemDetail).toHaveBeenCalledOnce();
 });
 
@@ -98,7 +98,7 @@ it.each([false, true])("后台回读新快照期间，本次联网失败仍显�
   }
   const view = render(<WorkItemDetails item={item} enabled />);
   if (previouslyChecked) {
-    await screen.findByText(`已检查 · ${localTime(120_000)}`);
+    await screen.findByText(`已检查 ${localTime(120_000)}`);
     await userEvent.setup().click(screen.getByRole("button", { name: "刷新详情" }));
   }
 
@@ -118,7 +118,7 @@ it("详情成功但清单摘要回读失败时保留已检查，下一次检查�
   render(<WorkItemDetails item={item} enabled onRefreshed={onRefreshed} />);
 
   await screen.findByText(/清单摘要读取失败/);
-  expect(screen.getByRole("status").textContent).toBe(`已检查 · ${localTime(120_000)}`);
+  expect(screen.getByRole("status").textContent).toBe(`已检查 ${localTime(120_000)}`);
   expect(screen.getByRole("alert").textContent).toContain("暂时无法获取最新信息，请稍后重试");
   expect(screen.getByRole("alert").textContent).not.toContain("上次保存的信息");
   expect(screen.getByText("最新正文")).toBeTruthy();
@@ -127,7 +127,7 @@ it("详情成功但清单摘要回读失败时保留已检查，下一次检查�
   await userEvent.setup().click(screen.getByRole("button", { name: "刷新详情" }));
   await screen.findByText("再次检查的正文");
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(screen.getByRole("status").textContent).toBe(`已检查 · ${localTime(240_000)}`);
+  expect(screen.getByRole("status").textContent).toBe(`已检查 ${localTime(240_000)}`);
   expect(onRefreshed).toHaveBeenCalledTimes(2);
 });
 
@@ -151,7 +151,7 @@ it("成功检查与连续两次后台回读交错时保留最新正文并显示�
   view.rerender(<WorkItemDetails item={{ ...item, detail_revision: "v3" }} enabled onRefreshed={onRefreshed} />);
   await screen.findByText("最新后台正文");
   await act(async () => responseRead.resolve(detail(180_000, "较早回读正文")));
-  expect(screen.getByRole("status").textContent).toBe(`已检查 · ${localTime(240_000)}`);
+  expect(screen.getByRole("status").textContent).toBe(`已检查 ${localTime(240_000)}`);
   expect(screen.getByText("最新后台正文")).toBeTruthy();
   expect(screen.queryByText("较早回读正文")).toBeNull();
   expect(refreshItemDetail).toHaveBeenCalledOnce();
@@ -162,7 +162,7 @@ it("切换事项时重置检查结果，旧事项的已检查状态不能用于�
   vi.mocked(cachedItemDetail).mockResolvedValue(null);
   vi.mocked(refreshItemDetail).mockResolvedValueOnce(detail(120_000));
   const view = render(<WorkItemDetails item={item} enabled />);
-  await screen.findByText(`已检查 · ${localTime(120_000)}`);
+  await screen.findByText(`已检查 ${localTime(120_000)}`);
 
   const other = { ...item, id: { ...item.id, work_item_id: "2" } };
   const remote = deferred<ItemDetail>();
@@ -186,5 +186,5 @@ it("切换事项后旧请求的迟到错误不能污染新事项", async () => {
   await screen.findByText("新事项正文");
   await act(async () => oldRequest.reject({ kind: "tool", message: "RPCError: unavailable" }));
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(screen.getByRole("status").textContent).toBe(`已检查 · ${localTime(180_000)}`);
+  expect(screen.getByRole("status").textContent).toBe(`已检查 ${localTime(180_000)}`);
 });

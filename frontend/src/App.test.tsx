@@ -794,7 +794,7 @@ describe("工作台交互", () => {
     const detail = screen.getByRole("complementary", { name: "事项详情" });
     expect(detail.textContent).toContain("space-b");
     expect(within(detail).getByText("研发")).toBeTruthy();
-    expect(detail.textContent).toContain("状态 · 待处理");
+    expect(detail.textContent).toContain("状态 待处理");
     expect(detail.textContent).toContain("修复中");
     await user.click(screen.getByRole("button", { name: "关闭详情" }));
     await user.type(
@@ -1924,7 +1924,7 @@ describe("所有来源调度与清单 patch", () => {
     vi.mocked(syncTodos).mockResolvedValue({ ...patchReport(), patch: { added: [], modified: [shared], removed: [] } });
     await chooseOption(user, "显示来源", "source-a");
     await user.click(screen.getByRole("button", { name: "立即刷新" }));
-    expect(await screen.findByText("状态 · 已完成")).toBeTruthy();
+    expect(await screen.findByText("状态 已完成")).toBeTruthy();
   });
 
   it("来源设置中选中不可执行来源时禁止手动刷新", async () => {

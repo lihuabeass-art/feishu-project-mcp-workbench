@@ -30,7 +30,7 @@ export function CachedDefectDetails({ item }: { item: CachedItem }) {
     {error && <p className="error-text" role="alert">本机详情读取失败：{error}</p>}
     {!loading && !error && !detail && <p className="hint">本机暂无缺陷详情，请通过工作来源同步。</p>}
     {detail && <>
-      <div className="detail-freshness"><p className="hint">本机缓存 · {localTime(detail.fetched_at_ms)}</p>{detail.item_url && <ExternalLink href={detail.item_url}>打开飞书事项 ↗</ExternalLink>}</div>
+      <div className="detail-freshness"><p className="hint">本机缓存 {localTime(detail.fetched_at_ms)}</p>{detail.item_url && <ExternalLink href={detail.item_url}>打开飞书事项 ↗</ExternalLink>}</div>
       <dl className="detail-summary"><dt>当前状态</dt><dd><FieldValue value={statusValue} /></dd></dl>
       {detail.data.work_item_fields.filter((field) => !isEmpty(field.value)).map((field, index) => <section className="detail-description" key={`${field.key}-${index}`}><h4>{field.name || field.key}</h4><BusinessField itemId={item.id} fieldKey={field.key} value={field.value} cacheOnly /></section>)}
       <p className="hint">此处只显示本机内容。需要流转时可从工作清单打开该缺陷。</p>

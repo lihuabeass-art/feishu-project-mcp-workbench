@@ -209,8 +209,8 @@ it("来源的类型、显示偏好、别名和同步范围互不串用，全部�
   renderMyWork();
   await screen.findByText("旧缓存事项");
   await user.click(screen.getByRole("button", { name: "工作来源" }));
-  await user.click(screen.getByRole("radio", { name: "乙来源 · 空间甲" }));
-  expect(panel().getByText("当前来源：乙来源 · 空间甲")).toBeTruthy();
+  await user.click(screen.getByRole("radio", { name: "乙来源 空间甲" }));
+  expect(panel().getByText("当前来源：乙来源 空间甲")).toBeTruthy();
   expect(panel().getAllByRole("listitem")).toHaveLength(1);
   expect(panel().queryByText("缺陷")).toBeNull();
 });
