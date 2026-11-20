@@ -2225,6 +2225,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     fireEvent.mouseEnter(prdBar);
     const popover = document.querySelector(".schedule-bar-popover") as HTMLElement;
     expect(popover).toBeTruthy();
+    expect(prdBar.hasAttribute("title")).toBe(false);
     expect(popover.classList.contains("is-align-right")).toBe(true);
     expect(popover.textContent).toContain("已流转");
     expect(popover.textContent).toContain("产品方案评审");
@@ -2390,6 +2391,8 @@ it("我的排期与个人待办不混入同事项下他人的历史已流转节�
   for (const row of [peopleFrontend, peopleProduct, peopleTesting]) {
     expect(row?.querySelector(".schedule-row-current")).toBeNull();
   }
+  fireEvent.click(screen.getByRole("button", { name: /发布 · 前端方案设计/ }));
+  expect(screen.queryByRole("group", { name: "事项节点" })).toBeNull();
 
   // 3. 即便在账号未确认的回退只读模式（accountError）下展示全部目标，『我的排期』也按负责人分别成行，不把闫国强节点挂在刘悦然名下
   cleanup();
@@ -2404,4 +2407,83 @@ it("我的排期与个人待办不混入同事项下他人的历史已流转节�
   const fallbackProduct = screen.getByRole("button", { name: /发布 · 产品方案设计/ }).closest(".schedule-row");
   expect(fallbackFrontend).not.toBe(fallbackProduct);
   expect(fallbackFrontend?.querySelector(".schedule-row-current")).toBeNull();
+});
+
+it("人员排期的副标题、排期条及详情只显示当前行负责人的节点", async () => {
+  const read = data();
+  const base = read.targets[0];
+  const dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
+  read.people = [{ id: "me", name: "前端同事" }, { id: "peer", name: "后端同事" }];
+  read.targets = [
+    { ...base, id: "frontend", nodeName: "前端研发", nodeStatus: "doing", dates },
+    {
+      ...base,
+      id: "backend",
+      nodeName: "后端研发",
+      nodeStatus: "doing",
+      identity: { ...identity, node: "backend", owner: "peer" },
+      ownerId: "peer",
+      ownerIds: ["peer"],
+      mine: false,
+      dates,
+    },
+    {
+      ...base,
+      id: "shared",
+      nodeName: "共同联调",
+      nodeStatus: "finished",
+      identity: { ...identity, node: "shared", scope: "node", owner: undefined },
+      ownerId: null,
+      ownerIds: ["me", "peer"],
+      dates,
+    },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+
+  for (const [mine, other] of [["前端研发", "后端研发"], ["后端研发", "前端研发"]]) {
+    const row = screen.getByRole("button", { name: `任务一 · ${mine}` }).closest(".schedule-row") as HTMLElement;
+    expect(row.querySelector(".schedule-row-current")?.getAttribute("title"))
+      .toBe(`当前节点：${mine}`);
+    expect(within(row).queryByRole("button", { name: `任务一 · ${other}` })).toBeNull();
+    const sharedBar = within(row).getByRole("button", { name: "任务一 · 共同联调" });
+    fireEvent.mouseEnter(sharedBar);
+    expect(row.querySelector(".schedule-bar-popover")?.textContent).toContain("共同联调");
+    expect(document.querySelectorAll(".schedule-bar-popover")).toHaveLength(1);
+    fireEvent.mouseLeave(sharedBar);
+    fireEvent.focus(sharedBar);
+    expect(row.querySelector(".schedule-bar-popover")).toBeTruthy();
+    expect(document.querySelectorAll(".schedule-bar-popover")).toHaveLength(1);
+    fireEvent.blur(sharedBar);
+    fireEvent.click(sharedBar);
+    expect(row.classList.contains("selected")).toBe(true);
+    const scope = within(screen.getByRole("group", { name: "事项节点" }));
+    expect(scope.getByRole("button", { name: new RegExp(mine) })).toBeTruthy();
+    expect(scope.queryByRole("button", { name: new RegExp(other) })).toBeNull();
+  }
+});
+
+it("节点身份缺失时不把多条进行中记录合并成一个当前节点", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.targets = [
+    {
+      ...base,
+      nodeStatus: "finished",
+      dates: { start: currentWeekDay(0), end: currentWeekDay(0) },
+    },
+    ...["节点甲", "节点乙"].map((nodeName) => ({
+      ...base,
+      id: nodeName,
+      identity: { ...base.identity, node: "" },
+      nodeName,
+      nodeStatus: "doing",
+    })),
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  const row = screen.getByRole("button", { name: "任务一 · 开发" }).closest(".schedule-row");
+  expect(row).toBeTruthy();
+  expect(row?.querySelector(".schedule-row-current")).toBeNull();
 });

@@ -2223,10 +2223,15 @@ fn build_targets_with_order(
 ) {
     let key = node_key(node);
     let status = normalized_node_status(node);
-    let owners = node["assignees"]["owners"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let declared_owners = node["assignees"]["owners"].as_array();
+    let owners = declared_owners.map(Vec::as_slice).unwrap_or_default();
+    let confirmed_owner_keys: HashSet<_> = owners
+        .iter()
+        .filter_map(|owner| detail::text(&owner["user_key"]).filter(|key| !key.trim().is_empty()))
+        .collect();
+    let owners_complete = declared_owners.is_some() && owners.iter().all(|owner| {
+        detail::text(&owner["user_key"]).is_some_and(|key| !key.trim().is_empty())
+    });
     let personal = node["assignee_schedule_list"].as_array();
     let invalid_personal = node
         .get("assignee_schedule_list")
@@ -2277,8 +2282,8 @@ fn build_targets_with_order(
             &node["schedule"],
         )],
     };
-    if personal.is_some_and(|p| !p.is_empty()) && !invalid_personal && !node_data_incomplete(node) {
-        for owner_obj in &owners {
+    if personal.is_some_and(|p| !p.is_empty()) && owners_complete {
+        for owner_obj in owners {
             if let Some(owner_key) = detail::text(&owner_obj["user_key"]).filter(|k| !k.trim().is_empty()) {
                 if !rows.iter().any(|(existing, _, _, _)| existing.as_deref() == Some(owner_key.as_str())) {
                     rows.push((
@@ -2299,7 +2304,17 @@ fn build_targets_with_order(
     }
     let mut emitted_owners = HashSet::new();
     for (owner, name, avatar, value) in rows {
+        let unconfirmed_owner = owner.as_ref().is_some_and(|key| !confirmed_owner_keys.contains(key));
+        // A personal schedule may outlive its node assignment.
+        if unconfirmed_owner && owners_complete {
+            continue;
+        }
         if owner.as_ref().is_some_and(|owner| !emitted_owners.insert(owner.clone())) { continue; }
+        let (owner, name, avatar) = if unconfirmed_owner {
+            (None, String::new(), None)
+        } else {
+            (owner, name, avatar)
+        };
         let parsed = dates(value);
         let baseline = parsed.clone().unwrap_or_else(|| Dates {
             start: value
@@ -2326,6 +2341,8 @@ fn build_targets_with_order(
             Some("负责人排期身份重复，请在飞书查看")
         } else if parsed.is_none() {
             Some("排期日期格式无法确认")
+        } else if unconfirmed_owner {
+            Some("负责人身份不明，排期仅供查看")
         } else if status == "not_started" {
             Some("当前连接尚未验证此状态的排期写入")
         } else if status != "doing" {
@@ -2410,7 +2427,8 @@ fn build_targets_with_order(
                 name
             },
             owners: people,
-            unknown_owner: scope == "node" && owners.iter().any(|o| detail::text(&o["user_key"]).is_none()),
+            unknown_owner: unconfirmed_owner
+                || (scope == "node" && owners.iter().any(|o| detail::text(&o["user_key"]).is_none())),
             item_url: None,
             sources: sources.iter().cloned().collect(),
             baseline,
@@ -3092,14 +3110,54 @@ mod tests {
         let mut targets = Vec::new();
         build_targets(&mut targets, "s", "c", "me", &id, "title", &BTreeSet::new(), &node);
         for (target, (key, name)) in targets.iter().zip([
-            ("me", "本人"), ("missing", "missing"), ("other", "排期姓名"), ("placeholder", "节点真实姓名")
+            ("me", "本人"), ("other", "排期姓名"), ("placeholder", "节点真实姓名")
         ]) {
             assert_eq!(target.identity.owner.as_deref(), Some(key));
             assert_eq!(target.owner_name, name);
             assert_eq!(target.owners[0].id, key);
             assert_eq!(target.owners[0].name, name);
         }
-        assert_eq!(targets.len(), 4);
+        assert_eq!(targets.len(), 3);
+    }
+
+    #[test]
+    fn finished_node_does_not_attribute_stale_personal_dates_to_removed_owner() {
+        let id = WorkItemId {
+            project_key: Some("p".into()),
+            work_item_type_key: Some("t".into()),
+            work_item_id: "1".into(),
+        };
+        let mut node = json!({
+            "basic": {"node_key": "backend", "name": "后端代码研发", "status": "finished"},
+            "assignees": {"owners": [{"user_key": "backend-owner"}]},
+            "assignee_schedule_list": [
+                {"assignee": {"user_key": "former-owner"}, "schedule_info": {"estimate_start_time": 1794499200000i64, "estimate_finish_time": 1794499200000i64}},
+                {"assignee": {"user_key": "backend-owner"}, "schedule_info": {"estimate_start_time": 1794585600000i64, "estimate_finish_time": 1794585600000i64}}
+            ]
+        });
+        let mut targets = Vec::new();
+        build_targets(&mut targets, "s", "c", "former-owner", &id, "事项", &BTreeSet::new(), &node);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].identity.owner.as_deref(), Some("backend-owner"));
+        assert_eq!(targets[0].baseline.start, date(&json!(1794585600000i64)).unwrap());
+        assert!(targets[0].read_only_reason.is_some());
+
+        node["assignees"]["owners"].as_array_mut().unwrap().push(json!({"name": "身份不明"}));
+        targets.clear();
+        build_targets(&mut targets, "s", "c", "former-owner", &id, "事项", &BTreeSet::new(), &node);
+        assert_eq!(targets.len(), 2);
+        assert!(targets[0].identity.owner.is_none() && targets[0].unknown_owner);
+        assert_eq!(targets[1].identity.owner.as_deref(), Some("backend-owner"));
+
+        // Some completed nodes only return personal schedules.
+        node.as_object_mut().unwrap().remove("assignees");
+        targets.clear();
+        build_targets(&mut targets, "s", "c", "former-owner", &id, "事项", &BTreeSet::new(), &node);
+        assert_eq!(targets.len(), 2);
+        assert!(targets.iter().all(|target| target.identity.owner.is_none()
+            && target.owners.is_empty()
+            && target.unknown_owner
+            && target.read_only_reason.is_some()));
     }
 
     #[test]

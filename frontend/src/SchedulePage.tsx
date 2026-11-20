@@ -334,6 +334,7 @@ export function SchedulePage({
   const [report, setReport] = useState("");
   const [successToast, setSuccessToast] = useState<{ id: number; accepted: number } | null>(null);
   const [selected, setSelected] = useState("");
+  const [selectedPerson, setSelectedPerson] = useState<string | null>(null);
   const [workflowSelection, setWorkflowSelection] = useState("");
   const [workflowEditorOpen, setWorkflowEditorOpen] = useState(false);
   const [workflowLoading, setWorkflowLoading] = useState(false);
@@ -356,7 +357,7 @@ export function SchedulePage({
   const [poolTab, setPoolTab] = useState<"pending" | "outside">("pending");
   const [reviewOpen, setReviewOpen] = useState(false);
   const scheduleReviewBlockedIds = useRef("");
-  const [hoveredId, setHoveredId] = useState("");
+  const [hoveredTarget, setHoveredTarget] = useState<{ id: string; owner?: string }>();
   const [preview, setPreview] = useState<{ id: string; start: string; end: string } | null>(null);
   const drag = useRef<Drag | null>(null);
   const blankGridRef = useRef<HTMLDivElement>(null);
@@ -398,7 +399,7 @@ export function SchedulePage({
   useEffect(() => {
     let active = true;
     if (!preloadedSession?.read) setSelected("");
-    setHoveredId("");
+    setHoveredTarget(undefined);
     setReport("");
     setSuccessToast(null);
     setReviewOpen(false);
@@ -810,10 +811,9 @@ export function SchedulePage({
         !!read?.accountError ||
         entry.record.mine ||
         entry.record.sourceAggregate ||
-        entry.record.unknownOwner ||
         (!isPastTransitionedNode(entry) &&
-          !entry.identity.owner &&
-          !entry.record.ownerIds.some(Boolean))) &&
+          (entry.record.unknownOwner ||
+            (!entry.identity.owner && !entry.record.ownerIds.some(Boolean))))) &&
       (view !== "mine" || !editableOnly || isEditableTarget(entry)),
   );
 
@@ -899,14 +899,19 @@ export function SchedulePage({
           ) || groupKey(a.entry, a.owner).localeCompare(groupKey(b.entry, b.owner)),
       );
 
+  const selectPersonRow = (entry: Entry, owner: string) => {
+    setSelected(entry.id);
+    setSelectedPerson(view === "people" ? owner : null);
+  };
+  const personItemKey = (entry: Entry, owner: string) =>
+    JSON.stringify([groupKey(entry, owner), itemIdentityKey(entry)]);
+
   const scheduled = visible.filter(
     (entry) =>
       validSchedule(entry.dates) &&
       entry.dates.start <= windowEnd &&
       entry.dates.end >= windowStart,
   );
-  const personItemKey = (entry: Entry, owner: string) =>
-    JSON.stringify([groupKey(entry, owner), itemIdentityKey(entry)]);
   const currentNodeByPersonItem = new Map<string, Entry | null>();
   for (const { entry, owner } of personRows(visible)) {
     const { record } = entry;
@@ -928,7 +933,7 @@ export function SchedulePage({
   for (const { entry, owner } of rawScheduledRows) {
     const key =
       view === "people"
-        ? JSON.stringify([groupKey(entry, owner), itemIdentityKey(entry)])
+        ? personItemKey(entry, owner)
         : JSON.stringify([
             groupKey(entry, resolveOwnerId(entry, owner)),
             targetLabel(entry, owner),
@@ -1009,6 +1014,19 @@ export function SchedulePage({
       : outside.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
   const selectedEntry = visible.find((entry) => entry.id === selected);
+  const selectedPeopleRows = view === "people" && selectedEntry ? personRows([selectedEntry]) : [];
+  const activePerson = selectedPeopleRows.find(({ owner }) => owner === selectedPerson)?.owner
+    ?? selectedPeopleRows[0]?.owner;
+  const highlightTarget = (id: string, owner?: string) => {
+    setHoveredTarget({ id, owner: view === "people" ? owner : undefined });
+  };
+  const clearTargetHighlight = (id: string, owner?: string) => {
+    setHoveredTarget((current) =>
+      current?.id === id && current.owner === (view === "people" ? owner : undefined)
+        ? undefined
+        : current,
+    );
+  };
   const selectedNodeKey = selectedEntry ? nodeKey(selectedEntry) : "";
   const workflowKey = workflow && selectedEntry && selectedEntry.identity.node.trim() &&
     selectedEntry.identity.project.trim() && selectedEntry.identity.type.trim() && selectedEntry.identity.item.trim()
@@ -1025,6 +1043,8 @@ export function SchedulePage({
     const candidates = visible.filter(
       (item) =>
         itemIdentityKey(item) === targetItemKey &&
+        (view !== "people" ||
+          (activePerson ? item.record.ownerIds.includes(activePerson) : !item.record.ownerIds.length)) &&
         (item.id === selectedEntry.id ||
           validSchedule(item.dates) ||
           isCurrentSchedulablePoolNode(item)),
@@ -1038,10 +1058,6 @@ export function SchedulePage({
         const bEditable = canEdit(b);
         if (aEditable !== bEditable) return aEditable ? -1 : 1;
         if (a.record.mine !== b.record.mine) return a.record.mine ? -1 : 1;
-      } else if (person.length > 0) {
-        const aMatch = a.record.ownerIds.some((id) => person.includes(id));
-        const bMatch = b.record.ownerIds.some((id) => person.includes(id));
-        if (aMatch !== bMatch) return aMatch ? -1 : 1;
       }
       const aValid = validSchedule(a.dates);
       const bValid = validSchedule(b.dates);
@@ -1943,7 +1959,7 @@ export function SchedulePage({
                                 )}
                               <div
                                 hidden={groupHidden("pending", entry, owner)}
-                                className={`schedule-pending-card ${entry.id === selected ? "selected" : ""}`}
+                                className={`schedule-pending-card ${entry.id === selected && (view !== "people" || owner === activePerson) ? "selected" : ""}`}
                               >
                                 <button
                                   type="button"
@@ -1955,7 +1971,7 @@ export function SchedulePage({
                                     setDragging(false);
                                     setPreview(null);
                                   }}
-                                  onClick={() => setSelected(entry.id)}
+                                  onClick={() => selectPersonRow(entry, owner)}
                                 >
                                   <span className="schedule-pending-head">
                                     <strong>{entry.record.title}</strong>
@@ -2168,7 +2184,8 @@ export function SchedulePage({
 
                     {rows.map((row, rowIndex) => {
                       const { key, owner, primaryEntry, bars, laneCount } = row;
-                      const rowSelected = bars.some((b) => b.entry.id === selected);
+                      const rowSelected = (view !== "people" || owner === activePerson) &&
+                        bars.some((b) => b.entry.id === selected);
                       const currentNode = currentNodeByPersonItem.get(personItemKey(primaryEntry, owner))?.record;
                       return (
                         <Fragment key={key}>
@@ -2181,7 +2198,7 @@ export function SchedulePage({
                           <div hidden={groupHidden("calendar", primaryEntry, owner)} className={`schedule-row ${rowSelected ? "selected" : ""}`}>
                             <div
                               className="schedule-row-label"
-                              onClick={() => setSelected(primaryEntry.id)}
+                              onClick={() => selectPersonRow(primaryEntry, owner)}
                             >
                               <Avatar
                                 person={personFor(
@@ -2287,7 +2304,8 @@ export function SchedulePage({
                                   const barTitleText = entry.record.nodeName || entry.record.title;
                                   const displayTitle = compactScheduleNodeName(entry.record.nodeName) ?? barTitleText;
                                   const spanDays = scheduleSpanDays(entry.dates);
-                                  const isBarHovered = hoveredId === entry.id;
+                                  const isBarHovered = hoveredTarget?.id === entry.id &&
+                                    (view !== "people" || hoveredTarget.owner === owner);
                                   const ariaName = `${entry.record.title}${
                                     entry.record.nodeName &&
                                     entry.record.nodeName !== entry.record.title
@@ -2308,7 +2326,7 @@ export function SchedulePage({
                                           entry.dates.start < windowStart && "is-clipped-start",
                                           entry.dates.end > windowEnd && "is-clipped-end",
                                           isBarHovered && "is-hovered",
-                                          entry.id === selected && "selected",
+                                          rowSelected && entry.id === selected && "selected",
                                         ]
                                           .filter(Boolean)
                                           .join(" ")}
@@ -2319,7 +2337,7 @@ export function SchedulePage({
                                         }}
                                         draggable={editable}
                                         onDragStart={(event) => {
-                                          setHoveredId("");
+                                          setHoveredTarget(undefined);
                                           const rect = event.currentTarget.getBoundingClientRect();
                                           const width = rect.width / (endCol - startCol + 1);
                                           const index = Math.max(
@@ -2337,20 +2355,11 @@ export function SchedulePage({
                                           setDragging(false);
                                           setPreview(null);
                                         }}
-                                        onMouseEnter={() => setHoveredId(entry.id)}
-                                        onMouseLeave={() =>
-                                          setHoveredId((curr) =>
-                                            curr === entry.id ? "" : curr,
-                                          )
-                                        }
-                                        onFocus={() => setHoveredId(entry.id)}
-                                        onBlur={() =>
-                                          setHoveredId((curr) =>
-                                            curr === entry.id ? "" : curr,
-                                          )
-                                        }
-                                        onClick={() => setSelected(entry.id)}
-                                        title={`${entry.record.title} · ${barTitleText}（${entry.dates.start} ~ ${entry.dates.end}，共 ${spanDays} 天）`}
+                                        onMouseEnter={() => highlightTarget(entry.id, owner)}
+                                        onMouseLeave={() => clearTargetHighlight(entry.id, owner)}
+                                        onFocus={() => highlightTarget(entry.id, owner)}
+                                        onBlur={() => clearTargetHighlight(entry.id, owner)}
+                                        onClick={() => selectPersonRow(entry, owner)}
                                       >
                                         {entry.dates.start < windowStart ? (
                                           <span className="schedule-bar-clip" aria-hidden="true">
@@ -2363,7 +2372,7 @@ export function SchedulePage({
                                               draggable
                                               onDragStart={(event) => {
                                                 event.stopPropagation();
-                                                setHoveredId("");
+                                                setHoveredTarget(undefined);
                                                 startDrag(event, entry, "start", entry.dates.start);
                                               }}
                                               aria-hidden="true"
@@ -2392,7 +2401,7 @@ export function SchedulePage({
                                               draggable
                                               onDragStart={(event) => {
                                                 event.stopPropagation();
-                                                setHoveredId("");
+                                                setHoveredTarget(undefined);
                                                 startDrag(event, entry, "end", entry.dates.end);
                                               }}
                                               aria-hidden="true"
@@ -2542,14 +2551,12 @@ export function SchedulePage({
                                 <button
                                   key={node.id}
                                   type="button"
-                                  className={`schedule-sibling-chip ${isCurrent ? "active" : ""} ${hoveredId === node.id ? "is-hovered" : ""} ${isPast ? "is-past" : editableNode ? "is-editable" : "is-readonly"}`}
+                                  className={`schedule-sibling-chip ${isCurrent ? "active" : ""} ${hoveredTarget?.id === node.id && (view !== "people" || hoveredTarget.owner === activePerson) ? "is-hovered" : ""} ${isPast ? "is-past" : editableNode ? "is-editable" : "is-readonly"}`}
                                   style={nodeColorStyle(node.record)}
                                   aria-pressed={isCurrent}
                                   onClick={() => setSelected(node.id)}
-                                  onMouseEnter={() => setHoveredId(node.id)}
-                                  onMouseLeave={() =>
-                                    setHoveredId((curr) => (curr === node.id ? "" : curr))
-                                  }
+                                  onMouseEnter={() => highlightTarget(node.id, activePerson)}
+                                  onMouseLeave={() => clearTargetHighlight(node.id, activePerson)}
                                 >
                                   <strong>{node.record.nodeName || node.record.title}</strong>
                                   <span>{dateText}</span>
