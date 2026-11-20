@@ -287,18 +287,20 @@ function NodeDwellTime({ startedAt }: { startedAt?: number | null }) {
     return <small title="飞书未提供可确认的节点实际进入时间">停留时间未知</small>;
   }
 
+  const dayMs = 86_400_000;
   const [unit, unitMs] = elapsed < 3_600_000 ? ["分钟", 60_000]
-    : elapsed < 86_400_000 ? ["小时", 3_600_000]
-    : ["天", 86_400_000];
+    : elapsed < dayMs ? ["小时", 3_600_000]
+    : ["天", dayMs];
   const belowOneMinute = elapsed < 60_000;
   const value = Math.max(1, Math.floor(elapsed / unitMs));
+  const longDwell = elapsed >= 7 * dayMs;
   return (
     <small
       className="schedule-dwell-time"
       title={`节点进入时间：${new Date(startedAt!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`}
     >
       {belowOneMinute ? "已停留不足 " : "已停留 "}
-      <span className="schedule-dwell-duration">
+      <span className={`schedule-dwell-duration${longDwell ? " is-long-dwell" : ""}`}>
         <strong className="schedule-dwell-value" key={`${belowOneMinute}-${value}-${unit}`}>{value}</strong>{" "}{unit}
       </span>
     </small>

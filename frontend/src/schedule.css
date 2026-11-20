@@ -497,6 +497,13 @@
   white-space: nowrap;
 }
 
+.schedule-pending-item .schedule-dwell-duration.is-long-dwell {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--error-text);
+  font-weight: 700;
+}
+
 .schedule-dwell-value {
   display: inline-block;
   font-size: 14px;

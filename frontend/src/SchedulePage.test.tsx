@@ -195,6 +195,29 @@ it("按人待排期显示各节点停留时间，隐藏重复操作说明和权�
   expect(screen.queryByText(/点快捷胶囊一键排期/)).toBeNull();
 });
 
+it("待排期节点停留满七天时强调天数徽标", async () => {
+  const read = data();
+  const now = Date.now();
+  const weekMs = 7 * 86_400_000;
+  vi.spyOn(Date, "now").mockReturnValue(now);
+  read.targets = [weekMs - 1, weekMs, 2 * weekMs].map((elapsed, index) => ({
+    ...read.targets[0],
+    id: `dwell-${index}`,
+    identity: { ...identity, node: `dwell-${index}` },
+    nodeStatus: "doing",
+    nodeStartedAtMs: now - elapsed,
+  }));
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+
+  const sixDays = await screen.findByRole("button", { name: /已停留 6 天/ });
+  const sevenDays = screen.getByRole("button", { name: /已停留 7 天/ });
+  const fourteenDays = screen.getByRole("button", { name: /已停留 14 天/ });
+  expect(sixDays.querySelector(".schedule-dwell-duration.is-long-dwell")).toBeNull();
+  expect(sevenDays.querySelector(".schedule-dwell-duration.is-long-dwell")).toBeTruthy();
+  expect(fourteenDays.querySelector(".schedule-dwell-duration.is-long-dwell")).toBeTruthy();
+});
+
 it("重新读取使用独立悬浮消息，结束时淡出，连续读取不会被旧计时器关闭", async () => {
   const read = data();
   let finish!: (value: ScheduleRead) => void;
