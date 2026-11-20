@@ -69,7 +69,9 @@ Windows 代理回归应覆盖：关闭 TUN 后仅使用系统 HTTP 代理、分�
 
 当前配置的公钥对应维护者本机忽略目录 `.local/updater/fstodo.key` 中的 updater 私钥。此私钥须另行安全备份；Windows 和 macOS Actions 均从同一个 `TAURI_SIGNING_PRIVATE_KEY` Secret 读取私钥内容，密码 Secret 与密钥生成时保持一致。本机签名构建也可将该变量设为私钥文件的绝对路径。不要把私钥粘贴到代码、日志或 Release；丢失私钥会导致已安装客户端无法继续验证后续更新，不能通过换一把私钥直接恢复。
 
-当前 macOS 沿用 ad-hoc 签名（`signingIdentity: "-"`），不要求 Apple Developer 账号。Universal 更新归档同时服务 Apple Silicon 和 Intel，最低系统仍是 macOS 13。手动首次安装使用 DMG，应用内更新使用 `.app.tar.gz`；DMG 仍可随 Release 提供给首次安装或手动恢复的用户。
+macOS 构建默认使用 ad-hoc 签名（`signingIdentity: "-"`），配置 Apple 证书与公证凭证后可启用 [Developer ID 签名](macos试用版构建.md)。Universal 更新归档同时服务 Apple Silicon 和 Intel，最低系统仍是 macOS 13。首次安装使用 DMG，应用内更新使用 `.app.tar.gz`。
+
+macOS 应用内更新在应用所在卷解包并原子替换应用。安装位置不可写、文件系统不支持原子交换或交换失败时，旧应用留在原位置，界面提供手动安装 DMG 的提示。
 
 ad-hoc 构建的首次打开仍可能被 Gatekeeper 拦截，需要用户在系统设置中允许。安装新版本后，钥匙串可能再次请求授权；Updater 包签名不会提供稳定的 Apple 代码签名身份。本次实现不绕过 Gatekeeper、不自动删除隔离属性；macOS 的安装替换、重新启动和钥匙串行为需要用真实 Mac 验收。
 

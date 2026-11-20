@@ -11,6 +11,10 @@ use std::{
 use tauri::{ipc::Channel, Manager, Resource, ResourceId, Webview};
 use tauri_plugin_updater::Update;
 
+#[cfg(any(target_os = "macos", test))]
+#[path = "update_download_macos.rs"]
+mod macos;
+
 #[derive(Clone, Copy)]
 struct Policy {
     segment_bytes: usize,
@@ -158,7 +162,17 @@ pub async fn install_verified_update(webview: Webview, rid: ResourceId) -> Resul
         .ok_or("安装包已交付安装，请重新检查更新")?;
     // Update::install does not verify signatures itself. The private resource
     // type above is the boundary; never accept bytes or a path from the UI.
-    tauri::async_runtime::spawn_blocking(move || update.install(bytes).map_err(|e| e.to_string()))
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = update;
+            macos::install(&bytes)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            update.install(bytes).map_err(|e| e.to_string())
+        }
+    })
         .await
         .map_err(|_| "更新安装任务中断".to_owned())?
 }

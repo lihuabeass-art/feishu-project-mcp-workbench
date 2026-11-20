@@ -23,6 +23,12 @@ minisign-verify = "=0.2.5"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "system-proxy", "socks"] }
 tokio = { version = "1", features = ["sync", "time"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 semver = "1"
 winvd = "=0.0.49"

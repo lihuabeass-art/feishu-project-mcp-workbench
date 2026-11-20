@@ -1387,13 +1387,16 @@ name = "fstodo-desktop"
 version = "0.4.3"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "fstodo-backend",
  "hyper-util",
+ "libc",
  "minisign-verify",
  "reqwest 0.12.28",
  "semver",
  "serde",
  "serde_json",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
