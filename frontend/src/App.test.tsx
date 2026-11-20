@@ -1642,7 +1642,7 @@ describe("所有来源调度与清单 patch", () => {
     error_message: "RPCError: service unavailable; log_id: sample-log",
   });
 
-  it("手动待办解析失败保留真实原因，按需展开诊断且不泄漏到普通提示", async () => {
+  it("手动待办解析失败只显示用户提示，连接与配置没有同步诊断入口", async () => {
     const data = scheduledData();
     data.sources[0].builtin_key = "todo";
     const report = patchReport(["source-a"]);
@@ -1654,17 +1654,13 @@ describe("所有来源调度与清单 patch", () => {
     await user.click(await screen.findByRole("button", { name: "立即刷新" }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("我的待办：已收到服务响应，但内容无法完整解析");
-    expect(alert.textContent).not.toMatch(/list 数组|diagnostic-example/);
-    await user.click(within(alert).getByRole("button", { name: "查看同步诊断" }));
-    const diagnostics = screen.getByRole("region", { name: "同步诊断详情" });
-    await user.click(within(diagnostics).getByText(/我的待办.*本次会话失败/));
-    expect(diagnostics.textContent).toContain("缺少 list 数组");
-    expect(diagnostics.textContent).toContain("diagnostic-example");
+    expect(alert.textContent).not.toMatch(/list 数组|diagnostic-example|同步诊断/);
     await user.click(screen.getByRole("button", { name: "连接与配置" }));
     expect(screen.getByRole("heading", { name: "设置" })).toBeTruthy();
+    expect(screen.queryByText(/同步诊断/)).toBeNull();
   });
 
-  it("重启后的历史失败可从连接与配置查看，打开诊断不重新发送请求", async () => {
+  it("重启后的历史失败不显示在连接与配置，也不会重新发送请求", async () => {
     const data = scheduledData();
     data.sources[0].builtin_key = "todo";
     data.runs = [{ id: 31, started_at_ms: 1700000000000, finished_at_ms: 1700000001000,
@@ -1675,11 +1671,7 @@ describe("所有来源调度与清单 patch", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "连接与配置" }));
-    await user.click(screen.getByRole("button", { name: "查看同步诊断" }));
-    const diagnostics = screen.getByRole("region", { name: "同步诊断详情" });
-    await user.click(within(diagnostics).getByText(/我的待办.*失败$/));
-    expect(diagnostics.textContent).toContain("historical-example");
-    expect(diagnostics.textContent).toContain("已读取 0 页 / 0 条");
+    expect(screen.queryByText(/同步诊断|historical-example/)).toBeNull();
     expect(syncTodos).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
   });

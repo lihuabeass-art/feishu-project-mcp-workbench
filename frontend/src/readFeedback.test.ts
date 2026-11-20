@@ -1,11 +1,7 @@
-// @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { diagnosticText, reportFailure, SyncDiagnostics } from "./SyncDiagnostics";
-import { readFailureMessage, syncFailureMessage } from "./readFeedback";
+import { describe, expect, it } from "vitest";
+import { readFailureMessage, reportFailure, syncFailureMessage } from "./readFeedback";
 import type { SyncReport, SyncRun } from "./types";
 
-afterEach(cleanup);
 const failedRun: SyncRun = {
   id: 7, started_at_ms: 1700000000000, finished_at_ms: 1700000001000,
   action: "personal_todo", todo_scope: "in_progress", status: "failed",
@@ -19,7 +15,7 @@ const report: SyncReport = {
   items_inserted: 0, items_updated: 0, items_rejected: 0, stop_reason: "error",
 };
 
-describe("同步错误原因与诊断", () => {
+describe("同步失败反馈", () => {
   it("解析和参数校验错误有明确提示，空间相关提示仅依据明确失败文字", () => {
     expect(readFailureMessage("parse")).toContain("内容无法完整解析");
     expect(readFailureMessage("validation")).toContain("读取参数未通过校验");
@@ -49,29 +45,4 @@ describe("同步错误原因与诊断", () => {
       .toEqual({ kind: "parse", message: '[{"code":"missing_identity","count":1}]' });
   });
 
-  it("可展开历史详情并复制诊断，常见凭证格式在两条路径均隐藏", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    const error = { kind: "tool", message: 'missing asset_key; X-Mcp-Token: header-secret; {"token":"json-secret"}; Bearer bearer-secret' };
-    render(<SyncDiagnostics sources={[]} failures={[["personal-todo", error]]}
-      runs={[failedRun]} close={() => {}} />);
-    fireEvent.click(screen.getByText(/personal-todo.*本次会话失败/));
-    expect(screen.getByText(/missing asset_key/).textContent).not.toMatch(/header-secret|json-secret|bearer-secret/);
-    fireEvent.click(screen.getByText(/personal-todo.* · 失败$/, { selector: "summary" }));
-    expect(screen.getByText("个人待办：缺少 list 数组")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "复制同步诊断" }));
-    await screen.findByRole("status");
-    expect(writeText).toHaveBeenCalledOnce();
-    expect(writeText.mock.calls[0][0]).toContain("已读取 0 页 / 0 条");
-    expect(writeText.mock.calls[0][0]).not.toMatch(/header-secret|json-secret|bearer-secret/);
-    expect(diagnosticText("x".repeat(13000))).toHaveLength(12000);
-  });
-
-  it("复制失败提供手动复制提示，不宣称成功", async () => {
-    Object.defineProperty(navigator, "clipboard", { configurable: true,
-      value: { writeText: vi.fn().mockRejectedValue(new Error("unavailable")) } });
-    render(<SyncDiagnostics sources={[]} failures={[]} runs={[]} close={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "复制同步诊断" }));
-    expect((await screen.findByRole("status")).textContent).toContain("复制失败");
-  });
 });

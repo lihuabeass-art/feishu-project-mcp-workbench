@@ -73,7 +73,7 @@ export interface SyncRun {
   error_kind: string | null;
   error_message: string | null;
   rejection_detail: string | null;
-  // 后端 v3 起附带；同步诊断按需展示，不进入普通错误提示。
+  // 后端 v3 起附带；同步错误按本轮运行编号关联，普通提示只展示用户文案。
   trigger?: "manual" | "automatic";
   source_id?: string | null;
   items_out_of_scope?: number;

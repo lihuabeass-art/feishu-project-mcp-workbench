@@ -1,3 +1,6 @@
+import { stopLabel } from "./model";
+import type { AppError, SyncReport, SyncRun } from "./types";
+
 // 读取错误的技术原文留在诊断台账；界面按稳定错误类别说明下一步。
 export function readFailureMessage(kind: string): string {
   switch (kind) {
@@ -25,10 +28,21 @@ export function syncFailureMessage(kind: string, detail = ""): string {
     const after = new RegExp(`(?:^|[^\\w])(${parameter})["']?\\s*[:：]?\\s*(?:(?:is|为)\\s*)?(?:missing|required|invalid|not\\s+found|empty|不能为空|为空|无效|不存在|无法获取|无法读取|未能读取)(?![\\w])`, "i");
     const field = before.exec(detail)?.[1] || after.exec(detail)?.[1];
     if (field) return field.toLowerCase() === "asset_key"
-      ? "服务要求的待办查询标识缺失或无效，请查看同步诊断中的具体原因"
-      : "空间上下文未能确认，请查看同步诊断中的具体原因，并检查该账号的空间访问权限";
+      ? "服务要求的待办查询标识缺失或无效，请检查工作来源配置"
+      : "空间上下文未能确认，请检查该账号的空间访问权限";
   }
-  return kind === "parse" ? "已收到服务响应，但内容无法完整解析，请查看同步诊断" : readFailureMessage(kind);
+  return readFailureMessage(kind);
+}
+
+export function reportFailure(report: SyncReport, runs: SyncRun[] = report.runs || []): AppError {
+  // 只按当前运行编号关联，其他来源的历史失败不能成为本次失败原因。
+  const run = report.run_id == null ? undefined : runs.find((run) => run.id === report.run_id);
+  return {
+    kind: run?.error_kind || (report.items_rejected ? "parse" : "incomplete"),
+    message: run?.error_message || run?.rejection_detail ||
+      (report.rejections?.length ? JSON.stringify(report.rejections) : "") ||
+      (report.items_rejected ? `${report.items_rejected} 条记录未能入库` : stopLabel[report.stop_reason] || report.stop_reason),
+  };
 }
 
 export function readFailureNeedsAction(kind: string): boolean {

@@ -73,8 +73,7 @@ import { sourceName, sourceProjects } from "./sourcePresets";
 import { WorkItemDetails } from "./WorkItemDetails";
 import { RelatedDefects } from "./RelatedDefects";
 import { CachedDefectDetails } from "./CachedDefectDetails";
-import { readFailureMessage, readFailureNeedsAction, syncFailureMessage } from "./readFeedback";
-import { SyncDiagnostics, reportFailure } from "./SyncDiagnostics";
+import { readFailureMessage, readFailureNeedsAction, reportFailure, syncFailureMessage } from "./readFeedback";
 import { Select } from "./Select";
 import { LinkSettings } from "./LinkSettings";
 import { WorkflowSettings } from "./WorkflowSettings";
@@ -385,7 +384,6 @@ function Workspace() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [syncFailure, setSyncFailure] = useState<string | null>(null);
   const syncFailures = useRef(new Map<string, AppError & { dismissed: boolean }>());
-  const [syncDiagnosticsOpen, setSyncDiagnosticsOpen] = useState(false);
   const [sourceReadFailures, setSourceReadFailures] = useState<Record<string, string>>({});
   const displayMode = useDisplayMode((message) => setError({ kind: "window", message }));
   const compact = displayMode.mode === "compact";
@@ -1701,7 +1699,7 @@ function Workspace() {
   };
   const syncDisabled =
     !desktop || !source?.executable || !!contextOperation || (syncBusy && !incremental) || loading;
-  const hasAlerts = syncDiagnosticsOpen || settingsRefreshFailed || !!error || !!syncFailure || !!notice || !!recoveryFeedback || Object.values(workflowReports).some((report) => !!report.error) || Object.values(typeOperationErrors).some(Boolean);
+  const hasAlerts = settingsRefreshFailed || !!error || !!syncFailure || !!notice || !!recoveryFeedback || Object.values(workflowReports).some((report) => !!report.error) || Object.values(typeOperationErrors).some(Boolean);
   const alerts = (
     <>
       {settingsRefreshFailed && <div className="banner warning" role="status">
@@ -1757,7 +1755,6 @@ function Workspace() {
           <div>
             <strong>同步未完成</strong>
             <p>{syncFailure}</p>
-            <button className="secondary" aria-expanded={syncDiagnosticsOpen} onClick={() => setSyncDiagnosticsOpen((open) => !open)}>查看同步诊断</button>
           </div>
           <button
             className="icon-button"
@@ -1771,8 +1768,6 @@ function Workspace() {
           </button>
         </div>
       )}
-      {syncDiagnosticsOpen && <SyncDiagnostics sources={data?.sources || []} runs={data?.runs || []}
-        failures={[...syncFailures.current.entries()]} close={() => setSyncDiagnosticsOpen(false)} />}
       {notice && (
         <div
           className={`banner ${notice.tone} ${notice.tone === "success" ? "toast" : ""}`}
@@ -2328,10 +2323,6 @@ function Workspace() {
               { id: "links", label: "链接打开方式", icon: Link2, content: <LinkSettings onFeedback={setLinkFeedback} disabled={!!contextOperation || loading} /> },
               { id: "workflow", label: "流程操作", icon: ShieldCheck, content: <WorkflowSettings onFeedback={setWorkflowFeedback} disabled={!!contextOperation || loading} /> },
               { id: "updates", label: "软件更新", icon: ArrowDownToLine, content: <AppUpdateSettings updater={updater} /> },
-              { id: "diagnostics", label: "同步诊断", icon: FileText, content: <>
-                <p>查看最近的同步结果及详细失败原因，便于排查待办、空间与事项内容读取问题。</p>
-                <button className="secondary" aria-expanded={syncDiagnosticsOpen} onClick={() => setSyncDiagnosticsOpen((open) => !open)}>查看同步诊断</button>
-              </> },
             ]} />
         </div>
       </main>
