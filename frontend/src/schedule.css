@@ -751,8 +751,7 @@
   align-items: center;
   gap: 8px;
   padding: 9px 12px;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-soft);
+  background: var(--surface-raised);
   font-size: 12px;
   font-weight: 600;
   color: var(--heading);
@@ -770,7 +769,16 @@
 
 .schedule-group:hover {
   background: var(--surface-hover);
-  background: color-mix(in srgb, var(--green) 8%, var(--surface-soft));
+}
+
+.schedule-pool-list > .schedule-group {
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.schedule-pool-list > .schedule-group:hover {
+  background: var(--surface-selected-hover);
 }
 
 .schedule-group:focus-visible {
@@ -790,7 +798,7 @@
   padding: 2px 7px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  color: var(--text-secondary);
+  color: inherit;
   font-size: 10px;
   font-weight: 500;
   white-space: nowrap;
@@ -2234,7 +2242,6 @@
   .schedule-days > div.today,
   .schedule-row-grid .today,
   .schedule-row.selected { background: var(--surface-selected); }
-  .schedule-group:hover { background: var(--surface-hover); }
   .schedule-current-node {
     border: 1px solid var(--border-strong);
     background: var(--surface-selected);
