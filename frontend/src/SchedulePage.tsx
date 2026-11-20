@@ -2354,7 +2354,8 @@ export function SchedulePage({
                                             ? `is-${entry.result}`
                                             : "is-cloud";
                                   const barTitleText = entry.record.nodeName || entry.record.title;
-                                  const displayTitle = compactScheduleNodeName(entry.record.nodeName) ?? barTitleText;
+                                  const displayTitle =
+                                    compactScheduleNodeName(entry.record.nodeName) ?? barTitleText;
                                   const spanDays = scheduleSpanDays(entry.dates);
                                   const isBarHovered = hoveredTarget?.id === entry.id &&
                                     (view !== "people" || hoveredTarget.owner === owner);
@@ -2528,7 +2529,7 @@ export function SchedulePage({
                           ref={blankGridRef}
                           className="schedule-empty-grid"
                         />
-                        {rows.length === 0 && !calendarLoading && !calendarFailed && <p className="schedule-empty">
+                          {rows.length === 0 && !calendarLoading && !calendarFailed && <p className="schedule-empty">
                           {view === "people" && person.length > 0 && visible.length === 0
                             ? "当前范围未包含该人员的安排"
                             : viewingHistory ? "所选日期暂无可显示的安排" : "本周暂无可显示的安排"}
