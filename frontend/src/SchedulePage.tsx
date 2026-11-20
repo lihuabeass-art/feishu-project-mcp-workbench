@@ -891,6 +891,20 @@ export function SchedulePage({
       entry.dates.start <= windowEnd &&
       entry.dates.end >= windowStart,
   );
+  const personItemKey = (entry: Entry, owner: string) =>
+    JSON.stringify([groupKey(entry, owner), itemIdentityKey(entry)]);
+  const currentNodeByPersonItem = new Map<string, Entry | null>();
+  for (const { entry, owner } of personRows(visible)) {
+    const { record } = entry;
+    if (!record.nodeName.trim() || record.sourceAggregate || normalizeNodeStatus(record.nodeStatus) !== "doing") continue;
+    const key = personItemKey(entry, owner);
+    const current = currentNodeByPersonItem.get(key);
+    if (current === undefined) {
+      currentNodeByPersonItem.set(key, entry);
+    } else if (current && (!entry.identity.node.trim() || current.identity.node !== entry.identity.node)) {
+      currentNodeByPersonItem.set(key, null);
+    }
+  }
   const rawScheduledRows =
     view === "people"
       ? personRows(scheduled)
@@ -2077,7 +2091,7 @@ export function SchedulePage({
 
                 <div className="schedule-main">
                   <div
-                    className="schedule-calendar"
+                    className={`schedule-calendar is-${view}`}
                     style={{ "--schedule-cols": days.length } as React.CSSProperties}
                   >
                     <div className="schedule-calendar-header">
@@ -2139,6 +2153,7 @@ export function SchedulePage({
                     {rows.map((row, rowIndex) => {
                       const { key, owner, primaryEntry, bars, laneCount } = row;
                       const rowSelected = bars.some((b) => b.entry.id === selected);
+                      const currentNode = currentNodeByPersonItem.get(personItemKey(primaryEntry, owner))?.record;
                       return (
                         <Fragment key={key}>
                           {view === "people" &&
@@ -2160,11 +2175,13 @@ export function SchedulePage({
                               />
                               <span>
                                 <strong>{primaryEntry.record.title}</strong>
-                                <small>
-                                  {bars.length > 1
-                                    ? `${primaryEntry.record.nodeName}（共 ${bars.length} 个节点） · ${targetLabel(primaryEntry, owner)}`
-                                    : `${primaryEntry.record.nodeName} · ${targetLabel(primaryEntry, owner)}`}
-                                </small>
+                                {currentNode && (
+                                  <small className="schedule-row-current" title={`当前节点：${currentNode.nodeName}`}>
+                                    <span className="schedule-current-node" style={nodeColorStyle(currentNode)}>
+                                      {currentNode.nodeName}
+                                    </span>
+                                  </small>
+                                )}
                               </span>
                             </div>
                             <div
@@ -2172,7 +2189,7 @@ export function SchedulePage({
                               style={
                                 laneCount > 1
                                   ? ({
-                                      gridTemplateRows: `repeat(${laneCount}, minmax(44px, auto))`,
+                                      gridTemplateRows: `repeat(${laneCount}, minmax(var(--schedule-lane-height), 1fr))`,
                                     } as React.CSSProperties)
                                   : undefined
                               }
@@ -2252,7 +2269,7 @@ export function SchedulePage({
                                             ? `is-${entry.result}`
                                             : "is-cloud";
                                   const barTitleText = entry.record.nodeName || entry.record.title;
-                                  const compactTitle = compactScheduleNodeName(entry.record.nodeName);
+                                  const displayTitle = compactScheduleNodeName(entry.record.nodeName) ?? barTitleText;
                                   const spanDays = scheduleSpanDays(entry.dates);
                                   const isBarHovered = hoveredId === entry.id;
                                   const ariaName = `${entry.record.title}${
@@ -2337,16 +2354,7 @@ export function SchedulePage({
                                             />
                                           )
                                         )}
-                                        <span className="schedule-bar-title">
-                                          {compactTitle && compactTitle !== barTitleText ? (
-                                            <>
-                                              <span className="schedule-bar-title-full">{barTitleText}</span>
-                                              <span className="schedule-bar-title-compact" aria-hidden="true">
-                                                {compactTitle}
-                                              </span>
-                                            </>
-                                          ) : barTitleText}
-                                        </span>
+                                        <span className="schedule-bar-title">{displayTitle}</span>
                                         <span className="schedule-bar-badges" aria-hidden="true">
                                           <span className="schedule-bar-days">{spanDays}d</span>
                                           {changed && (
