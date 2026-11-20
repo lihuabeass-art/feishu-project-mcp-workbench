@@ -27,8 +27,8 @@ export interface ScheduleRead {
   itemErrors?: Array<{ project: string; type: string; item: string; title?: string; sources: string[]; message: string }>;
 }
 export interface ScheduleHistoryScope { project: string; work_item_type: string; users: string[] }
-export interface ScheduleHistoryRequest { connection: string; range: ScheduleDates; scopes: ScheduleHistoryScope[]; currentUser: string }
-export interface ScheduleHistory { people: SchedulePerson[]; targets: ScheduleRecord[]; complete: boolean }
+export interface ScheduleHistoryRequest { connection?: string; range: ScheduleDates; scopes: ScheduleHistoryScope[]; currentUser?: string }
+export interface ScheduleHistory { people: SchedulePerson[]; targets: ScheduleRecord[]; complete: boolean; connection?: string }
 export interface ScheduleWriteTarget { id: string; identity: ScheduleIdentity; dates: ScheduleDates; cancel: boolean }
 export interface ScheduleWriteResult {
   results: Array<{ id: string; result: ScheduleResult; message?: string | null; warning?: string | null }>;
@@ -131,9 +131,9 @@ function mapWireRead(result: WireRead): ScheduleRead {
   };
 }
 
-export async function loadScheduleHistory({ currentUser, ...request }: ScheduleHistoryRequest): Promise<ScheduleHistory> {
-  const result = await invoke<{ targets: WireTarget[]; complete: boolean }>("load_schedule_history", request);
-  return { complete: result.complete, ...mapScheduleRecords({ targets: result.targets, current_user: currentUser, current_user_name: "" }) };
+export async function loadScheduleHistory(request: ScheduleHistoryRequest): Promise<ScheduleHistory> {
+  const result = await invoke<{ targets: WireTarget[]; complete: boolean; connection: string; current_user: string }>("load_schedule_calendar", { ...request });
+  return { complete: result.complete, connection: result.connection, ...mapScheduleRecords({ targets: result.targets, current_user: result.current_user, current_user_name: "" }) };
 }
 // 候选读取不占编辑会话的串行队列；当前会话的提交无需等待后台网络读取。
 export const loadScheduleSession = async (options?: { includePeople?: boolean }): Promise<ScheduleRead> => {

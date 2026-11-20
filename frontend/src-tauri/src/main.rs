@@ -91,12 +91,13 @@ async fn load_schedule_session(include_people: Option<bool>) -> Result<fstodo_ba
 }
 
 #[tauri::command]
-async fn load_schedule_history(
-    connection: String,
+async fn load_schedule_calendar(
+    connection: Option<String>,
+    current_user: Option<String>,
     range: fstodo_backend::schedule::Dates,
     scopes: Vec<fstodo_backend::schedule::HistoryScope>,
-) -> Result<fstodo_backend::schedule::HistoryResult, UiError> {
-    blocking(move || fstodo_backend::schedule::load_history(&open_session()?, &connection, &range, scopes)).await
+) -> Result<fstodo_backend::schedule::CalendarResult, UiError> {
+    blocking(move || fstodo_backend::schedule::load_calendar(&open_session()?, connection.as_deref(), current_user.as_deref(), &range, scopes)).await
 }
 
 #[tauri::command]
@@ -823,7 +824,7 @@ fn main() {
             acknowledge_creation_recovery,
             execute_workflow_action,
             load_schedule_session,
-            load_schedule_history,
+            load_schedule_calendar,
             load_schedule_people,
             sync_schedule_session,
             close_schedule_session,

@@ -13,6 +13,7 @@ vi.mock("./api", async (original) => ({
   loadSnapshot: vi.fn().mockResolvedValue({ items: [], total: 0, last_success: null, runs: [], sources: [], config_path: "cfg", db_path: "db", credential_ready: true, credential_description: "已配置" }),
 }));
 vi.mock("./scheduleApi", () => ({
+  loadScheduleHistory: vi.fn().mockResolvedValue({ people: [], targets: [], complete: true }),
   loadScheduleSession: vi.fn(), loadSchedulePeople: vi.fn(),
   closeScheduleSession: vi.fn().mockResolvedValue(undefined),
   resetScheduleSession: vi.fn().mockResolvedValue(undefined), submitScheduleTargets: vi.fn(),
@@ -44,11 +45,11 @@ it("事项安排的流程确认成功后重新读取排期并保持周视图和�
   const nextWeek = await screen.findByRole("button", { name: "下一周" });
   fireEvent.click(nextWeek);
   const range = nextWeek.parentElement!.querySelector("strong")!.textContent;
-  fireEvent.click(screen.getByRole("tab", { name: /已排期/ }));
+  fireEvent.click(await screen.findByRole("tab", { name: "已排期 (1)" }));
   fireEvent.click(screen.getAllByRole("button", { name: /待处理事项.*开发/ })[0]);
   const inspector = within(screen.getByLabelText("排期检查器"));
   expect(getWorkflowActions).not.toHaveBeenCalled();
-  fireEvent.click(inspector.getByRole("button", { name: "流程操作" }));
+  fireEvent.click(inspector.getByRole("button", { name: "查看可用流程动作" }));
   fireEvent.click(await inspector.findByRole("button", { name: "完成开发" }));
   const dialog = within(screen.getByRole("dialog", { name: "开发 · 流程操作" }));
   fireEvent.click(dialog.getByRole("button", { name: "提交" }));

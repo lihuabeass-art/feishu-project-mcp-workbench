@@ -37,7 +37,7 @@ import {
   type ScheduleRead,
   type ScheduleRecord,
 } from "./scheduleApi";
-import { scheduleHistoryRequest, useScheduleHistory } from "./scheduleHistory";
+import { scheduleHistoryRequest, useScheduleCalendar } from "./scheduleHistory";
 import {
   applyQuickSchedulePreset,
   classifyScheduleReview,
@@ -313,12 +313,14 @@ export function SchedulePage({
   onGuardChange,
   requestReload,
   snapshot,
+  calendarContext = "",
   preloadedSession,
   workflow,
 }: {
   onGuardChange: (guard: Guard) => void;
   requestReload: (reload: () => void) => void;
   snapshot?: Snapshot | null;
+  calendarContext?: string;
   preloadedSession?: ScheduleSessionController;
   workflow?: { context: string; busy: boolean; submit: WorkflowSubmit };
 }) {
@@ -380,16 +382,23 @@ export function SchedulePage({
   const windowEnd = days[days.length - 1];
   const thisWeek = read?.recentRange?.start ?? monday(currentToday);
   const viewingHistory = windowStart < thisWeek;
-  const [historyKey, previousHistoryKey] = useMemo(() => {
-    const keyFor = (start: string, end: string) => {
-      if (start >= thisWeek) return "";
-      const request = scheduleHistoryRequest(read, snapshot, view, { start, end: end < thisWeek ? end : addDays(thisWeek, -1) });
-      return request ? JSON.stringify(request) : "";
-    };
-    return [keyFor(windowStart, windowEnd), keyFor(addDays(windowStart, -7), addDays(windowEnd, -7))];
-  }, [read, snapshot, view, thisWeek, windowStart, windowEnd]);
-  const { data: currentHistory, loading: historyLoading, failed: historyFailed, retry: retryHistory } =
-    useScheduleHistory(historyKey, previousHistoryKey);
+  const recentEnd = read?.recentRange?.end ?? addDays(thisWeek, 13);
+  const [calendarKey, previousCalendarKey] = useMemo(() => {
+    const request = scheduleHistoryRequest(read, snapshot, view, {
+      start: windowStart, end: windowEnd > recentEnd ? recentEnd : windowEnd,
+    });
+    if (!request || windowStart > recentEnd) return ["", ""];
+    const visibleKey = JSON.stringify([calendarContext, request]);
+    const previousStart = addDays(windowStart, -7);
+    const scopeReady = request.connection && request.currentUser && request.scopes.length &&
+      !read?.accountError && (view !== "people" || read?.peopleLoaded !== false);
+    if (!scopeReady || previousStart >= thisWeek) return [visibleKey, ""];
+    return [visibleKey, JSON.stringify([calendarContext, {
+      ...request, range: { start: previousStart, end: addDays(windowEnd, -7) },
+    }])];
+  }, [read, snapshot, view, calendarContext, recentEnd, thisWeek, windowStart, windowEnd]);
+  const { data: currentHistory, loading: calendarLoading, failed: calendarFailed, retry: retryCalendar } =
+    useScheduleCalendar(calendarKey, previousCalendarKey);
   const historicalEntries = useMemo(
     () => currentHistory?.targets.map(createScheduleEntry) || [],
     [currentHistory],
@@ -563,6 +572,11 @@ export function SchedulePage({
         }
       });
   };
+
+  const peopleSessionId = view === "people" && read?.peopleLoaded === false ? read.sessionId : "";
+  useEffect(() => {
+    if (peopleSessionId && read) triggerLoadPeople(read);
+  }, [peopleSessionId]);
 
   useLayoutEffect(() => {
     if (!preloadedSession) return;
@@ -1054,7 +1068,8 @@ export function SchedulePage({
       ? personRows(outside)
       : outside.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
-  const selectedEntry = calendarEntries.find((entry) => entry.id === selected);
+  const selectedEntry = calendarEntries.find((entry) => entry.id === selected)
+    ?? historicalEntries.find((entry) => entry.id === selected && matchesFilters(entry));
   const selectedScopeLabel = selectedEntry ? targetScopeLabel(selectedEntry) : "";
   const selectedPeopleRows = view === "people" && selectedEntry ? personRows([selectedEntry]) : [];
   const activePerson = selectedPeopleRows.find(({ owner }) => owner === selectedPerson)?.owner
@@ -1607,48 +1622,20 @@ export function SchedulePage({
 
   return (
     <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={() => preloadedSession?.onInteraction?.()} onFocusCapture={() => preloadedSession?.onInteraction?.()}>
-      {loading && !read ? (
-        <div className="overview schedule-overview">
-          <div className="schedule-overview-loading">
-            <span className="overview-icon">
-              <CalendarDays size={20} />
-            </span>
-            <div>
-              <span>事项安排</span>
-              <p role="status">正在读取个人待办及节点排期…</p>
-            </div>
-          </div>
-          <div className="overview-actions schedule-overview-actions">
-            <button type="button" className="primary" disabled>
-              同步排期
-            </button>
-          </div>
-        </div>
-      ) : error && !read ? (
-        <div className="banner warning" role="alert">
-          <span>{error}</span>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              forceResetRef.current = true;
-              setEpoch((value) => value + 1);
-            }}
-          >
-            重新读取
-          </button>
-        </div>
-      ) : (
-        read && (
           <>
             <div className="overview schedule-overview">
-              <ScheduleGreeting person={currentUserPerson} name={currentUserDisplayName} />
+              {read ? <ScheduleGreeting person={currentUserPerson} name={currentUserDisplayName} /> : <strong>事项安排</strong>}
               <div className="overview-actions schedule-overview-actions">
                 <button
                   type="button"
                   className="secondary"
                   disabled={busy || readRefreshing}
-                  onClick={() => requestReload(() => { setManualRefreshing(true); setEpoch((value) => value + 1); })}
+                  onClick={() => requestReload(() => {
+                    if (!read) forceResetRef.current = true;
+                    setManualRefreshing(true);
+                    setEpoch((value) => value + 1);
+                    retryCalendar();
+                  })}
                 >
                   <RefreshCw size={14} aria-hidden="true" />
                   {readRefreshing ? "正在刷新…" : "重新读取"}
@@ -1682,14 +1669,14 @@ export function SchedulePage({
 
             <ScheduleRefreshNotice refreshing={manualRefreshing} />
             {preloadedSession?.refreshError && <p className="banner warning" role="alert">{preloadedSession.refreshError}</p>}
-            {error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，可继续编辑，稍后重试。</p>}
+            {read && error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，可继续编辑，稍后重试。</p>}
             {scopeSources.filter((item) => item.error).map((item) => (
               <p key={item.id} className="banner warning">
                 {readableSourceName(item.name || item.id)}：{item.error}
               </p>
             ))}
 
-            {read.accountError && (
+            {read?.accountError && (
               <div className="banner warning" role="alert">
                 {read.accountError}；以下显示当前来源中可读取的安排，均为只读。
               </div>
@@ -1709,7 +1696,7 @@ export function SchedulePage({
                 <span>正在加载团队成员排期…</span>
               </div>
             )}
-            {peopleError && !peopleLoading && (
+            {read && peopleError && !peopleLoading && (
               <div className="banner warning" role="alert">
                 <span>{peopleError}</span>
                 <button
@@ -1795,12 +1782,7 @@ export function SchedulePage({
                     <button
                       type="button"
                       className={view === "people" ? "active" : ""}
-                      onClick={() => {
-                        setView("people");
-                        if (read && read.peopleLoaded === false) {
-                          triggerLoadPeople(read);
-                        }
-                      }}
+                      onClick={() => setView("people")}
                     >
                       人员排期
                     </button>
@@ -1957,7 +1939,7 @@ export function SchedulePage({
                         className={poolTab === "pending" ? "active" : ""}
                         onClick={() => setPoolTab("pending")}
                       >
-                        待排期 ({pendingRows.length})
+                        {read ? `待排期 (${pendingRows.length})` : "待排期"}
                       </button>
                       <button
                         type="button"
@@ -1966,11 +1948,14 @@ export function SchedulePage({
                         className={poolTab === "outside" ? "active" : ""}
                         onClick={() => setPoolTab("outside")}
                       >
-                        已排期 ({outsideRows.length})
+                        {read ? `已排期 (${outsideRows.length})` : "已排期"}
                       </button>
                     </div>
 
-                    {poolTab === "pending" ? (
+                    {!read ? (
+                      error ? <p className="schedule-pool-empty" role="alert">{error}，可重新读取。</p>
+                        : <p className="schedule-pool-empty" role="status">正在读取事项清单…</p>
+                    ) : poolTab === "pending" ? (
                       <>
                         {editablePendingCount !== null && editablePendingCount < pendingRows.length && (
                           <p className="schedule-pool-editable-count">其中 {editablePendingCount} 项可排期</p>
@@ -2054,7 +2039,9 @@ export function SchedulePage({
                             </Fragment>
                           ))}
                           {pendingRows.length === 0 && (
-                            <p className="schedule-pool-empty">日历仅显示所选日期内的排期</p>
+                            <p className="schedule-pool-empty">
+                              当前筛选下暂无待排期事项
+                            </p>
                           )}
                         </div>
                       </>
@@ -2153,15 +2140,12 @@ export function SchedulePage({
                 )}
 
                 <div className="schedule-main">
-                  {historyLoading && <div className="banner" role="status">正在读取历史排期…</div>}
-                  {historyFailed && (
+                  {calendarLoading && <div className="banner" role="status">{viewingHistory ? "正在读取历史排期…" : "正在读取日历排期…"}</div>}
+                  {calendarFailed && (
                     <div className="banner" role="status">
-                      <span>{currentHistory?.targets.length ? "历史排期读取未完成，当前显示已取得的安排。" : "暂时无法读取历史排期。"}</span>
-                      <button type="button" className="secondary" onClick={retryHistory}>重试历史排期</button>
+                      <span>{viewingHistory ? "暂时无法完整读取历史排期。" : "暂时无法完整读取日历排期。"}</span>
+                      <button type="button" className="secondary" onClick={retryCalendar}>{viewingHistory ? "重试历史排期" : "重试日历排期"}</button>
                     </div>
-                  )}
-                  {viewingHistory && !historyKey && !peopleLoading && (
-                    <div className="banner" role="status">当前还没有可查询历史排期的空间、类型或人员范围。</div>
                   )}
                   <div
                     className={`schedule-calendar is-${view}`}
@@ -2517,7 +2501,7 @@ export function SchedulePage({
                           ref={blankGridRef}
                           className="schedule-empty-grid"
                         />
-                        {rows.length === 0 && (!viewingHistory || (historyKey && !historyLoading && !historyFailed)) && <p className="schedule-empty">
+                        {rows.length === 0 && !calendarLoading && !calendarFailed && <p className="schedule-empty">
                           {view === "people" && person.length > 0 && visible.length === 0
                             ? "当前范围未包含该人员的安排"
                             : viewingHistory ? "所选日期暂无可显示的安排" : "本周暂无可显示的安排"}
@@ -2914,8 +2898,6 @@ export function SchedulePage({
                 document.body,
               )}
           </>
-        )
-      )}
       <span className="sr-only">
         <CalendarDays size={1} />
       </span>

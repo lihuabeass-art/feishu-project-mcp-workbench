@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 mod history;
-pub use history::{load_history, HistoryResult, HistoryScope};
+pub use history::{load_calendar, CalendarResult, HistoryScope};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Dates {
@@ -143,7 +143,6 @@ struct LoadState {
     transition_required: BTreeMap<(String, String, String, String), Option<Value>>,
     detail_names: BTreeMap<(String, String), String>,
     detail_avatars: BTreeMap<(String, String), String>,
-    deferred_todos: Vec<TodoItem>,
 }
 
 type TodoItem = (WorkItemId, String, BTreeSet<String>, Vec<(String, Value)>, Option<detail::ItemDetail>);
@@ -154,7 +153,6 @@ pub struct ScheduleSession {
     frozen: HashSet<String>,
     frozen_nodes: HashSet<(String, String, String, String)>,
     deferred_targets: Vec<Target>,
-    deferred_todos: Vec<TodoItem>,
     processed_items: HashSet<(String, String, String)>,
     schedule_configs: BTreeMap<(String, String), Result<bool, ()>>,
     transition_required: BTreeMap<(String, String, String, String), Option<Value>>,
@@ -602,7 +600,6 @@ impl ScheduleSession {
             frozen: HashSet::new(),
             frozen_nodes: HashSet::new(),
             deferred_targets,
-            deferred_todos: state.deferred_todos,
             processed_items: state.processed_items,
             schedule_configs: state.schedule_configs,
             transition_required: state.transition_required,
@@ -639,33 +636,6 @@ impl ScheduleSession {
             }
             let mut extra_targets = Vec::new();
             let mut failed_extra_sources = BTreeMap::new();
-            let deferred_todos = std::mem::take(&mut self.deferred_todos);
-            if let Some(range) = self.view.recent_range.as_ref().filter(|_| !deferred_todos.is_empty()) {
-                let (recent_todos, _, failed) = history::matching_recent_todos(
-                    client.as_ref(), range, deferred_todos, session.config.max_pages, |project| {
-                        self.view.history_scopes.iter().filter(|scope| scope.project == project)
-                            .flat_map(|scope| scope.users.iter().cloned())
-                            .chain(self.view.targets.iter().filter(|target| target.identity.project == project)
-                                .flat_map(|target| target.owners.iter().map(|owner| owner.id.clone())))
-                            .filter(|owner| owner != &self.view.current_user && !owner.is_empty())
-                            .collect::<BTreeSet<_>>().into_iter().collect()
-                    },
-                ).await;
-                flag_recent_incomplete(&mut self.view.sources, &failed);
-                let mut state = LoadState {
-                    schedule_configs: std::mem::take(&mut self.schedule_configs),
-                    detail_names: std::mem::take(&mut self.detail_names),
-                    detail_avatars: std::mem::take(&mut self.detail_avatars),
-                    ..Default::default()
-                };
-                let mut source_statuses = std::mem::take(&mut self.view.sources);
-                read_todo_nodes(session, client.as_ref(), &self.fingerprint, &mut self.view, &mut source_statuses, &mut state, recent_todos).await;
-                self.view.sources = source_statuses;
-                self.schedule_configs = state.schedule_configs;
-                self.detail_names = state.detail_names;
-                self.detail_avatars = state.detail_avatars;
-                self.next_target_seq = self.view.targets.len().max(self.next_target_seq);
-            }
             expand_cached_non_todo_items(
                 session,
                 client.clone(),
@@ -920,13 +890,6 @@ fn retain_recent_targets(view: &mut LoadResult) {
     }
 }
 
-fn flag_recent_incomplete(statuses: &mut [SourceStatus], failed: &BTreeSet<String>) {
-    for status in statuses.iter_mut().filter(|status| failed.contains(&status.id)) {
-        status.complete = false;
-        status.error.get_or_insert_with(|| "近两周排期读取未完成，请重试".into());
-    }
-}
-
 fn add_history_scope<'a>(scopes: &mut Vec<HistoryScope>, project: &str, kind: &str, users: impl Iterator<Item = &'a str>) {
     let index = scopes.iter().position(|scope| scope.project == project && scope.work_item_type == kind)
         .unwrap_or_else(|| {
@@ -940,30 +903,18 @@ fn add_history_scope<'a>(scopes: &mut Vec<HistoryScope>, project: &str, kind: &s
     }
 }
 
-async fn load_remote(
-    session: &Session,
-    client: &dyn TodoSource,
-    fingerprint: &str,
-    view: &mut LoadResult,
-    statuses: &mut [SourceStatus],
-    state: &mut LoadState,
-) -> Result<(), BackendError> {
-    crate::diagnostics::schedule_stage("schedule_account");
-    let account = client.call_tool("search_user_info", json!({"user_keys":["current_login_user()"]}).as_object().unwrap()).await
-        .and_then(|payload| parse_tool_json("search_user_info", &payload));
-    if let Ok(value) = account {
-        if let Some(users) = value.as_array().filter(|users| users.len() == 1) {
-            view.current_user = txt(&users[0]["user_key"]);
-            view.current_user_name = user_name(&users[0]);
-            view.current_user_avatar = user_avatar(&users[0]);
-        }
-    }
-    if view.current_user.trim().is_empty() {
-        view.current_user.clear();
-        view.account_error = Some("未能确认当前飞书账号，请检查连接后重试".into());
-    }
-    crate::diagnostics::schedule_stage("schedule_todos");
-    let mut items: BTreeMap<(String, String, String), (WorkItemId, String, BTreeSet<String>, Vec<(String, Value)>)> = BTreeMap::new();
+async fn read_schedule_account(client: &dyn TodoSource) -> Result<Value, BackendError> {
+    let payload = client.call_tool("search_user_info", json!({"user_keys":["current_login_user()"]}).as_object().unwrap()).await?;
+    let value = parse_tool_json("search_user_info", &payload)?;
+    value.as_array().filter(|users| users.len() == 1)
+        .and_then(|users| users.first()).filter(|user| !txt(&user["user_key"]).trim().is_empty())
+        .cloned().ok_or_else(|| BackendError::parse("search_user_info", "未能确认当前飞书账号"))
+}
+
+type TodoIndex = BTreeMap<(String, String, String), (WorkItemId, String, BTreeSet<String>, Vec<(String, Value)>)>;
+
+async fn read_todo_index(session: &Session, client: &dyn TodoSource, statuses: &mut [SourceStatus]) -> Result<TodoIndex, BackendError> {
+    let mut items = TodoIndex::new();
     for status in statuses.iter_mut() {
         let source = session.config.sources.iter().find(|source| source.id == status.id).unwrap();
         if source.ensure_executable().is_err() {
@@ -1037,6 +988,28 @@ async fn load_remote(
             if page == session.config.max_pages { status.error = Some("个人待办分页达到上限，读取未完成".into()); }
         }
     }
+    Ok(items)
+}
+
+async fn load_remote(
+    session: &Session,
+    client: &dyn TodoSource,
+    fingerprint: &str,
+    view: &mut LoadResult,
+    statuses: &mut [SourceStatus],
+    state: &mut LoadState,
+) -> Result<(), BackendError> {
+    crate::diagnostics::schedule_stage("schedule_account");
+    match read_schedule_account(client).await {
+        Ok(user) => {
+            view.current_user = txt(&user["user_key"]);
+            view.current_user_name = user_name(&user);
+            view.current_user_avatar = user_avatar(&user);
+        }
+        Err(_) => view.account_error = Some("未能确认当前飞书账号，请检查连接后重试".into()),
+    }
+    crate::diagnostics::schedule_stage("schedule_todos");
+    let items = read_todo_index(session, client, statuses).await?;
     let cached_flow_kinds: HashMap<(String, String, String), crate::model::domain::FlowKind> = session
         .store
         .query_items(&crate::store::ItemFilter {
@@ -1063,7 +1036,7 @@ async fn load_remote(
         }
         todo_items.push((id, title, sources, rows, cached_detail));
     }
-    if let Some(range) = &view.recent_range {
+    if view.recent_range.is_some() {
         for (id, _, _, _, detail) in &todo_items {
             let (project, kind, _) = id.key_tuple();
             let owners: Vec<_> = detail.as_ref().and_then(|detail| detail.data["work_item_current_node"].as_array())
@@ -1072,10 +1045,6 @@ async fn load_remote(
                 .collect();
             add_history_scope(&mut view.history_scopes, &project, &kind, owners.into_iter());
         }
-        let (recent, deferred, failed) = history::prioritize_recent_todos(client, range, &view.current_user, todo_items, session.config.max_pages).await;
-        flag_recent_incomplete(statuses, &failed);
-        todo_items = recent;
-        state.deferred_todos = deferred;
     }
     read_todo_nodes(session, client, fingerprint, view, statuses, state, todo_items).await;
     Ok(())
@@ -2654,6 +2623,14 @@ mod tests {
                 .push((tool.into(), Value::Object(args.clone())));
             let v = match tool {
                 "search_user_info" => json!([{"user_key":"me","name_cn":"本人"}]),
+                "search_project_info" => json!({"projects":[{"project_key":"p","name":"空间"}], "pagination":{"has_more":false}}),
+                "list_workitem_types" => json!({"list":[{"type_key":"story"}]}),
+                "list_schedule" => json!({
+                    "user_workload_list":[{"user_info":{"userKey":"me","name":"本人"}, "tasks":[{
+                        "entity_key":"3:1:node_state_0_1", "work_item_info":{"id":1,"name":"日历事项"},
+                        "time":{"start":args["start_time"],"end":args["end_time"]}
+                    }]}], "pagination":{"has_more":false}
+                }),
                 "list_todo" => {
                     if self.partial_page.load(Ordering::SeqCst) && args["page_num"] == 2 {
                         return Err(BackendError::parse("测试", "第二页失败"));
@@ -2820,6 +2797,32 @@ mod tests {
             assert_eq!(fake.calls.lock().unwrap().iter().filter(|(tool, _)| tool == "update_node").count(), 0);
             drop(installed); drop(session); std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn cold_calendar_discovers_scope_without_todo_pages_and_sidebar_ignores_calendar_dates() {
+        let (session, dir) = fixture();
+        let fake = Arc::new(Fake { calls: Mutex::new(vec![]), fail_detail: AtomicBool::new(false), partial_page: AtomicBool::new(false), receipts: Mutex::new(vec![]) });
+        let pages = vec![json!({"list":[{"project_key":"p", "work_item_info":{"work_item_id":"1","work_item_type_key":"story"},
+            "schedule":{"start_time":"2020-01-01","end_time":"2020-01-02"}}], "total":1})];
+        let config = Some(json!({"list":[{"field_key":"schedule","field_type":"schedule"}],"pagination":{"has_more":false}}));
+        let installed = crate::remote::install_test_client(&session.config, &session.credential().unwrap(), Box::new(ReadScenario { fake: fake.clone(), pages, config }));
+        let range = Dates { start: "2026-11-16".into(), end: "2026-11-22".into() };
+        let calendar = serde_json::to_value(load_calendar(&session, None, None, &range, Vec::new()).unwrap()).unwrap();
+        assert_eq!(calendar["complete"], true);
+        assert_eq!(calendar["targets"][0]["title"], "日历事项");
+        let calls = std::mem::take(&mut *fake.calls.lock().unwrap());
+        assert_eq!(calls.iter().map(|(tool, _)| tool.as_str()).collect::<Vec<_>>(),
+            ["search_user_info", "search_project_info", "list_workitem_types", "list_schedule"]);
+        assert_eq!(calls[3].1["start_time"], range.start);
+        assert_eq!(calls[3].1["end_time"], range.end);
+
+        let plan = ScheduleSession::load_internal_traced(&session, true, Some(range)).unwrap();
+        assert!(plan.view.targets.iter().any(|target| target.identity.node == "n1" && target.baseline.start.is_empty() && target.baseline.end.is_empty()));
+        let calls = fake.calls.lock().unwrap();
+        assert!(calls.iter().any(|(tool, _)| tool == "get_node_detail"));
+        assert!(calls.iter().all(|(tool, _)| tool != "list_schedule"));
+        drop(calls); drop(installed); drop(session); std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -7,120 +7,137 @@ pub struct HistoryScope {
     pub users: Vec<String>,
 }
 
-pub(super) async fn prioritize_recent_todos(
-    client: &dyn TodoSource,
-    range: &Dates,
-    current_user: &str,
-    items: Vec<TodoItem>,
-    max_pages: u32,
-) -> (Vec<TodoItem>, Vec<TodoItem>, BTreeSet<String>) {
-    if current_user.is_empty() {
-        return (items, Vec::new(), BTreeSet::new());
-    }
-    let (mut current, dated): (Vec<_>, Vec<_>) =
-        items.into_iter().partition(|(_, _, _, rows, _)| {
-            rows.is_empty()
-                || rows.iter().any(|(_, row)| {
-                    let start = date(&row["schedule"]["start_time"]).unwrap_or_default();
-                    let end = date(&row["schedule"]["end_time"]).unwrap_or_default();
-                    !(Dates { start, end }).outside(range)
-                })
-        });
-    let (in_range, deferred, failed) =
-        matching_recent_todos(client, range, dated, max_pages, |_| {
-            vec![current_user.to_owned()]
-        })
-        .await;
-    current.extend(in_range);
-    (current, deferred, failed)
-}
-
-pub(super) async fn matching_recent_todos(
-    client: &dyn TodoSource,
-    range: &Dates,
-    items: Vec<TodoItem>,
-    max_pages: u32,
-    users_for_project: impl Fn(&str) -> Vec<String>,
-) -> (Vec<TodoItem>, Vec<TodoItem>, BTreeSet<String>) {
-    let mut groups: BTreeMap<(String, String), Vec<TodoItem>> = BTreeMap::new();
-    for item in items {
-        let (project, kind, _) = item.0.key_tuple();
-        groups.entry((project, kind)).or_default().push(item);
-    }
-    let mut checked = stream::iter(groups)
-        .map(|((project, work_item_type), items)| {
-            let users = users_for_project(&project);
-            async move {
-                let scope = HistoryScope {
-                    project,
-                    work_item_type,
-                    users,
-                };
-                let mut matches = HashSet::new();
-                let mut complete = true;
-                for users in scope.users.chunks(3) {
-                    let result = read_people(client, "", range, &scope, users, max_pages).await;
-                    complete &= result.complete;
-                    matches.extend(
-                        result
-                            .targets
-                            .into_iter()
-                            .map(|target| target.identity.item),
-                    );
-                }
-                (items, matches, complete)
-            }
-        })
-        .buffered(4);
-    let mut current = Vec::new();
-    let mut deferred = Vec::new();
-    let mut failed = BTreeSet::new();
-    while let Some((items, matching_items, complete)) = checked.next().await {
-        for item in items {
-            // Out-of-range summary dates alone cannot rule out a different personal node date.
-            if !complete {
-                failed.extend(item.2.iter().cloned());
-            }
-            if matching_items.contains(&item.0.work_item_id) {
-                current.push(item);
-            } else {
-                deferred.push(item);
-            }
-        }
-    }
-    (current, deferred, failed)
+#[derive(Debug)]
+struct HistoryResult {
+    targets: Vec<Target>,
+    complete: bool,
 }
 
 #[derive(Debug, Serialize)]
-pub struct HistoryResult {
-    pub targets: Vec<Target>,
-    pub complete: bool,
+pub struct CalendarResult {
+    targets: Vec<Target>,
+    complete: bool,
+    connection: String,
+    current_user: String,
 }
 
-pub fn load_history(
+async fn discover_calendar_scopes(
     session: &Session,
-    connection: &str,
+    client: &dyn TodoSource,
+) -> Result<(Vec<HistoryScope>, bool), BackendError> {
+    let mut scopes = Vec::new();
+    let mut source_filters = Vec::new();
+    for source in session.config.sources.iter().filter(|source| {
+        source.enabled
+            && source.ensure_executable().is_ok()
+            && matches!(source.kind, crate::model::source::SourceKind::PersonalTodo)
+    }) {
+        let filter = session.source_type_scope(&source.id)?;
+        for kind in session.source_types(&source.id)? {
+            if filter
+                .as_ref()
+                .is_none_or(|scope| scope.allows(&kind.project_key, &kind.type_key))
+            {
+                add_history_scope(
+                    &mut scopes,
+                    &kind.project_key,
+                    &kind.type_key,
+                    std::iter::empty(),
+                );
+            }
+        }
+        source_filters.push(filter);
+    }
+    if !scopes.is_empty() || source_filters.is_empty() {
+        return Ok((scopes, true));
+    }
+
+    // 初次进入时从空间和类型目录确定范围，不等待待办页及事项详情。
+    let mut spaces = session.store.workspace_catalog()?;
+    if spaces.is_empty() {
+        spaces = crate::catalog::discover_spaces(client, Vec::new(), session.config.max_pages)
+            .await?
+            .spaces;
+    }
+    let mut types = stream::iter(spaces)
+        .map(|space| async move {
+            let tool = crate::mcp::feishu::TOOL_LIST_WORKITEM_TYPES;
+            let args = json!({"project_key": space.project_key});
+            let result = client
+                .call_tool(tool, args.as_object().unwrap())
+                .await
+                .and_then(|payload| parse_tool_json(tool, &payload));
+            (space.project_key, result)
+        })
+        .buffered(4);
+    let mut complete = true;
+    while let Some((project, response)) = types.next().await {
+        let Ok(response) = response else {
+            complete = false;
+            continue;
+        };
+        let Some(kinds) = response["list"].as_array() else {
+            complete = false;
+            continue;
+        };
+        for kind in kinds {
+            let Some(kind) = kind["type_key"].as_str().filter(|kind| !kind.is_empty()) else {
+                complete = false;
+                continue;
+            };
+            if source_filters.iter().any(|filter| {
+                filter
+                    .as_ref()
+                    .is_none_or(|scope| scope.allows(&project, kind))
+            }) {
+                add_history_scope(&mut scopes, &project, kind, std::iter::empty());
+            }
+        }
+    }
+    Ok((scopes, complete))
+}
+
+pub fn load_calendar(
+    session: &Session,
+    connection: Option<&str>,
+    current_user: Option<&str>,
     range: &Dates,
-    scopes: Vec<HistoryScope>,
-) -> Result<HistoryResult, BackendError> {
+    mut scopes: Vec<HistoryScope>,
+) -> Result<CalendarResult, BackendError> {
     match (date_ms(&range.start), date_ms(&range.end)) {
         (Some(start), Some(end)) if (0..14 * 86_400_000).contains(&(end - start)) => {}
-        _ => return Err(BackendError::conflict("历史排期日期范围无效")),
+        _ => return Err(BackendError::validation("日历排期日期范围无效")),
     }
     let credential = session.credential()?;
-    if connection_fingerprint(&session.config.endpoint, credential.token().expose()) != connection {
+    let fingerprint = connection_fingerprint(&session.config.endpoint, credential.token().expose());
+    if connection.is_some_and(|expected| expected != fingerprint) {
         return Err(BackendError::conflict("飞书连接已变化，请重新读取排期"));
     }
     let client = crate::remote::shared(&session.config, &credential);
-    let requests = scopes
-        .iter()
-        .flat_map(|scope| scope.users.chunks(3).map(move |users| (scope, users)));
-    let mut result = crate::remote::runtime()?.block_on(async {
+    let (current_user, mut result) = crate::remote::runtime()?.block_on(async {
+        let client = client.as_ref();
+        let current_user =
+            match current_user.filter(|user| connection.is_some() && !user.is_empty()) {
+                Some(user) => user.to_owned(),
+                None => txt(&read_schedule_account(client).await?["user_key"]),
+            };
+        let mut complete = true;
+        if scopes.is_empty() {
+            (scopes, complete) = discover_calendar_scopes(session, client).await?;
+        }
+        for scope in &mut scopes {
+            scope.users.push(current_user.clone());
+            scope.users.sort();
+            scope.users.dedup();
+        }
+        let requests = scopes
+            .iter()
+            .flat_map(|scope| scope.users.chunks(3).map(move |users| (scope, users)));
         let mut pages = stream::iter(requests)
             .map(|(scope, users)| {
                 read_people(
-                    client.as_ref(),
-                    connection,
+                    client,
+                    &fingerprint,
                     range,
                     scope,
                     users,
@@ -130,14 +147,14 @@ pub fn load_history(
             .buffered(4);
         let mut result = HistoryResult {
             targets: Vec::new(),
-            complete: true,
+            complete,
         };
         while let Some(batch) = pages.next().await {
             result.complete &= batch.complete;
             result.targets.extend(batch.targets);
         }
-        result
-    });
+        Ok::<_, BackendError>((current_user, result))
+    })?;
     let mut urls = HashMap::new();
     for target in &mut result.targets {
         let identity = &target.identity;
@@ -158,7 +175,12 @@ pub fn load_history(
             })
             .clone();
     }
-    Ok(result)
+    Ok(CalendarResult {
+        targets: result.targets,
+        complete: result.complete,
+        connection: fingerprint,
+        current_user,
+    })
 }
 
 #[cfg(test)]
@@ -228,51 +250,6 @@ mod tests {
             assert_eq!(target.identity.node, "node_state_0_10");
             assert!(target.read_only_reason.is_some());
         }
-    }
-
-    #[tokio::test]
-    async fn date_outside_summary_only_opens_details_when_recent_person_or_team_query_matches() {
-        let range = Dates {
-            start: "2026-10-05".into(),
-            end: "2026-10-18".into(),
-        };
-        let todo = |id: &str, start: &str, end: &str| {
-            let id = WorkItemId {
-                project_key: Some("p".into()),
-                work_item_type_key: Some("story".into()),
-                work_item_id: id.into(),
-            };
-            let row = json!({"schedule":{"start_time":start, "end_time":end}});
-            (
-                id,
-                String::new(),
-                BTreeSet::from(["todo".into()]),
-                vec![("todo".into(), row)],
-                None,
-            )
-        };
-        let items = vec![
-            todo("10", "2026-09-01", "2026-09-02"),
-            todo("20", "2026-09-01", "2026-09-02"),
-            todo("30", "", ""),
-            todo("40", "2026-10-01", "2026-10-05"),
-        ];
-        let client = Pages { fail_next: false };
-        let (current, deferred, failed) =
-            prioritize_recent_todos(&client, &range, "me", items, 3).await;
-        assert!(failed.is_empty());
-        assert_eq!(
-            current
-                .iter()
-                .map(|item| item.0.work_item_id.as_str())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["10", "30", "40"])
-        );
-        assert_eq!(deferred.len(), 1);
-        let (team, still_outside, failed) =
-            matching_recent_todos(&client, &range, deferred, 3, |_| vec!["peer".into()]).await;
-        assert!(team.is_empty() && failed.is_empty());
-        assert_eq!(still_outside[0].0.work_item_id, "20");
     }
 }
 

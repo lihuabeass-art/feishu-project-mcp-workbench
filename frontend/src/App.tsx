@@ -2000,7 +2000,7 @@ function Workspace() {
           )}
           {!compact && alerts}
 
-          {view === "schedule" && !compact && <SchedulePage snapshot={data} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit}
+          {view === "schedule" && !compact && <SchedulePage snapshot={data} calendarContext={scheduleConnectionKey} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit}
             workflow={desktop && data?.credential_ready && data.capabilities?.workflow ? {
               context: scheduleConnectionKey,
               busy: workspaceActionBlocked("workflow", activity),
