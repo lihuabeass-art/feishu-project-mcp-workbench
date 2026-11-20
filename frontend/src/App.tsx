@@ -455,6 +455,7 @@ function Workspace() {
   const snapshotRequest = useRef(0);
   const syncPatchRevision = useRef(0);
   const scheduleBusinessRevision = useRef(0);
+  const [scheduleWorkflowRevision, setScheduleWorkflowRevision] = useState(0);
   const syncProgressAbort = useRef<AbortController | null>(null);
   useEffect(() => () => { syncProgressAbort.current?.abort(); }, []);
   const syncConfiguration = (snapshot: Snapshot) => JSON.stringify([
@@ -494,7 +495,7 @@ function Workspace() {
         }`,
     )
     .join(";");
-  const scheduleDataRevision = `${scheduleBusinessRevision.current}:${defectRevision}`;
+  const scheduleDataRevision = `${scheduleBusinessRevision.current}:${defectRevision}:${scheduleWorkflowRevision}`;
   const schedulePreloadFingerprint =
     desktop && !loading && data?.credential_ready && !compact
       ? `${scheduleConnectionKey}|${scheduleSourcesSignature}|${scheduleDataRevision}`
@@ -628,9 +629,9 @@ function Workspace() {
       return;
     }
     void beginScheduleLoad(schedulePreloadFingerprint, scheduleConnectionKey, {
-      includePeople: false,
+      includePeople: scheduleSessionRef.current.read?.peopleLoaded === true,
     }).catch(() => {});
-  }, [schedulePreloadFingerprint, scheduleConnectionKey, data?.credential_ready, loading, beginScheduleLoad, preloadedSchedule]);
+  }, [schedulePreloadFingerprint, scheduleConnectionKey, data?.credential_ready, loading, beginScheduleLoad, preloadedSchedule, scheduleGuard, scheduleRefreshing]);
   useEffect(() => {
     if (!schedulePreloadFingerprint) return;
     const refreshIfStale = () => {
@@ -1398,7 +1399,7 @@ function Workspace() {
     void run("sync", true, incremental ? due : undefined);
   };
 
-  async function submitWorkflow(request: WorkflowRequest, actionLabel: string) {
+  async function submitWorkflow(request: WorkflowRequest, actionLabel: string, origin?: "schedule") {
     if (workspaceActionBlocked("workflow", currentActivity()) || !desktop) throw { kind: "conflict", message: "当前有其他操作正在执行或桌面连接不可用，本次尚未发送，请稍后重新检查。" };
     const identity = itemKey({ id: request.item_id } as CachedItem);
     const scope = JSON.stringify([identity, request.action_id]);
@@ -1433,6 +1434,9 @@ function Workspace() {
           ? "（清单刷新未完成，已保留现有内容，可稍后刷新。）"
           : `（本地列表未能刷新：${refresh.message}）`;
         report(`${result.message}${note}`, { kind: resultError?.kind ?? refresh.kind, message: `${result.message}${note}` });
+      }
+      if (origin === "schedule" && result.outcome === "verified" && result.verified) {
+        setScheduleWorkflowRevision((revision) => revision + 1);
       }
       return result;
     } catch (e) {
@@ -1999,7 +2003,12 @@ function Workspace() {
           )}
           {!compact && alerts}
 
-          {view === "schedule" && !compact && <SchedulePage snapshot={data} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit} />}
+          {view === "schedule" && !compact && <SchedulePage snapshot={data} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit}
+            workflow={desktop && data?.credential_ready && data.capabilities?.workflow ? {
+              context: scheduleConnectionKey,
+              busy: workspaceActionBlocked("workflow", activity),
+              submit: (request, label) => submitWorkflow(request, label, "schedule"),
+            } : undefined} />}
 
           {view === "work" && (
             <>

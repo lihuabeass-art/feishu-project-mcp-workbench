@@ -2,12 +2,14 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
-import { loadSnapshot } from "./api";
+import { executeWorkflowAction, getWorkflowActions, loadSnapshot } from "./api";
 import { closeScheduleSession, loadScheduleSession, submitScheduleTargets, type ScheduleRead, type ScheduleWriteResult } from "./scheduleApi";
 
 vi.mock("./api", async (original) => ({
   ...await original<typeof import("./api")>(),
   desktop: true,
+  getWorkflowActions: vi.fn(),
+  executeWorkflowAction: vi.fn(),
   loadSnapshot: vi.fn().mockResolvedValue({ items: [], total: 0, last_success: null, runs: [], sources: [], config_path: "cfg", db_path: "db", credential_ready: true, credential_description: "已配置" }),
 }));
 vi.mock("./scheduleApi", () => ({
@@ -20,6 +22,42 @@ beforeEach(() => {
   localStorage.clear();
   vi.mocked(loadSnapshot).mockResolvedValue({ items: [], total: 0, last_success: null, runs: [], sources: [], config_path: "cfg", db_path: "db", credential_ready: true, credential_description: "已配置" });
   vi.mocked(closeScheduleSession).mockResolvedValue();
+});
+
+it("事项安排的流程确认成功后重新读取排期并保持周视图和节点选择", async () => {
+  const snapshot = await loadSnapshot();
+  vi.mocked(loadSnapshot).mockResolvedValue({ ...snapshot, capabilities: { ...snapshot.capabilities, workflow: true } });
+  const read: ScheduleRead = {
+    sessionId: "before", currentUserId: "me", peopleLoaded: false, readAt: "刚刚", complete: true,
+    sources: [], people: [{ id: "me", name: "本人" }],
+    targets: [{ id: "one", identity: { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal", owner: "me" }, title: "待处理事项", nodeName: "开发", ownerId: "me", ownerIds: ["me"], sourceIds: [], projectName: "空间", typeName: "需求", dates: { start: "2026-11-16", end: "2026-11-17" }, nodeStatus: "doing", mine: true }],
+  };
+  vi.mocked(loadScheduleSession).mockResolvedValueOnce(read).mockResolvedValue({ ...read, sessionId: "after",
+    targets: [{ ...read.targets[0], id: "new-row", title: "核验后事项", nodeStatus: "done" }],
+  });
+  vi.mocked(getWorkflowActions).mockResolvedValueOnce({ version: "v1", actions: [{ id: "node:confirm:n", kind: "node", label: "完成开发", fields: [] }] })
+    .mockResolvedValue({ version: "v2", actions: [] });
+  vi.mocked(executeWorkflowAction).mockResolvedValue({ outcome: "verified", verified: true, message: "流程已完成", request_id: "r", action_id: "node:confirm:n", resynced: true });
+
+  render(<App />);
+  fireEvent.click(await screen.findByText("事项安排"));
+  const nextWeek = await screen.findByRole("button", { name: "下一周" });
+  fireEvent.click(nextWeek);
+  const range = nextWeek.parentElement!.querySelector("strong")!.textContent;
+  fireEvent.click(screen.getByRole("tab", { name: /已排期/ }));
+  fireEvent.click(screen.getAllByRole("button", { name: /待处理事项.*开发/ })[0]);
+  const inspector = within(screen.getByLabelText("排期检查器"));
+  expect(getWorkflowActions).not.toHaveBeenCalled();
+  fireEvent.click(inspector.getByRole("button", { name: "流程操作" }));
+  fireEvent.click(await inspector.findByRole("button", { name: "完成开发" }));
+  const dialog = within(screen.getByRole("dialog", { name: "开发 · 流程操作" }));
+  fireEvent.click(dialog.getByRole("button", { name: "提交" }));
+  const review = within(await dialog.findByRole("region", { name: "提交前二次确认" }));
+  fireEvent.click(review.getByRole("button", { name: /我已核对/ }));
+  fireEvent.click(review.getByRole("button", { name: /确认/ }));
+  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(2));
+  await inspector.findByText("核验后事项");
+  expect(nextWeek.parentElement!.querySelector("strong")!.textContent).toBe(range);
 });
 
 it.each(["success", "partial", "rejected"])("真实页面在后台%s期间编辑与提交交错，保留会话并在后续刷新恢复", async (outcome) => {

@@ -70,7 +70,7 @@ export function projectFilterOptions(items: CachedItem[], catalog: SpaceCatalog[
   return result;
 }
 
-export const itemKey = (item: CachedItem) =>
+export const itemKey = (item: Pick<CachedItem, "id">) =>
   JSON.stringify([
     item.id.project_key,
     item.id.work_item_type_key,

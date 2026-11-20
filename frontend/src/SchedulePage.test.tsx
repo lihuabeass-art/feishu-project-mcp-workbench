@@ -2,8 +2,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { SchedulePage, type ScheduleSessionController } from "./SchedulePage";
-import type { Snapshot } from "./types";
+import { getWorkflowActions } from "./api";
+import { saveWorkflowSkipConfirmation } from "./workflowPreferences";
+import type { Snapshot, WorkflowAction, WorkflowOptions, WorkflowResult } from "./types";
 import { closeScheduleSession, loadSchedulePeople, loadScheduleSession, submitScheduleTargets, type ScheduleRead } from "./scheduleApi";
 const loadCss = async (rel: string) => {
   const fsModule = "node:fs";
@@ -13,6 +16,7 @@ const loadCss = async (rel: string) => {
   return fs.readFileSync(new URL(rel, import.meta.url), "utf8");
 };
 vi.mock("./scheduleApi", () => ({ loadScheduleSession: vi.fn(), loadSchedulePeople: vi.fn(), closeScheduleSession: vi.fn(), submitScheduleTargets: vi.fn() }));
+vi.mock("./api", () => ({ getWorkflowActions: vi.fn() }));
 const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
 const data = (): ScheduleRead => ({ sessionId: "session", currentUserId: "me", readAt: "today", complete: false, sources: [{ id: "s", name: "我的来源", complete: false, error: "部分事项读取失败" }], people: [{ id: "me", name: "本人" }], targets: [{ id: "one", identity, title: "任务一", nodeName: "开发", ownerId: "me", ownerIds: ["me"], sourceIds: ["s"], projectName: "空间", typeName: "需求", dates: { start: "", end: "" }, mine: true }] });
 const projectSnapshot = (read: ScheduleRead): Snapshot => ({
@@ -34,6 +38,98 @@ const confirmSync = () => {
   const dialog = screen.queryByRole("dialog", { name: "核对排期变更并同步" });
   if (dialog) fireEvent.click(within(dialog).getByRole("button", { name: /确认同步/ }));
 };
+
+it("只在显式展开时读取流程，并隔离切换节点后的迟到返回", async () => {
+  const read = data();
+  read.targets.push({ ...read.targets[0], id: "two", identity: { ...identity, node: "n-next" }, nodeName: "后续开发" });
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  let finishFirst!: (options: WorkflowOptions) => void;
+  const firstAction: WorkflowAction = { id: "node:confirm:n", kind: "node", label: "完成开发", fields: [] };
+  const secondAction: WorkflowAction = { id: "node:confirm:n-next", kind: "node", label: "完成后续开发", fields: [] };
+  vi.mocked(getWorkflowActions).mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }));
+  vi.mocked(getWorkflowActions).mockResolvedValue({ version: "v1", actions: [firstAction, secondAction] });
+  const consumeCandidate = vi.fn((_candidate: ScheduleRead, adopt: boolean) => adopt);
+  const controller: ScheduleSessionController = { read, pending: null, reload: vi.fn(), updateRead: vi.fn(), consumeCandidate };
+  const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload(), workflow: { context: "test", busy: false, submit: vi.fn() } };
+  const page = render(<StrictMode><SchedulePage {...props} preloadedSession={controller} /></StrictMode>);
+
+  await screen.findByLabelText("今日问候");
+  expect(getWorkflowActions).not.toHaveBeenCalled();
+  fireEvent.click(screen.getAllByRole("button", { name: /任务一.*开发/ })[0]);
+  const inspector = within(screen.getByLabelText("排期检查器"));
+  expect(getWorkflowActions).not.toHaveBeenCalled();
+  fireEvent.click(inspector.getByRole("button", { name: "流程操作" }));
+  expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith({ project_key: "p", work_item_type_key: "t", work_item_id: "i" }, true);
+  const candidate = { ...read, sessionId: "background" };
+  page.rerender(<StrictMode><SchedulePage {...props} preloadedSession={{ ...controller, candidate }} /></StrictMode>);
+  expect(consumeCandidate).toHaveBeenCalledWith(candidate, false);
+  expect((inspector.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
+  page.rerender(<StrictMode><SchedulePage {...props} preloadedSession={controller} /></StrictMode>);
+  fireEvent.click(inspector.getByRole("button", { name: /后续开发/ }));
+  expect(getWorkflowActions).toHaveBeenCalledTimes(1);
+  expect(inspector.queryByText("正在读取可用动作…")).toBeNull();
+  fireEvent.click(inspector.getByRole("button", { name: "流程操作" }));
+  await inspector.findByRole("button", { name: "完成后续开发" });
+  await act(async () => { finishFirst({ version: "old", actions: [firstAction] }); });
+  expect(inspector.queryByRole("button", { name: "完成开发" })).toBeNull();
+  expect(inspector.getByRole("button", { name: "完成后续开发" })).toBeTruthy();
+});
+
+it("单节点可填写并二次确认，保留排期草稿且仅提交当前流程差异", async () => {
+  localStorage.clear();
+  saveWorkflowSkipConfirmation(true);
+  const action: WorkflowAction = { id: "node:confirm:n", kind: "node", label: "完成开发", fields: [
+    { key: "doc", label: "设计文档", kind: "text", required: true, initial_value: "云端设计" },
+    ...[
+      { property: "estimate_start_date", label: "开始日期", initial_value: "2026-11-25" },
+      { property: "estimate_end_date", label: "结束日期", initial_value: "2026-11-26" },
+    ].map(({ property, label, initial_value }) => ({
+      key: JSON.stringify({ Schedule: { property, owner: null } }), label,
+      kind: "date" as const, required: true, initial_value, scope: "node" as const,
+    })),
+  ] };
+  const result: WorkflowResult = { outcome: "verified", verified: true, message: "已完成", request_id: "r", action_id: action.id, resynced: true };
+  const submit = vi.fn().mockResolvedValue(result);
+  vi.mocked(getWorkflowActions).mockResolvedValue({ version: "v1", action_versions: { [action.id]: "node-v1" }, actions: [action] });
+  try {
+    render(<SchedulePage onGuardChange={vi.fn()} requestReload={(reload) => reload()}
+      workflow={{ context: "test", busy: false, submit }} />);
+    fireEvent.click(await screen.findByText("任务一"));
+    const inspector = within(screen.getByLabelText("排期检查器"));
+    fireEvent.click(inspector.getByRole("button", { name: "今天" }));
+    const trigger = inspector.getByRole("button", { name: "流程操作" });
+    fireEvent.click(trigger);
+    fireEvent.click(await inspector.findByRole("button", { name: "完成开发" }));
+    const form = () => screen.getByRole("dialog", { name: "开发 · 流程操作" });
+    const dialog = within(form());
+    expect(dialog.getByText(/此节点有未同步的排期草稿/)).toBeTruthy();
+    fireEvent.change(dialog.getByLabelText(/设计文档/), { target: { value: "更新后的设计" } });
+    const heading = dialog.getByRole("heading", { name: "开发 · 流程操作" });
+    const wheel = createEvent.wheel(heading, { deltaY: 60, cancelable: true });
+    fireEvent(heading, wheel);
+    expect(wheel.defaultPrevented).toBe(true);
+    fireEvent.keyDown(form(), { key: "Escape" });
+    expect(document.activeElement).toBe(trigger);
+    fireEvent.click(inspector.getByRole("button", { name: "完成开发" }));
+    const reopened = within(form());
+    expect((reopened.getByLabelText(/设计文档/) as HTMLInputElement).value).toBe("更新后的设计");
+    fireEvent.click(reopened.getByRole("button", { name: "提交" }));
+    const review = within(await reopened.findByRole("region", { name: "提交前二次确认" }));
+    expect(review.getByText("云端设计")).toBeTruthy();
+    expect(review.getByText("更新后的设计")).toBeTruthy();
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.click(review.getByRole("button", { name: /我已核对/ }));
+    fireEvent.click(review.getByRole("button", { name: /确认/ }));
+    await waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      action_id: "node:confirm:n", version: "node-v1", fields: { doc: "更新后的设计" },
+    }), "完成开发"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "开发 · 流程操作" })).toBeNull());
+    expect(inspector.getByText("本地草稿")).toBeTruthy();
+    expect(submitScheduleTargets).not.toHaveBeenCalled();
+  } finally {
+    localStorage.clear();
+  }
+});
 
 it("按人待排期显示各节点停留时间，隐藏重复操作说明和权限说明", async () => {
   const read = data();

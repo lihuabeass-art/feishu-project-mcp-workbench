@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowUpRight,
@@ -19,6 +19,9 @@ import { DateRangePicker } from "./DateRangePicker";
 import { Select } from "./Select";
 import { ExternalLink } from "./ExternalLink";
 import { useScrollIsolation } from "./useScrollIsolation";
+import { nodeWorkflowActionIds, Workflow, type WorkflowItem, type WorkflowSubmit } from "./Workflow";
+import { draftKey, readDraft } from "./workflowDrafts";
+import { useWorkflowSubmissions, workflowSubmissions } from "./workflowSubmissions";
 import type { Snapshot } from "./types";
 import { asError, itemKey, missingProject, projectFilterOptions, relatedProjectKey } from "./model";
 import { readFailureMessage } from "./readFeedback";
@@ -53,6 +56,26 @@ import "./schedule.css";
 type Entry = ScheduleTarget & { record: ScheduleRecord; resultMessage?: string | null; resultWarning?: string | null };
 type Guard = { dirty: boolean; busy: boolean; uncertain: boolean; interacting?: boolean };
 type Drag = { id: string; kind: "new" | "move" | "start" | "end"; grabbed: string };
+
+function workflowItemFor(entry: Entry): WorkflowItem {
+  return {
+    id: {
+      project_key: entry.identity.project,
+      work_item_type_key: entry.identity.type,
+      work_item_id: entry.identity.item,
+    },
+    name: entry.record.title,
+  };
+}
+
+function nodeWorkflowNeedsVerification(entry: Entry) {
+  const identity = itemKey(workflowItemFor(entry));
+  return nodeWorkflowActionIds(entry.identity.node).some((id) => {
+    const key = draftKey(identity, id);
+    if (workflowSubmissions.has(key)) return true;
+    try { return !!readDraft(key)?.pending; } catch { return false; }
+  });
+}
 
 export interface ScheduleSessionController {
   read: ScheduleRead | null;
@@ -269,11 +292,13 @@ export function SchedulePage({
   requestReload,
   snapshot,
   preloadedSession,
+  workflow,
 }: {
   onGuardChange: (guard: Guard) => void;
   requestReload: (reload: () => void) => void;
   snapshot?: Snapshot | null;
   preloadedSession?: ScheduleSessionController;
+  workflow?: { context: string; busy: boolean; submit: WorkflowSubmit };
 }) {
   const initialRead = preloadedSession?.read || null;
   const [epoch, setEpoch] = useState(0);
@@ -291,9 +316,16 @@ export function SchedulePage({
   const forceResetRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const submittingScheduleNodes = useRef(new Set<string>());
   const [report, setReport] = useState("");
   const [successToast, setSuccessToast] = useState<{ id: number; accepted: number } | null>(null);
   const [selected, setSelected] = useState("");
+  const [workflowSelection, setWorkflowSelection] = useState("");
+  const [workflowEditorOpen, setWorkflowEditorOpen] = useState(false);
+  const [workflowLoading, setWorkflowLoading] = useState(false);
+  const workflowPanelId = useId();
+  const workflowTrigger = useRef<HTMLButtonElement>(null);
+  useWorkflowSubmissions();
   const [week, setWeek] = useState(() => monday(today()));
   const [daySpan, setDaySpan] = useState<7 | 14>(7);
   const [view, setView] = useState<"mine" | "people">("mine");
@@ -309,6 +341,7 @@ export function SchedulePage({
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [poolTab, setPoolTab] = useState<"pending" | "outside">("pending");
   const [reviewOpen, setReviewOpen] = useState(false);
+  const scheduleReviewBlockedIds = useRef("");
   const [hoveredId, setHoveredId] = useState("");
   const [preview, setPreview] = useState<{ id: string; start: string; end: string } | null>(null);
   const drag = useRef<Drag | null>(null);
@@ -319,6 +352,7 @@ export function SchedulePage({
   const reviewScrollRef = useScrollIsolation(reviewBackdropRef);
 
   const currentToday = today();
+  const workflowInteraction = workflowEditorOpen || workflowLoading;
   const dirty = entries.some(scheduleChanged);
   const uncertain = entries.some((entry) => entry.result === "uncertain");
   const persistentWarnings = Array.from(new Set(entries.flatMap((entry) =>
@@ -335,8 +369,8 @@ export function SchedulePage({
   const frozenNodes = new Set(entries.filter((entry) => entry.result === "uncertain").map(nodeKey));
 
   useLayoutEffect(() => {
-    onGuardChange({ dirty, busy, uncertain, ...(reviewOpen || dragging || peopleLoading || datePickerOpen ? { interacting: true } : {}) });
-  }, [dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen, onGuardChange]);
+    onGuardChange({ dirty, busy, uncertain, ...(reviewOpen || dragging || peopleLoading || datePickerOpen || workflowInteraction ? { interacting: true } : {}) });
+  }, [dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen, workflowInteraction, onGuardChange]);
   useLayoutEffect(() => () => preloadedSession?.endInteraction?.(), []);
 
   useEffect(() => {
@@ -490,7 +524,7 @@ export function SchedulePage({
 
   useLayoutEffect(() => {
     if (!preloadedSession) return;
-    const protectedInteraction = dirty || busy || busyRef.current || uncertain || reviewOpen || dragging || peopleLoading || datePickerOpen;
+    const protectedInteraction = dirty || busy || busyRef.current || uncertain || reviewOpen || dragging || peopleLoading || datePickerOpen || workflowInteraction;
     const next = preloadedSession.candidate ?? preloadedSession.read;
     if (preloadedSession.candidate && preloadedSession.consumeCandidate?.(preloadedSession.candidate, !protectedInteraction) === false) return;
     if (protectedInteraction) return;
@@ -542,7 +576,7 @@ export function SchedulePage({
         active = false;
       };
     }
-  }, [preloadedSession?.candidate, preloadedSession?.read, preloadedSession?.pending, dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen]);
+  }, [preloadedSession?.candidate, preloadedSession?.read, preloadedSession?.pending, dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen, workflowInteraction]);
 
   const people = useMemo(
     () =>
@@ -947,6 +981,16 @@ export function SchedulePage({
       : outside.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
   const selectedEntry = visible.find((entry) => entry.id === selected);
+  const selectedNodeKey = selectedEntry ? nodeKey(selectedEntry) : "";
+  const workflowKey = workflow && selectedEntry && selectedEntry.identity.node.trim() &&
+    selectedEntry.identity.project.trim() && selectedEntry.identity.type.trim() && selectedEntry.identity.item.trim()
+    ? JSON.stringify([workflow.context, selectedNodeKey]) : "";
+  const workflowOpen = !!workflowKey && workflowSelection === workflowKey;
+  useLayoutEffect(() => { setWorkflowSelection(""); }, [workflowKey]);
+  const nodeHasScheduleDraft = workflowOpen && entries.some((entry) => nodeKey(entry) === selectedNodeKey && scheduleChanged(entry));
+  const workflowWriteBlocked = frozenNodes.has(selectedNodeKey)
+    ? "此节点的排期提交结果待核实。请先核对飞书排期。"
+    : busy && submittingScheduleNodes.current.has(selectedNodeKey) ? "此节点的排期正在同步，请等待结果。" : undefined;
   const siblingNodes = (() => {
     if (!selectedEntry) return [];
     const targetItemKey = itemIdentityKey(selectedEntry);
@@ -1008,9 +1052,11 @@ export function SchedulePage({
     });
   })();
 
-  const changedEntries = entries.filter(
-    (entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)),
-  );
+  const pendingScheduleChanges = entries.filter((entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)));
+  const blockedScheduleIds = new Set(pendingScheduleChanges.filter(nodeWorkflowNeedsVerification).map((entry) => entry.id));
+  const blockedScheduleSignature = JSON.stringify([...blockedScheduleIds]);
+  const changedEntries = pendingScheduleChanges.filter((entry) => !blockedScheduleIds.has(entry.id));
+  const changedEntryIds = JSON.stringify(changedEntries.map((entry) => entry.id));
   const reviewScope = entries.filter(
     (entry) =>
       (isEditableTarget(entry) && isCurrentSchedulablePoolNode(entry)) ||
@@ -1025,8 +1071,12 @@ export function SchedulePage({
   const unchangedEntries = reviewScope.filter((entry) => !scheduleChanged(entry));
 
   useEffect(() => {
-    if (reviewOpen && changedEntries.length === 0) setReviewOpen(false);
-  }, [reviewOpen, changedEntries.length]);
+    if (!reviewOpen) return;
+    if (scheduleReviewBlockedIds.current !== blockedScheduleSignature) {
+      setReviewOpen(false);
+      setReport("可同步的排期范围已变化，请重新核对。");
+    } else if (changedEntries.length === 0) setReviewOpen(false);
+  }, [reviewOpen, blockedScheduleSignature, changedEntries.length]);
 
   useEffect(() => {
     if (!reviewOpen) return;
@@ -1297,9 +1347,7 @@ export function SchedulePage({
 
   function openReviewOrValidate() {
     if (busyRef.current || readUnavailable) return;
-    const changed = entries.filter(
-      (entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)),
-    );
+    const changed = changedEntries;
     const invalid = changed
       .map((entry) => ({ entry, message: scheduleValidation(entry) }))
       .filter((entry) => entry.message);
@@ -1310,14 +1358,18 @@ export function SchedulePage({
       setReport(`无法同步：${invalid[0].entry.record.title}：${invalid[0].message}`);
       return;
     }
+    scheduleReviewBlockedIds.current = blockedScheduleSignature;
     setReviewOpen(true);
   }
 
   async function submit() {
     if (busyRef.current || readUnavailable) return;
-    const changed = entries.filter(
-      (entry) => scheduleChanged(entry) && !frozenNodes.has(nodeKey(entry)),
-    );
+    const changed = pendingScheduleChanges.filter((entry) => !nodeWorkflowNeedsVerification(entry));
+    if (JSON.stringify(changed.map((entry) => entry.id)) !== changedEntryIds) {
+      setReviewOpen(false);
+      setReport("部分节点的流程操作正在提交或待核实，请重新核对可同步的排期。");
+      return;
+    }
     const invalid = changed
       .map((entry) => ({ entry, message: scheduleValidation(entry) }))
       .filter((entry) => entry.message);
@@ -1337,6 +1389,7 @@ export function SchedulePage({
     }));
     setReviewOpen(false);
     busyRef.current = true;
+    submittingScheduleNodes.current = new Set(changed.map(nodeKey));
     onGuardChange({ dirty: true, busy: true, uncertain });
     setBusy(true);
     setSuccessToast(null);
@@ -2442,7 +2495,7 @@ export function SchedulePage({
                           </div>
                         )}
                       </div>
-                      {siblingNodes.length > 1 && (
+                      {(siblingNodes.length > 1 || workflowKey) && (
                         <div
                           className="schedule-sibling-nodes"
                           role="group"
@@ -2480,10 +2533,35 @@ export function SchedulePage({
                               );
                             })}
                           </div>
+                          {workflowKey && workflow && (
+                            <>
+                              <div className="schedule-node-workflow-entry">
+                                <button ref={workflowTrigger} type="button" className="secondary" aria-expanded={workflowOpen}
+                                  aria-controls={workflowOpen ? workflowPanelId : undefined}
+                                  onClick={() => setWorkflowSelection(workflowOpen ? "" : workflowKey)}>
+                                  流程操作 <ChevronDown size={13} aria-hidden="true" />
+                                </button>
+                              </div>
+                              {workflowOpen && <div className="schedule-node-workflow" id={workflowPanelId}>
+                                <Workflow key={workflowKey} item={workflowItemFor(selectedEntry)} available busy={workflow.busy}
+                                  submit={workflow.submit} onEditorChange={setWorkflowEditorOpen} onInitialReadChange={setWorkflowLoading}
+                                  scheduleNode={{
+                                    id: selectedEntry.identity.node,
+                                    name: selectedEntry.record.nodeName || selectedEntry.record.title,
+                                    triggerRef: workflowTrigger,
+                                    draftNotice: nodeHasScheduleDraft ? "此节点有未同步的排期草稿。草稿会保留，请核对本次流程使用的日期。" : undefined,
+                                    writeBlocked: workflowWriteBlocked,
+                                  }} />
+                              </div>}
+                            </>
+                          )}
                         </div>
                       )}
                       {view === "mine" && (
                         <section className="schedule-editor-dates" aria-label="节点排期">
+                          {scheduleChanged(selectedEntry) && nodeWorkflowNeedsVerification(selectedEntry) && (
+                            <p className="hint">此节点的流程操作正在提交或待核实，排期草稿已保留。</p>
+                          )}
                           <div className="schedule-editor-section-head">
                             <strong>节点排期</strong>
                             {validSchedule(selectedEntry.dates) && (

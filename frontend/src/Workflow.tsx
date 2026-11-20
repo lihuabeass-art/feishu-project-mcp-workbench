@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import type { CSSProperties } from "react";
-import { ArrowUpRight, Check, CircleAlert, ClipboardCheck } from "lucide-react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
+import { createPortal } from "react-dom";
+import { ArrowUpRight, Check, CircleAlert, ClipboardCheck, X } from "lucide-react";
 import { getWorkflowActions } from "./api";
 import { asError, itemKey } from "./model";
 import { ExternalLink, openExternalUrl } from "./ExternalLink";
@@ -19,6 +20,8 @@ import { hasInvalidLocalCreationImages, localCreationImageIds, replaceCreationIm
 import { layoutFields, ownerCell, scheduleDatePairs, type ScheduleDatePair } from "./workflowLayout";
 import { loadWorkflowSkipConfirmation, useWorkflowSkipConfirmation } from "./workflowPreferences";
 import { useWorkflowSubmissions, workflowSubmissions as submissions } from "./workflowSubmissions";
+import { useScrollIsolation } from "./useScrollIsolation";
+import { readFailureMessage } from "./readFeedback";
 import {
   changedFields,
   draftKey,
@@ -37,6 +40,10 @@ import type {
 } from "./types";
 
 type Field = WorkflowAction["fields"][number];
+export type WorkflowItem = Pick<CachedItem, "id" | "name" | "detail_revision" | "updated_at_ms">;
+export type WorkflowSubmit = (request: WorkflowRequest, actionLabel: string) => Promise<WorkflowResult | undefined>;
+const nodeActionKinds = ["confirm", "rollback", "progress", "schedule"];
+export const nodeWorkflowActionIds = (nodeId: string) => nodeActionKinds.map((kind) => `node:${kind}:${nodeId}`);
 const canSkipConfirmation = (candidate: WorkflowAction) =>
   candidate.kind === "state" ||
   candidate.id.startsWith("node:confirm:") ||
@@ -60,11 +67,17 @@ export function Workflow({
   available,
   busy,
   submit,
+  scheduleNode,
+  onEditorChange,
+  onInitialReadChange,
 }: {
-  item: CachedItem;
+  item: WorkflowItem;
   available: boolean;
   busy: boolean;
-  submit: (request: WorkflowRequest, actionLabel: string) => Promise<WorkflowResult | undefined>;
+  submit: WorkflowSubmit;
+  scheduleNode?: { id: string; name: string; triggerRef: RefObject<HTMLButtonElement | null>; draftNotice?: string; writeBlocked?: string };
+  onEditorChange?: (open: boolean) => void;
+  onInitialReadChange?: (loading: boolean) => void;
 }) {
   const skipConfirmation = useWorkflowSkipConfirmation();
   const [options, setOptions] = useState<WorkflowOptions | null>(null);
@@ -91,11 +104,24 @@ export function Workflow({
   const fieldId = useId();
   const workflowRef = useRef<HTMLElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const editorHeading = useRef<HTMLHeadingElement>(null);
+  const editorBackdrop = useScrollIsolation();
+  const nodeId = scheduleNode?.id;
+  const scheduleTrigger = scheduleNode?.triggerRef;
+  const actionIds = nodeId ? nodeWorkflowActionIds(nodeId) : undefined;
+  const editorOpen = !!action && !!options;
+  const writeBlocked = scheduleNode?.writeBlocked;
+  const writeBlockedRef = useRef(writeBlocked);
+  writeBlockedRef.current = writeBlocked;
+  function scopedOptions(source: WorkflowOptions) {
+    return actionIds ? { ...source, actions: source.actions.filter((candidate) => actionIds.includes(candidate.id)) } : source;
+  }
   const identity = itemKey(item);
   const executingAction = !!action && executing.has(draftKey(identity, action.id));
   const identityRef = useRef(identity);
   identityRef.current = identity;
   const optionsIdentity = useRef(identity);
+  const scheduleRead = useRef<{ identity: string; nodeId: string; revision: number; request: Promise<WorkflowOptions> } | null>(null);
   const manualFillReturn = useRef<string | null>(null);
   const manualFillEpoch = useRef(0);
   const reads = useRef(0);
@@ -144,16 +170,27 @@ export function Workflow({
     if (!available || !item.id.project_key || !item.id.work_item_type_key)
       return;
     setLoading(true);
-    void getWorkflowActions(item.id)
+    let request: Promise<WorkflowOptions>;
+    if (nodeId) {
+      const current = scheduleRead.current;
+      if (current?.identity === identity && current.nodeId === nodeId && current.revision === revision) {
+        request = current.request;
+      } else {
+        request = getWorkflowActions(item.id, true);
+        scheduleRead.current = { identity, nodeId, revision, request };
+      }
+    } else request = getWorkflowActions(item.id);
+    void request
       .then((v) => {
         if (active) {
           optionsIdentity.current = identity;
-          rememberPendingActions(v);
-          setOptions(v);
+          const scoped = scopedOptions(v);
+          rememberPendingActions(scoped);
+          setOptions(scoped);
         }
       })
       .catch((e) => {
-        if (active) setError(asError(e).message);
+        if (active) setError(nodeId ? `读取流程操作失败：${readFailureMessage(asError(e).kind)}` : asError(e).message);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -162,18 +199,40 @@ export function Workflow({
       active = false;
       reads.current += 1;
     };
-  }, [identity, available, revision]);
+  }, [identity, available, revision, nodeId]);
 
   useEffect(() => {
     manualFillEpoch.current += 1;
     manualFillReturn.current = null;
-    knownPendingActions.current = { identity, actions: new Map() };
+    const actions = new Map<string, string>();
+    if (actionIds) {
+      for (const id of actionIds) {
+        if (pendingDraftFor({ id })) actions.set(id, scheduleNode!.name);
+      }
+    }
+    knownPendingActions.current = { identity, actions };
     setRejectedConflictActions([]);
     return () => {
       manualFillEpoch.current += 1;
       manualFillReturn.current = null;
     };
-  }, [identity]);
+  }, [identity, nodeId]);
+
+  useLayoutEffect(() => {
+    if (!nodeId || !editorOpen) return;
+    onEditorChange?.(true);
+    editorHeading.current?.focus();
+    return () => {
+      onEditorChange?.(false);
+      if (scheduleTrigger?.current?.isConnected) scheduleTrigger.current.focus();
+    };
+  }, [nodeId, editorOpen, onEditorChange, scheduleTrigger]);
+
+  useLayoutEffect(() => {
+    if (!loading || !onInitialReadChange) return;
+    onInitialReadChange(true);
+    return () => onInitialReadChange(false);
+  }, [loading, onInitialReadChange]);
 
   useLayoutEffect(() => {
     const workflow = workflowRef.current;
@@ -379,9 +438,9 @@ export function Workflow({
   }
 
   async function readCurrentActions(actionId: string | undefined, isCurrent: () => boolean) {
-    let latest = await getWorkflowActions(item.id, true);
+    let latest = scopedOptions(await getWorkflowActions(item.id, true));
     if (actionId && !latest.actions.some((candidate) => candidate.id === actionId) && isCurrent())
-      latest = await getWorkflowActions(item.id, true);
+      latest = scopedOptions(await getWorkflowActions(item.id, true));
     return actionId && latest.action_versions?.[actionId]
       ? { ...latest, version: latest.action_versions[actionId] }
       : latest;
@@ -628,7 +687,7 @@ export function Workflow({
       setConflicts(merged.conflicts);
       setReview(null);
       setDraftStatus("草稿已保存在本机");
-      const skipReview = canSkipConfirmation(action) && loadWorkflowSkipConfirmation();
+      const skipReview = !nodeId && canSkipConfirmation(action) && loadWorkflowSkipConfirmation();
       const missing = action.fields.find(
         (field) => field.required && workflowValueEmpty(field, merged.fields[field.key]),
       );
@@ -714,6 +773,10 @@ export function Workflow({
     action: WorkflowAction,
     draft: ReturnType<typeof reconcileDraft>,
   ) {
+    if (writeBlockedRef.current) {
+      setError(writeBlockedRef.current);
+      return;
+    }
     const { fields, base_fields: baseFields, field_labels: fieldLabels, conflicts } = draft;
     const origin = identity,
       key = draftKey(identity, action.id);
@@ -1334,12 +1397,52 @@ export function Workflow({
         knownPendingActions.current.actions.set(candidate.id, candidate.label);
     }
   }
+  function closeScheduleEditor() {
+    if (navigationLocked) return;
+    if (!blocked && !preserveEditorDraft(identity, editor.current)) return;
+    reads.current += 1;
+    backgroundRead.current = null;
+    setAction(null);
+    setReview(null);
+  }
+
+  function renderEditor(form: ReactNode) {
+    if (!scheduleNode) return form;
+    return createPortal(
+      <div ref={editorBackdrop} className="schedule-dialog-backdrop scroll-isolation-boundary">
+        <div className="schedule-dialog schedule-review-dialog schedule-workflow-dialog" role="dialog" aria-modal="true"
+          aria-labelledby={`${fieldId}-schedule-title`} onKeyDown={(event) => {
+            if (event.key === "Escape" && !event.defaultPrevented) closeScheduleEditor();
+            if (event.key !== "Tab" || event.defaultPrevented || !event.currentTarget.contains(event.target as Node)) return;
+            const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+              'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"], [contenteditable="true"]',
+            )).filter((element) => element.getClientRects().length > 0 && element.tabIndex >= 0);
+            const boundary = event.shiftKey ? controls[0] : controls.at(-1);
+            if (!boundary || event.target === boundary || (event.shiftKey && event.target === editorHeading.current)) {
+              event.preventDefault();
+              (event.shiftKey ? controls.at(-1) : controls[0])?.focus();
+            }
+          }}>
+          <div className="schedule-review-header">
+            <div>
+              <h2 id={`${fieldId}-schedule-title`} ref={editorHeading} tabIndex={-1}>{scheduleNode.name} · 流程操作</h2>
+              <p>{item.name || item.id.work_item_id}</p>
+            </div>
+            <button type="button" className="icon-button" disabled={navigationLocked}
+              aria-label="关闭流程表单" onClick={closeScheduleEditor}><X size={16} /></button>
+          </div>
+          {form}
+        </div>
+      </div>,
+      document.body,
+    );
+  }
   return (
     <section
       className={`detail-section workflow${action && options ? " workflow-active" : ""}`}
       ref={workflowRef}
     >
-      <h3>流程操作</h3>
+      {!nodeId && <h3>流程操作</h3>}
       {!available ? (
         <p className="hint">当前版本暂不支持流程操作，请更新桌面应用后重试。</p>
       ) : !item.id.project_key || !item.id.work_item_type_key ? (
@@ -1473,7 +1576,7 @@ export function Workflow({
               </button>
             </>
           )}
-          {action && options && (
+          {action && options && renderEditor(
             <form
               className="workflow-editor"
               onSubmit={(e) => {
@@ -1488,6 +1591,8 @@ export function Workflow({
               >
                 <div className="workflow-scroll" ref={contentRef}>
                   {!review && <strong>{action.label}</strong>}
+                  {scheduleNode?.draftNotice && pairs.length > 0 && <p className="workflow-warning">{scheduleNode.draftNotice}</p>}
+                  {writeBlocked && <p className="workflow-warning" role="status">{writeBlocked}</p>}
                   {!review && action.description && (
                     <p className="hint">{action.description}</p>
                   )}
@@ -1717,7 +1822,7 @@ export function Workflow({
                       <p className="draft-status" role="status">
                         {draftStatus}
                       </p>
-                      {skipConfirmation && canSkipConfirmation(action) && (
+                      {!nodeId && skipConfirmation && canSkipConfirmation(action) && (
                         <p className="workflow-warning">
                           已关闭流程操作二次确认，点击「{progressOnly ? "同步进度" : scheduleOnly ? "同步日期" : "提交"}」将直接执行。
                         </p>
@@ -1728,6 +1833,7 @@ export function Workflow({
                           className="secondary"
                           disabled={navigationLocked}
                           onClick={() => {
+                            if (nodeId) { closeScheduleEditor(); return; }
                             reads.current += 1;
                             backgroundRead.current = null;
                             setAction(null);
@@ -1739,6 +1845,7 @@ export function Workflow({
                           className="primary"
                           disabled={
                             locked ||
+                            !!writeBlocked ||
                             blocked ||
                             rejectedConflict ||
                             !!action.disabled_reason ||
@@ -1809,7 +1916,7 @@ export function Workflow({
                         <button
                           type="button"
                           className="primary"
-                          disabled={locked || !acknowledged || blocked || rejectedConflict || !!action.requires_feishu}
+                          disabled={locked || !!writeBlocked || !acknowledged || blocked || rejectedConflict || !!action.requires_feishu}
                           onClick={() => void confirm()}
                         >
                           {pending || executingAction ? "正在提交…" : confirmLabel}
