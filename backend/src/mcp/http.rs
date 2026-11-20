@@ -31,7 +31,7 @@ pub struct HttpClient(reqwest::Client);
 impl HttpClient {
     pub fn new() -> Result<Self, reqwest::Error> {
         // 写操作的重放只能由业务幂等链路决定，HTTP 层不自动重试。
-        reqwest::Client::builder()
+        crate::system_proxy::configure(reqwest::Client::builder())
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(30))
             .build()

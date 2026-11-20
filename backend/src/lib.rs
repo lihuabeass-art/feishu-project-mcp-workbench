@@ -27,6 +27,7 @@ pub mod detail;
 mod diagnostics;
 mod item_access;
 mod remote;
+mod system_proxy;
 pub mod field_images;
 pub mod link_metadata;
 pub mod source_query;

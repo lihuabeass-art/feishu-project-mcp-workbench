@@ -334,7 +334,7 @@ pub fn load(
         }
         None => (url, None),
     };
-    let client = Client::builder()
+    let client = crate::system_proxy::configure(Client::builder())
         .timeout(std::time::Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
         .build()

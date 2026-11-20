@@ -509,7 +509,7 @@ pub(super) fn post_image(ticket: &UploadTicket, image: &CreationImage) -> Result
             "文件上传结果尚未确认，本机文件和草稿已保留，请稍后核对或重新上传",
         )
     };
-    let client = Client::builder()
+    let client = crate::system_proxy::configure(Client::builder())
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
         .connect_timeout(Duration::from_secs(15))
