@@ -704,12 +704,6 @@
   color: var(--on-primary);
 }
 
-.schedule-day-load {
-  font-size: 10px;
-  color: var(--warning-text);
-  font-variant-numeric: tabular-nums;
-}
-
 .schedule-preview {
   margin-left: var(--schedule-label-width);
   padding: 4px 0;
@@ -1595,25 +1589,88 @@
   color: var(--muted);
 }
 
-.schedule-node-workflow-entry {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 4px;
+.schedule-node-workflow {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
 
-.schedule-node-workflow-entry .secondary {
+.schedule-node-workflow-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.schedule-node-workflow-context {
+  flex: 1 1 64px;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.schedule-node-workflow-context strong {
+  color: var(--heading);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.schedule-node-workflow-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 5px;
+  min-height: 29px;
+  margin-inline-start: auto;
+  padding: 3px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface-selected);
+  color: var(--heading);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-.schedule-node-workflow-entry [aria-expanded="true"] svg {
+.schedule-node-workflow-trigger svg {
+  flex-shrink: 0;
+}
+
+.schedule-node-workflow-trigger svg:first-child {
+  color: var(--green);
+}
+
+.schedule-node-workflow-trigger:hover:not(:disabled),
+.schedule-node-workflow-trigger[aria-expanded="true"] {
+  background: var(--surface-selected-hover);
+  border-color: var(--green);
+  filter: none;
+}
+
+.schedule-node-workflow-trigger:active:not(:disabled) {
+  background: var(--surface-tint);
+}
+
+:root[data-appearance="pearl"] .schedule-node-workflow-trigger {
+  background: var(--button-primary-bg);
+}
+
+:root[data-appearance="pearl"] .schedule-node-workflow-trigger:hover:not(:disabled),
+:root[data-appearance="pearl"] .schedule-node-workflow-trigger[aria-expanded="true"] {
+  background: var(--button-primary-hover-bg);
+}
+
+:root[data-appearance="pearl"] .schedule-node-workflow-trigger:active:not(:disabled) {
+  background: var(--button-primary-active-bg);
+}
+
+.schedule-node-workflow-trigger[aria-expanded="true"] .schedule-node-workflow-chevron {
   transform: rotate(180deg);
-}
-
-.schedule-node-workflow {
-  padding-top: 6px;
-  border-top: 1px solid var(--line);
 }
 
 .schedule-node-workflow .detail-section {

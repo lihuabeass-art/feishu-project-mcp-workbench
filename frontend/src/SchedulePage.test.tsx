@@ -97,7 +97,12 @@ it("只在显式展开时读取流程，并隔离切换节点后的迟到返回"
   fireEvent.click(screen.getAllByRole("button", { name: /任务一.*开发/ })[0]);
   const inspector = within(screen.getByLabelText("排期检查器"));
   expect(getWorkflowActions).not.toHaveBeenCalled();
-  fireEvent.click(inspector.getByRole("button", { name: "流程操作" }));
+  const trigger = inspector.getByRole("button", { name: "查看可用流程动作", description: "当前节点 开发" });
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(trigger);
+  const expanded = inspector.getByRole("button", { name: "收起流程动作", description: "当前节点 开发" });
+  expect(expanded.getAttribute("aria-expanded")).toBe("true");
+  expect(document.getElementById(expanded.getAttribute("aria-controls")!)).toBeTruthy();
   expect(getWorkflowActions).toHaveBeenCalledExactlyOnceWith({ project_key: "p", work_item_type_key: "t", work_item_id: "i" }, true);
   const candidate = { ...read, sessionId: "background" };
   page.rerender(<StrictMode><SchedulePage {...props} preloadedSession={{ ...controller, candidate }} /></StrictMode>);
@@ -107,7 +112,7 @@ it("只在显式展开时读取流程，并隔离切换节点后的迟到返回"
   fireEvent.click(inspector.getByRole("button", { name: /后续开发/ }));
   expect(getWorkflowActions).toHaveBeenCalledTimes(1);
   expect(inspector.queryByText("正在读取可用动作…")).toBeNull();
-  fireEvent.click(inspector.getByRole("button", { name: "流程操作" }));
+  fireEvent.click(inspector.getByRole("button", { name: "查看可用流程动作", description: "当前节点 后续开发" }));
   await inspector.findByRole("button", { name: "完成后续开发" });
   await act(async () => { finishFirst({ version: "old", actions: [firstAction] }); });
   expect(inspector.queryByRole("button", { name: "完成开发" })).toBeNull();
@@ -136,7 +141,7 @@ it("单节点可填写并二次确认，保留排期草稿且仅提交当前流�
     fireEvent.click(await screen.findByText("任务一"));
     const inspector = within(screen.getByLabelText("排期检查器"));
     fireEvent.click(inspector.getByRole("button", { name: "今天" }));
-    const trigger = inspector.getByRole("button", { name: "流程操作" });
+    const trigger = inspector.getByRole("button", { name: "查看可用流程动作" });
     fireEvent.click(trigger);
     fireEvent.click(await inspector.findByRole("button", { name: "完成开发" }));
     const form = () => screen.getByRole("dialog", { name: "开发 · 流程操作" });

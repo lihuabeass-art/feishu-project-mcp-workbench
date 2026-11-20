@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  GitBranch,
   Info,
   PanelLeftClose,
   PanelLeftOpen,
@@ -1566,10 +1567,6 @@ export function SchedulePage({
   const activeTodayCount = scheduled.filter(
     (entry) => entry.dates.start <= currentToday && entry.dates.end >= currentToday,
   ).length;
-  const dailyLoads = days.map(
-    (day) =>
-      scheduled.filter((entry) => entry.dates.start <= day && entry.dates.end >= day).length,
-  );
 
   return (
     <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={() => preloadedSession?.onInteraction?.()} onFocusCapture={() => preloadedSession?.onInteraction?.()}>
@@ -2142,12 +2139,11 @@ export function SchedulePage({
                         <small>共 {rows.length} 项</small>
                       </div>
                       <div className="schedule-days">
-                        {days.map((day, index) => {
+                        {days.map((day) => {
                           const weekdayIndex =
                             (new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7;
                           const isWeekend = weekdayIndex >= 5;
                           const isToday = day === currentToday;
-                          const load = dailyLoads[index];
                           return (
                             <div
                               key={day}
@@ -2169,11 +2165,6 @@ export function SchedulePage({
                                 {isToday ? "今天" : `周${weekdays[weekdayIndex]}`}
                               </span>
                               <strong>{day.slice(5)}</strong>
-                              {(view === "people" ? load > 0 : load >= 3) && (
-                                <small className="schedule-day-load" aria-hidden="true">
-                                  {load}项
-                                </small>
-                              )}
                             </div>
                           );
                         })}
@@ -2583,26 +2574,35 @@ export function SchedulePage({
                             })}
                           </div>
                           {workflowKey && workflow && (
-                            <>
-                              <div className="schedule-node-workflow-entry">
-                                <button ref={workflowTrigger} type="button" className="secondary" aria-expanded={workflowOpen}
+                            <div className="schedule-node-workflow">
+                              <div className="schedule-node-workflow-header">
+                                <div className="schedule-node-workflow-context">
+                                  <span id={`${workflowPanelId}-node-label`}>当前节点</span>
+                                  <strong id={`${workflowPanelId}-node`}>{selectedEntry.record.nodeName || selectedEntry.record.title}</strong>
+                                </div>
+                                <button ref={workflowTrigger} type="button" className="schedule-node-workflow-trigger"
+                                  aria-expanded={workflowOpen} aria-describedby={`${workflowPanelId}-node-label ${workflowPanelId}-node`}
                                   aria-controls={workflowOpen ? workflowPanelId : undefined}
                                   onClick={() => setWorkflowSelection(workflowOpen ? "" : workflowKey)}>
-                                  流程操作 <ChevronDown size={13} aria-hidden="true" />
+                                  <GitBranch size={13} aria-hidden="true" />
+                                  {workflowOpen ? "收起流程动作" : "查看可用流程动作"}
+                                  <ChevronDown className="schedule-node-workflow-chevron" size={12} aria-hidden="true" />
                                 </button>
                               </div>
-                              {workflowOpen && <div className="schedule-node-workflow" id={workflowPanelId}>
-                                <Workflow key={workflowKey} item={workflowItemFor(selectedEntry)} available busy={workflow.busy}
-                                  submit={workflow.submit} onEditorChange={setWorkflowEditorOpen} onInitialReadChange={setWorkflowLoading}
-                                  scheduleNode={{
-                                    id: selectedEntry.identity.node,
-                                    name: selectedEntry.record.nodeName || selectedEntry.record.title,
-                                    triggerRef: workflowTrigger,
-                                    draftNotice: nodeHasScheduleDraft ? "此节点有未同步的排期草稿。草稿会保留，请核对本次流程使用的日期。" : undefined,
-                                    writeBlocked: workflowWriteBlocked,
-                                  }} />
-                              </div>}
-                            </>
+                              {workflowOpen && (
+                                <div id={workflowPanelId}>
+                                  <Workflow key={workflowKey} item={workflowItemFor(selectedEntry)} available busy={workflow.busy}
+                                    submit={workflow.submit} onEditorChange={setWorkflowEditorOpen} onInitialReadChange={setWorkflowLoading}
+                                    scheduleNode={{
+                                      id: selectedEntry.identity.node,
+                                      name: selectedEntry.record.nodeName || selectedEntry.record.title,
+                                      triggerRef: workflowTrigger,
+                                      draftNotice: nodeHasScheduleDraft ? "此节点有未同步的排期草稿。草稿会保留，请核对本次流程使用的日期。" : undefined,
+                                      writeBlocked: workflowWriteBlocked,
+                                    }} />
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
                       )}
