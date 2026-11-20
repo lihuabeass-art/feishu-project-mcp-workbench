@@ -120,6 +120,28 @@ it("我的缺陷和每个人员分组均按 P0 到 P4 排序，缺少优先级�
   expect(ordered()).toEqual(expected);
 });
 
+it("两种排期中处理中缺陷置顶，同一状态组内仍按优先级排序", async () => {
+  const defects = [
+    { ...mine, item: "201", title: "待处理零级", status: "待处理", priority: "P0" },
+    { ...mine, item: "202", title: "处理中三级", status: "处理中", priority: "P3" },
+    { ...mine, item: "203", title: "处理中一级", status: "处理中", priority: "P1" },
+    { ...mine, item: "204", title: "待处理一级", status: "待处理", priority: "P1" },
+  ];
+  vi.mocked(invoke).mockImplementation(async (command) => command === "load_schedule_defects"
+    ? { defects, failed_projects: [] } : { targets: [], complete: true });
+  render(<SchedulePage {...props} />);
+  fireEvent.click(await screen.findByRole("tab", { name: "未解决缺陷 4" }));
+  const list = within(screen.getByLabelText("未解决缺陷清单"));
+  const ordered = () => list.getAllByRole("button", { name: /处理中[一三]级|待处理[零一]级/ })
+    .map((item) => item.querySelector("strong")?.textContent);
+  const expected = ["处理中一级", "处理中三级", "待处理零级", "待处理一级"];
+  expect(ordered()).toEqual(expected);
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  expect(ordered()).toEqual(expected);
+  fireEvent.click(screen.getByRole("button", { name: "P1，2 条" }));
+  expect(ordered()).toEqual(["处理中一级", "待处理一级"]);
+});
+
 it("同一人员标识在不同空间保留对应的名字和头像", async () => {
   const peerInOtherSpace = { ...other, project: "other-space", item: "200", title: "另一空间的缺陷",
     owners: [{ id: "peer", name: "另一位同事", avatar: "https://example.com/other-avatar.png" }] };

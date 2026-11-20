@@ -36,8 +36,10 @@ function DefectPriority({ priority }: { priority?: string | null }) {
   return <span className="schedule-defect-priority" data-level={level}>{level === undefined ? priority : `P${level}`}</span>;
 }
 
+const isInProgress = (status: string) => status === "处理中";
+
 function DefectStatus({ status }: { status: string }) {
-  const tone = status === "处理中" ? "active" : status === "挂起" ? "paused"
+  const tone = isInProgress(status) ? "active" : status === "挂起" ? "paused"
     : status === "待处理" || status === "重新打开" ? "pending" : undefined;
   return <span className="schedule-defect-status" data-tone={tone}>{status}</span>;
 }
@@ -123,6 +125,7 @@ export function ScheduleDefectList({ defects, currentUser, team, knownPeople, se
     if (level !== undefined) counts[level] += 1;
   }
   const sorted = defects.filter((defect) => selectedPriority === null || priorityLevel(defect.priority) === selectedPriority).sort((a, b) =>
+    Number(isInProgress(b.status)) - Number(isInProgress(a.status)) ||
     (priorityLevel(a.priority) ?? 5) - (priorityLevel(b.priority) ?? 5) || a.title.localeCompare(b.title, "zh-CN"));
   const renderRow = (defect: ScheduleDefect) => {
     const key = defectKey(defect);
