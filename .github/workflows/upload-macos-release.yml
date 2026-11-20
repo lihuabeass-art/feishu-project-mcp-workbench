@@ -12,15 +12,15 @@ on:
         required: true
         type: string
       release_id:
-        description: "同一 tag 的已有草稿 Release ID"
+        description: "同一 tag 的已有 Release ID（已发布版本仅补传 macOS）"
         required: true
         type: string
       windows_sha256:
-        description: "可选：Windows 正式安装包 SHA256，须与 windows_bytes 同时填写"
+        description: "仅草稿可选：Windows 安装包 SHA256，须与 windows_bytes 同时填写"
         required: false
         type: string
       windows_bytes:
-        description: "可选：Windows 正式安装包字节数，须与 windows_sha256 同时填写"
+        description: "仅草稿可选：Windows 安装包字节数，须与 windows_sha256 同时填写"
         required: false
         type: string
 
@@ -47,7 +47,7 @@ jobs:
       WINDOWS_SHA256: ${{ inputs.windows_sha256 }}
       WINDOWS_BYTES: ${{ inputs.windows_bytes }}
     steps:
-      - name: Verify build, download artifact and upload to existing draft
+      - name: Verify build and upload missing assets to the existing release
         shell: bash
         run: |
           python3 - <<'PY'
@@ -123,12 +123,24 @@ jobs:
           require(run["status"] == "completed" and run["conclusion"] == "success", "Build macOS run must have succeeded")
           require(run["head_sha"] == commit and run["head_branch"] == tag, "Build run must match the exact tag and commit")
 
-          def verify_draft():
+          def read_release():
               release = gh_json(f"{prefix}/releases/{release_id}")
-              require(release["draft"] is True and release["tag_name"] == tag, "Target must remain an existing draft for this tag")
+              require(release["tag_name"] == tag, "Target release must match the exact tag")
+              require(release.get("immutable") is not True, "Target release is immutable")
+              return release
+
+          original_release = read_release()
+          is_draft = original_release["draft"]
+          is_prerelease = original_release["prerelease"]
+          require(is_draft or not windows_sha256, "Windows parts can only be assembled into a draft")
+
+          def verify_target():
+              release = read_release()
+              require(release["draft"] == is_draft and release["prerelease"] == is_prerelease,
+                      "Target release visibility or type changed during upload")
               require(tag_commit() == commit, "Tag commit changed during upload")
 
-          verify_draft()
+          verify_target()
           artifacts = []
           page = 1
           while True:
@@ -154,7 +166,7 @@ jobs:
               metadata = json.loads((root / "release.json").read_text(encoding="utf-8"))
               require(metadata.get("version") == version and metadata.get("tag") == tag
                       and metadata.get("commit") == commit, "Artifact release.json does not match version, tag and commit")
-              names = ["FSTODO.app.tar.gz", f"FSTODO_{version}_universal.dmg"]
+              names = [f"FSTODO_{version}_universal.dmg", "FSTODO.app.tar.gz", "FSTODO.app.tar.gz.sig"]
               files = []
               for name in names:
                   path = root / name
@@ -210,7 +222,7 @@ jobs:
                       verify_asset(matches[0], name, size, digest)
 
               for name, path, size, digest in files:
-                  verify_draft()
+                  verify_target()
                   matches = [asset for asset in pages(f"{prefix}/releases/{release_id}/assets") if asset["name"] == name]
                   require(len(matches) <= 1, f"Duplicate release asset names: {name}")
                   if matches:
@@ -229,5 +241,5 @@ jobs:
                   remote = gh_json(f"{prefix}/releases/assets/{asset_id}")
                   verify_asset(remote, name, size, digest)
                   print(f"Verified remote asset: {name}, bytes={size}, sha256={digest}, state={remote['state']}")
-              verify_draft()
+              verify_target()
           PY

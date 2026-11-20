@@ -5,7 +5,7 @@
 ## GitHub Actions 构建
 
 1. 仅在用户明确要求发版时，先由用户指定版本号，再按[发版流程](release-process.md)确认提交、生成记录并交付 tag。
-2. 推送版本 tag 会触发 **Actions → Build macOS**；手动运行或重跑时填写已有 tag。Windows 使用同一 tag 在本机构建，未打版本 tag 的分支不能发版。
+2. 推送版本 tag 会触发 **Actions → Build macOS**。手动运行时用 `gh workflow run build-macos.yml --ref "$tag" -f "tag=$tag"`，使调度 ref 和输入都指向同一个已有 tag；重跑可直接使用该 tag 的运行记录。Windows 使用同一 tag 构建。
 3. 等待测试、通用应用构建、架构与签名校验成功。
 4. 在本次运行的 **Artifacts** 下载 `FSTODO-版本号-macos-universal`，解压获得 DMG 与 `RELEASE_NOTES.md`。产物保留 14 天，下载并完成安装核验后，将文件直接发给群友；使用者在软件内离线查看记录。
 
@@ -17,7 +17,15 @@
 
 FSTODO 成功读取密钥后，会在当前进程内复用，刷新、检查连接、读取详情和替换 Token 无需再次访问钥匙串，并发读取也共用同一次成功授权。缓存只存在于内存，退出进程后失效；访问失败或密钥无效时不缓存，可在解锁钥匙串或重新授权后重试。
 
-当前包采用 ad-hoc 签名，未使用 Apple Developer ID 签名或公证。首次打开如被 Gatekeeper 拦截，可在「系统设置 → 隐私与安全性」中对 FSTODO 选择「仍要打开」；公开分发前需要补齐 Developer ID 签名与公证。进程内缓存只解决本次运行中的重复访问，安装新的 ad-hoc 构建后，系统仍可能要求重新授权钥匙串；跨版本授权连续性需要稳定的代码签名身份。
+默认构建采用 ad-hoc 签名。首次打开如被 Gatekeeper 拦截，可在「系统设置 → 隐私与安全性」中对 FSTODO 选择「仍要打开」。覆盖安装新的 ad-hoc 构建后，系统可能再次请求钥匙串授权。
+
+公开分发可使用稳定的 Developer ID Application 签名身份和 Apple 公证。要在 GitHub Actions 中启用，在仓库配置 `FSTODO_MACOS_DEVELOPER_ID_SIGNING=true`，并设置以下 Secrets。
+
+- `APPLE_CERTIFICATE` 和 `APPLE_CERTIFICATE_PASSWORD`，对应 Base64 编码的 Developer ID Application `.p12` 证书及其导出密码。
+- `APPLE_SIGNING_IDENTITY`，对应证书的完整名称，以 `Developer ID Application: ` 开头。
+- `APPLE_ID`、`APPLE_PASSWORD` 和 `APPLE_TEAM_ID`，对应 Apple 账号、App 专用密码和团队 ID。
+
+启用后，CI 校验应用的 Developer ID 签名及随包公证票据。由 ad-hoc 版迁移到 Developer ID 版时，首次打开仍需核对钥匙串访问提示。配置详见 [Tauri macOS 签名与公证说明](https://v2.tauri.app/distribute/sign/macos/)。
 
 ## 本机重建
 

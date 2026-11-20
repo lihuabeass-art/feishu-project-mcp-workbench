@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "已由用户确定并推送的版本 tag"
+        description: "当前调度 ref 对应的已有版本 tag"
         required: true
         type: string
 
@@ -106,7 +106,12 @@ jobs:
       - name: Validate tag and generate release notes
         if: env.FSTODO_RELEASE_TAG != ''
         id: notes
-        run: node frontend/scripts/release-notes.mjs --output artifacts/release --github-output "$GITHUB_OUTPUT"
+        run: |
+          if [[ "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "$FSTODO_RELEASE_TAG" ]]; then
+            echo 'Dispatch Build macOS on the release tag with --ref and pass the same tag as input.' >&2
+            exit 1
+          fi
+          node frontend/scripts/release-notes.mjs --output artifacts/release --github-output "$GITHUB_OUTPUT"
       - name: Use generated notes for build
         if: env.FSTODO_RELEASE_TAG != ''
         run: echo "FSTODO_RELEASE_NOTES_FILE=$GITHUB_WORKSPACE/artifacts/release/release.json" >> "$GITHUB_ENV"
@@ -138,13 +143,46 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run build:macos
-      - name: Verify architectures and ad-hoc signature
+          USE_DEVELOPER_ID: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING }}
+          APPLE_CERTIFICATE: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          if [[ "$USE_DEVELOPER_ID" == true ]]; then
+            for credential in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              if [[ -z "${!credential}" ]]; then
+                echo "Developer ID signing is enabled, but $credential is missing." >&2
+                exit 1
+              fi
+            done
+            if [[ "$APPLE_SIGNING_IDENTITY" != "Developer ID Application: "* ]]; then
+              echo "APPLE_SIGNING_IDENTITY must name a Developer ID Application certificate." >&2
+              exit 1
+            fi
+          else
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
+          npm run build:macos
+      - name: Test macOS desktop
+        working-directory: frontend/src-tauri
+        run: |
+          target=$(rustc -vV | sed -n 's/^host: //p')
+          cargo test --locked --release --features tauri/custom-protocol --target "$target"
+      - name: Verify architectures and app signing
         if: env.FSTODO_RELEASE_TAG != ''
+        env:
+          USE_DEVELOPER_ID: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING }}
         run: |
           app=frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/FSTODO.app
           lipo "$app/Contents/MacOS/fstodo-desktop" -verify_arch arm64 x86_64
           codesign --verify --deep --strict --verbose=2 "$app"
+          if [[ "$USE_DEVELOPER_ID" == true ]]; then
+            codesign --display --verbose=4 "$app" 2>&1 | grep '^Authority=Developer ID Application: '
+            xcrun stapler validate "$app"
+          fi
       - name: Collect DMG, release notes and optional signed updater archive
         if: env.FSTODO_RELEASE_TAG != ''
         env:

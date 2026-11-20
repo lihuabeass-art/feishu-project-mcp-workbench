@@ -46,13 +46,13 @@
 5. `Build macOS` 会由 main 或 tag 推送触发；为严格保证顺序，推送前暂时停用该工作流，记录其原状态，再推送已确认代码及 tag。发布中断时恢复原状态；重试时如需再次推送代码或 tag，必须先重新停用并记录原状态，确保 Windows 发布前不会触发 macOS 发版构建。只有 Windows 已发布并确认为 Latest 后才手动启动指定 tag 的 macOS 构建。
 6. 手动运行 `Build Windows`，输入已推送的 tag。工作流使用 GitHub Secrets 中现有 updater 私钥构建签名包，并运行前端和 Windows 后端测试；只有整次运行成功才可使用 Artifact。下载 `FSTODO-<版本>-windows-x64`，核对 run、tag、提交和 `release.json` 一致，保留 NSIS、相邻 `.sig`、`release.json` 和 `RELEASE_NOTES.md`；安装包须包含本项目 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`。
 7. 先核验 Windows 包、签名、版本及许可文件，创建草稿并上传 Windows 安装包、`.sig`、`release.json`、更新说明和许可附件。可发布只包含 `windows-x86_64` 的临时 `latest.json`，其版本、正文、日期、固定 tag URL 和签名来自同一 Windows 构建；验证签名及远端摘要后发布正式 Release 并设为 Latest。阶段性清单没有 macOS 平台项，Mac 客户端在补齐前不能通过该清单更新，应明确告知用户。
-8. 确认 GitHub Latest 指向本版、Windows 文件及签名已上传且摘要一致，匿名下载 Windows 包并核验 SHA256 和签名；之后恢复工作流并手动运行 `Build macOS`，指定相同 tag。不能在确认 Windows 发布前启动 macOS 发版构建。
+8. 确认 GitHub Latest 指向本版、Windows 文件及签名已上传且摘要一致，匿名下载 Windows 包并核验 SHA256 和签名；之后恢复工作流并运行 `gh workflow run build-macos.yml --ref "$tag" -f "tag=$tag"`，其中 `tag` 为同一已推送版本 tag。工作流的调度 ref 和输入都用该 tag，确保后续补传能核对运行记录与构建产物。
 9. CI 检出指定 tag 和完整历史，前端测试、macOS 后端及钥匙串测试、Universal 构建并行运行；仅整次运行所有任务成功后，才能使用其 Artifact。核验 macOS 构建记录与 Windows 的版本、tag、提交一致，并验证 Universal 更新包签名，然后上传 DMG、`.app.tar.gz` 和 `.sig` 到已发布的同一 Release。按[自动更新说明](auto-update.md)生成完整 `latest.json`，上传并核验后替换阶段性清单；不得覆盖已发布的 Windows 安装包。Actions 成功不等于 Mac 实机安装验收。
 10. 未登录 GitHub 验证正式 Release、完整 `latest.json` 及两个固定版本下载地址，完整下载两个更新包并比对 SHA256、执行签名校验，向用户提供 Release 和安装包链接。Windows 用旧安装版本检查真实更新；Mac 分别记录 Actions 构建结果与实机首次安装、覆盖更新、重启及钥匙串结果。未执行的检查明确记为待验收。需要向群友发送文件或消息时，仍须有明确发送指令。
 
-在线更新使用 Tauri 官方 updater 签名校验，自动检查与下载在后台完成，安装仍须用户明确确认；关闭窗口或正常退出不自动安装。macOS 继续使用 ad-hoc 签名，首次安装用 DMG、应用内更新用 Universal `.app.tar.gz`；updater 签名不等于 Apple Developer ID 签名或公证。分发前须核对 Gatekeeper、覆盖安装、重启及钥匙串体验；Windows 须验证旧版到新版的真实安装以及 WebView2 安装行为。macOS 的安装限制见[构建与安装说明](macos试用版构建.md)。
+在线更新使用 Tauri updater 签名校验，自动检查与下载在后台完成，安装仍须用户明确确认；关闭窗口或正常退出不自动安装。macOS 首次安装用 DMG、应用内更新用 Universal `.app.tar.gz`。CI 默认为 ad-hoc 签名，配置 Apple 证书和公证凭证后可启用 Developer ID 签名。分发前须核对 Gatekeeper、覆盖安装、重启及钥匙串体验；Windows 须验证旧版到新版的真实安装以及 WebView2 安装行为。配置和安装限制见[构建与安装说明](macos试用版构建.md)。
 
-本机向 GitHub 上传较大的 macOS 文件发生超时，应保留已发布的 Windows Release 并排查网络；现有 [Upload existing macOS release assets](../.github/workflows/upload-macos-release.yml) 只接受草稿 Release，不能用于已发布的 Release，也不能为绕过限制把正式版退回草稿。
+本机向 GitHub 上传较大的 macOS 文件发生超时，可运行 [Upload existing macOS release assets](../.github/workflows/upload-macos-release.yml)，填入同一 tag、已成功的 macOS 构建运行 ID 和已有 Release ID。工作流向可修改的同一 Release 补传 DMG、更新包及其签名，并核对远端摘要。已存在且摘要一致的文件会被复用，摘要冲突会停止上传。随后按第 9 步生成并发布完整 `latest.json`。启用了不可变发布时，已发布 Release 无法追加附件，须在发布前解决流程配置与 Windows 先发布顺序的冲突。
 
 Windows 安装包上传超时，应保留草稿并排查网络；现有分段重组工作流依赖已成功的 macOS 构建，因此不能用于 Windows 先发布阶段。分段文件仅可作为草稿中转，不得出现在正式 Release。
 
