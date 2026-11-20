@@ -2243,8 +2243,11 @@ export function SchedulePage({
                               <span>
                                 <strong>{primaryEntry.record.title}</strong>
                                 {completedStatus ? (
-                                  <small className="schedule-row-current" title={`事项状态：${completedStatus}`}>
-                                    {completedStatus}
+                                  <small className="schedule-row-current" title={`事项已完成：${completedStatus}`}>
+                                    <span className="schedule-completed-status">
+                                      <Check size={11} strokeWidth={3} aria-hidden="true" />
+                                      <span>{completedStatus}</span>
+                                    </span>
                                   </small>
                                 ) : currentNode && (
                                   <small className="schedule-row-current" title={`当前节点：${currentNode.nodeName}`}>

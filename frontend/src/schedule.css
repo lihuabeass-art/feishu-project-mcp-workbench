@@ -973,6 +973,34 @@
   white-space: nowrap;
 }
 
+.schedule-completed-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 1px 7px 1px 4px;
+  border: 1px solid var(--success-border);
+  border-radius: 999px;
+  background: var(--success-bg);
+  color: var(--heading);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.schedule-completed-status > svg {
+  box-sizing: content-box;
+  flex: none;
+  padding: 1px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--success-text);
+}
+
+.schedule-completed-status > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .schedule-current-node {
   --schedule-node-color: hsl(var(--schedule-node-hue, 155) 44% 44%);
   min-width: 0;

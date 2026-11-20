@@ -2836,6 +2836,9 @@ it("缓存确认事项已完成后，仍在当前排期会话中的行展示终�
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   render(<SchedulePage snapshot={snapshot} onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
   const row = (await screen.findByRole("button", { name: "任务一 · 开发" })).closest(".schedule-row");
-  expect(row?.querySelector(".schedule-row-current")?.textContent).toBe("需求上线");
+  expect(row?.querySelector(".schedule-row-current")?.getAttribute("title")).toBe("事项已完成：需求上线");
+  const badge = row?.querySelector(".schedule-completed-status");
+  expect(badge?.textContent).toBe("需求上线");
+  expect(badge?.querySelector("svg[aria-hidden='true']")).toBeTruthy();
   expect(row?.querySelector(".schedule-current-node")).toBeNull();
 });
