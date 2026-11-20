@@ -139,7 +139,7 @@ pub fn resolve(token_env: &str, token_file: Option<&Path>) -> Result<Credential,
     Err(BackendError::credential(hint))
 }
 
-/// 拒绝放在当前工作目录（典型即仓库目录）里的凭证文件。
+/// 拒绝放在当前工作目录或 Git 仓库内的凭证文件。
 ///
 /// 这是对「凭证不写入仓库」的机器兜底：仓库会被 `git add`、被打包、被贴进 issue，
 /// 凭证文件一旦落在里面，泄露只是时间问题。
@@ -149,14 +149,24 @@ fn reject_unsafe_token_file(path: &Path) -> Result<(), BackendError> {
         .map_err(|e| BackendError::credential(format!("凭证文件 {} 无法定位: {e}", path.display())))?;
 
     let cwd = std::env::current_dir().ok().and_then(|c| c.canonicalize().ok());
-    if let Some(cwd) = cwd {
-        if abs.starts_with(&cwd) {
+    reject_unsafe_token_location(&abs, cwd.as_deref())
+}
+
+fn reject_unsafe_token_location(abs: &Path, cwd: Option<&Path>) -> Result<(), BackendError> {
+    if let Some(cwd) = cwd.filter(|cwd| cwd.parent().is_some()) {
+        if abs.starts_with(cwd) {
             return Err(BackendError::credential(format!(
                 "凭证文件 {} 位于当前工作目录 {} 之内，可能随仓库一起提交；请把文件移到工作目录之外",
                 abs.display(),
                 cwd.display()
             )));
         }
+    }
+    if abs.ancestors().any(|ancestor| ancestor.join(".git").exists()) {
+        return Err(BackendError::credential(format!(
+            "凭证文件 {} 位于 Git 仓库内，可能随仓库一起提交；请把文件移到仓库之外",
+            abs.display()
+        )));
     }
     Ok(())
 }
@@ -251,5 +261,27 @@ mod tests {
         assert_eq!(e.kind(), crate::error::ErrorKind::Credential);
         assert!(e.to_string().contains("当前工作目录"), "应说明位置风险: {e}");
         let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn root_cwd_allows_external_file_but_still_rejects_git_repositories() {
+        let dir = std::env::temp_dir().join(format!("fstodo-cred-root-{}", std::process::id()));
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let external = dir.join("outside-token.txt");
+        let inside = repo.join("token.txt");
+        std::fs::write(&external, "token").unwrap();
+        std::fs::write(&inside, "token").unwrap();
+        // Git worktrees use a .git file, while ordinary repositories use a directory.
+        std::fs::write(repo.join(".git"), "gitdir: elsewhere").unwrap();
+        let external = external.canonicalize().unwrap();
+        let inside = inside.canonicalize().unwrap();
+        let root = external.ancestors().last().unwrap();
+        assert!(reject_unsafe_token_location(&external, Some(root)).is_ok());
+        assert!(reject_unsafe_token_location(&inside, Some(root)).is_err());
+        std::fs::remove_file(repo.join(".git")).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        assert!(reject_unsafe_token_location(&inside, Some(root)).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
