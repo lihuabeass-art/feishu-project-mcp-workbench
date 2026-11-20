@@ -1014,7 +1014,9 @@ export function SchedulePage({
       : pending.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
   // 已排期是稳定清单；日历导航只改变视窗，不改变成员或计数。
-  const outside = visible.filter((entry) => view === "mine" && isEditableTarget(entry) && validSchedule(entry.dates));
+  const outside = visible.filter(
+    (entry) => validSchedule(entry.dates) && (view === "people" || isEditableTarget(entry)),
+  );
   const outsideRows =
     view === "people"
       ? personRows(outside)
@@ -2059,7 +2061,7 @@ export function SchedulePage({
                                     setDragging(false);
                                     setPreview(null);
                                   }}
-                                  onClick={() => setSelected(entry.id)}
+                                  onClick={() => selectPersonRow(entry, owner)}
                                 >
                                   <span className="schedule-pending-head">
                                     <strong>{entry.record.title}</strong>
@@ -2110,7 +2112,7 @@ export function SchedulePage({
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       setWeek(monday(entry.dates.start));
-                                      setSelected(entry.id);
+                                      selectPersonRow(entry, owner);
                                     }}
                                   >
                                     定位该周 ↗

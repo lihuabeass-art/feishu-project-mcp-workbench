@@ -1124,23 +1124,36 @@ it("人员分组在待排池和日历独立折叠，键盘展开并保留选择�
   expect(document.querySelectorAll(".schedule-row[hidden]")).toHaveLength(0);
 });
 
-it("人员排期隐藏只读已排期，跨空间相同人员 ID 的待排分组不串联", async () => {
+it("人员排期计入当前周和其他周的只读排期，跨空间相同人员 ID 的待排分组不串联", async () => {
   const read = data();
   const base = read.targets[0];
   read.targets.push(
     { ...base, id: "other-space", title: "另一空间待排", identity: { ...identity, project: "q" } },
+    { ...base, id: "current", title: "本周任务", identity: { ...identity, item: "current", owner: "other" }, ownerId: "other", ownerIds: ["other"], mine: false, dates: { start: currentWeekDay(0), end: currentWeekDay(0) } },
     { ...base, id: "outside", title: "其他周任务", identity: { ...identity, item: "outside" }, dates: { start: "2020-01-01", end: "2020-01-01" } },
   );
+  read.people.push({ id: "other", name: "同事" });
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
+  expect(screen.getByRole("tab", { name: "已排期 (1)" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getAllByRole("button", { name: "收起本人的待排期，共1项" })[0]);
   expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
   expect(screen.getByRole("button", { name: /另一空间待排/ })).toBeTruthy();
-  fireEvent.click(screen.getByRole("tab", { name: /已排期/ }));
-  expect(screen.getByRole("tab", { name: "已排期 (0)" })).toBeTruthy();
-  expect(screen.getByText("当前筛选下暂无已排期节点")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /其他周任务/ })).toBeNull();
+  fireEvent.click(screen.getByRole("tab", { name: "已排期 (2)" }));
+  const pool = within(document.querySelector<HTMLElement>(".schedule-pending")!);
+  expect(pool.getByRole("button", { name: /本周任务/ }).getAttribute("draggable")).toBe("false");
+  const otherWeekCard = pool.getByRole("button", { name: /其他周任务/ }).closest<HTMLElement>(".schedule-outside-card")!;
+  expect(within(otherWeekCard).queryByRole("button", { name: "排入本周" })).toBeNull();
+  fireEvent.click(within(otherWeekCard).getByRole("button", { name: /定位该周/ }));
+  expect(screen.getByRole("button", { name: /其他周任务 · 开发/ })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "已排期 (2)" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
+  fireEvent.click(screen.getByRole("option", { name: "同事" }));
+  expect(screen.getByRole("tab", { name: "已排期 (1)" })).toBeTruthy();
+  expect(pool.queryByRole("button", { name: /其他周任务/ })).toBeNull();
+  fireEvent.click(screen.getByRole("option", { name: "同事" }));
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "筛选人员" }), { key: "Escape" });
   fireEvent.click(screen.getByRole("tab", { name: /待排期/ }));
   expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
   expect(screen.getByRole("button", { name: /另一空间待排/ })).toBeTruthy();
