@@ -1338,6 +1338,8 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   const outsideTab = screen.getByRole("tab", { name: /已排期/ });
   fireEvent.click(outsideTab);
   const outsideCard = screen.getByRole("button", { name: /三周后专项/ });
+  expect(outsideCard.querySelector(".schedule-current-node.is-pending")?.textContent).toBe("开发");
+  expect(outsideCard.textContent).not.toContain("本人");
   expect(outsideCard.textContent).toContain(`${farStart} ~ ${farEnd}`);
   expect(outsideCard.getAttribute("draggable")).toBe("true");
 

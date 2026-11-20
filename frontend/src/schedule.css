@@ -888,7 +888,7 @@
   vertical-align: 0.12em;
 }
 
-.schedule-pending-item .schedule-current-node.is-pending {
+.schedule-pending-meta .schedule-current-node.is-pending {
   max-width: 100%;
   border-color: var(--line);
   background: transparent;

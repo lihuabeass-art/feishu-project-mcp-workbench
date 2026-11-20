@@ -2072,9 +2072,13 @@ export function SchedulePage({
                                       </span>
                                     )}
                                   </span>
-                                  <span>
-                                    {entry.record.nodeName} · {targetLabel(entry, owner)}
-                                  </span>
+                                  {entry.record.nodeName && (
+                                    <span className="schedule-pending-meta">
+                                      <span className="schedule-current-node is-pending" style={nodeColorStyle(entry.record)}>
+                                        {entry.record.nodeName}
+                                      </span>
+                                    </span>
+                                  )}
                                   <span className="schedule-outside-range">
                                     {entry.dates.start} ~ {entry.dates.end}
                                   </span>
