@@ -381,8 +381,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* 停靠栏触及边界时，继续滚动页面以露出视口外的栏底。 */
   overflow-y: auto;
-  overscroll-behavior: contain;
   flex: 1;
   min-height: 0;
 }
@@ -1449,7 +1449,6 @@
   gap: 8px;
   padding: 16px;
   overflow-y: auto;
-  overscroll-behavior-y: contain;
 }
 
 .schedule-description {
@@ -1628,8 +1627,8 @@
   flex-direction: column;
   gap: 4px;
   max-height: 220px;
+  /* 列表无可滚动空间时，让滚轮继续滚动同一检查器的正文。 */
   overflow-y: auto;
-  overscroll-behavior: contain;
 }
 
 .schedule-sibling-chip {
