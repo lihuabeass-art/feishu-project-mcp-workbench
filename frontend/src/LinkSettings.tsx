@@ -13,6 +13,7 @@ export function LinkSettings({ onFeedback, disabled = false }: {
 }) {
   const [mode, setMode] = useState(loadLinkOpeningMode);
   const feedbackEvent = useRef(0);
+  const usesSystemOpening = /Macintosh|Mac OS X/.test(navigator.userAgent);
   return (
     <section className="link-settings" aria-label="链接打开设置">
       <div className="section-heading">
@@ -20,7 +21,7 @@ export function LinkSettings({ onFeedback, disabled = false }: {
           <h2>链接打开方式</h2>
           <p>使用系统默认浏览器打开。</p>
         </div>
-        <Select
+        {!usesSystemOpening && <Select
           ariaLabel="链接打开方式"
           disabled={disabled}
           value={mode}
@@ -38,10 +39,12 @@ export function LinkSettings({ onFeedback, disabled = false }: {
               onFeedback({ state: "failed", message: "链接打开方式保存失败，请重新选择。" });
             }
           }}
-        />
+        />}
       </div>
       <p className="hint">
-        {mode === "new-window"
+        {usesSystemOpening
+          ? "窗口和标签位置由默认浏览器决定。"
+          : mode === "new-window"
           ? "新建浏览器窗口，方便在当前桌面查看。"
           : "优先在已有浏览器中打开，窗口和标签位置由浏览器决定。"}
       </p>
