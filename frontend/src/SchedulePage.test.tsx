@@ -144,8 +144,8 @@ it("按人待排期显示各节点停留时间，隐藏重复操作说明和权�
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
-  await screen.findByText("已停留 3 天");
-  expect(screen.getByText("已停留 5 小时")).toBeTruthy();
+  await screen.findByRole("button", { name: /已停留 3 天/ });
+  expect(screen.getByRole("button", { name: /已停留 5 小时/ })).toBeTruthy();
   expect(screen.getByText("停留时间未知")).toBeTruthy();
   const card = screen.getByRole("button", { name: /任务一/ });
   expect(card.getAttribute("draggable")).toBe("false");

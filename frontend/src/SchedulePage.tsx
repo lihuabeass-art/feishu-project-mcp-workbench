@@ -279,12 +279,26 @@ function NodeDwellTime({ startedAt }: { startedAt?: number | null }) {
   }, []);
   const elapsed = startedAt != null && Number.isFinite(startedAt) && startedAt > 0 && startedAt <= now
     ? now - startedAt : null;
-  const label = elapsed == null ? "停留时间未知"
-    : elapsed < 60_000 ? "已停留不足 1 分钟"
-    : elapsed < 3_600_000 ? `已停留 ${Math.floor(elapsed / 60_000)} 分钟`
-    : elapsed < 86_400_000 ? `已停留 ${Math.floor(elapsed / 3_600_000)} 小时`
-    : `已停留 ${Math.floor(elapsed / 86_400_000)} 天`;
-  return <small title={elapsed == null ? "飞书未提供可确认的节点实际进入时间" : `节点进入时间：${new Date(startedAt!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`}>{label}</small>;
+  if (elapsed == null) {
+    return <small title="飞书未提供可确认的节点实际进入时间">停留时间未知</small>;
+  }
+
+  const [unit, unitMs] = elapsed < 3_600_000 ? ["分钟", 60_000]
+    : elapsed < 86_400_000 ? ["小时", 3_600_000]
+    : ["天", 86_400_000];
+  const belowOneMinute = elapsed < 60_000;
+  const value = Math.max(1, Math.floor(elapsed / unitMs));
+  return (
+    <small
+      className="schedule-dwell-time"
+      title={`节点进入时间：${new Date(startedAt!).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`}
+    >
+      {belowOneMinute ? "已停留不足 " : "已停留 "}
+      <span className="schedule-dwell-duration">
+        <strong className="schedule-dwell-value" key={`${belowOneMinute}-${value}-${unit}`}>{value}</strong>{" "}{unit}
+      </span>
+    </small>
+  );
 }
 
 export function SchedulePage({
