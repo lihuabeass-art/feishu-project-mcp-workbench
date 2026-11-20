@@ -4,7 +4,7 @@ import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within }
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { SchedulePage, type ScheduleSessionController } from "./SchedulePage";
-import { getWorkflowActions } from "./api";
+import { cachedItemDetail, getWorkflowActions, refreshItemDetail } from "./api";
 import { saveWorkflowSkipConfirmation } from "./workflowPreferences";
 import type { Snapshot, WorkflowAction, WorkflowOptions, WorkflowResult } from "./types";
 import { closeScheduleSession, loadScheduleHistory, loadSchedulePeople, loadScheduleSession, submitScheduleTargets, type ScheduleHistory, type ScheduleRead } from "./scheduleApi";
@@ -16,7 +16,7 @@ const loadCss = async (rel: string) => {
   return fs.readFileSync(new URL(rel, import.meta.url), "utf8");
 };
 vi.mock("./scheduleApi", () => ({ loadScheduleSession: vi.fn(), loadScheduleHistory: vi.fn(), loadSchedulePeople: vi.fn(), closeScheduleSession: vi.fn(), submitScheduleTargets: vi.fn() }));
-vi.mock("./api", () => ({ getWorkflowActions: vi.fn() }));
+vi.mock("./api", () => ({ cachedItemDetail: vi.fn(), getWorkflowActions: vi.fn(), refreshItemDetail: vi.fn() }));
 const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
 const data = (): ScheduleRead => ({ sessionId: "session", currentUserId: "me", readAt: "today", complete: false, sources: [{ id: "s", name: "我的来源", complete: false, error: "部分事项读取失败" }], people: [{ id: "me", name: "本人" }], targets: [{ id: "one", identity, title: "任务一", nodeName: "开发", ownerId: "me", ownerIds: ["me"], sourceIds: ["s"], projectName: "空间", typeName: "需求", dates: { start: "", end: "" }, mine: true }] });
 const projectSnapshot = (read: ScheduleRead): Snapshot => ({
@@ -1527,6 +1527,32 @@ it("左侧仍在加载或加载失败时，右侧已能显示排期和翻周", a
   fireEvent.click(screen.getByRole("button", { name: "上一周" }));
   await waitFor(() => expect(loadScheduleHistory).toHaveBeenCalledWith(expect.objectContaining({ range: { start: currentWeekDay(-7), end: currentWeekDay(-1) } })));
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
+});
+
+it("历史排期没有清单缓存时，可补齐上线徽标和事项链接", async () => {
+  const record = { ...data().targets[0], id: "history:released", title: "历史需求",
+    identity: { ...identity, item: "released", type: "story" },
+    dates: { start: currentWeekDay(-7), end: currentWeekDay(-6) }, readOnlyReason: "历史排期，仅供查看" };
+  const itemId = { project_key: "p", work_item_type_key: "story", work_item_id: "released" };
+  const href = "https://project.feishu.cn/example/story/detail/released";
+  vi.mocked(loadScheduleHistory).mockImplementation(async ({ range }) => ({
+    people: [], targets: range.start === currentWeekDay(-7) ? [record] : [], complete: true,
+  }));
+  vi.mocked(cachedItemDetail).mockResolvedValue(null);
+  vi.mocked(refreshItemDetail).mockResolvedValue({ id: itemId, item_url: href, fetched_at_ms: 1, pages: [], data: {
+    work_item_attribute: { work_item_status: { name: "需求上线" } },
+    work_item_fields: [{ key: "finish_status", value: "true" }, { key: "description", value: "历史需求说明" }],
+  } });
+
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "上一周" }));
+  const bar = await screen.findByRole("button", { name: /历史需求.*开发/ });
+  expect(await within(bar.closest(".schedule-row") as HTMLElement).findByText("需求上线")).toBeTruthy();
+  expect(refreshItemDetail).toHaveBeenCalledExactlyOnceWith(itemId);
+  fireEvent.click(bar);
+  const inspector = within(screen.getByLabelText("排期检查器"));
+  expect((await inspector.findByRole("link", { name: "打开飞书事项" })).getAttribute("href")).toBe(href);
+  expect(inspector.getByText("历史需求说明")).toBeTruthy();
 });
 
 it("已排期包含当前及多个历史未来周，定位与切周后计数、卡片和选择保持稳定", async () => {

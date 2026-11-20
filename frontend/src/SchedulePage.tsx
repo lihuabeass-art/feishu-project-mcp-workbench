@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import {
-  ArrowUpRight,
   CalendarDays,
   Check,
   ChevronDown,
@@ -17,7 +16,6 @@ import {
 } from "lucide-react";
 import { DateRangePicker } from "./DateRangePicker";
 import { Select } from "./Select";
-import { ExternalLink } from "./ExternalLink";
 import { ScheduleDescription } from "./ScheduleDescription";
 import { ScheduleAvatar } from "./ScheduleAvatar";
 import { defectKey, ScheduleDefectInspector, ScheduleDefectList, useScheduleDefects, type ScheduleDefect } from "./ScheduleDefects";
@@ -38,7 +36,7 @@ import {
   type ScheduleRead,
   type ScheduleRecord,
 } from "./scheduleApi";
-import { scheduleHistoryRequest, useScheduleCalendar } from "./scheduleHistory";
+import { scheduleHistoryRequest, scheduleItemKey, useScheduleCalendar, useScheduleHistoryStatuses } from "./scheduleHistory";
 import {
   applyQuickSchedulePreset,
   classifyScheduleReview,
@@ -1050,6 +1048,13 @@ export function SchedulePage({
     const rowOwner = view === "people" ? owner : resolveOwnerId(primaryEntry, owner);
     return { key, owner: rowOwner, primaryEntry, bars, laneCount };
   });
+  const historyKeys = new Set(historicalEntries.map((entry) => scheduleItemKey(entry.identity)));
+  const displayedHistoryKeys = new Set<string>();
+  for (const { primaryEntry } of rows) {
+    const key = scheduleItemKey(primaryEntry.identity);
+    if (calendarKey && historyKeys.has(key)) displayedHistoryKeys.add(key);
+  }
+  const historyStatuses = useScheduleHistoryStatuses(calendarContext, displayedHistoryKeys, currentHistory);
 
   const pending = visible.filter(
     (entry) => isCurrentSchedulablePoolNode(entry) && !validSchedule(entry.dates),
@@ -2223,7 +2228,10 @@ export function SchedulePage({
                         bars.some((b) => b.entry.id === selected);
                       const currentNode = currentNodeByPersonItem.get(personItemKey(primaryEntry, owner))?.record;
                       const cachedItem = cachedItemFor(primaryEntry);
-                      const completedStatus = cachedItem?.is_completed === true ? workItemStatusName(cachedItem) : null;
+                      const historyKey = scheduleItemKey(primaryEntry.identity);
+                      const historyStatus = displayedHistoryKeys.has(historyKey) ? historyStatuses?.get(historyKey) : undefined;
+                      const completedStatus = historyStatus !== undefined ? historyStatus
+                        : cachedItem?.is_completed === true ? workItemStatusName(cachedItem) : null;
                       return (
                         <Fragment key={key}>
                           {view === "people" &&
@@ -2558,22 +2566,10 @@ export function SchedulePage({
                           {projectLabel(selectedEntry)} · {typeLabel(selectedEntry)}
                         </span>
                       </div>
-                      <div className="schedule-editor-heading">
-                        <h3>{selectedEntry.record.title}</h3>
-                        {selectedEntry.record.itemUrl && (
-                          <div className="schedule-editor-actions workflow-manual-fill detail-item-link">
-                            <ExternalLink
-                              href={selectedEntry.record.itemUrl}
-                              title="在浏览器打开飞书事项"
-                            >
-                              打开飞书事项
-                              <ArrowUpRight size={13} aria-hidden="true" />
-                            </ExternalLink>
-                          </div>
-                        )}
-                      </div>
                       <ScheduleDescription key={JSON.stringify([selectedEntry.identity.connection, selectedEntry.identity.project, selectedEntry.identity.type, selectedEntry.identity.item])}
-                        connection={selectedEntry.identity.connection} project={selectedEntry.identity.project} type={selectedEntry.identity.type} item={selectedEntry.identity.item} />
+                        connection={selectedEntry.identity.connection} project={selectedEntry.identity.project} type={selectedEntry.identity.type} item={selectedEntry.identity.item}
+                        heading={<h3>{selectedEntry.record.title}</h3>} itemUrl={selectedEntry.record.itemUrl}
+                        needsRemoteCheck={frozenNodes.has(nodeKey(selectedEntry))} />
                       {(siblingNodes.length > 1 || workflowKey) && (
                         <div
                           className="schedule-sibling-nodes"
@@ -2756,10 +2752,6 @@ export function SchedulePage({
                       {frozenNodes.has(nodeKey(selectedEntry)) && (
                         <p>该节点存在结果不确定的排期，请先在飞书核对并重新读取。</p>
                       )}
-                      {!selectedEntry.record.itemUrl &&
-                        frozenNodes.has(nodeKey(selectedEntry)) && (
-                          <p>无法确认飞书事项链接，请在飞书中按事项名称查找并核对。</p>
-                        )}
                       {scheduleChanged(selectedEntry) && scheduleValidation(selectedEntry) && (
                         <p role="alert">{scheduleValidation(selectedEntry)}</p>
                       )}

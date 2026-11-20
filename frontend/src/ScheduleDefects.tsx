@@ -214,8 +214,8 @@ export function ScheduleDefectInspector({ defect, connection, projectName, workf
     </div>
     <div className="schedule-editor">
       <div className="schedule-editor-meta"><span className="schedule-editor-tag">{projectName} · 缺陷跟踪</span></div>
-      <div className="schedule-editor-heading"><h3 className="schedule-defect-title">{defect.title} <DefectPriority priority={defect.priority} /></h3></div>
-      <ScheduleDescription connection={connection} project={defect.project} type="issue" item={defect.item} showItemLink />
+      <ScheduleDescription connection={connection} project={defect.project} type="issue" item={defect.item}
+        heading={<h3 className="schedule-defect-title">{defect.title} <DefectPriority priority={defect.priority} /></h3>} />
       {stale && <p className="hint" role="status">该缺陷已移出当前清单，已保留当前流程编辑。</p>}
       <div className="schedule-sibling-nodes">
         <div className="schedule-node-workflow">

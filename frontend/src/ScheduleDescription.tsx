@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import { BusinessField } from "./BusinessField";
 import { ExternalLink } from "./ExternalLink";
@@ -7,8 +7,17 @@ import { isEmpty } from "./detailFields";
 import { useDetailFieldIdentity } from "./useDetailFieldIdentity";
 import type { ItemDetail } from "./types";
 
-export function ScheduleDescription({ project, type, item, connection, showItemLink }: { project: string; type: string; item: string; connection: string; showItemLink?: boolean }) {
+export function ScheduleDescription({ project, type, item, connection, heading, itemUrl, needsRemoteCheck }: {
+  project: string;
+  type: string;
+  item: string;
+  connection: string;
+  heading?: ReactNode;
+  itemUrl?: string | null;
+  needsRemoteCheck?: boolean;
+}) {
   const [detail, setDetail] = useState<ItemDetail | null>(null);
+  const [detailUrl, setDetailUrl] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -25,7 +34,11 @@ export function ScheduleDescription({ project, type, item, connection, showItemL
       let cached: ItemDetail | null = null;
       try {
         cached = await cachedItemDetail(id);
-        if (active && cached && !current.current.detail) setDetail(cached);
+        if (active && cached) {
+          const cachedUrl = cached.item_url;
+          if (cachedUrl) setDetailUrl((url) => url ?? cachedUrl);
+          if (!current.current.detail) setDetail(cached);
+        }
       } catch { /* 缓存不可用时仍尝试读取云端。 */ }
       try {
         const fresh = await refreshItemDetail(id);
@@ -35,6 +48,7 @@ export function ScheduleDescription({ project, type, item, connection, showItemL
         const incomplete = cachedDescriptions.some((field) =>
           !fresh.data.work_item_fields.some((next) => next.key === field.key && next.value !== undefined));
         if (active) {
+          if (fresh.item_url) setDetailUrl(fresh.item_url);
           if (incomplete) setFailed(true);
           else setDetail(fresh);
         }
@@ -48,9 +62,13 @@ export function ScheduleDescription({ project, type, item, connection, showItemL
   }, [project, type, item, connection, attempt]);
   const descriptions = fields.filter((field) => identities.descriptions.includes(field.key));
   const title = type === "story" ? "需求说明" : type === "issue" ? "缺陷描述" : "事项说明";
+  const href = itemUrl || detailUrl;
   return <>
-  {showItemLink && detail?.item_url && <div className="schedule-editor-actions workflow-manual-fill detail-item-link">
-    <ExternalLink href={detail.item_url} title="在浏览器打开飞书事项">打开飞书事项 <ArrowUpRight size={13} aria-hidden="true" /></ExternalLink>
+  {heading && <div className="schedule-editor-heading">
+    {heading}
+    {href && <div className="schedule-editor-actions workflow-manual-fill detail-item-link">
+      <ExternalLink href={href} title="在浏览器打开飞书事项">打开飞书事项 <ArrowUpRight size={13} aria-hidden="true" /></ExternalLink>
+    </div>}
   </div>}
   <section className="schedule-description" aria-label={title}>
     <strong>{title}</strong>
@@ -61,5 +79,7 @@ export function ScheduleDescription({ project, type, item, connection, showItemL
     </div>)}
     {!descriptions.length && <p className="hint">{loading ? "正在读取说明…" : failed ? "暂时无法读取说明。" : "详情未返回已识别的说明字段，可在飞书中查看。"}</p>}
     {failed && <p className="hint">{detail ? "暂时无法获取最新说明，已保留缓存。" : "请稍后重试。"} <button type="button" className="secondary" onClick={() => setAttempt((value) => value + 1)}>重试</button></p>}
-  </section></>;
+  </section>
+  {needsRemoteCheck && !href && !loading && <p>无法确认飞书事项链接，请在飞书中按事项名称查找并核对。</p>}
+  </>;
 }

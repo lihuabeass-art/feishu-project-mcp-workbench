@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { cachedItemDetail, refreshItemDetail } from "./api";
 import { loadScheduleHistory, type ScheduleHistory, type ScheduleHistoryRequest, type ScheduleRead } from "./scheduleApi";
-import type { ScheduleDates } from "./scheduleSession";
-import type { Snapshot } from "./types";
+import type { ScheduleDates, ScheduleIdentity } from "./scheduleSession";
+import type { ItemDetail, Snapshot } from "./types";
 
 export function scheduleHistoryRequest(
   read: ScheduleRead | null,
@@ -69,6 +70,57 @@ function preserveHistory(previous?: ScheduleHistory, incoming?: ScheduleHistory)
 const MAX_CACHED_PAGES = 12;
 const MAX_PRELOADS = 2;
 const NAVIGATION_SETTLE_MS = 75;
+
+export function scheduleItemKey({ connection, project, type, item }: ScheduleIdentity) {
+  return JSON.stringify([connection, project, type, item]);
+}
+
+function completedStatus(detail: ItemDetail): string | null | undefined {
+  const finished = detail.data.work_item_fields.find((field) => field.key === "finish_status")?.value;
+  if (finished === false || finished === "false") return null;
+  if (finished !== true && finished !== "true") return undefined;
+  const status = detail.data.work_item_attribute.work_item_status;
+  const name = status && typeof status === "object" && "name" in status ? status.name : status;
+  return (typeof name === "string" && name.trim()) || "已完成";
+}
+
+export function useScheduleHistoryStatuses(context: string, itemKeys: Set<string>, revision: unknown) {
+  const request = JSON.stringify([...itemKeys].sort());
+  const [statuses, setStatuses] = useState<{ context: string; values: Map<string, string | null> }>();
+  useEffect(() => {
+    const keys: string[] = JSON.parse(request);
+    if (!keys.length) return;
+    let active = true;
+    const publish = (key: string, detail: ItemDetail | null) => {
+      if (!active || !detail) return;
+      const value = completedStatus(detail);
+      if (value === undefined) return;
+      setStatuses((previous) => {
+        const values = previous?.context === context ? previous.values : new Map<string, string | null>();
+        if (values.get(key) === value) return previous;
+        return { context, values: new Map(values).set(key, value) };
+      });
+    };
+    const pending = keys.values();
+    const readItems = async () => {
+      for (const key of pending) {
+        if (!active) break;
+        const [, project_key, work_item_type_key, work_item_id] = JSON.parse(key);
+        const id = { project_key, work_item_type_key, work_item_id };
+        try { publish(key, await cachedItemDetail(id)); } catch { /* 仍可向飞书读取。 */ }
+        if (!active) break;
+        try { publish(key, await refreshItemDetail(id)); } catch { /* 保留已有状态。 */ }
+      }
+    };
+    const timer = window.setTimeout(() => {
+      // 只补读当前日历的事项，限制并发，不阻塞排期加载与编辑。
+      void readItems();
+      void readItems();
+    }, NAVIGATION_SETTLE_MS);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [context, request, revision]);
+  return statuses?.context === context ? statuses.values : undefined;
+}
 
 export function useScheduleCalendar(visibleKey: string, preloadKeys: string[]) {
   const [pages, setPages] = useState(() => new Map<string, HistoryPage>());
