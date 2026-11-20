@@ -1645,6 +1645,48 @@ it("按需加载全员排期并保留未同步草稿，预加载会话在切换�
   expect(closeScheduleSession).not.toHaveBeenCalled();
 });
 
+it("同事项按日期复用排期轨道，窄卡片用动作词区分相同前缀的节点", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.targets = [
+    { name: "联调与自测", order: 0, day: 3 },
+    { name: "后端方案设计", order: 1, day: 0 },
+    { name: "后端代码研发", order: 2, day: 3 },
+    { name: "接口对接任务", order: 3, day: 5, endDay: 6 },
+    { name: "需求分析阶段", order: 4, day: 2 },
+    { name: "需求评审会议", order: 5, day: 1 },
+  ].map(({ name, order, day, endDay = day }) => ({
+    ...base,
+    id: `node-${order}`,
+    nodeName: name,
+    nodeOrder: order,
+    identity: { ...base.identity, node: `node-${order}` },
+    dates: { start: currentWeekDay(day), end: currentWeekDay(endDay) },
+  }));
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+
+  const design = screen.getByRole("button", { name: /后端方案设计/ });
+  const integration = screen.getByRole("button", { name: /联调与自测/ });
+  const development = screen.getByRole("button", { name: /后端代码研发/ });
+  const handoff = screen.getByRole("button", { name: /接口对接任务/ });
+  const analysis = screen.getByRole("button", { name: /需求分析阶段/ });
+  const review = screen.getByRole("button", { name: /需求评审会议/ });
+  expect(document.querySelectorAll(".schedule-row")).toHaveLength(1);
+  expect(design.style.gridRow).toBe(integration.style.gridRow);
+  expect(development.style.gridRow).toBe("2");
+  expect(design.querySelector(".schedule-bar-title-compact")?.textContent).toBe("设计");
+  expect(integration.querySelector(".schedule-bar-title-compact")?.textContent).toBe("联调");
+  expect(development.querySelector(".schedule-bar-title-compact")?.textContent).toBe("研发");
+  expect(handoff.classList.contains("is-single-day-bar")).toBe(false);
+  expect(handoff.querySelector(".schedule-bar-title-compact")?.textContent).toBe("对接");
+  expect(analysis.querySelector(".schedule-bar-title-compact")?.textContent).toBe("分析");
+  expect(review.querySelector(".schedule-bar-title-compact")?.textContent).toBe("评审");
+
+  fireEvent.focus(development);
+  expect(document.querySelector(".schedule-popover-title")?.textContent).toBe("后端代码研发");
+});
+
 it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨，历史已流转节点不进待排池且只读，当前进行中节点可编辑改期", async () => {
   const read = data();
   const base = read.targets[0];
@@ -1729,8 +1771,8 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
   expect(ganttRows).toHaveLength(1);
   const codeBar = screen.getByRole("button", { name: /核心架构演进专项 · 后端代码研发/ });
   const testBar = screen.getByRole("button", { name: /核心架构演进专项 · 联调与自测/ });
-  expect(codeBar.querySelector(".schedule-bar-title")?.textContent).toBe("后端代码研发");
-  expect(testBar.querySelector(".schedule-bar-title")?.textContent).toBe("联调与自测");
+  expect(codeBar.querySelector(".schedule-bar-title-full")?.textContent).toBe("后端代码研发");
+  expect(testBar.querySelector(".schedule-bar-title-full")?.textContent).toBe("联调与自测");
   expect(codeBar.style.gridRow).toBe("1");
   expect(testBar.style.gridRow).toBe("2");
   expect(codeBar.getAttribute("draggable")).toBe("false");
@@ -1754,7 +1796,7 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(4) } });
   expect(document.querySelectorAll(".schedule-row")).toHaveLength(1);
   const stageBar = screen.getByRole("button", { name: /核心架构演进专项 · 灰度联调验收/ });
-  expect(stageBar.querySelector(".schedule-bar-title")?.textContent).toBe("灰度联调验收");
+  expect(stageBar.querySelector(".schedule-bar-title-full")?.textContent).toBe("灰度联调验收");
   expect(stageBar.getAttribute("draggable")).toBe("true");
   expect(stageBar.style.gridRow).toBe("1");
 });

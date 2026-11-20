@@ -148,6 +148,13 @@ const nodeColorStyle = (record: ScheduleRecord): React.CSSProperties => {
   hash = (hash ^ (hash >>> 16)) >>> 0;
   return { "--schedule-node-hue": hash % 360 } as React.CSSProperties;
 };
+const scheduleNodeAction =
+  /(?:分析|设计|评审|研发|开发|联调|自测|测试|验收|上线|发布|部署|合入|确认|准备|排查|修复|回归|交付)(?=\s*(?:[与和及、]|$))/u;
+const compactScheduleNodeName = (name: string) => {
+  const label = name.trim().replace(/(?<=\S)(?:\s*(?:阶段|工作|任务|环节|会议))+$/u, "");
+  return label.match(scheduleNodeAction)?.[0] ??
+    label.match(/^\p{Script=Han}*(\p{Script=Han}{2})$/u)?.[1];
+};
 const unreadRelatedProject = "unread-related-project";
 const mergeResultWarnings = (previous?: string | null, next?: string | null) =>
   Array.from(new Set([...(previous || "").split("\n"), ...(next || "").split("\n")].filter(Boolean))).join("\n") || undefined;
@@ -884,7 +891,9 @@ export function SchedulePage({
         a.id.localeCompare(b.id),
     );
     const laneLastEndCol: number[] = [];
-    const bars = sorted.map((entry) => {
+    // A lane can be reused by checking its last end only when dates are processed left to right.
+    const chronological = [...sorted].sort((a, b) => a.dates.start.localeCompare(b.dates.start));
+    const bars = chronological.map((entry) => {
       const startCol = Math.max(
         0,
         days.findIndex((day) => day >= entry.dates.start),
@@ -2190,6 +2199,7 @@ export function SchedulePage({
                                             ? `is-${entry.result}`
                                             : "is-cloud";
                                   const barTitleText = entry.record.nodeName || entry.record.title;
+                                  const compactTitle = compactScheduleNodeName(entry.record.nodeName);
                                   const spanDays = scheduleSpanDays(entry.dates);
                                   const isBarHovered = hoveredId === entry.id;
                                   const ariaName = `${entry.record.title}${
@@ -2275,7 +2285,14 @@ export function SchedulePage({
                                           )
                                         )}
                                         <span className="schedule-bar-title">
-                                          {barTitleText}
+                                          {compactTitle && compactTitle !== barTitleText ? (
+                                            <>
+                                              <span className="schedule-bar-title-full">{barTitleText}</span>
+                                              <span className="schedule-bar-title-compact" aria-hidden="true">
+                                                {compactTitle}
+                                              </span>
+                                            </>
+                                          ) : barTitleText}
                                         </span>
                                         <span className="schedule-bar-badges" aria-hidden="true">
                                           <span className="schedule-bar-days">{spanDays}d</span>

@@ -1059,12 +1059,37 @@
 }
 
 .schedule-bar-title {
+  container: schedule-bar-title / inline-size;
   min-width: 0;
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
+}
+
+.schedule-bar-title-compact {
+  display: none;
+}
+
+@container schedule-bar-title (width < 6em) {
+  .schedule-bar:not(.is-single-day-bar) .schedule-bar-title-full {
+    display: none;
+  }
+
+  .schedule-bar:not(.is-single-day-bar) .schedule-bar-title-compact {
+    display: block;
+  }
+}
+
+@container schedule-bar-title (width < 4em) {
+  .is-single-day-bar .schedule-bar-title-full {
+    display: none;
+  }
+
+  .is-single-day-bar .schedule-bar-title-compact {
+    display: block;
+  }
 }
 
 .schedule-bar-badges {
