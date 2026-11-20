@@ -1525,16 +1525,6 @@ input {
   color: var(--green);
   font-weight: 600;
 }
-.tab.active:after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--green);
-  left: 0;
-  right: 0;
-}
 .tab.active span {
   background: var(--surface-tint);
   color: var(--green);
