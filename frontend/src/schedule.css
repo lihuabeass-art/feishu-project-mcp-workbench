@@ -466,6 +466,18 @@
   line-height: 1.45;
 }
 
+.schedule-pending-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 7px;
+  min-width: 0;
+}
+
+.schedule-pending-details:empty {
+  display: none;
+}
+
 .schedule-pending-quick {
   display: flex;
   align-items: center;
@@ -822,6 +834,20 @@
   border-radius: 50%;
   background: var(--schedule-node-color);
   vertical-align: 0.12em;
+}
+
+.schedule-pending-item .schedule-current-node.is-pending {
+  max-width: 100%;
+  border-color: var(--line);
+  background: transparent;
+  color: var(--heading);
+  white-space: nowrap;
+}
+
+.schedule-current-node.is-pending::before {
+  box-sizing: border-box;
+  border: 1px solid var(--schedule-node-color);
+  background: transparent;
 }
 
 .schedule-row-grid {

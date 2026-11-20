@@ -1121,6 +1121,18 @@ export function SchedulePage({
       }[state || "unknown"] || "未知");
     return `开始：${entry.dates.start || label(entry.record.startState)}；结束：${entry.dates.end || label(entry.record.endState)}`;
   };
+  const pendingCardDetails = (entry: Entry, owner: string) => {
+    const status = dateStatus(entry);
+    if (view === "mine") return `${targetLabel(entry, owner)} · ${status}`;
+    return [
+      entry.record.cacheKind === "detail_node"
+        ? "事项详情缓存节点"
+        : entry.identity.scope === "node" && !entry.record.sourceAggregate && "节点共同排期",
+      entry.record.sourceAggregate && "来源聚合日期",
+      entry.record.unknownOwner && "尚有负责人身份不明",
+      status !== "待安排" && status,
+    ].filter(Boolean).join(" · ");
+  };
   const projectLabel = (entry: Entry) =>
     projectNames.get(entry.identity.project) || entry.record.projectName || entry.identity.project;
   const typeLabel = (entry: Entry) =>
@@ -1939,23 +1951,13 @@ export function SchedulePage({
                                       </span>
                                     )}
                                   </span>
-                                  <span>
-                                    {entry.record.nodeName} ·{" "}
-                                    {view === "people" ? (
-                                      <>
-                                        {owner ? displayPerson(entry, owner) : "负责人不明"} ·{" "}
-                                        {entry.record.cacheKind === "detail_node"
-                                          ? "事项详情缓存节点 · "
-                                          : entry.identity.scope === "node" &&
-                                            !entry.record.sourceAggregate &&
-                                            "节点共同排期 · "}
-                                        {entry.record.sourceAggregate && "来源聚合日期 · "}
-                                        {entry.record.unknownOwner && "尚有负责人身份不明 · "}
-                                      </>
-                                    ) : (
-                                      <>{targetLabel(entry, owner)} · </>
+                                  <span className="schedule-pending-meta">
+                                    {entry.record.nodeName && (
+                                      <span className="schedule-current-node is-pending" style={nodeColorStyle(entry.record)}>
+                                        {entry.record.nodeName}
+                                      </span>
                                     )}
-                                    {dateStatus(entry)}
+                                    <span className="schedule-pending-details">{pendingCardDetails(entry, owner)}</span>
                                   </span>
                                   {isCurrentSchedulableStatus(entry.record.nodeStatus) && !entry.record.sourceAggregate && (
                                     <NodeDwellTime startedAt={entry.record.nodeStartedAtMs} />

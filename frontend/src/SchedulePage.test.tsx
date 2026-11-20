@@ -149,6 +149,9 @@ it("按人待排期显示各节点停留时间，隐藏重复操作说明和权�
   expect(screen.getByText("停留时间未知")).toBeTruthy();
   const card = screen.getByRole("button", { name: /任务一/ });
   expect(card.getAttribute("draggable")).toBe("false");
+  expect(card.querySelector(".schedule-current-node.is-pending")?.textContent).toBe("开发");
+  expect(card.textContent).not.toContain("同事");
+  expect(card.textContent).not.toContain("待安排");
   expect(card.textContent).not.toContain("仅可编辑明确属于自己的排期");
   expect(screen.queryByText(/点快捷胶囊一键排期/)).toBeNull();
 });
@@ -679,7 +682,8 @@ it("提交结果保留汇总与不确定保护，排期条、行标题和待排�
   await setup();
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   for (const suffix of ["一", "二", "三", "四"]) {
-    fireEvent.click(screen.getByRole("button", { name: new RegExp(`任务${suffix}开发 · 本人 · 待安排`) }));
+    fireEvent.click(within(document.querySelector(".schedule-pending") as HTMLElement)
+      .getByRole("button", { name: new RegExp(`^任务${suffix}`) }));
     fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: today } });
     fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: today } });
   }
@@ -740,7 +744,9 @@ it("没有进行中节点时隐藏日历副标题，待安排仍显示负责人"
   read.targets = [{ ...base, id: "shared", title: "共同任务", identity: { ...identity, scope: "node", owner: "" }, ownerId: null, ownerIds: ["me", "other"], dates: { start: currentWeekDay(0), end: currentWeekDay(0) }, readOnlyReason: "仅可编辑明确属于自己的排期" }, base];
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
   expect(document.querySelector(".schedule-row-current")).toBeNull();
-  expect(screen.getByRole("button", { name: /任务一/ }).textContent).toContain("开发 · 本人 · 待安排");
+  const pending = screen.getByRole("button", { name: /任务一/ });
+  expect(pending.querySelector(".schedule-current-node.is-pending")?.textContent).toBe("开发");
+  expect(pending.querySelector(".schedule-pending-details")?.textContent).toBe("本人 · 待安排");
   fireEvent.click(screen.getByRole("button", { name: /共同任务/ }));
   expect(screen.getByText("仅可编辑明确属于自己的排期")).toBeTruthy();
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
@@ -789,6 +795,10 @@ it("单端来源聚合日期在待安排中标明来源并保留原值", async (
   fireEvent.click(screen.getByRole("button", { name: /聚合记录/ }));
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe("2026-11-12");
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const pending = screen.getByRole("button", { name: /聚合记录/ });
+  expect(pending.querySelector(".schedule-pending-details")?.textContent)
+    .toBe("来源聚合日期 · 开始：2026-11-12；结束：未知");
 });
 
 it.each([
@@ -1085,11 +1095,11 @@ it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同
   expect(pending.querySelectorAll(".schedule-group")).toHaveLength(3);
   expect(pending.textContent).toContain("张三 (same)");
   expect(pending.textContent).toContain("张三 (other)");
-  expect(pending.textContent).toContain("李四 · 节点共同排期");
+  expect(Array.from(pending.querySelectorAll(".schedule-group")).some((group) => group.textContent?.includes("李四"))).toBe(true);
   expect(pending.querySelector('img[src="a.png"]')).toBeTruthy();
   expect(pending.querySelector('img[src="b.png"]')).toBeTruthy();
   expect(document.querySelector('.schedule-row-label img[src="b.png"]')).toBeTruthy();
-  const shared = screen.getByRole("button", { name: /李四.*节点共同排期/ });
+  const shared = within(pending as HTMLElement).getByRole("button", { name: /同标题.*节点共同排期/ });
   expect(shared.getAttribute("draggable")).toBe("false");
   fireEvent.click(shared);
   expect(document.querySelector(".schedule-editor")?.textContent).toContain("节点共同排期");
