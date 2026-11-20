@@ -252,7 +252,7 @@ describe("清单模式", () => {
     await chooseFilter(user, "清单空间", "空间甲");
     await chooseFilter(user, "清单所属项目", "项目甲");
     await user.click(screen.getByText("更多条件"));
-    await chooseFilter(user, "清单当前状态", "待处理（1）");
+    await chooseFilter(user, "清单当前状态", "已完成（1）");
     expect(within(list).getAllByRole("button")).toHaveLength(1);
     expect(within(list).getByText("已完成缺陷")).toBeTruthy();
     await chooseFilter(user, "清单所属项目", "全部项目");
