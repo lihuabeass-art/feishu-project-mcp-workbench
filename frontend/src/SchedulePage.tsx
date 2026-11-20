@@ -735,16 +735,16 @@ export function SchedulePage({
     if (entry.record.unknownOwner) labels.push("尚有负责人身份不明");
     return labels.join("、") || "负责人不明";
   };
+  const targetScopeLabel = (entry: Entry) =>
+    entry.record.cacheKind === "detail_node"
+      ? "事项详情缓存节点"
+      : entry.record.sourceAggregate
+        ? "来源聚合日期"
+        : entry.identity.scope === "node"
+          ? "节点共同排期"
+          : "";
   const targetLabel = (entry: Entry, owner: string) =>
-    `${
-      entry.record.cacheKind === "detail_node"
-        ? "事项详情缓存节点 · "
-        : entry.record.sourceAggregate
-          ? "来源聚合日期 · "
-          : entry.identity.scope === "node"
-            ? "节点共同排期 · "
-            : ""
-    }${ownerLabel(entry, owner)}`;
+    [targetScopeLabel(entry), ownerLabel(entry, owner)].filter(Boolean).join(" · ");
   const projectNames = new Map(
     (snapshot?.workspace_catalog || []).map((item) => [
       item.project_key,
@@ -1023,6 +1023,7 @@ export function SchedulePage({
       : outside.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
 
   const selectedEntry = visible.find((entry) => entry.id === selected);
+  const selectedScopeLabel = selectedEntry ? targetScopeLabel(selectedEntry) : "";
   const selectedPeopleRows = view === "people" && selectedEntry ? personRows([selectedEntry]) : [];
   const activePerson = selectedPeopleRows.find(({ owner }) => owner === selectedPerson)?.owner
     ?? selectedPeopleRows[0]?.owner;
@@ -2521,10 +2522,6 @@ export function SchedulePage({
                       </div>
                       <div className="schedule-editor-heading">
                         <h3>{selectedEntry.record.title}</h3>
-                        <p>
-                          {siblingNodes.length <= 1 && selectedEntry.record.nodeName && `${selectedEntry.record.nodeName} · `}
-                          {targetLabel(selectedEntry, selectedEntry.record.ownerId || "")}
-                        </p>
                         {selectedEntry.record.itemUrl && (
                           <div className="schedule-editor-actions workflow-manual-fill detail-item-link">
                             <ExternalLink
@@ -2707,10 +2704,11 @@ export function SchedulePage({
                       {(view !== "mine" || !validSchedule(selectedEntry.dates)) && (
                         <p>{dateStatus(selectedEntry)}</p>
                       )}
-                      {selectedEntry.record.fetchedAt && (
+                      {(selectedScopeLabel || selectedEntry.record.fetchedAt) && (
                         <details key={selectedEntry.id} className="schedule-read-meta">
                           <summary>数据读取信息</summary>
-                          <p>事项详情抓取时间 {selectedEntry.record.fetchedAt}</p>
+                          {selectedScopeLabel && <p>{selectedScopeLabel}</p>}
+                          {selectedEntry.record.fetchedAt && <p>事项详情抓取时间 {selectedEntry.record.fetchedAt}</p>}
                         </details>
                       )}
                       {visibleReadOnlyReason(selectedEntry.readOnlyReason) && <p>{selectedEntry.readOnlyReason}</p>}

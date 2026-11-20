@@ -1567,12 +1567,6 @@
   margin: 4px 0 0;
 }
 
-.schedule-editor .schedule-editor-heading p {
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.6;
-}
-
 .schedule-sibling-nodes {
   display: flex;
   flex-direction: column;

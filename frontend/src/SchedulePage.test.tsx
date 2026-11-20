@@ -842,7 +842,8 @@ it("默认显示来源聚合日期且保持只读，人员排期不虚构负责�
   const bar = screen.getByRole("button", { name: /来源记录/ });
   expect(bar.getAttribute("draggable")).toBe("false");
   fireEvent.click(bar);
-  expect(document.querySelector(".schedule-editor-heading")?.textContent).toContain("来源聚合日期");
+  expect(document.querySelector(".schedule-editor-heading")?.textContent).toBe("来源记录");
+  expect(document.querySelector(".schedule-read-meta")?.textContent).toContain("来源聚合日期");
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   expect(screen.getByText("负责人不明")).toBeTruthy();
@@ -1182,7 +1183,7 @@ it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同
   const shared = within(pending as HTMLElement).getByRole("button", { name: /同标题.*节点共同排期/ });
   expect(shared.getAttribute("draggable")).toBe("false");
   fireEvent.click(shared);
-  expect(document.querySelector(".schedule-editor")?.textContent).toContain("节点共同排期");
+  expect(document.querySelector(".schedule-read-meta")?.textContent).toContain("节点共同排期");
   expect(screen.queryByLabelText("开始日期")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: /已排期/ }));
   expect(document.querySelector(".schedule-editor")?.textContent).toContain(`已排期：${currentWeekDay(0)} ~ ${currentWeekDay(0)}（共 1 个自然日）`);
@@ -1207,7 +1208,7 @@ it("排期检查器合并当前节点与日期信息，隐藏清空入口并保�
   fireEvent.click(screen.getAllByRole("button", { name: /任务一/ })[0]);
   const editor = document.querySelector(".schedule-editor")!;
   const heading = editor.querySelector(".schedule-editor-heading")!;
-  expect(heading.textContent).toBe("任务一本人");
+  expect(heading.textContent).toBe("任务一");
   const nodes = within(editor as HTMLElement).getByRole("group", { name: "事项节点" });
   const currentNode = nodes.querySelector('[aria-pressed="true"]')!;
   expect(currentNode.textContent).toBe(`开发${currentWeekDay(0).slice(5)}`);
@@ -1638,7 +1639,9 @@ it("本人尾号兜底自动替换为真实姓名与头像，纯数字回退名�
   expect(screen.getByLabelText("今日问候").querySelector('img[src="https://example.com/me-avatar.png"]')).toBeTruthy();
 
   fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
-  const linkWrap = document.querySelector(".schedule-editor-heading .schedule-editor-actions.detail-item-link");
+  const heading = document.querySelector(".schedule-editor-heading")!;
+  expect(heading.querySelector("p")).toBeNull();
+  const linkWrap = heading.querySelector(".schedule-editor-actions.detail-item-link");
   expect(linkWrap).toBeTruthy();
   const linkBtn = within(linkWrap as HTMLElement).getByRole("link", { name: /打开飞书事项/ });
   expect(linkBtn.getAttribute("title")).toBe("在浏览器打开飞书事项");
