@@ -91,7 +91,8 @@ type ScheduleItemContext = { completedStatus?: string | null; currentNodes?: Sch
 
 function currentNodes(detail: ItemDetail): ScheduleCurrentNode[] | undefined {
   if (!Array.isArray(detail.data.work_item_current_node)) return undefined;
-  return detail.data.work_item_current_node.flatMap((node, index) => {
+  const occurrences = new Map<string, number>();
+  return detail.data.work_item_current_node.flatMap((node) => {
     if (typeof node.name !== "string" || !node.name.trim()) return [];
     const rawOwners = Array.isArray(node.owners) ? node.owners : [];
     const owners = new Map<string, SchedulePerson>();
@@ -104,7 +105,15 @@ function currentNodes(detail: ItemDetail): ScheduleCurrentNode[] | undefined {
         avatar: typeof value.avatar === "string" ? value.avatar : undefined });
     }
     const nodeId = node.id ?? node.node_key;
-    return [{ id: typeof nodeId === "string" ? nodeId : `detail-node-${index}`, name: node.name,
+    let id = typeof nodeId === "string" && nodeId.trim() ? nodeId
+      : typeof nodeId === "number" && Number.isSafeInteger(nodeId) ? String(nodeId) : undefined;
+    if (!id) {
+      const key = JSON.stringify([node.name.trim(), [...owners.keys()].sort(), unknownOwner]);
+      const occurrence = occurrences.get(key) || 0;
+      occurrences.set(key, occurrence + 1);
+      id = `detail-node:${key}:${occurrence}`;
+    }
+    return [{ id, name: node.name,
       owners: [...owners.values()], unknownOwner }];
   });
 }

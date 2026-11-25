@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import { scheduleItemKey, useScheduleItemContexts } from "./scheduleHistory";
+import { sortScheduleCurrentNodes } from "./scheduleNodeOrder";
 import type { ItemDetail } from "./types";
 
 vi.mock("./api", () => ({ cachedItemDetail: vi.fn(), refreshItemDetail: vi.fn() }));
@@ -43,4 +44,28 @@ it("切换账号或事项后，旧节点读取的迟到返回不污染当前内�
   await act(async () => { finishOld(detail("old", "旧事项节点")); });
   expect(hook.result.current?.get(keyFor("old"))).toBeUndefined();
   expect(hook.result.current?.get(keyFor("new"))?.currentNodes?.[0].name).toBe("新事项节点");
+});
+
+it("缺少 ID 的同名并行节点按稳定负责人身份保序，重排后不交换且不合并重复节点", async () => {
+  const key = keyFor("i");
+  const keys = new Set([key]);
+  const first = { name: "研发", owners: [{ key: "a", name: "甲" }] };
+  const second = { name: "研发", owners: [{ key: "b", name: "乙" }] };
+  const result = (nodes: Array<Record<string, unknown>>) => ({ ...detail("i", "研发"), data: {
+    ...detail("i", "研发").data, work_item_current_node: nodes,
+  } });
+  vi.mocked(cachedItemDetail).mockResolvedValue(null);
+  vi.mocked(refreshItemDetail).mockResolvedValueOnce(result([second, first, first]))
+    .mockResolvedValueOnce(result([first, first, { ...second, owners: [{ key: "b", name: "乙（新）" }] }]));
+  const hook = renderHook(({ revision }) => useScheduleItemContexts("account", keys, revision), { initialProps: { revision: 1 } });
+  await waitFor(() => expect(hook.result.current?.get(key)?.nodesVerified).toBe(true));
+  const identity = { connection: "c", project: "p", type: "story", item: "i", node: "n", scope: "node" as const };
+  const sorted = () => sortScheduleCurrentNodes(hook.result.current!.get(key)!.currentNodes!, [], identity);
+  expect(sorted().map((node) => node.owners[0].id)).toEqual(["a", "a", "b"]);
+  const original = sorted().map((node) => node.id);
+  expect(new Set(original).size).toBe(3);
+  hook.rerender({ revision: 2 });
+  await waitFor(() => expect(refreshItemDetail).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(sorted().find((node) => node.owners[0].id === "b")?.owners[0].name).toBe("乙（新）"));
+  expect(sorted().map((node) => node.id)).toEqual(original);
 });

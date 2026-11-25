@@ -803,7 +803,7 @@ it("我的排期保留负责人不明目标及只读原因，排除明确属于�
   expect(screen.queryByRole("button", { name: /他人排期/ })).toBeNull();
   expect(screen.getByRole("button", { name: /共同负责人未确认/ }).textContent).toContain("尚有负责人身份不明");
   expect(screen.getByRole("button", { name: /无人负责/ }).textContent).toContain("负责人不明");
-  expect(document.querySelector(".schedule-row-current")).toBeNull();
+  expect(document.querySelector(".schedule-row-current .schedule-current-node")).toBeNull();
   const bar = screen.getByRole("button", { name: /^身份不明/ });
   expect(bar.getAttribute("draggable")).toBe("false"); fireEvent.click(bar);
   expect(screen.getByText("负责人排期数据不完整")).toBeTruthy();
@@ -813,11 +813,11 @@ it("我的排期保留负责人不明目标及只读原因，排除明确属于�
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
-it("没有进行中节点时隐藏日历副标题，待安排仍显示负责人", async () => {
+it("没有可确认的进行中节点时不猜测节点标签，待安排仍显示负责人", async () => {
   const read = data(); const base = read.targets[0]; read.people.push({ id: "other", name: "同事" });
   read.targets = [{ ...base, id: "shared", title: "共同任务", identity: { ...identity, scope: "node", owner: "" }, ownerId: null, ownerIds: ["me", "other"], dates: { start: currentWeekDay(0), end: currentWeekDay(0) }, readOnlyReason: "仅可编辑明确属于自己的排期" }, base];
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
-  expect(document.querySelector(".schedule-row-current")).toBeNull();
+  expect(document.querySelector(".schedule-row-current .schedule-current-node")).toBeNull();
   const pending = screen.getByRole("button", { name: /任务一/ });
   expect(pending.querySelector(".schedule-current-node.is-pending")?.textContent).toBe("开发");
   expect(pending.querySelector(".schedule-pending-details")?.textContent).toBe("本人 待安排");
@@ -1354,10 +1354,10 @@ it.each([
     return { people: [], targets, complete: true };
   });
   await setup();
+  fireEvent.click(screen.getByRole("button", { name: view }));
   for (let offset = 0; offset > weekOffset; offset -= 7) {
     fireEvent.click(screen.getByRole("button", { name: "上一周" }));
   }
-  fireEvent.click(screen.getByRole("button", { name: view }));
   expect(screen.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
   const previousRequest = expect.objectContaining({
     range: { start: previousStart, end: currentWeekDay(weekOffset - 1) },
@@ -1611,7 +1611,60 @@ it("历史排期没有清单缓存时，可补齐上线徽标和事项链接", a
   expect(inspector.getByText("历史需求说明")).toBeTruthy();
 });
 
-it("人员历史独有事项补读当前节点与负责人，已经上线和已结束节点的原有排期始终保留", async () => {
+it("我的排期显示事项当前节点及负责人，排期条和编辑范围仍只属于自己", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.people.push({ id: "peer", name: "测试同事" });
+  read.targets = [
+    { ...base, nodeName: "前端研发", nodeStatus: "finished", dates: { start: currentWeekDay(0), end: currentWeekDay(1) } },
+    { ...base, id: "peer-testing", nodeName: "需求测试", nodeStatus: "doing", identity: { ...identity, node: "testing", owner: "peer" },
+      ownerId: "peer", ownerIds: ["peer"], mine: false },
+    { ...base, id: "another-pending", title: "另一个待排事项", nodeStatus: "doing", identity: { ...identity, item: "pending" } },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
+  const node = within(calendar).getByText("需求测试", { selector: ".schedule-current-node" });
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
+  expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(1);
+  expect(within(calendar).queryByRole("button", { name: "任务一 需求测试" })).toBeNull();
+  expect(screen.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
+  fireEvent.mouseEnter(node);
+  expect(screen.getByRole("tooltip").querySelector(".schedule-node-owner > span:last-child")?.textContent).toBe("测试同事");
+  fireEvent.mouseLeave(node);
+  fireEvent.click(within(calendar).getByRole("button", { name: "任务一 前端研发" }));
+  expect(screen.queryByRole("group", { name: "事项节点" })).toBeNull();
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
+});
+
+it("我的排期初始只读取本人时仍补齐事项的其他并行当前节点，不扩大编辑范围", async () => {
+  const read = data();
+  read.peopleLoaded = false;
+  read.targets[0] = { ...read.targets[0], nodeStatus: "doing", nodeOrder: 1,
+    dates: { start: currentWeekDay(0), end: currentWeekDay(1) } };
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(cachedItemDetail).mockResolvedValue(null);
+  vi.mocked(refreshItemDetail).mockResolvedValue({ id: { project_key: "p", work_item_type_key: "t", work_item_id: "i" },
+    fetched_at_ms: 1, pages: [], data: { work_item_attribute: {}, work_item_fields: [], work_item_current_node: [
+      { id: "peer-current", name: "后端研发", owners: [{ key: "peer", name: "后端同事" }] },
+      { id: "n", name: "开发", owners: [{ key: "me", name: "本人" }] },
+    ] } });
+  await setup();
+  const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
+  const peerNode = await within(calendar).findByText("后端研发", { selector: ".schedule-current-node" });
+  fireEvent.mouseEnter(peerNode);
+  expect(screen.getByRole("tooltip").querySelector(".schedule-node-owner > span:last-child")?.textContent).toBe("后端同事");
+  fireEvent.mouseLeave(peerNode);
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
+  expect(within(calendar).queryByRole("button", { name: "任务一 后端研发" })).toBeNull();
+  fireEvent.click(within(calendar).getByRole("button", { name: "任务一 开发" }));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
+  expect(screen.queryByRole("group", { name: "事项节点" })).toBeNull();
+  expect(loadSchedulePeople).not.toHaveBeenCalled();
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
+});
+
+it.each(["mine", "people"])("%s 历史独有事项补读当前节点与负责人，已经上线和已结束节点的原有排期始终保留", async (view) => {
   const read = data();
   const base = read.targets[0];
   read.targets = [];
@@ -1628,7 +1681,7 @@ it("人员历史独有事项补读当前节点与负责人，已经上线和已�
       : [{ id: "testing", name: "需求测试", owners: [{ key: "tester", name: "测试同事" }] }],
   } }));
   await setup();
-  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  if (view === "people") fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
   await within(calendar).findByText("需求测试", { selector: ".schedule-current-node" });
   const released = await within(calendar).findByText("需求上线", { selector: ".schedule-completed-status span" });
@@ -1640,7 +1693,53 @@ it("人员历史独有事项补读当前节点与负责人，已经上线和已�
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
-it("人员节点补读失败保留缓存节点及真实排期，不影响查看与切周", async () => {
+it.each(["mine", "people"])("%s 节点标签在详情补读返回乱序时仍按流程顺序显示", async (view) => {
+  const read = data();
+  const base = read.targets[0];
+  const specs = [{ id: "front", name: "前端代码研发", order: 4 }, { id: "back", name: "后端代码研发", order: 5 },
+    { id: "test", name: "测试用例设计", order: 8 }];
+  read.targets = specs.map((node) => ({ ...base, id: node.id, identity: { ...identity, node: node.id },
+    nodeName: node.name, nodeStatus: "doing", nodeOrder: node.order,
+    dates: node.id === "front" ? { start: currentWeekDay(0), end: currentWeekDay(1) } : { start: "", end: "" } }));
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], complete: true, targets: [{ ...read.targets[0], id: "history:front" }] });
+  vi.mocked(cachedItemDetail).mockResolvedValue(null);
+  let finish!: (detail: Awaited<ReturnType<typeof refreshItemDetail>>) => void;
+  vi.mocked(refreshItemDetail).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  await setup();
+  if (view === "people") fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const labels = () => [...document.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")].map((node) => node.textContent);
+  expect(labels()).toEqual(["前端代码研发", "后端代码研发", "测试用例设计"]);
+  await waitFor(() => expect(refreshItemDetail).toHaveBeenCalled());
+  await act(async () => { finish({ id: { project_key: "p", work_item_type_key: "t", work_item_id: "i" }, fetched_at_ms: 1, pages: [], data: {
+    work_item_attribute: {}, work_item_fields: [], work_item_current_node: [specs[2], specs[0], specs[1]].map((node) => ({
+      id: `detail-${node.id}`, name: node.name, owners: [{ key: "me", name: "本人" }],
+    })),
+  } }); });
+  expect(labels()).toEqual(["前端代码研发", "后端代码研发", "测试用例设计"]);
+});
+
+it("详情未提供头像时，负责人提示保留同一人员已有照片", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.targets = [];
+  read.connection = "c";
+  read.people.push({ id: "tester", name: "施伟", connection: "c", project: "p", avatar: "tester.png" });
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], complete: true, targets: [{ ...base,
+    id: "history:avatar", nodeStatus: "", dates: { start: currentWeekDay(0), end: currentWeekDay(2) } }] });
+  vi.mocked(cachedItemDetail).mockResolvedValue(null);
+  vi.mocked(refreshItemDetail).mockResolvedValue({ id: { project_key: "p", work_item_type_key: "t", work_item_id: "i" },
+    fetched_at_ms: 1, pages: [], data: { work_item_attribute: {}, work_item_fields: [],
+      work_item_current_node: [{ id: "testing", name: "测试用例设计", owners: [{ key: "tester", name: "施伟" }] }] } });
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const node = await screen.findByText("测试用例设计", { selector: ".schedule-current-node" });
+  fireEvent.mouseEnter(node);
+  expect(screen.getByRole("tooltip").querySelector('img[src="tester.png"]')).toBeTruthy();
+});
+
+it.each(["mine", "people"])("%s 节点补读失败保留缓存节点及真实排期，不影响查看与切周", async (view) => {
   const read = data();
   const base = read.targets[0];
   read.targets = [];
@@ -1652,7 +1751,7 @@ it("人员节点补读失败保留缓存节点及真实排期，不影响查看�
       work_item_current_node: [{ id: "testing", name: "缓存中的测试节点", owners: [{ key: "tester", name: "测试同事" }] }] } });
   vi.mocked(refreshItemDetail).mockRejectedValue(new Error("offline"));
   await setup();
-  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  if (view === "people") fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
   await within(calendar).findByText("缓存中的测试节点");
   await waitFor(() => expect(refreshItemDetail).toHaveBeenCalled());
@@ -2381,7 +2480,8 @@ it("同一事项多节点在甘特图合并为单横排并按重叠自动分轨�
   // 2. 甘特图中同一事项在本周内的多个节点合并为唯一一横排，且重叠日期（day 1）自动分配到不同子轨道不互相遮挡
   const ganttRows = document.querySelectorAll(".schedule-row");
   expect(ganttRows).toHaveLength(1);
-  expect(ganttRows[0].querySelector(".schedule-row-current")).toBeNull();
+  expect([...ganttRows[0].querySelectorAll(".schedule-current-node")].map((node) => node.textContent))
+    .toEqual(["灰度联调验收", "后端代码合入"]);
   const codeBar = screen.getByRole("button", { name: /核心架构演进专项 后端代码研发/ });
   const testBar = screen.getByRole("button", { name: /核心架构演进专项 联调与自测/ });
   expect(codeBar.querySelector(".schedule-bar-title")?.textContent).toBe("研发");
@@ -2900,7 +3000,7 @@ it("我的排期与个人待办不混入同事项下他人的历史已流转节�
   const fallbackFrontend = screen.getByRole("button", { name: /发布 前端方案设计/ }).closest(".schedule-row");
   const fallbackProduct = screen.getByRole("button", { name: /发布 产品方案设计/ }).closest(".schedule-row");
   expect(fallbackFrontend).not.toBe(fallbackProduct);
-  expect(fallbackFrontend?.querySelector(".schedule-row-current")).toBeNull();
+  expect(fallbackFrontend?.querySelector(".schedule-current-node")?.textContent).toBe("后端方案设计");
 });
 
 it("人员排期展示事项的全部当前节点及负责人，排期条和详情仍归属当前行人员", async () => {
@@ -2909,12 +3009,13 @@ it("人员排期展示事项的全部当前节点及负责人，排期条和详�
   const dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
   read.people = [{ id: "me", name: "前端同事" }, { id: "peer", name: "后端同事" }];
   read.targets = [
-    { ...base, id: "frontend", nodeName: "前端研发", nodeStatus: "doing", dates },
+    { ...base, id: "frontend", nodeName: "前端研发", nodeStatus: "doing", nodeOrder: 1, dates },
     {
       ...base,
       id: "backend",
       nodeName: "后端研发",
       nodeStatus: "doing",
+      nodeOrder: 2,
       identity: { ...identity, node: "backend", owner: "peer" },
       ownerId: "peer",
       ownerIds: ["peer"],
@@ -2995,6 +3096,7 @@ it.each([7, 14] as const)("人员 %s 天本周视图补齐未上线事项，切�
   if (span === 14) fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
   expect(document.querySelectorAll(".schedule-row")).toHaveLength(0);
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  if (span === 14) fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
   const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
   expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(3);
   expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(0);
@@ -3040,7 +3142,7 @@ it("节点身份缺失时不把多条进行中记录合并成一个当前节点"
   await setup();
   const row = screen.getByRole("button", { name: "任务一 开发" }).closest(".schedule-row");
   expect(row).toBeTruthy();
-  expect(row?.querySelector(".schedule-row-current")).toBeNull();
+  expect([...row!.querySelectorAll(".schedule-current-node")].map((node) => node.textContent)).toEqual(["节点甲", "节点乙"]);
 });
 
 it("缓存确认事项已完成后，仍在当前排期会话中的行展示终态", async () => {

@@ -17,8 +17,9 @@ import {
 import { DateRangePicker } from "./DateRangePicker";
 import { Select } from "./Select";
 import { ScheduleDescription } from "./ScheduleDescription";
-import { ScheduleAvatar } from "./ScheduleAvatar";
+import { ScheduleAvatar, ScheduleAvatarCacheProvider } from "./ScheduleAvatar";
 import { ScheduleNodeOwners } from "./ScheduleNodeOwners";
+import { sortScheduleCurrentNodes } from "./scheduleNodeOrder";
 import { defectKey, ScheduleDefectInspector, ScheduleDefectList, useScheduleDefects, type ScheduleDefect } from "./ScheduleDefects";
 import { useScrollIsolation } from "./useScrollIsolation";
 import { nodeWorkflowActionIds, Workflow, type WorkflowItem, type WorkflowNavigationState, type WorkflowSubmit } from "./Workflow";
@@ -963,32 +964,18 @@ export function SchedulePage({
   const scheduled = calendarEntries.filter(
     inWindow,
   );
-  const currentNodeByPersonItem = new Map<string, Entry | null>();
-  for (const { entry, owner } of personRows(visible)) {
-    const { record } = entry;
-    if (!record.nodeName.trim() || record.sourceAggregate || normalizeNodeStatus(record.nodeStatus) !== "doing") continue;
-    const key = personItemKey(entry, owner);
-    const current = currentNodeByPersonItem.get(key);
-    if (current === undefined) {
-      currentNodeByPersonItem.set(key, entry);
-    } else if (current && (!entry.identity.node.trim() || current.identity.node !== entry.identity.node)) {
-      currentNodeByPersonItem.set(key, null);
-    }
-  }
   // 事项当前节点独立于本行人员、日期及人员筛选；并行节点分别展示完整负责人。
   const currentNodesByItem = new Map<string, Map<string, { entry: Entry; owners: Set<string>; unknownOwner: boolean }>>();
-  if (view === "people") {
-    for (const entry of entries) {
-      if (entry.record.sourceAggregate || !entry.record.nodeName.trim() || normalizeNodeStatus(entry.record.nodeStatus) !== "doing") continue;
-      const key = scheduleItemKey(entry.identity);
-      const nodes = currentNodesByItem.get(key) || new Map();
-      const node = entry.identity.node || entry.id;
-      const current = nodes.get(node) || { entry, owners: new Set<string>(), unknownOwner: false };
-      for (const owner of entry.record.ownerIds) if (owner) current.owners.add(owner);
-      current.unknownOwner ||= !!entry.record.unknownOwner;
-      nodes.set(node, current);
-      currentNodesByItem.set(key, nodes);
-    }
+  for (const entry of entries) {
+    if (entry.record.sourceAggregate || !entry.record.nodeName.trim() || normalizeNodeStatus(entry.record.nodeStatus) !== "doing") continue;
+    const key = scheduleItemKey(entry.identity);
+    const nodes = currentNodesByItem.get(key) || new Map();
+    const node = entry.identity.node || entry.id;
+    const current = nodes.get(node) || { entry, owners: new Set<string>(), unknownOwner: false };
+    for (const owner of entry.record.ownerIds) if (owner) current.owners.add(owner);
+    current.unknownOwner ||= !!entry.record.unknownOwner;
+    nodes.set(node, current);
+    currentNodesByItem.set(key, nodes);
   }
   const supplementPeopleItems = view === "people" && (daySpan === 7 || daySpan === 14) && monday(windowStart) === monday(currentToday);
   const peopleCalendarEntries = supplementPeopleItems
@@ -1076,11 +1063,10 @@ export function SchedulePage({
     if (calendarKey && historyKeys.has(key)) displayedHistoryKeys.add(key);
   }
   const contextKeys = new Set(displayedHistoryKeys);
-  if (view === "people") {
-    for (const { primaryEntry } of rows) {
-      const key = scheduleItemKey(primaryEntry.identity);
-      if (!currentNodesByItem.has(key)) contextKeys.add(key);
-    }
+  for (const { primaryEntry } of rows) {
+    const key = scheduleItemKey(primaryEntry.identity);
+    if (!primaryEntry.record.sourceAggregate && primaryEntry.identity.project && primaryEntry.identity.type &&
+      primaryEntry.identity.item && (!currentNodesByItem.has(key) || (view === "mine" && read?.peopleLoaded === false))) contextKeys.add(key);
   }
   const contextRevision = useMemo(() => [read, currentHistory], [read, currentHistory]);
   const itemContexts = useScheduleItemContexts(calendarContext, contextKeys, contextRevision);
@@ -1659,7 +1645,12 @@ export function SchedulePage({
   ).length;
   const editablePendingCount = view === "mine" ? pending.filter(isEditableTarget).length : null;
 
+  const avatarConnection = read?.connection || entries[0]?.identity.connection;
+  const avatarScope = !read?.accountError && avatarConnection && read?.currentUserId
+    ? JSON.stringify([calendarContext, avatarConnection, read.currentUserId]) : null;
+  const avatarPeople = useMemo(() => [...currentHistory?.people || [], ...read?.people || []], [read?.people, currentHistory?.people]);
   return (
+    <ScheduleAvatarCacheProvider scope={avatarScope} people={avatarPeople}>
     <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={() => preloadedSession?.onInteraction?.()} onFocusCapture={() => preloadedSession?.onInteraction?.()}>
           <>
             <div className="overview schedule-overview">
@@ -2255,18 +2246,16 @@ export function SchedulePage({
                       const { key, owner, primaryEntry, bars, laneCount } = row;
                       const rowSelected = (view !== "people" || owner === activePerson) &&
                         (bars.some((b) => b.entry.id === selected) || primaryEntry.id === selected);
-                      const currentNode = currentNodeByPersonItem.get(personItemKey(primaryEntry, owner))?.record;
                       const cachedItem = cachedItemFor(primaryEntry);
                       const historyKey = scheduleItemKey(primaryEntry.identity);
                       const itemContext = contextKeys.has(historyKey) ? itemContexts?.get(historyKey) : undefined;
                       const hasLiveCurrentNodes = currentNodesByItem.has(historyKey);
                       const detailNodes = itemContext?.nodesVerified || !hasLiveCurrentNodes ? itemContext?.currentNodes : undefined;
-                      const currentNodes: ScheduleCurrentNode[] = detailNodes ??
+                      const currentNodes: ScheduleCurrentNode[] = sortScheduleCurrentNodes(detailNodes ??
                         Array.from(currentNodesByItem.get(historyKey)?.values() || [])
-                          .sort((a, b) => (a.entry.record.nodeOrder ?? 0) - (b.entry.record.nodeOrder ?? 0))
                           .map(({ entry, owners, unknownOwner }) => ({ id: entry.identity.node || entry.id,
                             name: entry.record.nodeName, owners: [...owners].map((id) => ({ ...personFor(entry, id), id,
-                              name: displayPerson(entry, id) })), unknownOwner }));
+                              name: displayPerson(entry, id) })), unknownOwner })), entries.map((entry) => entry.record), primaryEntry.identity);
                       const historyStatus = !hasLiveCurrentNodes || itemContext?.statusVerified ? itemContext?.completedStatus : undefined;
                       const completedStatus = historyStatus !== undefined ? historyStatus
                         : cachedItem?.is_completed === true && (view !== "people" || !hasLiveCurrentNodes) ? workItemStatusName(cachedItem) : null;
@@ -2298,11 +2287,15 @@ export function SchedulePage({
                                       <span>{completedStatus}</span>
                                     </span>
                                   </small>
-                                ) : view === "people" ? (
+                                ) : (currentNodes.length > 0 || contextKeys.has(historyKey)) && (
                                   <small className="schedule-row-current schedule-row-current-nodes">
                                     {currentNodes.map(({ id, name, owners, unknownOwner }) => {
-                                      const nodeOwners = owners.map((person) => ({ ...personFor(primaryEntry, person.id), ...person,
-                                        name: isFallbackPersonName(person.name, person.id) ? displayPerson(primaryEntry, person.id) : person.name }));
+                                      const nodeOwners: SchedulePerson[] = owners.map((person) => {
+                                        const known = personFor(primaryEntry, person.id);
+                                        return { ...known, ...person, connection: primaryEntry.identity.connection, project: primaryEntry.identity.project,
+                                          avatar: person.avatar || known?.avatar,
+                                          name: isFallbackPersonName(person.name, person.id) ? displayPerson(primaryEntry, person.id) : person.name };
+                                      });
                                       if (unknownOwner) nodeOwners.push({ id: "", name: "尚有负责人身份不明" });
                                       if (!nodeOwners.length) nodeOwners.push({ id: "", name: "负责人不明" });
                                       return <ScheduleNodeOwners key={id} name={name}
@@ -2312,12 +2305,6 @@ export function SchedulePage({
                                       {itemContext?.currentNodes ? "暂无进行中节点" : itemContext?.failed ? "当前节点暂未读取，可刷新重试"
                                         : itemContext ? "未取得当前节点信息" : "正在读取当前节点…"}
                                     </span>}
-                                  </small>
-                                ) : currentNode && (
-                                  <small className="schedule-row-current" title={`当前节点：${currentNode.nodeName}`}>
-                                    <span className="schedule-current-node" style={nodeColorStyle(currentNode)}>
-                                      {currentNode.nodeName}
-                                    </span>
                                   </small>
                                 )}
                               </span>
@@ -2971,5 +2958,6 @@ export function SchedulePage({
         <CalendarDays size={1} />
       </span>
     </section>
+    </ScheduleAvatarCacheProvider>
   );
 }
