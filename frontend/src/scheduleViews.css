@@ -1,0 +1,30 @@
+.schedule-view-trigger { max-width: 200px; }
+.schedule-view-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schedule-view-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.schedule-view-menu { min-width: 210px; max-width: min(320px, calc(100vw - 20px)); max-height: var(--radix-dropdown-menu-content-available-height); overflow-y: auto; }
+.schedule-view-menu .theme-menu-item > span:first-of-type { overflow-wrap: anywhere; }
+.schedule-view-menu [data-disabled] { opacity: .48; }
+.schedule-view-backdrop { position: fixed; inset: 0; z-index: 110; display: flex; align-items: center; justify-content: center; padding: 20px; background: var(--modal-backdrop, rgba(0, 0, 0, .35)); }
+.schedule-view-dialog { width: min(440px, 100%); max-height: calc(100dvh - 40px); overflow-y: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-solid); color: var(--text); box-shadow: var(--control-shadow); padding: 22px; }
+.schedule-view-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.schedule-view-dialog h2 { margin: 0; font-size: 17px; color: var(--heading); }
+.schedule-view-dialog p { margin: 10px 0 0; font-size: 12px; line-height: 1.7; color: var(--text-secondary); }
+.schedule-view-dialog section { margin-top: 20px; }
+.schedule-view-save-fields { padding-top: 18px; border-top: 1px solid var(--line); }
+.schedule-view-name { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; font-size: 12px; }
+.schedule-view-name input { width: 100%; min-height: 38px; background: var(--input-bg); color: var(--text); border: 1px solid var(--control-border); border-radius: 10px; padding: 8px 10px; }
+.schedule-view-date-mode { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; }
+.schedule-view-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+.schedule-view-actions > span { flex: 1; }
+.schedule-view-text-action { padding: 5px 0; font-size: 12px; color: var(--text-secondary); }
+.schedule-view-text-action:hover { color: var(--text); }
+.schedule-view-dialog .schedule-view-error { color: var(--error-text); }
+.schedule-view-delete { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 4px; }
+.schedule-view-delete p { margin-bottom: 12px; }
+.schedule-view-delete button + button { margin-left: 8px; }
+@media (max-width: 600px) {
+  .schedule-view-backdrop { padding: 10px; }
+  .schedule-view-dialog { padding: 16px; max-height: calc(100dvh - 20px); }
+  .schedule-week-nav { gap: 2px; }
+  .schedule-week-nav strong { font-size: 11px; padding: 0; }
+}

@@ -951,7 +951,7 @@ it.each([7, 14].flatMap((span) => Array.from({ length: span }, (_, index) => [sp
     read.targets.push({ ...read.targets[0], id: "scheduled", title: "已有安排", identity: { ...identity, item: "scheduled" }, dates: { start: currentWeekDay(0), end: currentWeekDay(0) } });
     vi.mocked(loadScheduleSession).mockResolvedValue(read);
     await setup();
-    if (span === 14) fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+    if (span === 14) fireEvent.click(screen.getByRole("button", { name: "双周" }));
     expect(document.querySelectorAll(".schedule-row")).toHaveLength(1);
     expect(screen.queryByText("本周暂无可显示的安排")).toBeNull();
     const grid = document.querySelector(".schedule-empty-grid") as HTMLElement;
@@ -1802,7 +1802,7 @@ it("已排期包含当前及多个历史未来周，定位与切周后计数、�
   expect(within(document.querySelector(".schedule-calendar") as HTMLElement).getByRole("button", { name: /未来安排/ })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "上一周" }));
   fireEvent.click(screen.getByRole("button", { name: "下一周" }));
-  fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+  fireEvent.click(screen.getByRole("button", { name: "双周" }));
   expect(screen.getByRole("tab", { name: "已排期 (3)" })).toBeTruthy();
   expect(within(pool).getAllByRole("button", { name: /任务一|过去安排|未来安排/ })).toHaveLength(3);
   expect(submitScheduleTargets).not.toHaveBeenCalled();
@@ -1815,7 +1815,7 @@ it("待排期空态仅反映左侧清单，切换日历范围不会重新读取�
   await setup();
 
   const empty = screen.getByText("当前筛选下暂无待排期事项");
-  fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+  fireEvent.click(screen.getByRole("button", { name: "双周" }));
   expect(screen.getByText("当前筛选下暂无待排期事项")).toBe(empty);
   fireEvent.click(screen.getByRole("button", { name: "下一周" }));
   expect(screen.getByText("当前筛选下暂无待排期事项")).toBe(empty);
@@ -1840,7 +1840,7 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   expect(screen.queryByRole("button", { name: /跨双周右界任务/ })).toBeNull();
 
   // 切换到双周 14 天后，跨双周右界任务进入视窗（第 9 列至第 14 列，右端裁切显示 ›），且『已排期』数量锚定单周口径保持 2 不变
-  fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+  fireEvent.click(screen.getByRole("button", { name: "双周" }));
   expect(screen.getByRole("tab", { name: "已排期 (2)" })).toBeTruthy();
   const dayHeaders = document.querySelectorAll(".schedule-days > div");
   expect(dayHeaders).toHaveLength(14);
@@ -1857,7 +1857,7 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(10));
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(currentWeekDay(10));
 
-  fireEvent.click(screen.getByRole("button", { name: "单周 7天" }));
+  fireEvent.click(screen.getByRole("button", { name: "单周" }));
   expect(document.querySelectorAll(".schedule-days > div")).toHaveLength(7);
 
   const outsideTab = screen.getByRole("tab", { name: /已排期/ });
@@ -2851,7 +2851,7 @@ it("多节点与单节点左侧事项栏保持统一简洁布局，短排期条�
     expect(getComputedStyle(prdBar).borderTopStyle).toBe("solid");
     delete document.documentElement.dataset.appearance;
 
-    fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+    fireEvent.click(screen.getByRole("button", { name: "双周" }));
     const feBarBiweekly = screen.getByRole("button", { name: /排期节点辨识专项 前端代码开发/ });
     expect(feBarBiweekly.classList.contains("is-single-day-bar")).toBe(true);
     expect(getComputedStyle(feBarBiweekly.querySelector(".schedule-bar-badges") as HTMLElement).display).toBe("none");
@@ -3093,10 +3093,10 @@ it.each([7, 14] as const)("人员 %s 天本周视图补齐未上线事项，切�
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   render(<SchedulePage snapshot={snapshot} onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
   await screen.findByLabelText("今日问候");
-  if (span === 14) fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+  if (span === 14) fireEvent.click(screen.getByRole("button", { name: "双周" }));
   expect(document.querySelectorAll(".schedule-row")).toHaveLength(0);
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
-  if (span === 14) fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+  if (span === 14) fireEvent.click(screen.getByRole("button", { name: "双周" }));
   const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
   expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(3);
   expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(0);

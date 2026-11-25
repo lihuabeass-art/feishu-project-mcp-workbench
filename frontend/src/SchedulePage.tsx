@@ -4,8 +4,6 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   GitBranch,
   Info,
   PanelLeftClose,
@@ -15,6 +13,8 @@ import {
   X,
 } from "lucide-react";
 import { DateRangePicker } from "./DateRangePicker";
+import { ScheduleDateControls, ScheduleViewControls } from "./ScheduleViewControls";
+import { fitScheduleView, scheduleViewsKey, validViewDate, type ScheduleViewSettings } from "./scheduleViews";
 import { Select } from "./Select";
 import { ScheduleDescription } from "./ScheduleDescription";
 import { ScheduleAvatar, ScheduleAvatarCacheProvider } from "./ScheduleAvatar";
@@ -328,13 +328,28 @@ export function SchedulePage({
   const workflowPanelId = useId();
   const workflowTrigger = useRef<HTMLButtonElement>(null);
   useWorkflowSubmissions();
-  const [week, setWeek] = useState(() => monday(today()));
-  const [daySpan, setDaySpan] = useState<7 | 14>(7);
   const [view, setView] = useState<"mine" | "people">("mine");
   const viewModeRef = useRef(view);
   viewModeRef.current = view;
-  const [project, setProject] = useState("");
-  const [relatedProject, setRelatedProject] = useState("");
+  const [mineWeek, setMineWeek] = useState(() => monday(today()));
+  const [peopleWeek, setPeopleWeek] = useState(() => monday(today()));
+  const [peopleViewDays, setPeopleViewDays] = useState(7);
+  const [minePeriods, setMinePeriods] = useState<1 | 2>(1);
+  const [peoplePeriods, setPeoplePeriods] = useState<1 | 2>(1);
+  const week = view === "mine" ? mineWeek : peopleWeek;
+  const setWeek = view === "mine" ? setMineWeek : setPeopleWeek;
+  const viewDays = view === "mine" ? 7 : peopleViewDays;
+  const viewPeriods = view === "mine" ? minePeriods : peoplePeriods;
+  const daySpan = viewDays * viewPeriods;
+  const [viewSettingsOpen, setViewSettingsOpen] = useState(false);
+  const [mineProject, setMineProject] = useState("");
+  const [peopleProject, setPeopleProject] = useState("");
+  const [mineRelatedProject, setMineRelatedProject] = useState("");
+  const [peopleRelatedProject, setPeopleRelatedProject] = useState("");
+  const project = view === "mine" ? mineProject : peopleProject;
+  const setProject = view === "mine" ? setMineProject : setPeopleProject;
+  const relatedProject = view === "mine" ? mineRelatedProject : peopleRelatedProject;
+  const setRelatedProject = view === "mine" ? setMineRelatedProject : setPeopleRelatedProject;
   const [person, setPerson] = useState<string[]>([]);
   const [personQuery, setPersonQuery] = useState("");
   const [personSearchRequest, setPersonSearchRequest] = useState(0);
@@ -366,12 +381,13 @@ export function SchedulePage({
     const keyForWeek = (offset: number) => {
       const start = addDays(windowStart, offset);
       const end = addDays(windowEnd, offset);
+      if (!validViewDate(start) || !validViewDate(end)) return "";
       return JSON.stringify([calendarContext, { ...request, range: { start, end } }]);
     };
     const visibleKey = keyForWeek(0);
     const scopeReady = request.connection && request.currentUser && request.scopes.length &&
       !read?.accountError && (view !== "people" || read?.peopleLoaded !== false);
-    return [visibleKey, scopeReady ? [-7, 7, -14, 14].map(keyForWeek) : []];
+    return [visibleKey, scopeReady ? [-7, 7, -14, 14].map(keyForWeek).filter(Boolean) : []];
   }, [read, snapshot, view, calendarContext, windowStart, windowEnd]);
   const { data: currentHistory, loading: calendarLoading, failed: calendarFailed, retry: retryCalendar } =
     useScheduleCalendar(calendarKey, preloadCalendarKeys);
@@ -380,7 +396,7 @@ export function SchedulePage({
     [currentHistory],
   );
   const defectWorkflowInteraction = Boolean(defectWorkflowLoading || defectWorkflow?.editing || defectWorkflow?.busy || defectWorkflow?.uncertain);
-  const workflowInteraction = workflowEditorOpen || workflowLoading || defectWorkflowInteraction;
+  const workflowInteraction = workflowEditorOpen || workflowLoading || defectWorkflowInteraction || viewSettingsOpen;
   const dirty = entries.some(scheduleChanged);
   const uncertain = entries.some((entry) => entry.result === "uncertain");
   const persistentWarnings = Array.from(new Set(entries.flatMap((entry) =>
@@ -837,6 +853,12 @@ export function SchedulePage({
   const relatedProjectOptions = projectFilterOptions(projectItems, snapshot?.workspace_catalog || [], "", "");
   if (filterEntries.some((entry) => (!project || entry.identity.project === project) && !cachedItemFor(entry))) {
     relatedProjectOptions.push({ value: unreadRelatedProject, label: "项目信息未读取" });
+  }
+  if (relatedProject && !relatedProjectOptions.some((option) => option.value === relatedProject)) {
+    const catalogOption = snapshot?.workspace_catalog?.flatMap((space) => space.projects.map((entry) => ({
+      value: relatedProjectKey(space.project_key, entry), label: entry.name,
+    }))).find((option) => option.value === relatedProject);
+    relatedProjectOptions.push(catalogOption || { value: relatedProject, label: "已保存的项目筛选（暂无事项）" });
   }
 
   const matchesFilters = (entry: Entry) =>
@@ -1382,13 +1404,15 @@ export function SchedulePage({
         const start = currentToday;
         const weekSunday = addDays(monday(currentToday), 6);
         const rawEnd = addDays(start, span - 1);
-        const end = rawEnd <= weekSunday ? rawEnd : weekSunday;
+        const rangeEnd = windowEnd < weekSunday ? windowEnd : weekSunday;
+        const end = rawEnd <= rangeEnd ? rawEnd : rangeEnd;
         return editSchedule(entry, { start, end: end < start ? start : end });
       }
       const start = week;
       const weekFriday = addDays(week, 4);
       const rawEnd = addDays(start, span - 1);
-      const end = rawEnd <= weekFriday ? rawEnd : weekFriday;
+      const rangeEnd = windowEnd < weekFriday ? windowEnd : weekFriday;
+      const end = rawEnd <= rangeEnd ? rawEnd : rangeEnd;
       return editSchedule(entry, { start, end: end < start ? start : end });
     });
   };
@@ -1644,6 +1668,31 @@ export function SchedulePage({
     (entry) => entry.dates.start <= currentToday && entry.dates.end >= currentToday,
   ).length;
   const editablePendingCount = view === "mine" ? pending.filter(isEditableTarget).length : null;
+  const viewStorageKey = scheduleViewsKey(snapshot?.settings?.endpoint, read?.accountError ? null : read?.currentUserId);
+  const applyViewSettings = (settings: ScheduleViewSettings, restoring = false) => {
+    setPeopleWeek(fitScheduleView({ ...settings, days: settings.days * peoplePeriods }).start);
+    setPeopleViewDays(settings.days);
+    // 只在完整读取明确证明选项已失效时剔除；部分读取不能清空已保存的筛选。
+    const projects = new Set([
+      ...entries.map((entry) => entry.identity.project),
+      ...(read?.historyScopes || []).map((scope) => scope.project),
+      ...(snapshot?.workspace_catalog || []).map((space) => space.project_key),
+    ]);
+    const project = restoring && read?.complete && settings.project && !projects.has(settings.project) ? "" : settings.project;
+    setPeopleProject(project);
+    // 排期或缓存事项中没有出现，不能证明项目已删除；只有对应空间的目录可核对项目身份。
+    let related = settings.relatedProject;
+    if (restoring && snapshot?.workspace_catalog && related && related !== missingProject && related !== unreadRelatedProject) {
+      try {
+        const [space, id] = JSON.parse(related);
+        const catalog = snapshot.workspace_catalog.find((entry) => entry.project_key === space);
+        if (catalog && !catalog.projects.some((entry) => entry.id === id)) related = "";
+      } catch { related = ""; }
+    }
+    setPeopleRelatedProject(related);
+    const people = new Set(read?.people.map((person) => person.id));
+    setPerson(restoring && read?.complete && read.peopleLoaded !== false ? settings.people.filter((id) => people.has(id)) : settings.people);
+  };
 
   const avatarConnection = read?.connection || entries[0]?.identity.connection;
   const avatarScope = !read?.accountError && avatarConnection && read?.currentUserId
@@ -1888,53 +1937,16 @@ export function SchedulePage({
                     {poolCollapsed ? `展开待排池 (${pendingRows.length})` : "收起待排池"}
                   </button>
 
-                  <div className="schedule-tabs" role="group" aria-label="时间跨度">
-                    <button
-                      type="button"
-                      className={daySpan === 7 ? "active" : ""}
-                      aria-pressed={daySpan === 7}
-                      onClick={() => setDaySpan(7)}
-                    >
-                      单周 7天
-                    </button>
-                    <button
-                      type="button"
-                      className={daySpan === 14 ? "active" : ""}
-                      aria-pressed={daySpan === 14}
-                      onClick={() => setDaySpan(14)}
-                    >
-                      双周 14天
-                    </button>
-                  </div>
-
-                  <div className="schedule-week-nav">
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label="上一周"
-                      onClick={() => setWeek((current) => addDays(current, -7))}
-                    >
-                      <ChevronLeft size={16} />
-                    </button>
-                    <strong>
-                      {windowStart} — {windowEnd}
-                    </strong>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label="下一周"
-                      onClick={() => setWeek((current) => addDays(current, 7))}
-                    >
-                      <ChevronRight size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() => setWeek(monday(today()))}
-                    >
-                      本周
-                    </button>
-                  </div>
+                  {view === "mine" && <ScheduleDateControls
+                    current={{ start: mineWeek, days: 7, perspective: "mine", project: mineProject, relatedProject: mineRelatedProject, people: [], editableOnly }}
+                    periods={minePeriods} onPeriodsChange={setMinePeriods} today={currentToday}
+                    onApply={(settings) => setMineWeek(settings.start)} />}
+                  <ScheduleViewControls key={viewStorageKey || "unconfirmed-account"} enabled={view === "people"} storageKey={viewStorageKey}
+                    current={{ start: peopleWeek, days: peopleViewDays, perspective: "people", project: peopleProject, relatedProject: peopleRelatedProject, people: person, editableOnly: false }}
+                    periods={peoplePeriods} onPeriodsChange={(periods) => {
+                      setPeopleWeek(fitScheduleView({ start: peopleWeek, days: peopleViewDays * periods, perspective: "people", project: peopleProject, relatedProject: peopleRelatedProject, people: person, editableOnly: false }).start);
+                      setPeoplePeriods(periods);
+                    }} today={currentToday} onApply={applyViewSettings} onOpenChange={setViewSettingsOpen} />
                   <div className="schedule-range-summary" role="group" aria-label="当前日期范围排期统计">
                     <span>已排 <strong>{scheduled.length}</strong></span>
                     {todayInWindow && <span>今日有排期 <strong>{scheduledTodayCount}</strong></span>}
