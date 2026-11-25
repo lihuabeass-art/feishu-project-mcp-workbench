@@ -1,0 +1,227 @@
+name: Build macOS Intel recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已发布版本的固定 tag"
+        required: true
+        type: string
+      commit:
+        description: "tag 对应的完整提交 SHA"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-macos-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+  FSTODO_RELEASE_TAG: ${{ inputs.tag }}
+  EXPECTED_RELEASE_COMMIT: ${{ inputs.commit }}
+
+jobs:
+  frontend-tests:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Verify fixed release tag and commit
+        shell: bash
+        run: |
+          [[ "$EXPECTED_RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$FSTODO_RELEASE_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_RELEASE_COMMIT"
+          test "$(git rev-list -n 1 "refs/tags/$FSTODO_RELEASE_TAG")" = "$EXPECTED_RELEASE_COMMIT"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+
+  backend-tests:
+    name: macOS backend tests
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Verify fixed release tag and commit
+        shell: bash
+        run: |
+          [[ "$EXPECTED_RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$FSTODO_RELEASE_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_RELEASE_COMMIT"
+          test "$(git rev-list -n 1 "refs/tags/$FSTODO_RELEASE_TAG")" = "$EXPECTED_RELEASE_COMMIT"
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+      - name: Cache backend test dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: macos-15-intel-backend-tests
+          workspaces: backend -> target
+          env-vars: MACOSX_DEPLOYMENT_TARGET
+          cache-bin: false
+          save-if: false
+      - name: Test backend
+        working-directory: backend
+        run: cargo test --locked
+      - name: Test token persistence with an isolated Keychain
+        working-directory: backend
+        run: |
+          original_keychain=$(security default-keychain -d user | sed 's/^ *"//; s/"$//')
+          test_keychain="$RUNNER_TEMP/fstodo-test.keychain-db"
+          keychain_password=$(uuidgen)
+          cleanup() {
+            security default-keychain -d user -s "$original_keychain"
+            security delete-keychain "$test_keychain"
+          }
+          trap cleanup EXIT
+          security create-keychain -p "$keychain_password" "$test_keychain"
+          security unlock-keychain -p "$keychain_password" "$test_keychain"
+          security default-keychain -d user -s "$test_keychain"
+          cargo test --locked encrypted_token_survives_reopen_and_overrides_external_credentials -- --ignored
+
+  build:
+    name: macOS universal DMG
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Verify fixed release tag and commit
+        shell: bash
+        run: |
+          [[ "$EXPECTED_RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$FSTODO_RELEASE_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_RELEASE_COMMIT"
+          test "$(git rev-list -n 1 "refs/tags/$FSTODO_RELEASE_TAG")" = "$EXPECTED_RELEASE_COMMIT"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Validate tag and generate release notes
+        if: env.FSTODO_RELEASE_TAG != ''
+        id: notes
+        run: |
+          node frontend/scripts/release-notes.mjs --output artifacts/release --github-output "$GITHUB_OUTPUT"
+      - name: Use generated notes for build
+        if: env.FSTODO_RELEASE_TAG != ''
+        run: echo "FSTODO_RELEASE_NOTES_FILE=$GITHUB_WORKSPACE/artifacts/release/release.json" >> "$GITHUB_ENV"
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup default 1.88.0
+      - name: Cache universal release dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: macos-15-intel-desktop-universal
+          workspaces: frontend/src-tauri -> target
+          env-vars: MACOSX_DEPLOYMENT_TARGET
+          cache-bin: false
+          save-if: false
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build universal app and DMG
+        if: env.FSTODO_RELEASE_TAG != ''
+        working-directory: frontend
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          USE_DEVELOPER_ID: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING }}
+          APPLE_CERTIFICATE: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING == 'true' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo '缺少 updater 签名私钥，不能生成正式更新包。' >&2
+            exit 1
+          fi
+          if [[ "$USE_DEVELOPER_ID" == true ]]; then
+            for credential in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              if [[ -z "${!credential}" ]]; then
+                echo "Developer ID signing is enabled, but $credential is missing." >&2
+                exit 1
+              fi
+            done
+            if [[ "$APPLE_SIGNING_IDENTITY" != "Developer ID Application: "* ]]; then
+              echo "APPLE_SIGNING_IDENTITY must name a Developer ID Application certificate." >&2
+              exit 1
+            fi
+          else
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
+          npm run build:macos
+      - name: Test macOS desktop
+        working-directory: frontend/src-tauri
+        run: |
+          target=$(rustc -vV | sed -n 's/^host: //p')
+          cargo test --locked --release --features tauri/custom-protocol --target "$target"
+      - name: Verify architectures and app signing
+        if: env.FSTODO_RELEASE_TAG != ''
+        env:
+          USE_DEVELOPER_ID: ${{ vars.FSTODO_MACOS_DEVELOPER_ID_SIGNING }}
+        run: |
+          app=frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/FSTODO.app
+          lipo "$app/Contents/MacOS/fstodo-desktop" -verify_arch arm64 x86_64
+          codesign --verify --deep --strict --verbose=2 "$app"
+          if [[ "$USE_DEVELOPER_ID" == true ]]; then
+            codesign --display --verbose=4 "$app" 2>&1 | grep '^Authority=Developer ID Application: '
+            xcrun stapler validate "$app"
+          fi
+      - name: Verify updater signature
+        run: |
+          brew install minisign
+          archive=frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/FSTODO.app.tar.gz
+          test -s "$archive"
+          test -s "$archive.sig"
+          base64 -D -i "$archive.sig" -o "$RUNNER_TEMP/fstodo-updater.minisig"
+          pub=$(node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('frontend/src-tauri/tauri.conf.json'));console.log(Buffer.from(c.plugins.updater.pubkey,'base64').toString().trim().split(String.fromCharCode(10)).at(-1).trim())")
+          minisign -Vm "$archive" -x "$RUNNER_TEMP/fstodo-updater.minisig" -P "$pub"
+      - name: Collect DMG, release notes and signed updater archive
+        run: |
+          mkdir -p artifacts/packages
+          cp frontend/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg artifacts/packages/
+          cp artifacts/release/RELEASE_NOTES.md artifacts/packages/
+          cp artifacts/release/release.json artifacts/packages/
+          cp frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz artifacts/packages/
+          cp frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig artifacts/packages/
+      - name: Upload DMG and release notes
+        if: env.FSTODO_RELEASE_TAG != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: FSTODO-${{ steps.notes.outputs.version }}-macos-universal
+          path: artifacts/packages/*
+          if-no-files-found: error
+          retention-days: 14
