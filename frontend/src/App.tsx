@@ -518,9 +518,11 @@ function Workspace() {
     (
       fingerprint: string,
       connectionKey: string,
-      options: { includePeople: boolean; forceReset?: boolean },
+      options: { includePeople: boolean; forceReset?: boolean; afterWorkflow?: boolean },
     ): Promise<ScheduleRead> => {
-      if (scheduleSessionRef.current.pending && scheduleSessionRef.current.connectionKey === connectionKey) {
+      // 写后刷新只复用包含本次流程成功版本的读取，写前旧请求结束后自行释放。
+      if (scheduleSessionRef.current.pending && scheduleSessionRef.current.connectionKey === connectionKey &&
+        (!options.afterWorkflow || scheduleSessionRef.current.fingerprint === fingerprint)) {
         return scheduleSessionRef.current.pending;
       }
       scheduleLastAttemptRef.current = Date.now();
@@ -690,10 +692,11 @@ function Workspace() {
     }
   }, []);
   const reloadScheduleSession = useCallback(
-    (options?: { includePeople?: boolean; forceReset?: boolean }) =>
+    (options?: { includePeople?: boolean; forceReset?: boolean; afterWorkflow?: boolean }) =>
       beginScheduleLoad(scheduleFingerprintRef.current, scheduleConnectionKeyRef.current, {
         includePeople: Boolean(options?.includePeople),
         forceReset: options?.forceReset,
+        afterWorkflow: options?.afterWorkflow,
       }),
     [beginScheduleLoad],
   );
@@ -1423,20 +1426,24 @@ function Workspace() {
         kind: result.outcome === "failed" ? "action_failed" : "unknown_result", message: result.message,
       };
       report(result.message, resultError);
-      try {
-        if (result.outcome === "verified" && result.verified) await refreshAfterWrite();
-        else await reload();
-      } catch (e) {
-        // 列表没刷新是另一件事：追加说明，不替换上面那句结论，也不谎称列表是新的。
-        const refresh = asError(e);
-        const note = result.outcome === "verified" && result.verified
-          ? "（清单刷新未完成，已保留现有内容，可稍后刷新。）"
-          : `（本地列表未能刷新：${refresh.message}）`;
-        report(`${result.message}${note}`, { kind: resultError?.kind ?? refresh.kind, message: `${result.message}${note}` });
-      }
+      const refreshLists = async () => {
+        try {
+          if (result.outcome === "verified" && result.verified) await refreshAfterWrite();
+          else await reload();
+        } catch (e) {
+          // 列表没刷新是另一件事：追加说明，不替换已核验的流程结论。
+          const refresh = asError(e);
+          const note = result.outcome === "verified" && result.verified
+            ? "（清单刷新未完成，已保留现有内容，可稍后刷新。）"
+            : `（本地列表未能刷新：${refresh.message}）`;
+          report(`${result.message}${note}`, { kind: resultError?.kind ?? refresh.kind, message: `${result.message}${note}` });
+        }
+      };
       if (origin === "schedule" && result.outcome === "verified" && result.verified) {
+        // 已核验的流程立即收尾并刷新排期，来源同步独立继续，不占用表单的提交队列。
         setScheduleWorkflowRevision((revision) => revision + 1);
-      }
+        void refreshLists();
+      } else await refreshLists();
       return result;
     } catch (e) {
       report(asError(e).message, asError(e));
@@ -2023,7 +2030,7 @@ function Workspace() {
           )}
           {!compact && alerts}
 
-          {view === "schedule" && !compact && <SchedulePage snapshot={data} waitingForSnapshot={desktop && loading && !data} calendarContext={scheduleConnectionKey} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit} defectRevision={scheduleWorkflowRevision}
+          {view === "schedule" && !compact && <SchedulePage snapshot={data} waitingForSnapshot={desktop && loading && !data} calendarContext={scheduleConnectionKey} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit} defectRevision={scheduleWorkflowRevision} workflowRefreshRevision={scheduleWorkflowRevision}
             workflow={desktop && data?.credential_ready && data.capabilities?.workflow ? {
               context: scheduleConnectionKey,
               busy: workspaceActionBlocked("workflow", activity),

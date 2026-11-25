@@ -48,7 +48,12 @@ it("完整模式首屏先显示问候，排期读完后在同一张卡片补上�
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
 });
 
-it("事项安排的流程确认成功后重新读取排期并保持周视图和节点选择", async () => {
+it.each([
+  ["verified", "success"], ["verified", "stale"], ["verified", "failure"], ["verified", "slow-list"],
+  ["failed", "success"], ["unknown", "success"],
+] as const)("事项安排流程%s后以%s读取验证刷新提示、旧请求隔离及选择保留", async (outcome, refreshOutcome) => {
+  let now = 1_000_000;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
   const snapshot = await loadSnapshot();
   vi.mocked(loadSnapshot).mockResolvedValue({ ...snapshot, capabilities: { ...snapshot.capabilities, workflow: true } });
   const read: ScheduleRead = {
@@ -56,18 +61,26 @@ it("事项安排的流程确认成功后重新读取排期并保持周视图和�
     sources: [], people: [{ id: "me", name: "本人" }],
     targets: [{ id: "one", identity: { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal", owner: "me" }, title: "待处理事项", nodeName: "开发", ownerId: "me", ownerIds: ["me"], sourceIds: [], projectName: "空间", typeName: "需求", dates: { start: "2026-11-16", end: "2026-11-17" }, nodeStatus: "doing", mine: true }],
   };
-  vi.mocked(loadScheduleSession).mockResolvedValueOnce(read).mockResolvedValue({ ...read, sessionId: "after",
-    targets: [{ ...read.targets[0], id: "new-row", title: "核验后事项", nodeStatus: "done" }],
-  });
+  let finishRead!: (value: ScheduleRead) => void;
+  let failRead!: (error: unknown) => void;
+  let finishOldRead!: (value: ScheduleRead) => void;
+  vi.mocked(loadScheduleSession).mockResolvedValueOnce(read);
+  if (refreshOutcome === "stale") vi.mocked(loadScheduleSession).mockImplementationOnce(() => new Promise((resolve) => { finishOldRead = resolve; }));
+  vi.mocked(loadScheduleSession).mockImplementationOnce(() => new Promise((resolve, reject) => { finishRead = resolve; failRead = reject; }));
   vi.mocked(getWorkflowActions).mockResolvedValueOnce({ version: "v1", actions: [{ id: "node:confirm:n", kind: "node", label: "完成开发", fields: [] }] })
     .mockResolvedValue({ version: "v2", actions: [] });
-  vi.mocked(executeWorkflowAction).mockResolvedValue({ outcome: "verified", verified: true, message: "流程已完成", request_id: "r", action_id: "node:confirm:n", resynced: true });
+  vi.mocked(executeWorkflowAction).mockResolvedValue({ outcome, verified: outcome === "verified", message: `流程结果 ${outcome}`, request_id: "r", action_id: "node:confirm:n", resynced: true });
 
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "事项安排" }));
   const nextWeek = await screen.findByRole("button", { name: "下一周" });
   fireEvent.click(nextWeek);
   const range = nextWeek.parentElement!.querySelector("strong")!.textContent;
+  if (refreshOutcome === "stale") {
+    now += 300_000;
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(2));
+  }
   fireEvent.click(await screen.findByRole("tab", { name: "已排期 (1)" }));
   fireEvent.click(screen.getAllByRole("button", { name: /待处理事项.*开发/ })[0]);
   const inspector = within(screen.getByLabelText("排期检查器"));
@@ -78,10 +91,36 @@ it("事项安排的流程确认成功后重新读取排期并保持周视图和�
   fireEvent.click(dialog.getByRole("button", { name: "提交" }));
   const review = within(await dialog.findByRole("region", { name: "提交前二次确认" }));
   fireEvent.click(review.getByRole("button", { name: /我已核对/ }));
-  fireEvent.click(review.getByRole("button", { name: /确认/ }));
-  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(2));
+  let finishSnapshot!: () => void;
+  if (refreshOutcome === "slow-list") vi.mocked(loadSnapshot).mockImplementationOnce(() => new Promise((resolve) => { finishSnapshot = () => resolve({ ...snapshot, capabilities: { ...snapshot.capabilities, workflow: true } }); }));
+  await act(async () => fireEvent.click(review.getByRole("button", { name: /确认/ })));
+  if (outcome !== "verified") {
+    await screen.findAllByText(`流程结果 ${outcome}`);
+    expect(loadScheduleSession).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("正在刷新最新排期")).toBeNull();
+    return;
+  }
+  await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(refreshOutcome === "stale" ? 3 : 2));
+  expect(screen.getByText("正在刷新最新排期")).toBeTruthy();
+  expect(closeScheduleSession).not.toHaveBeenCalled();
+  if (refreshOutcome === "failure") {
+    await act(async () => failRead(new Error("offline")));
+    expect(screen.getByRole("alert").textContent).toContain("已保留上次内容");
+    expect(inspector.getByText("待处理事项")).toBeTruthy();
+    expect(screen.getAllByText("流程结果 verified").length).toBeGreaterThan(0);
+    return;
+  }
+  await act(async () => finishRead({ ...read, sessionId: "after",
+    targets: [{ ...read.targets[0], id: "new-row", title: "核验后事项", nodeStatus: "done" }],
+  }));
   await inspector.findByText("核验后事项");
   expect(nextWeek.parentElement!.querySelector("strong")!.textContent).toBe(range);
+  if (refreshOutcome === "slow-list") await act(async () => finishSnapshot());
+  if (refreshOutcome === "stale") {
+    await act(async () => finishOldRead({ ...read, sessionId: "old-inflight", targets: [{ ...read.targets[0], title: "过期事项" }] }));
+    expect(inspector.queryByText("过期事项")).toBeNull();
+    expect(inspector.getByText("核验后事项")).toBeTruthy();
+  }
 });
 
 it.each(["success", "partial", "rejected"])("真实页面在后台%s期间编辑与提交交错，保留会话并在后续刷新恢复", async (outcome) => {
