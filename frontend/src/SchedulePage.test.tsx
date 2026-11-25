@@ -61,13 +61,14 @@ it("日期格式化结果不是 ISO 文本时仍能打开事项安排", async ()
 it("旧版 WebKit 无颜色混合时排期条保留主题背景和边框", async () => {
   const css = await loadCss("./schedule.css");
   const bar = css.match(/\.schedule-bar\s*\{([^}]+)\}/)?.[1] ?? "";
-  const node = css.match(/\.schedule-current-node\s*\{([^}]+)\}/)?.[1] ?? "";
+  const mineNode = css.match(/\.schedule-current-node\.is-mine\s*\{([^}]+)\}/)?.[1] ?? "";
   expect(bar).toMatch(/background:\s*var\(--surface-selected\);[\s\S]*background:\s*linear-gradient/);
   expect(bar).toMatch(/border:\s*1px solid var\(--border-strong\)/);
-  expect(node).toMatch(/border:\s*1px solid var\(--border-strong\)/);
-  expect(node).toMatch(/background:\s*var\(--surface-selected\)/);
+  expect(mineNode).toMatch(/border:\s*1px solid var\(--border-strong\)/);
+  expect(mineNode).toMatch(/background:\s*var\(--surface-selected\)/);
   expect(css).toContain("@supports not (background: color-mix(in srgb, black, white))");
   const fallback = css.slice(css.indexOf("@supports not (color: color-mix(in srgb, red, blue))"));
+  expect(fallback).toMatch(/\.schedule-current-node\.is-mine\s*\{[^}]*background:\s*var\(--surface-selected\)/);
   expect(fallback).toMatch(/\.schedule-bar\s*\{[^}]*background:\s*var\(--surface-selected\)/);
   expect(fallback).toMatch(/\.schedule-bar\.is-cloud\s*\{[^}]*background:\s*var\(--surface-selected\)/);
   expect(fallback).toMatch(/\.schedule-bar\.is-draft\s*\{[^}]*background:\s*var\(--surface-tint\)/);
@@ -1189,7 +1190,8 @@ it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同
   expect(Array.from(pending.querySelectorAll(".schedule-group")).some((group) => group.textContent?.includes("李四"))).toBe(true);
   expect(pending.querySelector('img[src="a.png"]')).toBeTruthy();
   expect(pending.querySelector('img[src="b.png"]')).toBeTruthy();
-  expect(document.querySelector('.schedule-row-label img[src="b.png"]')).toBeTruthy();
+  expect(document.querySelector('.schedule-calendar .schedule-group img[src="b.png"]')).toBeTruthy();
+  expect(document.querySelectorAll('.schedule-row-label .schedule-avatar')).toHaveLength(0);
   const shared = within(pending as HTMLElement).getByRole("button", { name: /同标题.*节点共同排期/ });
   expect(shared.getAttribute("draggable")).toBe("false");
   fireEvent.click(shared);
@@ -1693,7 +1695,7 @@ it.each(["mine", "people"])("%s 历史独有事项补读当前节点与负责人
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
-it.each(["mine", "people"])("%s 节点标签在详情补读返回乱序时仍按流程顺序显示", async (view) => {
+it.each(["mine", "people"])("%s 节点标签在详情补读返回乱序时仍按流程顺序显示并在超 2 个时折叠聚合", async (view) => {
   const read = data();
   const base = read.targets[0];
   const specs = [{ id: "front", name: "前端代码研发", order: 4 }, { id: "back", name: "后端代码研发", order: 5 },
@@ -1708,22 +1710,32 @@ it.each(["mine", "people"])("%s 节点标签在详情补读返回乱序时仍按
   vi.mocked(refreshItemDetail).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   await setup();
   if (view === "people") fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
-  const labels = () => [...document.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")].map((node) => node.textContent);
-  expect(labels()).toEqual(["前端代码研发", "后端代码研发", "测试用例设计"]);
+  const inlineLabels = () => [...document.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")].map((node) => node.textContent);
+  const summaryOrder = () => {
+    const more = document.querySelector(".schedule-row-current-nodes .schedule-current-nodes-more") as HTMLElement;
+    fireEvent.mouseEnter(more);
+    const names = [...screen.getByRole("tooltip").querySelectorAll(".schedule-parallel-node-name")].map((node) => node.textContent);
+    fireEvent.mouseLeave(more);
+    return names;
+  };
+  expect(inlineLabels()).toEqual(["前端代码研发"]);
+  expect(summaryOrder()).toEqual(["前端代码研发", "后端代码研发", "测试用例设计"]);
   await waitFor(() => expect(refreshItemDetail).toHaveBeenCalled());
   await act(async () => { finish({ id: { project_key: "p", work_item_type_key: "t", work_item_id: "i" }, fetched_at_ms: 1, pages: [], data: {
     work_item_attribute: {}, work_item_fields: [], work_item_current_node: [specs[2], specs[0], specs[1]].map((node) => ({
       id: `detail-${node.id}`, name: node.name, owners: [{ key: "me", name: "本人" }],
     })),
   } }); });
-  expect(labels()).toEqual(["前端代码研发", "后端代码研发", "测试用例设计"]);
+  expect(inlineLabels()).toEqual(["前端代码研发"]);
+  expect(summaryOrder()).toEqual(["前端代码研发", "后端代码研发", "测试用例设计"]);
 });
 
-it("详情未提供头像时，负责人提示保留同一人员已有照片", async () => {
+it.each(["mine", "people"])("%s 详情未提供头像时，负责人提示直接显示其他节点负责人的照片", async (view) => {
   const read = data();
   const base = read.targets[0];
   read.targets = [];
   read.connection = "c";
+  if (view === "mine") read.peopleLoaded = false;
   read.people.push({ id: "tester", name: "施伟", connection: "c", project: "p", avatar: "tester.png" });
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], complete: true, targets: [{ ...base,
@@ -1733,10 +1745,11 @@ it("详情未提供头像时，负责人提示保留同一人员已有照片", a
     fetched_at_ms: 1, pages: [], data: { work_item_attribute: {}, work_item_fields: [],
       work_item_current_node: [{ id: "testing", name: "测试用例设计", owners: [{ key: "tester", name: "施伟" }] }] } });
   await setup();
-  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  if (view === "people") fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   const node = await screen.findByText("测试用例设计", { selector: ".schedule-current-node" });
   fireEvent.mouseEnter(node);
   expect(screen.getByRole("tooltip").querySelector('img[src="tester.png"]')).toBeTruthy();
+  if (view === "mine") expect(loadSchedulePeople).not.toHaveBeenCalled();
 });
 
 it.each(["mine", "people"])("%s 节点补读失败保留缓存节点及真实排期，不影响查看与切周", async (view) => {
@@ -3160,4 +3173,199 @@ it("缓存确认事项已完成后，仍在当前排期会话中的行展示终�
   expect(badge?.textContent).toBe("需求上线");
   expect(badge?.querySelector("svg[aria-hidden='true']")).toBeTruthy();
   expect(row?.querySelector(".schedule-current-node")).toBeNull();
+});
+
+it("我的排期省去行内重复本人头像，优先点亮本人当前节点并将 3 个以上并行节点聚合为 +N 浮层", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.people = [
+    { id: "me", name: "本人", avatar: "me.png" },
+    { id: "qa", name: "施伟", avatar: "qa.png" },
+    { id: "fe", name: "刘悦然", avatar: "fe.png" },
+  ];
+  read.targets = [
+    // 事项 1：3 个并行节点（测试排在本人之前），我的排期应优先展示并点亮本人的「后端代码研发」，其余折叠为 +2 并行
+    {
+      ...base,
+      id: "item1-qa",
+      title: "运营平台模型目录自动获取与更新",
+      identity: { ...identity, item: "i1", node: "n-qa", owner: "qa" },
+      nodeName: "测试用例设计",
+      nodeStatus: "doing",
+      nodeOrder: 1,
+      ownerId: "qa",
+      ownerIds: ["qa"],
+      mine: false,
+      dates: { start: "", end: "" },
+    },
+    {
+      ...base,
+      id: "item1-be",
+      title: "运营平台模型目录自动获取与更新",
+      identity: { ...identity, item: "i1", node: "n-be", owner: "me" },
+      nodeName: "后端代码研发",
+      nodeStatus: "doing",
+      nodeOrder: 2,
+      ownerId: "me",
+      ownerIds: ["me"],
+      mine: true,
+      dates: { start: currentWeekDay(1), end: currentWeekDay(3) },
+    },
+    {
+      ...base,
+      id: "item1-fe",
+      title: "运营平台模型目录自动获取与更新",
+      identity: { ...identity, item: "i1", node: "n-fe", owner: "fe" },
+      nodeName: "前端代码研发",
+      nodeStatus: "doing",
+      nodeOrder: 3,
+      ownerId: "fe",
+      ownerIds: ["fe"],
+      mine: false,
+      dates: { start: currentWeekDay(0), end: currentWeekDay(2) },
+    },
+    // 事项 2：2 个并行节点，单行同时展示并以 · 分隔，仅本人节点带 is-mine
+    {
+      ...base,
+      id: "item2-qa",
+      title: "模型输出达到长度上限后的内容截断优化",
+      identity: { ...identity, item: "i2", node: "n2-qa", owner: "qa" },
+      nodeName: "测试用例设计",
+      nodeStatus: "doing",
+      nodeOrder: 1,
+      ownerId: "qa",
+      ownerIds: ["qa"],
+      mine: false,
+      dates: { start: "", end: "" },
+    },
+    {
+      ...base,
+      id: "item2-fe",
+      title: "模型输出达到长度上限后的内容截断优化",
+      identity: { ...identity, item: "i2", node: "n2-fe", owner: "me" },
+      nodeName: "前端代码研发",
+      nodeStatus: "doing",
+      nodeOrder: 2,
+      ownerId: "me",
+      ownerIds: ["me"],
+      mine: true,
+      dates: { start: currentWeekDay(0), end: currentWeekDay(2) },
+    },
+    // 事项 3：本人节点已流转完成，后续 3 个并行节点均属他人，应回退展示流程顺序第 1 个节点且不标 is-mine
+    {
+      ...base,
+      id: "item3-done",
+      title: "历史设计已完成的多并行事项",
+      identity: { ...identity, item: "i3", node: "n3-design", owner: "me" },
+      nodeName: "产品方案设计",
+      nodeStatus: "finished",
+      nodeOrder: 1,
+      ownerId: "me",
+      ownerIds: ["me"],
+      mine: true,
+      dates: { start: currentWeekDay(0), end: currentWeekDay(0) },
+    },
+    {
+      ...base,
+      id: "item3-fe",
+      title: "历史设计已完成的多并行事项",
+      identity: { ...identity, item: "i3", node: "n3-fe", owner: "fe" },
+      nodeName: "前端代码研发",
+      nodeStatus: "doing",
+      nodeOrder: 2,
+      ownerId: "fe",
+      ownerIds: ["fe"],
+      mine: false,
+      dates: { start: "", end: "" },
+    },
+    {
+      ...base,
+      id: "item3-be",
+      title: "历史设计已完成的多并行事项",
+      identity: { ...identity, item: "i3", node: "n3-be", owner: "qa" },
+      nodeName: "后端代码研发",
+      nodeStatus: "doing",
+      nodeOrder: 3,
+      ownerId: "qa",
+      ownerIds: ["qa"],
+      mine: false,
+      dates: { start: "", end: "" },
+    },
+    {
+      ...base,
+      id: "item3-qa",
+      title: "历史设计已完成的多并行事项",
+      identity: { ...identity, item: "i3", node: "n3-qa", owner: "qa" },
+      nodeName: "测试用例设计",
+      nodeStatus: "doing",
+      nodeOrder: 4,
+      ownerId: "qa",
+      ownerIds: ["qa"],
+      mine: false,
+      dates: { start: "", end: "" },
+    },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+
+  // 顶部问候区仍展示本人头像，但「我的排期」日历行省去重复本人头像
+  expect(screen.getByLabelText("今日问候").querySelector(".schedule-avatar")).toBeTruthy();
+  expect(document.querySelectorAll(".schedule-row-label .schedule-avatar")).toHaveLength(0);
+
+  const row1 = screen.getByRole("button", { name: "运营平台模型目录自动获取与更新 后端代码研发" }).closest(".schedule-row") as HTMLElement;
+  const row1InlineNodes = [...row1.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")];
+  expect(row1InlineNodes.map((el) => el.textContent)).toEqual(["后端代码研发"]);
+  expect(row1InlineNodes[0].classList.contains("is-mine")).toBe(true);
+  const moreBadge = within(row1).getByText("+2 并行").closest(".schedule-current-nodes-more") as HTMLElement;
+  expect(moreBadge).toBeTruthy();
+  fireEvent.mouseEnter(moreBadge);
+  const tooltip = screen.getByRole("tooltip");
+  expect([...tooltip.querySelectorAll(".schedule-parallel-node-name")].map((el) => el.textContent))
+    .toEqual(["测试用例设计", "后端代码研发", "前端代码研发"]);
+  expect(tooltip.querySelector(".schedule-parallel-node-row.is-mine .schedule-parallel-node-name")?.textContent).toBe("后端代码研发");
+  fireEvent.mouseLeave(moreBadge);
+
+  const row2 = screen.getByRole("button", { name: "模型输出达到长度上限后的内容截断优化 前端代码研发" }).closest(".schedule-row") as HTMLElement;
+  const row2InlineNodes = [...row2.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")];
+  expect(row2InlineNodes.map((el) => el.textContent)).toEqual(["测试用例设计", "前端代码研发"]);
+  expect(row2InlineNodes[0].classList.contains("is-mine")).toBe(false);
+  expect(row2InlineNodes[1].classList.contains("is-mine")).toBe(true);
+  expect(row2.querySelector(".schedule-current-node-sep")?.textContent).toBe("·");
+  expect(row2.querySelector(".schedule-current-nodes-more")).toBeNull();
+
+  const row3 = screen.getByRole("button", { name: "历史设计已完成的多并行事项 产品方案设计" }).closest(".schedule-row") as HTMLElement;
+  const row3InlineNodes = [...row3.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")];
+  expect(row3InlineNodes.map((el) => el.textContent)).toEqual(["前端代码研发"]);
+  expect(row3InlineNodes[0].classList.contains("is-mine")).toBe(false);
+  expect(within(row3).getByText("+2 并行")).toBeTruthy();
+
+  // 切换到「人员排期」后：分组头保留各成员头像，子行同样省去重复头像，并按每行所属人员分别点亮各自的当前节点及流光/呼吸动效
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  expect(document.querySelectorAll(".schedule-calendar .schedule-group .schedule-avatar").length).toBeGreaterThan(0);
+  expect(document.querySelectorAll(".schedule-row-label .schedule-avatar")).toHaveLength(0);
+  const peerFeRow = screen.getByRole("button", { name: "运营平台模型目录自动获取与更新 前端代码研发" }).closest(".schedule-row") as HTMLElement;
+  const peerInline = [...peerFeRow.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")];
+  expect(peerInline.map((el) => el.textContent)).toEqual(["前端代码研发"]);
+  expect(peerInline[0].classList.contains("is-mine")).toBe(true);
+  const peerTwoNodeRow = screen.getAllByText("模型输出达到长度上限后的内容截断优化")
+    .map((el) => el.closest(".schedule-row") as HTMLElement)
+    .find((row) => row && !within(row).queryByRole("button", { name: /前端代码研发/ }));
+  expect(peerTwoNodeRow).toBeTruthy();
+  const qaNodes = [...peerTwoNodeRow!.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")];
+  expect(qaNodes.find((el) => el.textContent === "测试用例设计")?.classList.contains("is-mine")).toBe(true);
+  expect(qaNodes.find((el) => el.textContent === "前端代码研发")?.classList.contains("is-mine")).toBe(false);
+  const css = await loadCss("./schedule.css");
+  expect(css).toMatch(/\.schedule-current-node\.is-mine::after[\s\S]*?animation:\s*schedule-bar-sheen/);
+  expect(css).toMatch(/\.schedule-current-node\.is-mine::before[\s\S]*?animation:\s*schedule-mine-dot-pulse/);
+
+  // 账号未确认的回退只读模式（accountError）下，「我的排期」保留行内头像且不虚构本人高亮
+  cleanup();
+  vi.mocked(loadScheduleSession).mockResolvedValue({
+    ...read,
+    currentUserId: "",
+    accountError: "未能确认当前飞书账号，请检查连接后重试",
+  });
+  await setup();
+  expect(document.querySelectorAll(".schedule-row-label .schedule-avatar").length).toBeGreaterThan(0);
+  expect(document.querySelectorAll(".schedule-row-current-nodes .schedule-current-node.is-mine")).toHaveLength(0);
 });

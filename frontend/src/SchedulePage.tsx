@@ -18,7 +18,7 @@ import { fitScheduleView, scheduleViewsKey, validViewDate, type ScheduleViewSett
 import { Select } from "./Select";
 import { ScheduleDescription } from "./ScheduleDescription";
 import { ScheduleAvatar, ScheduleAvatarCacheProvider } from "./ScheduleAvatar";
-import { ScheduleNodeOwners } from "./ScheduleNodeOwners";
+import { ScheduleNodeOwners, ScheduleParallelNodesSummary } from "./ScheduleNodeOwners";
 import { sortScheduleCurrentNodes } from "./scheduleNodeOrder";
 import { defectKey, ScheduleDefectInspector, ScheduleDefectList, useScheduleDefects, type ScheduleDefect } from "./ScheduleDefects";
 import { useScrollIsolation } from "./useScrollIsolation";
@@ -91,7 +91,7 @@ export interface ScheduleSessionController {
   candidate?: ScheduleRead | null;
   consumeCandidate?: (next: ScheduleRead, adopt: boolean) => boolean;
   updateRead: (next: ScheduleRead) => void;
-  reload: (options?: { includePeople?: boolean; forceReset?: boolean }) => Promise<ScheduleRead>;
+  reload: (options?: { includePeople?: boolean; forceReset?: boolean; afterWorkflow?: boolean }) => Promise<ScheduleRead>;
 }
 
 const normalizeNodeStatus = (status?: string | null) => (status ?? "").trim().toLowerCase();
@@ -287,6 +287,7 @@ export function SchedulePage({
   preloadedSession,
   workflow,
   defectRevision = 0,
+  workflowRefreshRevision = 0,
 }: {
   onGuardChange: (guard: ScheduleGuard) => void;
   requestReload: (reload: () => void) => void;
@@ -296,6 +297,7 @@ export function SchedulePage({
   preloadedSession?: ScheduleSessionController;
   workflow?: { context: string; busy: boolean; submit: WorkflowSubmit };
   defectRevision?: number;
+  workflowRefreshRevision?: number;
 }) {
   const initialRead = preloadedSession?.read || null;
   const [epoch, setEpoch] = useState(0);
@@ -987,15 +989,16 @@ export function SchedulePage({
     inWindow,
   );
   // 事项当前节点独立于本行人员、日期及人员筛选；并行节点分别展示完整负责人。
-  const currentNodesByItem = new Map<string, Map<string, { entry: Entry; owners: Set<string>; unknownOwner: boolean }>>();
+  const currentNodesByItem = new Map<string, Map<string, { entry: Entry; owners: Set<string>; unknownOwner: boolean; mine: boolean }>>();
   for (const entry of entries) {
     if (entry.record.sourceAggregate || !entry.record.nodeName.trim() || normalizeNodeStatus(entry.record.nodeStatus) !== "doing") continue;
     const key = scheduleItemKey(entry.identity);
     const nodes = currentNodesByItem.get(key) || new Map();
     const node = entry.identity.node || entry.id;
-    const current = nodes.get(node) || { entry, owners: new Set<string>(), unknownOwner: false };
+    const current = nodes.get(node) || { entry, owners: new Set<string>(), unknownOwner: false, mine: false };
     for (const owner of entry.record.ownerIds) if (owner) current.owners.add(owner);
     current.unknownOwner ||= !!entry.record.unknownOwner;
+    current.mine ||= !!entry.record.mine;
     nodes.set(node, current);
     currentNodesByItem.set(key, nodes);
   }
@@ -1694,6 +1697,28 @@ export function SchedulePage({
     setPerson(restoring && read?.complete && read.peopleLoaded !== false ? settings.people.filter((id) => people.has(id)) : settings.people);
   };
 
+  const refreshSchedule = (afterWorkflow = false) => {
+    setManualRefreshing(true);
+    setError("");
+    retryCalendar();
+    if (afterWorkflow && preloadedSession?.read) {
+      // 候选读取保留当前编辑会话；由控制器按最新交互状态决定是否采用。
+      void preloadedSession.reload({ includePeople: viewModeRef.current === "people", ...(afterWorkflow ? { afterWorkflow: true } : {}) })
+        .catch((failure: unknown) => setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`))
+        .finally(() => setManualRefreshing(false));
+    } else {
+      if (!read) forceResetRef.current = true;
+      setEpoch((value) => value + 1);
+    }
+  };
+  const handledWorkflowRefresh = useRef(workflowRefreshRevision);
+  useEffect(() => {
+    // 正式桌面流程和排期控制器同时提供；无控制器的只读页面不自动重建会话。
+    if (!preloadedSession || handledWorkflowRefresh.current === workflowRefreshRevision || workflow?.busy || workflowInteraction) return;
+    handledWorkflowRefresh.current = workflowRefreshRevision;
+    refreshSchedule(true);
+  }, [workflowRefreshRevision, workflow?.busy, workflowInteraction]);
+
   const avatarConnection = read?.connection || entries[0]?.identity.connection;
   const avatarScope = !read?.accountError && avatarConnection && read?.currentUserId
     ? JSON.stringify([calendarContext, avatarConnection, read.currentUserId]) : null;
@@ -1709,12 +1734,7 @@ export function SchedulePage({
                   type="button"
                   className="secondary"
                   disabled={busy || readRefreshing}
-                  onClick={() => requestReload(() => {
-                    if (!read) forceResetRef.current = true;
-                    setManualRefreshing(true);
-                    setEpoch((value) => value + 1);
-                    retryCalendar();
-                  })}
+                  onClick={() => requestReload(() => refreshSchedule())}
                 >
                   <RefreshCw size={14} aria-hidden="true" />
                   {readRefreshing ? "正在刷新…" : "重新读取"}
@@ -2271,6 +2291,45 @@ export function SchedulePage({
                       const historyStatus = !hasLiveCurrentNodes || itemContext?.statusVerified ? itemContext?.completedStatus : undefined;
                       const completedStatus = historyStatus !== undefined ? historyStatus
                         : cachedItem?.is_completed === true && (view !== "people" || !hasLiveCurrentNodes) ? workItemStatusName(cachedItem) : null;
+                      const showRowAvatar = Boolean(read?.accountError && view === "mine");
+                      const highlightOwnerId = view === "people" ? owner : !read?.accountError ? read?.currentUserId || "" : "";
+                      const resolvedCurrentNodes = currentNodes.map(({ id, name, owners, unknownOwner }) => {
+                        const nodeOwners: SchedulePerson[] = owners.map((person) => {
+                          const known = personFor(primaryEntry, person.id);
+                          return {
+                            ...known,
+                            ...person,
+                            connection: primaryEntry.identity.connection,
+                            project: primaryEntry.identity.project,
+                            avatar: person.avatar || known?.avatar,
+                            name: isFallbackPersonName(person.name, person.id) ? displayPerson(primaryEntry, person.id) : person.name,
+                          };
+                        });
+                        if (unknownOwner) nodeOwners.push({ id: "", name: "尚有负责人身份不明" });
+                        if (!nodeOwners.length) nodeOwners.push({ id: "", name: "负责人不明" });
+                        const liveNode = currentNodesByItem.get(historyKey)?.get(id);
+                        const liveMine = view === "mine" && !read?.accountError && Boolean(liveNode?.mine);
+                        const isCurrentOwner = Boolean(
+                          (highlightOwnerId && (owners.some((person) => person.id === highlightOwnerId) || liveNode?.owners.has(highlightOwnerId))) || liveMine,
+                        );
+                        return {
+                          id,
+                          name,
+                          owners: nodeOwners,
+                          style: nodeColorStyle({ ...primaryEntry.record, nodeName: name }),
+                          isCurrentOwner,
+                        };
+                      });
+                      const collapseParallelNodes = resolvedCurrentNodes.length > 2;
+                      const primaryParallelNode = collapseParallelNodes
+                        ? resolvedCurrentNodes.find((node) => node.isCurrentOwner) ?? resolvedCurrentNodes[0]
+                        : undefined;
+                      const visibleCurrentNodes = collapseParallelNodes && primaryParallelNode
+                        ? [primaryParallelNode]
+                        : resolvedCurrentNodes;
+                      const hiddenParallelNodes = collapseParallelNodes && primaryParallelNode
+                        ? resolvedCurrentNodes.filter((node) => node !== primaryParallelNode)
+                        : [];
                       return (
                         <Fragment key={key}>
                           {view === "people" &&
@@ -2284,12 +2343,14 @@ export function SchedulePage({
                               className="schedule-row-label"
                               onClick={() => selectPersonRow(primaryEntry, owner)}
                             >
-                              <ScheduleAvatar
-                                person={personFor(
-                                  primaryEntry,
-                                  resolveOwnerId(primaryEntry, owner),
-                                )}
-                              />
+                              {showRowAvatar && (
+                                <ScheduleAvatar
+                                  person={personFor(
+                                    primaryEntry,
+                                    resolveOwnerId(primaryEntry, owner),
+                                  )}
+                                />
+                              )}
                               <span>
                                 <strong>{primaryEntry.record.title}</strong>
                                 {completedStatus ? (
@@ -2299,21 +2360,30 @@ export function SchedulePage({
                                       <span>{completedStatus}</span>
                                     </span>
                                   </small>
-                                ) : (currentNodes.length > 0 || contextKeys.has(historyKey)) && (
+                                ) : (resolvedCurrentNodes.length > 0 || contextKeys.has(historyKey)) && (
                                   <small className="schedule-row-current schedule-row-current-nodes">
-                                    {currentNodes.map(({ id, name, owners, unknownOwner }) => {
-                                      const nodeOwners: SchedulePerson[] = owners.map((person) => {
-                                        const known = personFor(primaryEntry, person.id);
-                                        return { ...known, ...person, connection: primaryEntry.identity.connection, project: primaryEntry.identity.project,
-                                          avatar: person.avatar || known?.avatar,
-                                          name: isFallbackPersonName(person.name, person.id) ? displayPerson(primaryEntry, person.id) : person.name };
-                                      });
-                                      if (unknownOwner) nodeOwners.push({ id: "", name: "尚有负责人身份不明" });
-                                      if (!nodeOwners.length) nodeOwners.push({ id: "", name: "负责人不明" });
-                                      return <ScheduleNodeOwners key={id} name={name}
-                                        owners={nodeOwners} style={nodeColorStyle({ ...primaryEntry.record, nodeName: name })} />;
-                                    })}
-                                    {currentNodes.length === 0 && <span className="schedule-node-context-status">
+                                    {visibleCurrentNodes.map((node, nodeIndex) => (
+                                      <Fragment key={node.id}>
+                                        {nodeIndex > 0 && (
+                                          <span className="schedule-current-node-sep" aria-hidden="true">
+                                            ·
+                                          </span>
+                                        )}
+                                        <ScheduleNodeOwners
+                                          name={node.name}
+                                          owners={node.owners}
+                                          style={node.style}
+                                          isCurrentOwner={node.isCurrentOwner}
+                                        />
+                                      </Fragment>
+                                    ))}
+                                    {hiddenParallelNodes.length > 0 && (
+                                      <ScheduleParallelNodesSummary
+                                        nodes={resolvedCurrentNodes}
+                                        hiddenNodes={hiddenParallelNodes}
+                                      />
+                                    )}
+                                    {resolvedCurrentNodes.length === 0 && <span className="schedule-node-context-status">
                                       {itemContext?.currentNodes ? "暂无进行中节点" : itemContext?.failed ? "当前节点暂未读取，可刷新重试"
                                         : itemContext ? "未取得当前节点信息" : "正在读取当前节点…"}
                                     </span>}

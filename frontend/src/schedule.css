@@ -749,7 +749,7 @@
   display: grid;
   grid-template-columns: var(--schedule-label-width) minmax(0, 1fr);
   border-bottom: 1px solid var(--line);
-  background: var(--surface-raised);
+  background: var(--surface-solid);
   position: sticky;
   top: 0;
   z-index: 5;
@@ -950,12 +950,13 @@
   min-width: 0;
   flex: 1;
   display: grid;
-  gap: 2px;
+  gap: 3px;
 }
 
 .schedule-row-label strong {
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
+  line-height: 1.38;
   color: var(--heading);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -965,7 +966,7 @@
 .schedule-row-current {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
   font-size: 11px;
   color: var(--text-secondary);
@@ -974,13 +975,22 @@
 }
 
 .schedule-row-current-nodes {
-  flex-wrap: wrap;
-  overflow: visible;
+  flex-wrap: nowrap;
+  padding-block: 1px;
 }
 
-.schedule-row-current-nodes .schedule-current-node:focus-visible {
-  outline: 2px solid var(--heading);
-  outline-offset: 2px;
+.schedule-current-node-sep {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  user-select: none;
+}
+
+.schedule-row-current-nodes .schedule-current-node:focus-visible,
+.schedule-current-nodes-more:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 
 .schedule-node-owners-tooltip {
@@ -1004,6 +1014,55 @@
   font-weight: 500;
   line-height: 1.5;
   pointer-events: none;
+}
+
+.schedule-node-owners-tooltip.is-parallel-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 6px 12px;
+  max-width: min(360px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  pointer-events: auto;
+}
+
+.schedule-parallel-node-row {
+  --schedule-node-color: hsl(var(--schedule-node-hue, 155) 44% 44%);
+  display: contents;
+}
+
+.schedule-parallel-node-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.schedule-parallel-node-row.is-mine .schedule-parallel-node-name {
+  color: var(--heading);
+  font-weight: 600;
+}
+
+.schedule-parallel-node-name::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--schedule-node-color);
+}
+
+.schedule-parallel-node-owners {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+  color: var(--heading);
 }
 
 @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
@@ -1077,33 +1136,166 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 1px 6px;
-  border: 1px solid var(--border-strong);
-  border: 1px solid color-mix(in srgb, var(--schedule-node-color) 26%, var(--line));
+  white-space: nowrap;
+  padding: 1px 4px;
+  border: 1px solid transparent;
   border-radius: 6px;
-  color: var(--heading);
-  background: var(--surface-selected);
-  background: color-mix(in srgb, var(--schedule-node-color) 10%, var(--surface-solid));
-  font-weight: 600;
+  color: var(--text-secondary);
+  background: transparent;
+  font-weight: 400;
   line-height: 1.35;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .schedule-current-node::before {
   content: "";
   display: inline-block;
-  width: 5px;
-  height: 5px;
+  width: 5.5px;
+  height: 5.5px;
   margin-inline-end: 4px;
   border-radius: 50%;
   background: var(--schedule-node-color);
-  vertical-align: 0.12em;
+  vertical-align: 0.1em;
+}
+
+.schedule-current-node.is-mine {
+  --schedule-sheen: linear-gradient(
+    110deg,
+    transparent 12%,
+    color-mix(in srgb, var(--schedule-node-color) 18%, transparent) 34%,
+    color-mix(in srgb, var(--surface-solid) 65%, transparent) 48%,
+    color-mix(in srgb, var(--green) 18%, transparent) 64%,
+    transparent 86%
+  );
+  position: relative;
+  isolation: isolate;
+  padding: 1px 7px 1px 6px;
+  border: 1px solid var(--border-strong);
+  border: 1px solid color-mix(in srgb, var(--schedule-node-color) 28%, var(--line));
+  border-radius: 999px;
+  color: var(--heading);
+  background: var(--surface-selected);
+  background: color-mix(in srgb, var(--schedule-node-color) 11%, var(--surface-solid));
+  font-weight: 500;
+}
+
+@supports not (background: color-mix(in srgb, black, white)) {
+  .schedule-current-node.is-mine {
+    --schedule-sheen: linear-gradient(
+      110deg,
+      transparent 12%,
+      rgba(120, 170, 150, 0.18) 34%,
+      rgba(255, 255, 255, 0.24) 48%,
+      transparent 86%
+    );
+  }
+}
+
+:root[data-appearance="pearl"] .schedule-current-node.is-mine {
+  --schedule-sheen: linear-gradient(
+    110deg,
+    transparent 8%,
+    var(--pearl-cyan) 28%,
+    var(--pearl-violet) 48%,
+    var(--pearl-rose) 66%,
+    transparent 88%
+  );
+}
+
+.schedule-current-node.is-mine::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--schedule-sheen);
+  background-size: 250% 100%;
+  animation: schedule-bar-sheen 5.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.schedule-current-node.is-mine::before {
+  --schedule-dot-ring-soft: rgba(53, 117, 100, 0.16);
+  --schedule-dot-ring-strong: rgba(53, 117, 100, 0.34);
+  --schedule-dot-ring-soft: color-mix(in srgb, var(--schedule-node-color) 16%, transparent);
+  --schedule-dot-ring-strong: color-mix(in srgb, var(--schedule-node-color) 34%, transparent);
+  box-shadow: none;
+  box-shadow: 0 0 0 2px var(--schedule-dot-ring-soft);
+  animation: schedule-mine-dot-pulse 2.8s ease-in-out infinite;
+}
+
+@keyframes schedule-mine-dot-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1.5px var(--schedule-dot-ring-soft);
+  }
+  50% {
+    box-shadow: 0 0 0 3.2px var(--schedule-dot-ring-strong);
+  }
+}
+
+.schedule-row-current-nodes .schedule-current-node:is(:hover, :focus-visible) {
+  color: var(--heading);
+  background: var(--surface-hover);
+  background: color-mix(in srgb, var(--schedule-node-color) 11%, var(--surface-solid));
+}
+
+.schedule-row-current-nodes .schedule-current-node.is-mine:is(:hover, :focus-visible) {
+  border-color: var(--border-strong);
+  border-color: color-mix(in srgb, var(--schedule-node-color) 40%, var(--line));
+  background: var(--surface-selected-hover);
+  background: color-mix(in srgb, var(--schedule-node-color) 16%, var(--surface-solid));
+}
+
+.schedule-current-nodes-more {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: nowrap;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.schedule-current-nodes-more:hover,
+.schedule-current-nodes-more:focus-visible {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  color: var(--heading);
+}
+
+.schedule-more-dots {
+  display: inline-flex;
+  align-items: center;
+}
+
+.schedule-more-dots > span {
+  --schedule-node-color: hsl(var(--schedule-node-hue, 155) 44% 44%);
+  width: 5.5px;
+  height: 5.5px;
+  border-radius: 50%;
+  background: var(--schedule-node-color);
+  box-shadow: 0 0 0 1px var(--surface-solid);
+  margin-inline-start: -1.5px;
+}
+
+.schedule-more-dots > span:first-child {
+  margin-inline-start: 0;
 }
 
 .schedule-pending-meta .schedule-current-node.is-pending {
   max-width: 100%;
+  padding: 1px 6px;
   border-color: var(--line);
   background: transparent;
   color: var(--heading);
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -1341,6 +1533,8 @@
 
 :root[data-theme="dark"] .schedule-bar,
 :root[data-theme="dark"] .schedule-current-node,
+:root[data-theme="dark"] .schedule-more-dots > span,
+:root[data-theme="dark"] .schedule-parallel-node-row,
 :root[data-theme="dark"] .schedule-sibling-chip {
   --schedule-node-color: hsl(var(--schedule-node-hue, 155) 58% 65%);
 }
@@ -2427,10 +2621,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .schedule-bar.is-schedulable::after {
+  .schedule-bar.is-schedulable::after,
+  .schedule-current-node.is-mine::after {
     animation: none;
     background-position: 50% 50%;
     opacity: 0.5;
+  }
+  .schedule-current-node.is-mine::before {
+    animation: none;
   }
   .schedule-switch-track,
   .schedule-switch-thumb,
@@ -2439,6 +2637,8 @@
   .schedule-quick-chip,
   .schedule-tabs button,
   .schedule-pool-tabs button,
+  .schedule-current-node,
+  .schedule-current-nodes-more,
   .schedule-handle {
     transition: none;
   }
@@ -2472,9 +2672,27 @@
   .schedule-days > div.today,
   .schedule-row-grid .today,
   .schedule-row.selected { background: var(--surface-selected); }
-  .schedule-current-node {
+  .schedule-node-owners-tooltip {
+    background: var(--menu-bg);
+  }
+  .schedule-node-owners-tooltip .schedule-avatar {
+    box-shadow: 0 0 0 1px var(--line);
+  }
+  .schedule-current-node.is-mine {
     border: 1px solid var(--border-strong);
     background: var(--surface-selected);
+  }
+  .schedule-current-node.is-mine::before {
+    --schedule-dot-ring-soft: rgba(53, 117, 100, 0.16);
+    --schedule-dot-ring-strong: rgba(53, 117, 100, 0.34);
+    box-shadow: none;
+  }
+  .schedule-row-current-nodes .schedule-current-node:is(:hover, :focus-visible) {
+    background: var(--surface-hover);
+  }
+  .schedule-row-current-nodes .schedule-current-node.is-mine:is(:hover, :focus-visible) {
+    border-color: var(--border-strong);
+    background: var(--surface-selected-hover);
   }
   .schedule-bar {
     background: var(--surface-selected);
