@@ -38,7 +38,7 @@ export interface ScheduleWriteResult {
 }
 
 interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; node_status?: string; node_started_at_ms?: number | null; node_order?: number; schedule_required?: boolean; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; people_only?: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
-interface WireRead { session_id: string; connection?: string; recent_range?: ScheduleDates | null; history_scopes?: ScheduleHistoryScope[]; defect_projects?: string[]; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
+interface WireRead { session_id: string; connection?: string; recent_range?: ScheduleDates | null; history_scopes?: ScheduleHistoryScope[]; defect_projects?: string[]; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; people?: SchedulePerson[]; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
 interface WireResult { targets: ScheduleWriteResult["results"]; write_requests: number }
 let lifecycle: Promise<unknown> = Promise.resolve();
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -55,13 +55,16 @@ function isFallbackPersonName(name: string | undefined | null, id: string): bool
     (id.length >= 6 && trimmed === Array.from(id).slice(-6).join(""))
   );
 }
-function mapScheduleRecords(result: Pick<WireRead, "targets" | "current_user" | "current_user_name" | "current_user_avatar">) {
+function mapScheduleRecords(result: Pick<WireRead, "targets" | "current_user" | "current_user_name" | "current_user_avatar" | "people">) {
   const people = new Map<string, SchedulePerson>();
   const currentHasRealName =
     Boolean(result.current_user) &&
     !isFallbackPersonName(result.current_user_name, result.current_user);
-  for (const target of result.targets) for (const owner of target.owners || []) {
-    const { connection, project } = target.identity;
+  const owners = [...result.people || [], ...result.targets.flatMap((target) =>
+    (target.owners || []).map((owner) => ({ ...owner, connection: target.identity.connection, project: target.identity.project })),
+  )];
+  for (const owner of owners) {
+    const { connection, project } = owner;
     const key = JSON.stringify([connection, project, owner.id]);
     const previous = people.get(key);
     const candidateName =

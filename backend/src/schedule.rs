@@ -55,6 +55,21 @@ pub struct Person {
     pub avatar: Option<String>,
 }
 #[derive(Clone, Debug, Serialize)]
+pub struct ScopedPerson {
+    pub connection: String,
+    pub project: String,
+    #[serde(flatten)]
+    pub person: Person,
+}
+
+fn schedule_people(targets: &[Target]) -> Vec<ScopedPerson> {
+    targets.iter().flat_map(|target| target.owners.iter().cloned().map(|person| ScopedPerson {
+        connection: target.identity.connection.clone(),
+        project: target.identity.project.clone(),
+        person,
+    })).collect()
+}
+#[derive(Clone, Debug, Serialize)]
 pub struct Target {
     pub id: String,
     pub node_id: String,
@@ -111,6 +126,8 @@ pub struct LoadResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_user_avatar: Option<String>,
     pub people_loaded: bool,
+    /// 已读取事项的负责人资料，独立于当前视角的排期记录。
+    pub people: Vec<ScopedPerson>,
     pub account_error: Option<String>,
     pub read_at_ms: i64,
     pub sources: Vec<SourceStatus>,
@@ -473,6 +490,7 @@ impl ScheduleSession {
             current_user_name: String::new(),
             current_user_avatar: None,
             people_loaded: !filter_mine,
+            people: Vec::new(),
             account_error: None,
             read_at_ms: crate::sync::now_ms(),
             sources: Vec::new(),
@@ -537,6 +555,16 @@ impl ScheduleSession {
                                     );
                                 }
                             }
+                            // 先补齐同一事项各节点的负责人，避免我的排期过滤后丢失他人头像。
+                            crate::diagnostics::schedule_stage("schedule_people");
+                            backfill_missing_people_remote(
+                                session,
+                                client.as_ref(),
+                                &mut view,
+                                &mut state.detail_names,
+                                &mut state.detail_avatars,
+                            )
+                            .await;
                             let all = std::mem::take(&mut view.targets);
                             for mut target in all {
                                 if !target.people_only && is_mine_target(&target, &view.current_user) {
@@ -552,15 +580,6 @@ impl ScheduleSession {
                                 &mut view.targets,
                                 &state.schedule_configs,
                                 &mut state.transition_required,
-                            )
-                            .await;
-                            crate::diagnostics::schedule_stage("schedule_people");
-                            backfill_missing_people_remote(
-                                session,
-                                client.as_ref(),
-                                &mut view,
-                                &mut state.detail_names,
-                                &mut state.detail_avatars,
                             )
                             .await;
                         } else {
@@ -1573,6 +1592,7 @@ async fn backfill_missing_people_remote(
         }
     }
     if missing_keys.is_empty() {
+        view.people = schedule_people(&view.targets);
         return;
     }
     let keys_vec: Vec<String> = missing_keys.into_iter().collect();
@@ -1668,6 +1688,7 @@ async fn backfill_missing_people_remote(
             }
         }
     }
+    view.people = schedule_people(&view.targets);
     if let Some(context) = crate::creation::account_context_for_key(session, &view.current_user) {
         for (project, learned) in per_project_learned {
             if learned.is_empty() {
@@ -2968,7 +2989,7 @@ mod tests {
             session_id: "s".into(), connection: "c".into(),
             recent_range: Some(Dates { start: "2026-11-23".into(), end: "2026-12-06".into() }),
             history_scopes: Vec::new(), defect_projects: Vec::new(), current_user: "me".into(),
-            current_user_name: String::new(), current_user_avatar: None, people_loaded: false,
+            current_user_name: String::new(), current_user_avatar: None, people_loaded: false, people: Vec::new(),
             account_error: None, read_at_ms: 0, sources: Vec::new(), targets,
             failed_items: 0, item_errors: Vec::new(), read_requests: 0,
         };
@@ -4347,6 +4368,14 @@ mod tests {
             Some("https://example.com/me.png")
         );
         assert_eq!(plan.view.targets.len(), 1);
+        // 未打开人员排期时，同一事项的其他节点负责人已有头像；团队来源仍延迟读取。
+        for (id, avatar) in [("u_peer1", "https://example.com/p1.png"), ("u_peer2", "https://example.com/p2.png")] {
+            let person = plan.view.people.iter().find(|p| p.project == "p" && p.person.id == id).unwrap();
+            assert_eq!(person.connection, plan.view.connection);
+            assert_eq!(person.person.avatar.as_deref(), Some(avatar));
+        }
+        assert!(!plan.view.people.iter().any(|p| p.person.id == "u_peer3"));
+        assert!(!fake.calls.lock().unwrap().iter().any(|(tool, args)| tool == "get_node_detail" && args["work_item_id"] == "2"));
         let my_target_before = plan.view.targets[0].clone();
         assert_eq!(my_target_before.identity.owner.as_deref(), Some("me"));
         assert_eq!(my_target_before.owners[0].name, "测试本人");

@@ -93,6 +93,25 @@ it("同 ID 的人员资料按连接和真实空间隔离", async () => {
   expect(read.people).toEqual(expect.arrayContaining([expect.objectContaining({ id: "same", project: "p1", name: "甲", avatar: "a.png" }), expect.objectContaining({ id: "same", project: "p2", name: "乙", avatar: "b.png" })]));
 });
 
+it("我的排期保留不在清单中的并行节点负责人头像并按连接空间隔离", async () => {
+  invoke.mockResolvedValueOnce({ session_id: "mine-avatars", current_user: "me", current_user_name: "本人",
+    people_loaded: false, read_at_ms: 1, sources: [], failed_items: 0,
+    people: [
+      { id: "peer", name: "同事甲", avatar: "a.png", connection: "c", project: "p1" },
+      { id: "peer", name: "peer", connection: "c", project: "p1" },
+      { id: "peer", name: "同事乙", avatar: "b.png", connection: "c", project: "p2" },
+      { id: "peer", name: "其他连接", avatar: "other.png", connection: "other", project: "p1" },
+    ], targets: [] });
+  const read = await loadScheduleSession({ includePeople: false });
+  expect(read.people).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: "peer", name: "同事甲", avatar: "a.png", connection: "c", project: "p1" }),
+    expect.objectContaining({ id: "peer", name: "同事乙", avatar: "b.png", connection: "c", project: "p2" }),
+    expect.objectContaining({ id: "peer", avatar: "other.png", connection: "other", project: "p1" }),
+  ]));
+  expect(read.targets).toEqual([]);
+  expect(read.peopleLoaded).toBe(false);
+});
+
 it("经 IPC 保留共同排期中身份不明的负责人标志", async () => {
   invoke.mockResolvedValueOnce({ session_id: "unknown", current_user: "me", current_user_name: "本人", read_at_ms: 1, sources: [], failed_items: 0, targets: [{ id: "n", identity: { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "node", owner: null }, title: "任务", node_name: "节点", owners: [{ id: "me", name: "本人" }], unknown_owner: true, sources: [], baseline: { start: "", end: "" }, read_only_reason: "只读" }] });
   const target = (await loadScheduleSession()).targets[0];
