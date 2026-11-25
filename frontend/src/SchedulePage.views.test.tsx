@@ -91,6 +91,75 @@ it("保存固定日期与筛选，重进页面恢复，改名更新与删除仅�
   page.unmount();
 });
 
+it("清除当前视图恢复本周周一到周日及默认筛选，保留已存视图和个人草稿，重进也不再恢复旧选择", async () => {
+  const saved = { id: "v", name: "周二周期", dateMode: "fixed" as const, settings: {
+    start: "2026-11-24", days: 8, perspective: "people" as const, project: "p", relatedProject: "",
+    people: ["me"], editableOnly: false,
+  } };
+  saveScheduleViews(key, { active: saved.id, views: [saved] });
+  let page = await mount(false);
+  const defaultRange = document.querySelector(".schedule-week-nav strong")?.textContent;
+  fireEvent.click(screen.getByText("任务一"));
+  fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: "2026-11-25" } });
+  fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "2026-11-26" } });
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  fireEvent.click(screen.getByRole("button", { name: "双周" }));
+  expect(document.querySelectorAll(".schedule-days > div")).toHaveLength(16);
+  menu(); fireEvent.click(screen.getByRole("menuitem", { name: "清除视图" }));
+  expect(document.querySelector(".schedule-week-nav strong")?.textContent).toBe(defaultRange);
+  const headers = document.querySelectorAll(".schedule-days > div");
+  expect(headers).toHaveLength(7);
+  const [start, end] = defaultRange!.split(" — ");
+  expect(new Date(`${start}T00:00:00Z`).getUTCDay()).toBe(1);
+  expect(new Date(`${end}T00:00:00Z`).getUTCDay()).toBe(0);
+  expect(headers[0].querySelector("strong")?.textContent).toBe(start.slice(5));
+  expect(headers[6].querySelector("strong")?.textContent).toBe(end.slice(5));
+  expect(screen.getByRole("button", { name: "单周" }).getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByRole("button", { name: "排期视图" }).textContent).toBe("视图");
+  expect(screen.getByRole("combobox", { name: "筛选空间" }).textContent).toContain("全部空间");
+  expect(screen.getByRole("combobox", { name: "筛选人员" }).textContent).toContain("全部人员");
+  expect(loadScheduleViews(key)).toEqual({ active: "", views: [saved] });
+  fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe("2026-11-25");
+  expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe("2026-11-26");
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
+  page.unmount(); page = await mount();
+  expect(document.querySelector(".schedule-week-nav strong")?.textContent).toBe(defaultRange);
+  expect(screen.getByRole("button", { name: "排期视图" }).textContent).toBe("视图");
+  menu(); fireEvent.click(screen.getByRole("menuitemradio", { name: "周二周期" }));
+  expect(document.querySelectorAll(".schedule-days > div")).toHaveLength(8);
+  page.unmount();
+});
+
+it("未确认账号也能清除临时日期范围，恢复默认周而无需保存", async () => {
+  vi.mocked(loadScheduleSession).mockResolvedValue({ ...read(), currentUserId: null });
+  await mount();
+  const defaultRange = document.querySelector(".schedule-week-nav strong")?.textContent;
+  const dialog = editor(); dates();
+  fireEvent.click(dialog.getByRole("button", { name: "应用" }));
+  fireEvent.click(screen.getByRole("button", { name: "双周" }));
+  const store = vi.spyOn(Storage.prototype, "setItem");
+  menu(); fireEvent.click(screen.getByRole("menuitem", { name: "清除视图" }));
+  expect(document.querySelector(".schedule-week-nav strong")?.textContent).toBe(defaultRange);
+  expect(document.querySelectorAll(".schedule-days > div")).toHaveLength(7);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(store).not.toHaveBeenCalled();
+});
+
+it("清除已存选择时若存储失败，保留当前视图及范围并提示重试", async () => {
+  saveScheduleViews(key, { active: "v", views: [{ id: "v", name: "周二周期", dateMode: "fixed", settings: {
+    start: "2026-11-24", days: 8, perspective: "people", project: "", relatedProject: "", people: [], editableOnly: false,
+  } }] });
+  await mount();
+  fireEvent.click(screen.getByRole("button", { name: "双周" }));
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+  menu(); fireEvent.click(screen.getByRole("menuitem", { name: "清除视图" }));
+  expect(document.querySelectorAll(".schedule-days > div")).toHaveLength(16);
+  expect(screen.getByRole("button", { name: "排期视图" }).textContent).toContain("周二周期");
+  expect(loadScheduleViews(key).active).toBe("v");
+  expect(screen.getByRole("alert").textContent).toContain("未能保存到本机");
+});
+
 it("只剔除已失效的空间和人员选项，保留有效人员与日期跨度", async () => {
   saveScheduleViews(key, { active: "v", views: [{ id: "v", name: "成员安排", dateMode: "fixed", settings: {
     start: "2026-11-24", days: 8, perspective: "people", project: "removed", relatedProject: "", people: ["me", "removed"], editableOnly: false,

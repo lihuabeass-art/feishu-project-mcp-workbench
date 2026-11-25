@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Pencil, Save, X } from "lucide-react";
+import { CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Pencil, RotateCcw, Save, X } from "lucide-react";
 import { DateRangePicker } from "./DateRangePicker";
 import { Select } from "./Select";
 import { useScrollIsolation } from "./useScrollIsolation";
@@ -104,6 +104,13 @@ export function ScheduleViewControls({ enabled, storageKey, current, periods, to
     setError(""); setDeleting(false); setMenuOpen(false); setOpen(true);
   }
   function close() { dialogOpening.current = false; setOpen(false); trigger.current?.focus(); }
+  function clearView() {
+    if (saved.active && !persist({ ...saved, active: "" })) return;
+    setError("");
+    onPeriodsChange(1);
+    onApply({ start: shiftViewDate(today, -viewWeekday(today)), days: 7, perspective: "people",
+      project: "", relatedProject: "", people: [], editableOnly: false });
+  }
   function save() {
     if (rangeError || !name.trim()) return;
     if (saved.views.some((view) => view.name === name.trim() && (!editing || view.id !== active?.id))) {
@@ -152,6 +159,10 @@ export function ScheduleViewControls({ enabled, storageKey, current, periods, to
           {active && <DropdownMenu.Item className="theme-menu-item" onSelect={() => show("edit")}>
             <Pencil size={15} aria-hidden="true" /><span>编辑当前视图…</span>
           </DropdownMenu.Item>}
+          <DropdownMenu.Separator className="theme-menu-separator" />
+          <DropdownMenu.Item className="theme-menu-item" onSelect={clearView}>
+            <RotateCcw size={15} aria-hidden="true" /><span>清除视图</span>
+          </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
