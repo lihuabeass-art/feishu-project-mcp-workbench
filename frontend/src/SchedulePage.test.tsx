@@ -1332,8 +1332,10 @@ it.each([
     identity: { ...identity, item: "old", owner }, ownerId: owner, ownerIds: [owner], mine: owner === "me",
     dates: { start: currentWeekDay(weekOffset - 9), end: currentWeekDay(weekOffset - 6) }, readOnlyReason: "历史排期，仅供查看" };
   const laterRecord = { ...historyRecord, id: "history:later", title: "更远一周的安排",
+    identity: { ...historyRecord.identity, item: "later" },
     dates: { start: currentWeekDay(14), end: currentWeekDay(15) } };
   read.targets.push({ ...historyRecord, id: "recent", title: "当前日期的排期", nodeStatus: "doing", readOnlyReason: undefined,
+    identity: { ...historyRecord.identity, item: "recent" },
     dates: { start: currentWeekDay(0), end: currentWeekDay(6) } });
   let finishPeople: ((result: ScheduleRead) => void) | undefined;
   vi.mocked(loadScheduleSession).mockResolvedValue(isPeople
@@ -1431,6 +1433,57 @@ it("日历按真实节点去重，保留名称相同的不同节点", async () =
   const calendar = document.querySelector(".schedule-calendar")!;
   await waitFor(() => expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(2));
   expect(calendar.querySelectorAll(".schedule-bar.is-readonly")).toHaveLength(1);
+});
+
+it.each(["doing", "finished"])("%s 节点流转刷新后日期与历史快照不同，日历仍只展示当前节点排期", async (nodeStatus) => {
+  const read = data();
+  const current = { ...read.targets[0], nodeStatus, dates: { start: currentWeekDay(1), end: currentWeekDay(2) } };
+  read.targets = [current];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], complete: true, targets: [
+    { ...current, id: "history:stale", dates: { start: currentWeekDay(0), end: currentWeekDay(2) }, readOnlyReason: "历史排期，仅供查看" },
+    { ...current, id: "history:other-node", identity: { ...identity, node: "other-node" }, nodeName: "独立节点", readOnlyReason: "历史排期，仅供查看" },
+  ] });
+  await setup();
+  await screen.findByRole("button", { name: "任务一 独立节点" });
+  const calendar = document.querySelector(".schedule-calendar")!;
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(2);
+  fireEvent.click(within(calendar as HTMLElement).getByRole("button", { name: "任务一 开发" }));
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(currentWeekDay(1));
+});
+
+it("人员日历按节点与负责人合并不同日期的历史快照，保留其他负责人及其他事项的排期", async () => {
+  const read = data();
+  const current = { ...read.targets[0], dates: { start: currentWeekDay(1), end: currentWeekDay(2) } };
+  read.targets = [current];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  const history = { ...current, dates: { start: currentWeekDay(0), end: currentWeekDay(2) }, readOnlyReason: "历史排期，仅供查看" };
+  vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [{ id: "peer", name: "同事", connection: "c", project: "p" }], complete: true, targets: [
+    { ...history, id: "history:stale" },
+    { ...history, id: "history:peer", identity: { ...identity, owner: "peer" }, ownerId: "peer", ownerIds: ["peer"], mine: false },
+    { ...history, id: "history:other-item", identity: { ...identity, item: "other-item" } },
+  ] });
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const calendar = document.querySelector(".schedule-calendar")!;
+  await waitFor(() => expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(3));
+  expect(calendar.querySelectorAll(".schedule-bar.is-readonly")).toHaveLength(3);
+});
+
+it("当前节点缺少完整日期时保留历史排期补充，编辑产生草稿后只展示草稿", async () => {
+  const read = data();
+  vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], complete: true, targets: [
+    { ...read.targets[0], id: "history:fallback", dates: { start: currentWeekDay(0), end: currentWeekDay(2) }, readOnlyReason: "历史排期，仅供查看" },
+  ] });
+  await setup();
+  const calendar = document.querySelector(".schedule-calendar")!;
+  await waitFor(() => expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1));
+  expect(calendar.querySelectorAll(".schedule-bar.is-readonly")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: /任务一.*开发.*待安排/ }));
+  fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: currentWeekDay(1) } });
+  fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(2) } });
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
+  expect(calendar.querySelectorAll(".schedule-bar.is-draft")).toHaveLength(1);
 });
 
 it("快速往返只补最终日期附近的缓存，后台预取最多同时两页", async () => {

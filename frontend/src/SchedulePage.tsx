@@ -850,21 +850,20 @@ export function SchedulePage({
             (!entry.identity.owner && !entry.record.ownerIds.some(Boolean))))) &&
       (view !== "mine" || !editableOnly || isEditableTarget(entry));
   const visible = entries.filter(matchesFilters);
-  const liveDates = new Set<string>();
-  const locallyChanged = new Set<string>();
+  const liveSchedules = new Set<string>();
   const calendarOwnerKey = (entry: Entry, owner?: string | null) => JSON.stringify([nodeKey(entry), owner]);
-  const calendarDatesKey = (ownerKey: string, entry: Entry) => JSON.stringify([ownerKey, entry.dates.start, entry.dates.end]);
   for (const entry of visible) {
     if (!entry.identity.node) continue;
     for (const owner of entry.record.ownerIds) {
       const ownerKey = calendarOwnerKey(entry, owner);
-      if (validSchedule(entry.dates)) liveDates.add(calendarDatesKey(ownerKey, entry));
-      if (scheduleChanged(entry) || entry.result === "accepted") locallyChanged.add(ownerKey);
+      // 历史接口是同一节点排期的补充快照；日期变化不能生成第二条节点。
+      // 当前无有效日期且没有本地变更时，仍允许历史快照补齐可用内容。
+      if (validSchedule(entry.dates) || scheduleChanged(entry) || entry.result === "accepted") liveSchedules.add(ownerKey);
     }
   }
   const calendarEntries = [...visible, ...historicalEntries.filter((entry) => {
     const ownerKey = calendarOwnerKey(entry, entry.record.ownerId);
-    return matchesFilters(entry) && !locallyChanged.has(ownerKey) && !liveDates.has(calendarDatesKey(ownerKey, entry));
+    return matchesFilters(entry) && !liveSchedules.has(ownerKey);
   })];
 
   const personOptions = new Map<string, Set<string>>();
