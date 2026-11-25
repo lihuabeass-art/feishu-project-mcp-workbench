@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import { ScheduleDescription } from "./ScheduleDescription";
@@ -11,6 +11,48 @@ const detail = (type: string, item: string, name: string, value: string): ItemDe
   data: { work_item_attribute: {}, work_item_fields: [{ key: "description", name, value }] }, pages: [],
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); localStorage.clear(); });
+
+it("排期检查器按需求编号、代码版本号顺序展示缓存与最新字段，保留多行内容", async () => {
+  const cached = detail("story", "1", "需求说明", "说明");
+  cached.data.work_item_fields.push(
+    { key: "version", name: "代码版本号", value: "后端：feat/example/model-catalog-sync\n（example-service）" },
+    { key: "number", name: "需求编号", value: "REQ-20261125-0001" },
+    { key: "other", name: "其他字段", value: "不展示的内容" },
+  );
+  vi.mocked(cachedItemDetail).mockResolvedValue(cached);
+  let resolve!: (value: ItemDetail) => void;
+  vi.mocked(refreshItemDetail).mockReturnValue(new Promise((done) => { resolve = done; }));
+  render(<ScheduleDescription connection="c" project="p" type="story" item="1" />);
+  await screen.findByText("REQ-20261125-0001");
+  const fields = document.querySelector(".schedule-inspector-fields")!;
+  expect([...fields.querySelectorAll("dt")].map((node) => node.textContent)).toEqual(["需求编号", "代码版本号"]);
+  expect(within(fields as HTMLElement).getByText("REQ-20261125-0001")).toBeTruthy();
+  expect(fields.textContent).toContain("（example-service）");
+  expect(fields.textContent).toContain("feat/example/model-catalog-sync");
+  expect(screen.queryByText("不展示的内容")).toBeNull();
+  resolve({ ...cached, data: { ...cached.data, work_item_fields: cached.data.work_item_fields.map((field) =>
+    field.key === "version" ? { ...field, value: "后端：v2" } : field) } });
+  expect(await screen.findByText("后端：v2")).toBeTruthy();
+});
+
+it("字段部分缺失时保留已有信息，重试后接受真实清空并保留有效零值", async () => {
+  const cached = detail("story", "1", "需求说明", "说明");
+  cached.data.work_item_fields.push(
+    { key: "number", name: "需求编号", value: "REQ-0001" },
+    { key: "version", name: "代码版本号", value: "v1" },
+  );
+  vi.mocked(cachedItemDetail).mockResolvedValue(cached);
+  vi.mocked(refreshItemDetail).mockResolvedValueOnce(detail("story", "1", "需求说明", "说明"))
+    .mockResolvedValueOnce({ ...cached, data: { ...cached.data, work_item_fields: cached.data.work_item_fields.map((field) =>
+      field.key === "version" ? { ...field, value: "   " } : field.key === "number" ? { ...field, value: 0 } : field) } });
+  render(<ScheduleDescription connection="c" project="p" type="story" item="1" />);
+  fireEvent.click(await screen.findByRole("button", { name: "重试" }));
+  expect(screen.getByText("REQ-0001")).toBeTruthy();
+  expect(screen.getByText("v1")).toBeTruthy();
+  expect(await screen.findByText("未填写")).toBeTruthy();
+  expect(screen.getByText("0")).toBeTruthy();
+  expect(screen.queryByText("v1")).toBeNull();
+});
 
 it("展示需求缓存与更新后的富文本说明", async () => {
   vi.mocked(cachedItemDetail).mockResolvedValue(detail("story", "1", "需求说明", "缓存说明"));

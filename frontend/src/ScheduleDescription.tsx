@@ -3,9 +3,12 @@ import { cachedItemDetail, refreshItemDetail } from "./api";
 import { BusinessField } from "./BusinessField";
 import { ExternalLink } from "./ExternalLink";
 import { ArrowUpRight } from "lucide-react";
-import { isEmpty } from "./detailFields";
+import { fieldName, isEmpty } from "./detailFields";
 import { useDetailFieldIdentity } from "./useDetailFieldIdentity";
 import type { ItemDetail } from "./types";
+
+const isInspectorField = (field: ItemDetail["data"]["work_item_fields"][number]) =>
+  ["需求编号", "代码版本号"].includes(field.name?.trim() || "");
 
 export function ScheduleDescription({ project, type, item, connection, heading, itemUrl, needsRemoteCheck }: {
   project: string;
@@ -43,9 +46,9 @@ export function ScheduleDescription({ project, type, item, connection, heading, 
       try {
         const fresh = await refreshItemDetail(id);
         const previous = current.current.detail || cached;
-        const cachedDescriptions = previous?.data.work_item_fields.filter((field) =>
-          current.current.keys.includes(field.key) || field.key === "description" || ["需求说明", "缺陷描述", "缺陷说明", "事项说明"].includes(field.name?.trim() || "")) ?? [];
-        const incomplete = cachedDescriptions.some((field) =>
+        const cachedFields = previous?.data.work_item_fields.filter((field) =>
+          isInspectorField(field) || current.current.keys.includes(field.key) || field.key === "description" || ["需求说明", "缺陷描述", "缺陷说明", "事项说明"].includes(field.name?.trim() || "")) ?? [];
+        const incomplete = cachedFields.some((field) =>
           !fresh.data.work_item_fields.some((next) => next.key === field.key && next.value !== undefined));
         if (active) {
           if (fresh.item_url) setDetailUrl(fresh.item_url);
@@ -61,6 +64,8 @@ export function ScheduleDescription({ project, type, item, connection, heading, 
     return () => { active = false; };
   }, [project, type, item, connection, attempt]);
   const descriptions = fields.filter((field) => identities.descriptions.includes(field.key));
+  const inspectorFields = fields.filter(isInspectorField).sort((a, b) =>
+    Number(a.name?.trim() === "代码版本号") - Number(b.name?.trim() === "代码版本号"));
   const title = type === "story" ? "需求说明" : type === "issue" ? "缺陷描述" : "事项说明";
   const href = itemUrl || detailUrl;
   return <>
@@ -78,8 +83,16 @@ export function ScheduleDescription({ project, type, item, connection, heading, 
         <BusinessField value={field.value} itemId={detail!.id} fieldKey={field.key} />}
     </div>)}
     {!descriptions.length && <p className="hint">{loading ? "正在读取说明…" : failed ? "暂时无法读取说明。" : "详情未返回已识别的说明字段，可在飞书中查看。"}</p>}
-    {failed && <p className="hint">{detail ? "暂时无法获取最新说明，已保留缓存。" : "请稍后重试。"} <button type="button" className="secondary" onClick={() => setAttempt((value) => value + 1)}>重试</button></p>}
+    {failed && <p className="hint">{detail ? "暂时无法获取最新事项信息，已保留缓存。" : "请稍后重试。"} <button type="button" className="secondary" onClick={() => setAttempt((value) => value + 1)}>重试</button></p>}
   </section>
+  {inspectorFields.length > 0 && <dl className="schedule-inspector-fields" aria-label="事项信息">
+    {inspectorFields.map((field, index) => <div key={`${field.key}-${index}`}>
+      <dt>{fieldName(field)}</dt>
+      <dd>{field.value === undefined ? <span className="hint">详情未返回该字段的内容，可在飞书中查看。</span> :
+        isEmpty(field.value) ? <span className="hint">未填写</span> :
+          <BusinessField value={field.value} itemId={detail!.id} fieldKey={field.key} />}</dd>
+    </div>)}
+  </dl>}
   {needsRemoteCheck && !href && !loading && <p>无法确认飞书事项链接，请在飞书中按事项名称查找并核对。</p>}
   </>;
 }

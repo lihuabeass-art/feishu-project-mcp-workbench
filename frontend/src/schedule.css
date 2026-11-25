@@ -1603,6 +1603,23 @@
 .schedule-description p { margin: 6px 0; }
 .schedule-description img { max-width: 100%; }
 
+.schedule-inspector-fields {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.schedule-inspector-fields > div {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.schedule-inspector-fields dt { margin-bottom: 6px; }
+.schedule-inspector-fields dd { margin: 0; }
+.schedule-inspector-fields p { margin: 0; }
+.schedule-inspector-fields img { max-width: 100%; }
+
 .schedule-feedback {
   display: flex;
   align-items: flex-start;
