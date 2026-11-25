@@ -1094,12 +1094,15 @@ it("筛选排除当前目标时隐藏编辑区，恢复筛选后保留会话", a
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe("2026-11-16");
 });
 
-it("人员有待安排事项但本周无排期时说明本周为空", async () => {
+it("人员有待安排事项但本周无排期时仍补齐事项行", async () => {
   await setup();
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
   fireEvent.click(screen.getByRole("option", { name: "本人" }));
-  expect(await screen.findByText("本周暂无可显示的安排")).toBeTruthy();
+  const calendar = document.querySelector(".schedule-calendar")!;
+  expect(calendar.querySelector(".schedule-row-label strong")?.textContent).toBe("任务一");
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(0);
+  expect(screen.queryByText("本周暂无可显示的安排")).toBeNull();
   expect(screen.queryByText("当前范围未包含该人员的安排")).toBeNull();
 });
 
@@ -1116,7 +1119,7 @@ it("人员分组在待排池和日历独立折叠，键盘展开并保留选择�
   expect(screen.queryByRole("button", { name: /任务一/ })).toBeNull();
   expect(document.querySelector(".schedule-editor")?.textContent).toContain("任务一");
   expect(document.querySelector(".schedule-row")?.hasAttribute("hidden")).toBe(false);
-  fireEvent.click(screen.getByRole("button", { name: "收起本人的日历安排，共1项" }));
+  fireEvent.click(screen.getByRole("button", { name: "收起本人的日历安排，共2项" }));
   expect(document.querySelector(".schedule-row")?.hasAttribute("hidden")).toBe(true);
   pendingToggle.focus();
   await userEvent.keyboard("{Enter}");
@@ -1606,6 +1609,79 @@ it("历史排期没有清单缓存时，可补齐上线徽标和事项链接", a
   const inspector = within(screen.getByLabelText("排期检查器"));
   expect((await inspector.findByRole("link", { name: "打开飞书事项" })).getAttribute("href")).toBe(href);
   expect(inspector.getByText("历史需求说明")).toBeTruthy();
+});
+
+it("人员历史独有事项补读当前节点与负责人，已经上线和已结束节点的原有排期始终保留", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.targets = [];
+  const history = ["active", "released"].map((item) => ({ ...base, id: `history:${item}`,
+    title: item === "active" ? "仅日历有排期的事项" : "已经需求上线的事项", nodeName: "前端代码研发",
+    identity: { ...identity, item }, nodeStatus: "", readOnlyReason: "历史排期，仅供查看",
+    dates: { start: currentWeekDay(0), end: currentWeekDay(2) } }));
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(loadScheduleHistory).mockResolvedValue({ targets: history, people: [], complete: true });
+  vi.mocked(cachedItemDetail).mockResolvedValue(null);
+  vi.mocked(refreshItemDetail).mockImplementation(async (id) => ({ id, fetched_at_ms: 1, pages: [], data: {
+    work_item_attribute: id.work_item_id === "released" ? { finish_status: true, work_item_status: { name: "需求上线" } } : {},
+    work_item_fields: [], work_item_current_node: id.work_item_id === "released" ? []
+      : [{ id: "testing", name: "需求测试", owners: [{ key: "tester", name: "测试同事" }] }],
+  } }));
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
+  await within(calendar).findByText("需求测试", { selector: ".schedule-current-node" });
+  const released = await within(calendar).findByText("需求上线", { selector: ".schedule-completed-status span" });
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(2);
+  expect(released.closest(".schedule-row")?.querySelectorAll(".schedule-bar")).toHaveLength(1);
+  fireEvent.mouseEnter(within(calendar).getByText("需求测试", { selector: ".schedule-current-node" }));
+  expect(screen.getByRole("tooltip").querySelector(".schedule-node-owner > span:last-child")?.textContent).toBe("测试同事");
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(2);
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
+});
+
+it("人员节点补读失败保留缓存节点及真实排期，不影响查看与切周", async () => {
+  const read = data();
+  const base = read.targets[0];
+  read.targets = [];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], complete: true, targets: [{ ...base,
+    id: "history:cached", nodeStatus: "", dates: { start: currentWeekDay(0), end: currentWeekDay(2) } }] });
+  vi.mocked(cachedItemDetail).mockResolvedValue({ id: { project_key: "p", work_item_type_key: "t", work_item_id: "i" },
+    fetched_at_ms: 1, pages: [], data: { work_item_attribute: {}, work_item_fields: [],
+      work_item_current_node: [{ id: "testing", name: "缓存中的测试节点", owners: [{ key: "tester", name: "测试同事" }] }] } });
+  vi.mocked(refreshItemDetail).mockRejectedValue(new Error("offline"));
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
+  await within(calendar).findByText("缓存中的测试节点");
+  await waitFor(() => expect(refreshItemDetail).toHaveBeenCalled());
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
+  expect(within(calendar).getByText("缓存中的测试节点")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "上一周" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("旧详情缓存的空节点及完成状态不能在补读失败时覆盖已知的会话当前节点", async () => {
+  const read = data();
+  read.targets[0].nodeStatus = "doing";
+  read.targets[0].dates = { start: currentWeekDay(0), end: currentWeekDay(1) };
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], complete: true, targets: [
+    { ...read.targets[0], id: "history:stale", nodeStatus: "", readOnlyReason: "历史排期，仅供查看" },
+  ] });
+  vi.mocked(cachedItemDetail).mockResolvedValue({ id: { project_key: "p", work_item_type_key: "t", work_item_id: "i" },
+    fetched_at_ms: 1, pages: [], data: { work_item_attribute: { finish_status: true, work_item_status: "需求上线" },
+      work_item_fields: [], work_item_current_node: [] } });
+  vi.mocked(refreshItemDetail).mockRejectedValue(new Error("offline"));
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  await waitFor(() => expect(refreshItemDetail).toHaveBeenCalled());
+  const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
+  expect(within(calendar).getByText("开发", { selector: ".schedule-current-node" })).toBeTruthy();
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
+  expect(within(calendar).queryByText("暂无进行中节点")).toBeNull();
+  expect(calendar.querySelector(".schedule-completed-status")).toBeNull();
 });
 
 it("已排期包含当前及多个历史未来周，定位与切周后计数、卡片和选择保持稳定", async () => {
@@ -2805,9 +2881,10 @@ it("我的排期与个人待办不混入同事项下他人的历史已流转节�
   const peopleProduct = screen.getByRole("button", { name: /发布 产品方案设计/ }).closest(".schedule-row");
   const peopleTesting = screen.getByRole("button", { name: /平台操作记录 需求测试/ }).closest(".schedule-row");
   expect(peopleFrontend).not.toBe(peopleProduct);
-  for (const row of [peopleFrontend, peopleProduct, peopleTesting]) {
-    expect(row?.querySelector(".schedule-row-current")).toBeNull();
+  for (const row of [peopleFrontend, peopleProduct]) {
+    expect(row?.querySelector(".schedule-current-node")?.textContent).toBe("后端方案设计");
   }
+  expect(peopleTesting?.querySelector(".schedule-current-node")?.textContent).toBe("后端代码合入");
   fireEvent.click(screen.getByRole("button", { name: /发布 前端方案设计/ }));
   expect(screen.queryByRole("group", { name: "事项节点" })).toBeNull();
 
@@ -2826,7 +2903,7 @@ it("我的排期与个人待办不混入同事项下他人的历史已流转节�
   expect(fallbackFrontend?.querySelector(".schedule-row-current")).toBeNull();
 });
 
-it("人员排期的副标题、排期条及详情只显示当前行负责人的节点", async () => {
+it("人员排期展示事项的全部当前节点及负责人，排期条和详情仍归属当前行人员", async () => {
   const read = data();
   const base = read.targets[0];
   const dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
@@ -2861,8 +2938,16 @@ it("人员排期的副标题、排期条及详情只显示当前行负责人的�
 
   for (const [mine, other] of [["前端研发", "后端研发"], ["后端研发", "前端研发"]]) {
     const row = screen.getByRole("button", { name: `任务一 ${mine}` }).closest(".schedule-row") as HTMLElement;
-    expect(row.querySelector(".schedule-row-current")?.getAttribute("title"))
-      .toBe(`当前节点：${mine}`);
+    expect([...row.querySelectorAll(".schedule-row-current .schedule-current-node")].map((node) => node.textContent))
+      .toEqual(["前端研发", "后端研发"]);
+    for (const [nodeName, ownerName] of [["前端研发", "前端同事"], ["后端研发", "后端同事"]]) {
+      const node = within(row).getByText(nodeName, { selector: ".schedule-current-node" });
+      expect(node.hasAttribute("title")).toBe(false);
+      fireEvent.mouseEnter(node);
+      expect(screen.getByRole("tooltip").querySelector(".schedule-node-owner > span:last-child")?.textContent).toBe(ownerName);
+      fireEvent.mouseLeave(node);
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    }
     expect(within(row).queryByRole("button", { name: `任务一 ${other}` })).toBeNull();
     const sharedBar = within(row).getByRole("button", { name: "任务一 共同联调" });
     fireEvent.mouseEnter(sharedBar);
@@ -2879,6 +2964,59 @@ it("人员排期的副标题、排期条及详情只显示当前行负责人的�
     expect(scope.getByRole("button", { name: new RegExp(mine) })).toBeTruthy();
     expect(scope.queryByRole("button", { name: new RegExp(other) })).toBeNull();
   }
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
+  fireEvent.click(screen.getByRole("option", { name: "前端同事" }));
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "筛选人员" }), { key: "Escape" });
+  const calendar = document.querySelector(".schedule-calendar")!;
+  expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(1);
+  const backendNode = within(calendar as HTMLElement).getByText("后端研发", { selector: ".schedule-current-node" });
+  fireEvent.focus(backendNode);
+  expect(screen.getByRole("tooltip").querySelector(".schedule-node-owner > span:last-child")?.textContent).toBe("后端同事");
+  fireEvent.blur(backendNode);
+});
+
+it.each([7, 14] as const)("人员 %s 天本周视图补齐未上线事项，切周后只显示真实排期且我的排期保持原范围", async (span) => {
+  const read = data();
+  const base = read.targets[0];
+  read.targets = [
+    { ...base, nodeStatus: "doing" },
+    { ...base, id: "old", title: "已过期未上线", identity: { ...identity, item: "old" }, peopleOnly: true,
+      nodeStatus: "finished", dates: { start: currentWeekDay(-7), end: currentWeekDay(-6) } },
+    { ...base, id: "future", title: "未来才排期", identity: { ...identity, item: "future" }, peopleOnly: true,
+      nodeStatus: "not_started", dates: { start: currentWeekDay(28), end: currentWeekDay(29) } },
+    { ...base, id: "released", title: "已经上线", identity: { ...identity, item: "released" }, nodeStatus: "finished" },
+    { ...base, id: "same-item", identity: { ...identity, node: "second" }, nodeStatus: "not_started" },
+  ];
+  const snapshot = projectSnapshot(read);
+  snapshot.items.find((item) => item.id.work_item_id === "released")!.is_completed = true;
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  render(<SchedulePage snapshot={snapshot} onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
+  await screen.findByLabelText("今日问候");
+  if (span === 14) fireEvent.click(screen.getByRole("button", { name: "双周 14天" }));
+  expect(document.querySelectorAll(".schedule-row")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
+  expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(3);
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(0);
+  expect(within(calendar).queryByText("已经上线")).toBeNull();
+  expect(screen.getByRole("button", { name: "收起本人的日历安排，共3项" })).toBeTruthy();
+  expect(screen.getByRole("group", { name: "当前日期范围排期统计" }).textContent).toContain("已排 0");
+  fireEvent.click(within(calendar).getByText("未来才排期"));
+  expect(screen.getByLabelText("排期检查器").querySelector("h3")?.textContent).toBe("未来才排期");
+  expect(screen.queryByLabelText("开始日期")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "下一周" }));
+  expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "本周" }));
+  expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(3);
+  fireEvent.click(screen.getByRole("button", { name: "上一周" }));
+  expect([...calendar.querySelectorAll(".schedule-row-label strong")].map((node) => node.textContent)).toEqual(["已过期未上线"]);
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "本周" }));
+  fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
+  expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("tab", { name: /已排期/ }));
+  expect(document.querySelector(".schedule-pending")?.textContent).not.toContain("未来才排期");
+  expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
 it("节点身份缺失时不把多条进行中记录合并成一个当前节点", async () => {

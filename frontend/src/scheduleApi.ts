@@ -12,6 +12,7 @@ export interface ScheduleRecord {
   dates: ScheduleDates; mine: boolean; readOnlyReason?: string | null; itemUrl?: string | null;
   ownerIds: string[];
   sourceAggregate?: boolean;
+  peopleOnly?: boolean;
   cacheKind?: string; startState?: string; endState?: string; fetchedAt?: string | null;
   unknownOwner?: boolean;
   result?: ScheduleResult; resultMessage?: string | null; resultWarning?: string | null;
@@ -36,7 +37,7 @@ export interface ScheduleWriteResult {
   writeRequests: number;
 }
 
-interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; node_status?: string; node_started_at_ms?: number | null; node_order?: number; schedule_required?: boolean; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
+interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; node_status?: string; node_started_at_ms?: number | null; node_order?: number; schedule_required?: boolean; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; people_only?: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
 interface WireRead { session_id: string; connection?: string; recent_range?: ScheduleDates | null; history_scopes?: ScheduleHistoryScope[]; defect_projects?: string[]; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
 interface WireResult { targets: ScheduleWriteResult["results"]; write_requests: number }
 let lifecycle: Promise<unknown> = Promise.resolve();
@@ -109,6 +110,7 @@ function mapScheduleRecords(result: Pick<WireRead, "targets" | "current_user" | 
       projectName: target.identity.project, typeName: target.identity.type, dates: target.baseline,
       mine: !!result.current_user && (target.identity.owner === result.current_user || target.owners.some((owner) => owner.id === result.current_user)),
       sourceAggregate: target.source_aggregate, readOnlyReason: target.source_aggregate ? target.read_only_reason || "来源聚合日期缺少准确节点和负责人信息，仅供查看" : target.read_only_reason, itemUrl: target.item_url,
+      peopleOnly: target.people_only ?? false,
       cacheKind: target.cache_kind, startState: target.start_state, endState: target.end_state, fetchedAt: target.fetched_at_ms ? new Date(target.fetched_at_ms).toLocaleString() : null,
     })),
   };

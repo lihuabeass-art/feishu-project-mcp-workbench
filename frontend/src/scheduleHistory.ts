@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
-import { loadScheduleHistory, type ScheduleHistory, type ScheduleHistoryRequest, type ScheduleRead } from "./scheduleApi";
+import { loadScheduleHistory, type ScheduleHistory, type ScheduleHistoryRequest, type SchedulePerson, type ScheduleRead } from "./scheduleApi";
 import type { ScheduleDates, ScheduleIdentity } from "./scheduleSession";
 import type { ItemDetail, Snapshot } from "./types";
 
@@ -76,7 +76,8 @@ export function scheduleItemKey({ connection, project, type, item }: ScheduleIde
 }
 
 function completedStatus(detail: ItemDetail): string | null | undefined {
-  const finished = detail.data.work_item_fields.find((field) => field.key === "finish_status")?.value;
+  const finished = detail.data.work_item_fields.find((field) => field.key === "finish_status")?.value
+    ?? detail.data.work_item_attribute.finish_status;
   if (finished === false || finished === "false") return null;
   if (finished !== true && finished !== "true") return undefined;
   const status = detail.data.work_item_attribute.work_item_status;
@@ -84,21 +85,47 @@ function completedStatus(detail: ItemDetail): string | null | undefined {
   return (typeof name === "string" && name.trim()) || "已完成";
 }
 
-export function useScheduleHistoryStatuses(context: string, itemKeys: Set<string>, revision: unknown) {
+export type ScheduleCurrentNode = { id: string; name: string; owners: SchedulePerson[]; unknownOwner: boolean };
+type ScheduleItemContext = { completedStatus?: string | null; currentNodes?: ScheduleCurrentNode[];
+  nodesVerified?: boolean; statusVerified?: boolean; failed?: boolean };
+
+function currentNodes(detail: ItemDetail): ScheduleCurrentNode[] | undefined {
+  if (!Array.isArray(detail.data.work_item_current_node)) return undefined;
+  return detail.data.work_item_current_node.flatMap((node, index) => {
+    if (typeof node.name !== "string" || !node.name.trim()) return [];
+    const rawOwners = Array.isArray(node.owners) ? node.owners : [];
+    const owners = new Map<string, SchedulePerson>();
+    let unknownOwner = false;
+    for (const owner of rawOwners) {
+      const value = owner && typeof owner === "object" ? owner as Record<string, unknown> : {};
+      const id = typeof owner === "string" ? owner : value.key ?? value.user_key ?? value.id;
+      if (typeof id !== "string" || !id.trim()) { unknownOwner = true; continue; }
+      owners.set(id, { id, name: typeof value.name === "string" ? value.name : id,
+        avatar: typeof value.avatar === "string" ? value.avatar : undefined });
+    }
+    const nodeId = node.id ?? node.node_key;
+    return [{ id: typeof nodeId === "string" ? nodeId : `detail-node-${index}`, name: node.name,
+      owners: [...owners.values()], unknownOwner }];
+  });
+}
+
+export function useScheduleItemContexts(context: string, itemKeys: Set<string>, revision: unknown) {
   const request = JSON.stringify([...itemKeys].sort());
-  const [statuses, setStatuses] = useState<{ context: string; values: Map<string, string | null> }>();
+  const [contexts, setContexts] = useState<{ context: string; values: Map<string, ScheduleItemContext> }>();
   useEffect(() => {
     const keys: string[] = JSON.parse(request);
     if (!keys.length) return;
     let active = true;
-    const publish = (key: string, detail: ItemDetail | null) => {
+    const publish = (key: string, detail: ItemDetail | null, remote = false) => {
       if (!active || !detail) return;
-      const value = completedStatus(detail);
-      if (value === undefined) return;
-      setStatuses((previous) => {
-        const values = previous?.context === context ? previous.values : new Map<string, string | null>();
-        if (values.get(key) === value) return previous;
-        return { context, values: new Map(values).set(key, value) };
+      const status = completedStatus(detail);
+      const nodes = currentNodes(detail);
+      setContexts((previous) => {
+        const values = previous?.context === context ? previous.values : new Map<string, ScheduleItemContext>();
+        const known = values.get(key);
+        return { context, values: new Map(values).set(key, { ...known,
+          ...(status !== undefined && (remote || !known?.statusVerified) ? { completedStatus: status, statusVerified: remote } : {}),
+          ...(nodes !== undefined && (remote || !known?.nodesVerified) ? { currentNodes: nodes, nodesVerified: remote } : {}), failed: false }) };
       });
     };
     const pending = keys.values();
@@ -109,7 +136,12 @@ export function useScheduleHistoryStatuses(context: string, itemKeys: Set<string
         const id = { project_key, work_item_type_key, work_item_id };
         try { publish(key, await cachedItemDetail(id)); } catch { /* 仍可向飞书读取。 */ }
         if (!active) break;
-        try { publish(key, await refreshItemDetail(id)); } catch { /* 保留已有状态。 */ }
+        try { publish(key, await refreshItemDetail(id), true); } catch {
+          if (active) setContexts((previous) => {
+            const values = previous?.context === context ? previous.values : new Map<string, ScheduleItemContext>();
+            return { context, values: new Map(values).set(key, { ...values.get(key), failed: true }) };
+          });
+        }
       }
     };
     const timer = window.setTimeout(() => {
@@ -119,7 +151,7 @@ export function useScheduleHistoryStatuses(context: string, itemKeys: Set<string
     }, NAVIGATION_SETTLE_MS);
     return () => { active = false; window.clearTimeout(timer); };
   }, [context, request, revision]);
-  return statuses?.context === context ? statuses.values : undefined;
+  return contexts?.context === context ? contexts.values : undefined;
 }
 
 export function useScheduleCalendar(visibleKey: string, preloadKeys: string[]) {

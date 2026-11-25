@@ -435,6 +435,7 @@ fn history_target(
         baseline,
         read_only_reason: Some("历史排期，仅供查看".into()),
         source_aggregate: false,
+        people_only: false,
         cache_kind: "node",
         start_state: "value",
         end_state: "value",

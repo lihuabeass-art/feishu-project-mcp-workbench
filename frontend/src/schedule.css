@@ -973,6 +973,57 @@
   white-space: nowrap;
 }
 
+.schedule-row-current-nodes {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+.schedule-row-current-nodes .schedule-current-node:focus-visible {
+  outline: 2px solid var(--heading);
+  outline-offset: 2px;
+}
+
+.schedule-node-owners-tooltip {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-solid);
+  color: var(--heading);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.schedule-node-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.schedule-node-owners-tooltip .schedule-avatar {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  font-size: 10px;
+}
+
+.schedule-node-owners-tooltip .schedule-avatar svg {
+  width: 13px;
+  height: 13px;
+}
+
 .schedule-completed-status {
   display: inline-flex;
   align-items: center;

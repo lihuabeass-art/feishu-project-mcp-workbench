@@ -26,8 +26,19 @@ it("桌面会话先结束旧会话再读取新会话，写入只传目标 ID 和
   expect(read.targets[0].mine).toBe(true);
   expect(read.targets[0].identity).toEqual(identity);
   expect(read.targets[0].nodeStartedAtMs).toBe(1794809754000);
+  expect(read.targets[0].peopleOnly).toBe(false);
   await submitScheduleTargets("s1", [{ id: "1", identity, dates: { start: "2026-11-13", end: "2026-11-14" }, cancel: false }]);
   expect(invoke).toHaveBeenLastCalledWith("sync_schedule_session", { sessionId: "s1", changes: [{ id: "1", start: "2026-11-13", end: "2026-11-14", cancel: false }] });
+});
+
+it("保留仅供人员排期补齐的范围外节点标记", async () => {
+  invoke.mockResolvedValueOnce({ session_id: "people-context", current_user: "me", read_at_ms: 1,
+    sources: [], failed_items: 0, targets: [{ id: "outside", identity: { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal", owner: "me" },
+      title: "范围外事项", node_name: "开发", owners: [{ id: "me", name: "本人" }], sources: [],
+      baseline: { start: "2020-01-01", end: "2020-01-02" }, people_only: true }] });
+  const read = await loadScheduleSession();
+  expect(read.targets[0].peopleOnly).toBe(true);
+  expect(read.targets[0].dates).toEqual({ start: "2020-01-01", end: "2020-01-02" });
 });
 
 it("传递账号识别错误，不把空账号或空负责人误认作本人", async () => {

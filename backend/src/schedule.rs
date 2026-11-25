@@ -74,6 +74,8 @@ pub struct Target {
     pub read_only_reason: Option<String>,
     /// 来源待办的聚合日期，没有确认节点或负责人归属。
     pub source_aggregate: bool,
+    /// 超出近期窗口的节点仅供人员排期补齐事项，不进入我的排期。
+    pub people_only: bool,
     pub cache_kind: &'static str,
     pub start_state: &'static str,
     pub end_state: &'static str,
@@ -337,6 +339,7 @@ fn build_aggregate_targets(
             baseline: Dates { start, end },
             read_only_reason: Some(reason.into()),
             source_aggregate: true,
+            people_only: false,
             cache_kind: "source_summary", start_state: "unknown", end_state: "unknown", fetched_at_ms: None,
         });
     }
@@ -536,7 +539,7 @@ impl ScheduleSession {
                             }
                             let all = std::mem::take(&mut view.targets);
                             for mut target in all {
-                                if is_mine_target(&target, &view.current_user) {
+                                if !target.people_only && is_mine_target(&target, &view.current_user) {
                                     target.id = format!("{}:{}", view.session_id, view.targets.len());
                                     view.targets.push(target);
                                 } else {
@@ -886,11 +889,13 @@ fn is_mine_target(target: &Target, current_user: &str) -> bool {
 
 fn retain_recent_targets(view: &mut LoadResult) {
     if let Some(range) = &view.recent_range {
-        for target in view.targets.iter().filter(|target| target.baseline.outside(range)) {
-            add_history_scope(&mut view.history_scopes, &target.identity.project, &target.identity.r#type,
-                target.owners.iter().map(|owner| owner.id.as_str()));
+        for target in &mut view.targets {
+            target.people_only = target.baseline.outside(range);
+            if target.people_only {
+                add_history_scope(&mut view.history_scopes, &target.identity.project, &target.identity.r#type,
+                    target.owners.iter().map(|owner| owner.id.as_str()));
+            }
         }
-        view.targets.retain(|target| !target.baseline.outside(range));
     }
 }
 
@@ -2545,6 +2550,7 @@ fn build_targets_with_order(
             baseline,
             read_only_reason: reason.map(str::to_owned),
             source_aggregate: false,
+            people_only: false,
             cache_kind: "node", start_state: "unknown", end_state: "unknown", fetched_at_ms: None,
         });
     }
@@ -2947,6 +2953,31 @@ mod tests {
         let mut targets = Vec::new();
         build_targets(&mut targets, "s", "c", "me", &id, "title", &BTreeSet::new(), &node);
         targets
+    }
+
+    #[test]
+    fn recent_window_preserves_outside_nodes_only_for_people_context() {
+        let base = named_targets("p").remove(0);
+        let targets = [
+            Dates { start: "2026-11-23".into(), end: "2026-11-24".into() },
+            Dates { start: "2026-10-01".into(), end: "2026-10-02".into() },
+            Dates { start: "2026-12-10".into(), end: "2026-12-11".into() },
+            Dates { start: String::new(), end: String::new() },
+        ].into_iter().map(|baseline| Target { baseline, ..base.clone() }).collect();
+        let mut view = LoadResult {
+            session_id: "s".into(), connection: "c".into(),
+            recent_range: Some(Dates { start: "2026-11-23".into(), end: "2026-12-06".into() }),
+            history_scopes: Vec::new(), defect_projects: Vec::new(), current_user: "me".into(),
+            current_user_name: String::new(), current_user_avatar: None, people_loaded: false,
+            account_error: None, read_at_ms: 0, sources: Vec::new(), targets,
+            failed_items: 0, item_errors: Vec::new(), read_requests: 0,
+        };
+        retain_recent_targets(&mut view);
+        retain_recent_targets(&mut view);
+        assert_eq!(view.targets.len(), 4);
+        assert_eq!(view.targets.iter().map(|target| target.people_only).collect::<Vec<_>>(), [false, true, true, false]);
+        assert_eq!(view.history_scopes.len(), 1);
+        assert_eq!(view.history_scopes[0].users, ["user-123456"]);
     }
 
     #[test]
