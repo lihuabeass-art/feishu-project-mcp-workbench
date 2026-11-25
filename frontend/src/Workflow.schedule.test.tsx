@@ -306,7 +306,7 @@ it("紧凑单月连续选起止，原子保存草稿且只通过日期动作提�
     [startKey]: "2026-11-05",
     [endKey]: "",
   });
-  expect(screen.getByRole("dialog").textContent).toContain("请选择结束日期");
+  expect(screen.getByRole("dialog", { name: /2026.*11/ }).textContent).toContain("请选择结束日期");
   expect(submit).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: /^2026年11月8日，/ }));
   await user.click(screen.getByRole("button", { name: "仅同步此日期" }));

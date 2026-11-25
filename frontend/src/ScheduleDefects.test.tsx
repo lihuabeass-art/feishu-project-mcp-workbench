@@ -30,7 +30,7 @@ beforeEach(() => {
   } });
   vi.mocked(getWorkflowActions).mockResolvedValue({ version: "current", actions: [{ id: "state:fix", kind: "state", label: "解决缺陷", fields: [] }] });
 });
-afterEach(() => { cleanup(); vi.resetAllMocks(); });
+afterEach(() => { cleanup(); vi.resetAllMocks(); localStorage.clear(); });
 
 it("自己的缺陷可打开说明和状态流程，人员排期按负责人展开，日历保持独立", async () => {
   render(<SchedulePage {...props} />);
@@ -79,15 +79,50 @@ it("后台缺陷读取发起后打开流程，保留正在填写的缺陷与草�
   const inspector = within(screen.getByLabelText("缺陷详情"));
   fireEvent.click(inspector.getByRole("button", { name: "查看可用流程动作" }));
   fireEvent.click(await inspector.findByRole("button", { name: "解决缺陷" }));
-  const field = await inspector.findByRole("textbox", { name: /解决说明/ });
+  const dialog = within(await screen.findByRole("dialog", { name: "流程操作" }));
+  expect(inspector.queryByRole("textbox", { name: /解决说明/ })).toBeNull();
+  const field = dialog.getByRole("textbox", { name: /解决说明/ });
   fireEvent.change(field, { target: { value: "本机正在填写的说明" } });
   await act(async () => finish({ defects: [other], failed_projects: [] }));
-  expect(inspector.getByRole("textbox", { name: /解决说明/ })).toBe(field);
+  expect(dialog.getByRole("textbox", { name: /解决说明/ })).toBe(field);
   expect((field as HTMLInputElement).value).toBe("本机正在填写的说明");
   expect(inspector.getByText("该缺陷已移出当前清单，已保留当前流程编辑。")).toBeTruthy();
   expect(onGuardChange).toHaveBeenLastCalledWith(expect.objectContaining({
     interacting: true, defectWorkflow: expect.objectContaining({ dirty: true }),
   }));
+});
+
+it("缺陷状态操作与节点操作使用独立弹层，保留草稿并始终先核对再提交", async () => {
+  localStorage.setItem("fstodo.workflow-skip-confirmation.v1", "true");
+  vi.mocked(getWorkflowActions).mockResolvedValue({ version: "current", actions: [{ id: "state:fix", kind: "state", label: "解决缺陷",
+    fields: [{ key: "reason", label: "解决说明", kind: "text", required: true }] }] });
+  const submit = vi.fn().mockResolvedValue({ outcome: "unknown", verified: false });
+  render(<SchedulePage {...props} workflow={{ ...props.workflow, submit }} />);
+  fireEvent.click(await screen.findByRole("tab", { name: "未解决缺陷 1" }));
+  fireEvent.click(screen.getByRole("button", { name: /导出漏掉筛选条件/ }));
+  const inspector = within(screen.getByLabelText("缺陷详情"));
+  fireEvent.click(inspector.getByRole("button", { name: "查看可用流程动作" }));
+  const trigger = await inspector.findByRole("button", { name: "解决缺陷" });
+  fireEvent.click(trigger);
+  const dialog = within(screen.getByRole("dialog", { name: "流程操作" }));
+  fireEvent.change(dialog.getByRole("textbox", { name: /解决说明/ }), { target: { value: "保留本机说明" } });
+  fireEvent.click(dialog.getByRole("button", { name: "关闭流程表单" }));
+  expect(screen.queryByRole("dialog", { name: "流程操作" })).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  fireEvent.click(trigger);
+  const reopened = within(screen.getByRole("dialog", { name: "流程操作" }));
+  expect(reopened.getByRole("textbox", { name: /解决说明/ })).toHaveProperty("value", "保留本机说明");
+  fireEvent.click(reopened.getByRole("button", { name: "提交" }));
+  const review = within(await reopened.findByRole("region", { name: "提交前二次确认" }));
+  expect(review.getByText("保留本机说明")).toBeTruthy();
+  expect(submit).not.toHaveBeenCalled();
+  fireEvent.click(review.getByRole("button", { name: /我已核对/ }));
+  fireEvent.click(review.getByRole("button", { name: "确认解决缺陷" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    action_id: "state:fix", fields: { reason: "保留本机说明" },
+  }), "解决缺陷"));
+  await reopened.findByText(/上次提交的结果尚待核实/);
+  expect(reopened.getByRole("textbox", { name: /解决说明/ })).toHaveProperty("value", "保留本机说明");
 });
 
 it("刷新失败保留可用缺陷和详情，成功读取后移除已解决缺陷", async () => {

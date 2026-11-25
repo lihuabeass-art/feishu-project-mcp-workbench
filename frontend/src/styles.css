@@ -621,31 +621,32 @@ input {
 .workflow-scroll > .hint {
   margin: 2px 0 0;
 }
-.workflow-active,
 .workflow-editor,
 .workflow-stage {
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
-.workflow-active {
-  max-height: calc(100dvh - 96px);
-}
-.workflow-active > h3 {
-  flex-shrink: 0;
-}
 .workflow-editor,
 .workflow-stage {
   flex: 1;
 }
+.workflow-dialog {
+  min-height: 0;
+}
+.workflow-editor {
+  overflow: hidden;
+}
+.workflow-stage {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 6px;
+}
 .workflow-scroll {
   --workflow-control-height: 34px;
   container: workflow-form / inline-size;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  flex-shrink: 0;
   padding: 4px 4px 6px;
-  scroll-padding-block: 6px;
 }
 .workflow-footer {
   flex-shrink: 0;
@@ -2630,7 +2631,6 @@ input {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface-raised);
-  overflow: hidden;
 }
 .workflow-review .workflow-scroll {
   padding: 12px 14px;

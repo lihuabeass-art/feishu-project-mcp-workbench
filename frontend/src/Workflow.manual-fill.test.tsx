@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Workflow } from "./Workflow";
@@ -331,7 +331,7 @@ it("已打开编辑器仅新增页面处理标记时提供准确说明和唯一�
   expect((restore as HTMLButtonElement).disabled).toBe(true);
   await userEvent.click(restore);
   expect(readDraft(draftKey(itemKey(item()), current.actions[0].id))?.fields.doc).toBe("云端设计稿本机修改");
-  expect(screen.queryByText(pageExplanation)).toBeNull();
+  expect(within(screen.getByRole("dialog", { name: "流程操作" })).queryByText(pageExplanation)).toBeNull();
   const links = screen.getAllByRole("link", { name: "去飞书填写" });
   expect(links).toHaveLength(1);
   expect(links[0].getAttribute("href")).toBe(url);
@@ -368,11 +368,11 @@ it("旧pending编辑器从飞书返回确实只读一次，更新云端展示且
   expect(screen.getByRole("status").textContent).toBe(draftStatus);
   expect(screen.getByText(/已阻止重复提交/)).toBeTruthy();
   expect(screen.getByText(editorExplanation)).toBeTruthy();
-  expect(screen.queryByText(pageExplanation)).toBeNull();
+  expect(within(screen.getByRole("dialog", { name: "流程操作" })).queryByText(pageExplanation)).toBeNull();
   expect(screen.getAllByRole("link", { name: "去飞书核对" })).toHaveLength(1);
   expect(screen.queryByRole("link", { name: "去飞书填写" })).toBeNull();
   expect(screen.getByText(/流程操作可直接在飞书完成/)).toBeTruthy();
-  expect(screen.queryByText(officialFailure)).toBeNull();
+  expect(within(screen.getByRole("dialog", { name: "流程操作" })).queryByText(officialFailure)).toBeNull();
   expect((screen.getByRole("button", { name: "提交" }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.focus(window);
   expect(getWorkflowActions).toHaveBeenCalledTimes(calls + 1);

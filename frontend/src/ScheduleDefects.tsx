@@ -228,7 +228,7 @@ export function ScheduleDefectInspector({ defect, connection, projectName, workf
             </button>}
           </div>
           {workflow && open && <div id={panel}>
-            <Workflow item={{ id, name: defect.title }} available busy={workflow.busy} submit={workflow.submit}
+            <Workflow item={{ id, name: defect.title }} available busy={workflow.busy} submit={workflow.submit} requireConfirmation
               onInitialReadChange={onWorkflowRead} onNavigationStateChange={onWorkflowNavigation} />
           </div>}
         </div>

@@ -120,9 +120,10 @@ it.each(["node", "state"] as const)(
     expect(screen.getByRole("link", { name: "在飞书中修改" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "去飞书填写" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "放大查看图片" }));
-    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "图片预览" })).toBeTruthy();
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "图片预览" })).toBeNull());
+    expect(screen.getByRole("dialog", { name: "流程操作" })).toBeTruthy();
     await user.clear(screen.getByRole("textbox", { name: "设计文档" }));
     await user.type(
       screen.getByRole("textbox", { name: "设计文档" }),

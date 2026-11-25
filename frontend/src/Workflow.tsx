@@ -69,6 +69,7 @@ export function Workflow({
   busy,
   submit,
   scheduleNode,
+  requireConfirmation = false,
   onEditorChange,
   onInitialReadChange,
   onNavigationStateChange,
@@ -78,6 +79,7 @@ export function Workflow({
   busy: boolean;
   submit: WorkflowSubmit;
   scheduleNode?: { id: string; name: string; triggerRef: RefObject<HTMLButtonElement | null>; draftNotice?: string; writeBlocked?: string };
+  requireConfirmation?: boolean;
   onEditorChange?: (open: boolean) => void;
   onInitialReadChange?: (loading: boolean) => void;
   onNavigationStateChange?: (state: WorkflowNavigationState | null) => void;
@@ -108,8 +110,10 @@ export function Workflow({
   const workflowRef = useRef<HTMLElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const editorHeading = useRef<HTMLHeadingElement>(null);
+  const editorTrigger = useRef<HTMLElement | null>(null);
   const editorBackdrop = useScrollIsolation();
   const nodeId = scheduleNode?.id;
+  const confirmationRequired = !!scheduleNode || requireConfirmation;
   const scheduleTrigger = scheduleNode?.triggerRef;
   const actionIds = nodeId ? nodeWorkflowActionIds(nodeId) : undefined;
   const editorOpen = !!action && !!options;
@@ -222,14 +226,15 @@ export function Workflow({
   }, [identity, nodeId]);
 
   useLayoutEffect(() => {
-    if (!nodeId || !editorOpen) return;
+    if (!editorOpen) return;
+    const trigger = scheduleTrigger?.current ?? editorTrigger.current;
     onEditorChange?.(true);
     editorHeading.current?.focus();
     return () => {
       onEditorChange?.(false);
-      if (scheduleTrigger?.current?.isConnected) scheduleTrigger.current.focus();
+      if (trigger?.isConnected) trigger.focus();
     };
-  }, [nodeId, editorOpen, onEditorChange, scheduleTrigger]);
+  }, [editorOpen, onEditorChange, scheduleTrigger]);
 
   useLayoutEffect(() => {
     if (!loading || !onInitialReadChange) return;
@@ -244,41 +249,11 @@ export function Workflow({
   useLayoutEffect(() => () => onNavigationStateChange?.(null), [onNavigationStateChange]);
 
   useLayoutEffect(() => {
-    const workflow = workflowRef.current;
-    const content = contentRef.current;
-    if (!action || !workflow || !content) return;
-
-    // Open long forms at the last field; review content starts at its heading.
-    let followEnd = !review;
-    content.scrollTop = review ? 0 : content.scrollHeight;
-    const detail = workflow.closest<HTMLElement>(".detail");
-    if (!detail) return;
-
-    const trackScroll = () => {
-      followEnd =
-        content.scrollHeight - content.clientHeight - content.scrollTop <= 1;
-    };
-    const reveal = () => {
-      if (followEnd) content.scrollTop = content.scrollHeight;
-      const viewport = detail.getBoundingClientRect();
-      const header = detail.querySelector<HTMLElement>(".detail-top");
-      const top = viewport.top + (header?.offsetHeight ?? 0) + 16;
-      const bottom = viewport.bottom - 16;
-      const bounds = workflow.getBoundingClientRect();
-      if (bounds.bottom > bottom) detail.scrollTop += bounds.bottom - bottom;
-      else if (bounds.top < top) detail.scrollTop += bounds.top - top;
-    };
-    reveal();
-    content.addEventListener("scroll", trackScroll);
-    const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reveal);
-    observer?.observe(workflow);
-    observer?.observe(content);
-    observer?.observe(detail);
-    return () => {
-      content.removeEventListener("scroll", trackScroll);
-      observer?.disconnect();
-    };
+    // 填写和核对共用一个滚动区，切换步骤从顶部开始，不牵动背景详情。
+    if (contentRef.current) {
+      contentRef.current.scrollTop = 0;
+      editorHeading.current?.focus({ preventScroll: true });
+    }
   }, [action?.id, !!review]);
 
   useEffect(() => {
@@ -488,7 +463,7 @@ export function Workflow({
     }
   }
 
-  async function selectAction(candidate: WorkflowAction) {
+  async function selectAction(candidate: WorkflowAction, trigger?: HTMLElement | null) {
     if (
       !options ||
       optionsIdentity.current !== identity ||
@@ -526,6 +501,7 @@ export function Workflow({
         setActionOpenError({ id: candidate.id, message: "云端动作已不可用，请核对最新提示。已有草稿已保留。" });
         return;
       }
+      editorTrigger.current = trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
       choose(candidate);
     } finally {
       if (selectionRead.current === read) {
@@ -696,7 +672,7 @@ export function Workflow({
       setConflicts(merged.conflicts);
       setReview(null);
       setDraftStatus("草稿已保存在本机");
-      const skipReview = !nodeId && canSkipConfirmation(action) && loadWorkflowSkipConfirmation();
+      const skipReview = !confirmationRequired && canSkipConfirmation(action) && loadWorkflowSkipConfirmation();
       const missing = action.fields.find(
         (field) => field.required && workflowValueEmpty(field, merged.fields[field.key]),
       );
@@ -1406,7 +1382,7 @@ export function Workflow({
         knownPendingActions.current.actions.set(candidate.id, candidate.label);
     }
   }
-  function closeScheduleEditor() {
+  function closeEditor() {
     if (navigationLocked) return;
     if (!blocked && !preserveEditorDraft(identity, editor.current)) return;
     reads.current += 1;
@@ -1416,13 +1392,17 @@ export function Workflow({
   }
 
   function renderEditor(form: ReactNode) {
-    if (!scheduleNode) return form;
     return createPortal(
       <div ref={editorBackdrop} className="schedule-dialog-backdrop scroll-isolation-boundary">
-        <div className="schedule-dialog schedule-review-dialog schedule-workflow-dialog" role="dialog" aria-modal="true"
+        <div className="schedule-dialog schedule-review-dialog schedule-workflow-dialog workflow-dialog" role="dialog" aria-modal="true"
           aria-labelledby={`${fieldId}-schedule-title`} onKeyDown={(event) => {
-            if (event.key === "Escape" && !event.defaultPrevented) closeScheduleEditor();
-            if (event.key !== "Tab" || event.defaultPrevented || !event.currentTarget.contains(event.target as Node)) return;
+            // 内部 Portal（下拉、图片预览）先处理自己的键盘交互。
+            if (!event.currentTarget.contains(event.target as Node)) return;
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              if (!event.defaultPrevented) { event.preventDefault(); closeEditor(); }
+            }
+            if (event.key !== "Tab" || event.defaultPrevented) return;
             const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
               'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"], [contenteditable="true"]',
             )).filter((element) => element.getClientRects().length > 0 && element.tabIndex >= 0);
@@ -1434,11 +1414,11 @@ export function Workflow({
           }}>
           <div className="schedule-review-header">
             <div>
-              <h2 id={`${fieldId}-schedule-title`} ref={editorHeading} tabIndex={-1}>{scheduleNode.name} 流程操作</h2>
+              <h2 id={`${fieldId}-schedule-title`} ref={editorHeading} tabIndex={-1}>{scheduleNode ? `${scheduleNode.name} 流程操作` : "流程操作"}</h2>
               <p>{item.name || item.id.work_item_id}</p>
             </div>
             <button type="button" className="icon-button" disabled={navigationLocked}
-              aria-label="关闭流程表单" onClick={closeScheduleEditor}><X size={16} /></button>
+              aria-label="关闭流程表单" onClick={closeEditor}><X size={16} /></button>
           </div>
           {form}
         </div>
@@ -1464,15 +1444,9 @@ export function Workflow({
               {error}
             </p>
           )}
-          {returnCheckError && (
+          {returnCheckError && !action && (
             <div className="workflow-recovery">
               <p className="workflow-error" role="alert">{returnCheckError}</p>
-              {action && (
-                <button type="button" className="text-button" disabled={locked}
-                  onClick={() => void checkRemote(true)}>
-                  重试云端检查
-                </button>
-              )}
             </div>
           )}
           {!action && knownPendingActions.current.identity === identity &&
@@ -1484,8 +1458,8 @@ export function Workflow({
                 {feishuLinkFor({ id }, "verify")}
               </div>
             ))}
-          {!loading && !action && (
-            <>
+          {!loading && (
+            <div hidden={!!action}>
               {flowActions?.length === 0 && (
                 <p className="hint">当前没有可执行的动作。</p>
               )}
@@ -1509,7 +1483,7 @@ export function Workflow({
                         }))}
                         onChange={(id) => {
                           const candidate = rollbackActions.find((entry) => entry.id === id);
-                          if (candidate) void selectAction(candidate);
+                          if (candidate) void selectAction(candidate, workflowRef.current?.querySelector(".workflow-action-select .select-trigger"));
                         }}
                       />
                       {rollbackActions.filter((candidate) => actionOpenError?.id === candidate.id).map((candidate) => (
@@ -1533,7 +1507,7 @@ export function Workflow({
                         !syncFor(a, "progress") &&
                         !syncFor(a, "schedule"))
                     }
-                    onClick={() => void selectAction(a)}
+                    onClick={(event) => void selectAction(a, event.currentTarget)}
                   >
                     {a.label}{executing.has(draftKey(identity, a.id)) ? "（正在提交…）" : ""}
                   </button>
@@ -1583,7 +1557,7 @@ export function Workflow({
               >
                 重新读取动作
               </button>
-            </>
+            </div>
           )}
           {action && options && renderEditor(
             <form
@@ -1597,8 +1571,14 @@ export function Workflow({
                 className={`workflow-stage${review ? " workflow-review" : ""}`}
                 role={review ? "region" : undefined}
                 aria-label={review ? "提交前二次确认" : undefined}
+                ref={contentRef}
               >
-                <div className="workflow-scroll" ref={contentRef}>
+                <div className="workflow-scroll">
+                  {returnCheckError && <div className="workflow-recovery">
+                    <p className="workflow-error" role="alert">{returnCheckError}</p>
+                    <button type="button" className="text-button" disabled={locked}
+                      onClick={() => void checkRemote(true)}>重试云端检查</button>
+                  </div>}
                   {!review && <strong>{action.label}</strong>}
                   {scheduleNode?.draftNotice && pairs.length > 0 && <p className="workflow-warning">{scheduleNode.draftNotice}</p>}
                   {writeBlocked && <p className="workflow-warning" role="status">{writeBlocked}</p>}
@@ -1831,7 +1811,7 @@ export function Workflow({
                       <p className="draft-status" role="status">
                         {draftStatus}
                       </p>
-                      {!nodeId && skipConfirmation && canSkipConfirmation(action) && (
+                      {!confirmationRequired && skipConfirmation && canSkipConfirmation(action) && (
                         <p className="workflow-warning">
                           已关闭流程操作二次确认，点击「{progressOnly ? "同步进度" : scheduleOnly ? "同步日期" : "提交"}」将直接执行。
                         </p>
@@ -1841,12 +1821,7 @@ export function Workflow({
                           type="button"
                           className="secondary"
                           disabled={navigationLocked}
-                          onClick={() => {
-                            if (nodeId) { closeScheduleEditor(); return; }
-                            reads.current += 1;
-                            backgroundRead.current = null;
-                            setAction(null);
-                          }}
+                          onClick={closeEditor}
                         >
                           返回，保留草稿
                         </button>
