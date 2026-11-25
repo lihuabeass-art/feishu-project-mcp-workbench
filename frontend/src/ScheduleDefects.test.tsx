@@ -18,10 +18,13 @@ const read: ScheduleRead = { sessionId: "session", connection: "connection", cur
   peopleLoaded: true, people: [{ id: "me", name: "本人" }, { id: "peer", name: "同事", project: "space" }],
   sources: [], defectProjects: ["space"], targets: [] };
 const controller: ScheduleSessionController = { read, pending: null, reload: vi.fn(), updateRead: vi.fn() };
-const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload(), preloadedSession: controller,
+const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload(), preloadedSession: controller, calendarContext: "",
   workflow: { context: "context", busy: false, submit: vi.fn() } };
+let testContext = 0;
 
 beforeEach(() => {
+  // 每例使用独立账号作用域，避免故意触发图片失败的用例污染后续头像缓存。
+  props.calendarContext = `context-${++testContext}`;
   vi.mocked(invoke).mockImplementation(async (command) => command === "load_schedule_defects"
     ? { defects: [mine, other], failed_projects: [] } : { targets: [], complete: true });
   vi.mocked(cachedItemDetail).mockResolvedValue(null);

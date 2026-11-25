@@ -145,7 +145,8 @@ export function ScheduleDefectList({ defects, currentUser, team, knownPeople, se
       const known = knownPeople.find((person) => person.id === owner.id && person.project === defect.project)
         ?? knownPeople.find((person) => person.id === owner.id && !person.project);
       const group = groups.get(key) ?? {
-        person: { ...owner, name: owner.name || known?.name || "成员", avatar: known?.avatar || owner.avatar }, defects: [],
+        person: { ...owner, connection: known?.connection || owner.connection, project: defect.project,
+          name: owner.name || known?.name || "成员", avatar: known?.avatar || owner.avatar }, defects: [],
       };
       group.defects.push(defect);
       groups.set(key, group);
