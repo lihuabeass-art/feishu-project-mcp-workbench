@@ -3517,6 +3517,7 @@ it("人员排期本周无需点击即列出负责人不明的事项，并按事�
   expect(calendar.queryByText("已完成未分配事项")).toBeNull();
 
   const pool = within(document.querySelector<HTMLElement>(".schedule-pending")!);
+  expect(pool.queryByText("节点无人负责，排期仅供查看")).toBeNull();
   fireEvent.click(pool.getByRole("button", { name: /^未分配事项乙/ }));
   expect(calendar.getByText("未分配事项乙").closest(".schedule-row")?.classList.contains("selected")).toBe(true);
   expect(calendar.getByText("未分配事项甲")).toBeTruthy();

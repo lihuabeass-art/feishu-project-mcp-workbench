@@ -2426,7 +2426,9 @@ export function SchedulePage({
                                   {isCurrentSchedulableStatus(entry.record.nodeStatus) && !entry.record.sourceAggregate && (
                                     <NodeDwellTime startedAt={entry.record.nodeStartedAtMs} />
                                   )}
-                                  {visibleReadOnlyReason(entry.readOnlyReason) && entry.readOnlyReason !== "仅可编辑明确属于自己的排期" && <small>{entry.readOnlyReason}</small>}
+                                  {visibleReadOnlyReason(entry.readOnlyReason) &&
+                                    entry.readOnlyReason !== "仅可编辑明确属于自己的排期" &&
+                                    entry.readOnlyReason !== "节点无人负责，排期仅供查看" && <small>{entry.readOnlyReason}</small>}
                                 </button>
                                 {canEdit(entry) && (
                                   <div
