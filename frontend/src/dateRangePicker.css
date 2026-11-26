@@ -86,7 +86,7 @@
 }
 .date-range-calendar {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--layer-popover);
   display: grid;
   gap: 8px;
   box-sizing: border-box;

@@ -1,7 +1,7 @@
 .image-preview-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 2000;
+  z-index: var(--layer-preview);
   color: #f4f7f5;
   background: #101714e6;
   -webkit-backdrop-filter: blur(14px);

@@ -9,6 +9,13 @@
 }
 
 :root {
+  /* body Portal 弹层共用层级：抽屉 < 操作弹窗 < 管理确认 < 下拉菜单 < 图片预览。
+     不要在组件内另设菜单数字，否则复用到流程弹窗后会被遮罩覆盖。 */
+  --layer-drawer: 120;
+  --layer-modal: 1000;
+  --layer-confirmation: 1200;
+  --layer-popover: 1500;
+  --layer-preview: 2000;
   color-scheme: light;
   --text: #283b36;
   --text-secondary: #65745f;
@@ -189,7 +196,7 @@
   border-color: var(--border-strong);
 }
 .theme-menu {
-  z-index: 1100;
+  z-index: var(--layer-popover);
   width: 232px;
   max-width: calc(100vw - 20px);
   max-height: var(--radix-dropdown-menu-content-available-height);
