@@ -789,6 +789,22 @@ fn prepare_app_update(app: tauri::AppHandle) {
 }
 
 fn main() {
+    #[cfg(debug_assertions)]
+    fstodo_backend::paths::use_development_data_directory();
+
+    let context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    let context = {
+        let mut context = context;
+        let config = context.config_mut();
+        config.identifier = "cn.fstodo.desktop.dev".into();
+        #[cfg(target_os = "macos")]
+        for window in &mut config.app.windows {
+            window.data_store_identifier = Some(*b"fstodo-debug-app");
+        }
+        context
+    };
+
     let builder = tauri::Builder::default();
     // Debug builds must never download or replace the development executable.
     #[cfg(not(debug_assertions))]
@@ -889,7 +905,7 @@ fn main() {
             close_schedule_session,
             reset_schedule_session
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("无法启动 FSTODO 桌面窗口");
 }
 

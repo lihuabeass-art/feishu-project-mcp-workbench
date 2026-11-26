@@ -27,6 +27,7 @@ pub const DEFAULT_ENDPOINT: &str = "https://project.feishu.cn/mcp_server/v1";
 
 /// 默认凭证环境变量名。
 pub const DEFAULT_TOKEN_ENV: &str = "FSTODO_MCP_TOKEN";
+pub(crate) const DEVELOPMENT_TOKEN_ENV: &str = "FSTODO_DEV_MCP_TOKEN";
 
 /// 0 表示自动翻页直到取完；正数仅供 CLI 显式限制页数。
 pub const DEFAULT_MAX_PAGES: u32 = 0;
@@ -205,15 +206,20 @@ impl Config {
             )));
         }
 
-        let token_env = non_empty(file.token_env, "token_env")?;
-        let token_file = file
-            .token_file
-            .as_ref()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from);
+        let development = paths::uses_development_data_directory();
+        let (token_env, token_file) = if development {
+            // 复制来的正式配置不能让调试桌面端复用正式环境的凭证。
+            (DEVELOPMENT_TOKEN_ENV.to_owned(), None)
+        } else {
+            let token_env = non_empty(file.token_env, "token_env")?;
+            let token_file = file.token_file.as_deref().map(str::trim)
+                .filter(|s| !s.is_empty()).map(PathBuf::from);
+            (token_env, token_file)
+        };
 
         let db_path = match db_override {
+            // 调试桌面端固定使用隔离库，复制来的旧配置不能指回正式库。
+            _ if development => paths::default_db_path()?,
             Some(p) => p.to_path_buf(),
             None => match file.db_path.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
                 Some(s) => PathBuf::from(s),

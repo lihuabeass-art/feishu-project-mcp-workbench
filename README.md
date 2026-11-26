@@ -106,6 +106,8 @@ npm ci
 npm run tauri dev
 ```
 
+桌面调试版将配置、凭证、缓存库和诊断日志保存在独立的 `FSTODO-dev` 目录。Windows 上配置位于 `%APPDATA%\FSTODO-dev`，缓存和日志位于 `%LOCALAPPDATA%\FSTODO-dev`。调试桌面端固定打开隔离缓存库，窗口设置和桌面框架数据使用 `cn.fstodo.desktop.dev`。首次启动在调试版内单独配置飞书连接，也可以通过 `FSTODO_DEV_MCP_TOKEN` 提供调试凭证。
+
 ```sh
 # 前端检查
 npm test
