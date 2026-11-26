@@ -12,6 +12,10 @@ pub(super) const SCHEMA: &str = "
         PRIMARY KEY(scope, page, id),
         FOREIGN KEY(scope, page) REFERENCES schedule_cache(scope, page) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS schedule_profiles (
+        scope TEXT NOT NULL, id TEXT NOT NULL, profile TEXT NOT NULL, saved_at INTEGER NOT NULL,
+        PRIMARY KEY(scope,id)
+    );
     CREATE TABLE IF NOT EXISTS schedule_avatar_cache (
         scope TEXT NOT NULL, image_key TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL,
         saved_at INTEGER NOT NULL, PRIMARY KEY(scope, image_key)
@@ -28,6 +32,32 @@ impl TypeScope {
 }
 
 impl Store {
+    pub(crate) fn schedule_profiles(&self, scope: &str, ids: &BTreeSet<String>, since: i64)
+        -> Result<BTreeMap<String, crate::schedule::Person>, BackendError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare("SELECT profile FROM schedule_profiles WHERE scope=?1 AND id=?2 AND saved_at>=?3")?;
+        let mut result = BTreeMap::new();
+        for id in ids {
+            let raw: Option<String> = stmt.query_row(params![scope,id,since], |row| row.get(0)).optional()?;
+            if let Some(raw) = raw { result.insert(id.clone(), serde_json::from_str(&raw)?); }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn save_schedule_profiles(&self, scope: &str, profiles: &[crate::schedule::Person], now: i64) -> Result<(), BackendError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+        for person in profiles {
+            tx.execute("INSERT INTO schedule_profiles VALUES (?1,?2,?3,?4)
+                ON CONFLICT(scope,id) DO UPDATE SET profile=excluded.profile,saved_at=excluded.saved_at
+                WHERE excluded.saved_at >= schedule_profiles.saved_at",
+                params![scope,person.id,serde_json::to_string(person)?,now])?;
+        }
+        tx.execute("DELETE FROM schedule_profiles WHERE saved_at < ?1", [now - 30 * 86_400_000])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub(crate) fn read_schedule_cache_header(
         &self,
         scope: &str,
@@ -114,13 +144,19 @@ impl Store {
         Ok(Some(result))
     }
 
-    /// 上游仅传完整结果。旧请求迟到时不覆盖更新的快照，目标表只落地实际差异。
+    #[cfg(test)]
     pub(crate) fn save_schedule_cache(
         &self,
         scope: &str,
         page: &str,
         observed_at: i64,
-        mut snapshot: Value,
+        snapshot: Value,
+    ) -> Result<(), BackendError> {
+        self.merge_schedule_cache(scope, page, observed_at, snapshot, true)
+    }
+
+    pub(crate) fn merge_schedule_cache(
+        &self, scope: &str, page: &str, observed_at: i64, mut snapshot: Value, complete: bool,
     ) -> Result<(), BackendError> {
         let Some(Value::Array(targets)) = snapshot
             .as_object_mut()
@@ -128,6 +164,21 @@ impl Store {
         else {
             return Err(BackendError::validation("本地排期缓存缺少目标列表"));
         };
+        let item_key = |value: &Value| {
+            Some((value["project"].as_str()?.to_owned(), value["type"].as_str()?.to_owned(), value["item"].as_str()?.to_owned()))
+        };
+        let mut confirmed_items = BTreeSet::new();
+        let mut keep_previous = BTreeSet::new();
+        if !complete && page == "recent" {
+            confirmed_items.extend(targets.iter().filter_map(|row| item_key(&row["identity"])));
+            let failed: BTreeSet<_> = snapshot["item_errors"].as_array().into_iter().flatten().filter_map(item_key).collect();
+            confirmed_items.retain(|item| !failed.contains(item));
+            for row in &targets {
+                if item_key(&row["identity"]).is_some_and(|item| failed.contains(&item)) {
+                    if let Some(id) = row["id"].as_str() { keep_previous.insert(id.to_owned()); }
+                }
+            }
+        }
         let targets = targets
             .into_iter()
             .map(|target| {
@@ -139,6 +190,11 @@ impl Store {
             .collect::<Result<BTreeMap<_, _>, BackendError>>()?;
         let conn = self.conn.lock().expect("store mutex poisoned");
         let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+        let previous_user: Option<String> = tx.query_row(
+            "SELECT json_extract(header,'$.current_user') FROM schedule_cache WHERE scope=?1 AND page=?2",
+            params![scope, page], |row| row.get(0),
+        ).optional()?.flatten();
+        let replace = complete || previous_user.as_deref() != snapshot["current_user"].as_str();
         let accepted = tx.execute(
             "INSERT INTO schedule_cache(scope,page,observed_at,header) VALUES(?1,?2,?3,?4)
              ON CONFLICT(scope,page) DO UPDATE SET observed_at=excluded.observed_at,header=excluded.header
@@ -148,26 +204,31 @@ impl Store {
         if accepted == 0 {
             return Ok(());
         }
-        let previous = {
-            let mut statement =
-                tx.prepare("SELECT id FROM schedule_cache_target WHERE scope=?1 AND page=?2")?;
-            let rows = statement.query_map(params![scope, page], |row| row.get::<_, String>(0))?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        for id in previous.iter().filter(|id| !targets.contains_key(*id)) {
-            tx.execute(
-                "DELETE FROM schedule_cache_target WHERE scope=?1 AND page=?2 AND id=?3",
-                params![scope, page, id],
-            )?;
+        {
+            let mut statement = tx.prepare("SELECT id, CASE WHEN ?3 THEN NULL ELSE json_extract(data,'$.identity') END
+                FROM schedule_cache_target WHERE scope=?1 AND page=?2")?;
+            let mut rows = statement.query(params![scope, page, replace])?;
+            let mut remove = Vec::new();
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                if targets.contains_key(&id) { continue; }
+                let identity: Option<String> = row.get(1)?;
+                let key = identity.and_then(|raw| serde_json::from_str(&raw).ok()).as_ref().and_then(item_key);
+                if replace || key.is_some_and(|key| confirmed_items.contains(&key)) { remove.push(id); }
+            }
+            drop(rows);
+            for id in remove {
+                tx.execute("DELETE FROM schedule_cache_target WHERE scope=?1 AND page=?2 AND id=?3", params![scope, page, id])?;
+            }
         }
         {
             let mut upsert = tx.prepare(
                 "INSERT INTO schedule_cache_target(scope,page,id,data) VALUES(?1,?2,?3,?4)
                  ON CONFLICT(scope,page,id) DO UPDATE SET data=excluded.data
-                 WHERE schedule_cache_target.data <> excluded.data",
+                 WHERE ?5 AND schedule_cache_target.data <> excluded.data",
             )?;
             for (id, data) in targets {
-                upsert.execute(params![scope, page, id, data])?;
+                upsert.execute(params![scope, page, id, data, replace || !keep_previous.contains(&id)])?;
             }
         }
         tx.execute(
@@ -186,6 +247,22 @@ impl Store {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn partial_team_cache_replaces_confirmed_items_and_preserves_unread_items_only_in_same_account() {
+        let store = Store::in_memory().unwrap();
+        let row = |item, id| json!({"id":id,"identity":{"project":"p","type":"story","item":item}});
+        let a = row("a", "old");
+        let b = row("b", "b");
+        let next = row("a", "new");
+        store.save_schedule_cache("scope", "recent", 1, json!({"current_user":"me","targets":[a,b]})).unwrap();
+        store.merge_schedule_cache("scope", "recent", 3, json!({"current_user":"me","targets":[next],
+            "item_errors":[{"project":"p","type":"story","item":"b"}]}), false).unwrap();
+        store.save_schedule_cache("scope", "recent", 2, json!({"current_user":"me","targets":[]})).unwrap();
+        assert_eq!(store.read_schedule_cache("scope", "recent").unwrap().unwrap()["targets"], json!([b,next]));
+        store.merge_schedule_cache("scope", "recent", 4, json!({"current_user":"other","targets":[a]}), false).unwrap();
+        assert_eq!(store.read_schedule_cache("scope", "recent").unwrap().unwrap()["targets"], json!([a]));
+    }
 
     #[test]
     fn only_changed_targets_are_written_and_late_reads_cannot_revert_them() {

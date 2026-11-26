@@ -42,6 +42,8 @@ import {
   type ScheduleRecord,
 } from "./scheduleApi";
 import { patchScheduleData } from "./scheduleReadPatch";
+import { useScheduleProgress, type ScheduleRequest } from "./scheduleProgress";
+import { useScheduleProfiles } from "./useScheduleProfiles";
 import { scheduleHistoryRequest, scheduleItemKey, useScheduleCalendar, useScheduleItemContexts, type ScheduleCalendarCache, type ScheduleCurrentNode } from "./scheduleHistory";
 import { HISTORICAL_SCHEDULE_INTERVAL, RECENT_SCHEDULE_INTERVAL } from "./useScheduleRevalidation";
 import {
@@ -91,6 +93,8 @@ export type ScheduleMode = "mine" | "people";
 export interface ScheduleSessionController {
   read: ScheduleRead | null;
   pending: Promise<ScheduleRead> | null;
+  progressRequest?: ScheduleRequest | null;
+  partial?: ScheduleRead;
   refreshing?: boolean;
   refreshError?: string;
   checkedAt?: number;
@@ -365,6 +369,9 @@ export function SchedulePage({
   const view = viewMode ?? localView;
   const setView = onViewModeChange ?? setLocalView;
   const [cachedPeople, setCachedPeople] = useState<{ context: string; read: ScheduleRead }>();
+  const [localProgress, setLocalProgress] = useState<{ context: string; request: ScheduleRequest }>();
+  const progress = useScheduleProgress(preloadedSession?.progressRequest ??
+    (localProgress?.context === peopleCacheContext ? localProgress.request : null));
   useEffect(() => {
     if (!peopleCacheContext) return;
     let active = true;
@@ -376,15 +383,40 @@ export function SchedulePage({
   }, [peopleCacheContext]);
   const livePeopleComplete = read && read.peopleLoaded !== false && !read.accountError &&
     (read.complete || (!read.sources.length && !read.itemErrors?.length));
-  const cachedPeopleRead = view === "people" && !livePeopleComplete && cachedPeople?.context === peopleCacheContext &&
+  const scopedPeopleCache = view === "people" && !livePeopleComplete && cachedPeople?.context === peopleCacheContext &&
       (!read?.connection || read.connection === cachedPeople.read.connection) &&
-      (!read?.currentUserId || read.currentUserId === cachedPeople.read.currentUserId) &&
-      (cachedPeople.read.targets.length > 0 || read?.peopleLoaded === false || !read?.targets.length)
+      (!read?.currentUserId || read.currentUserId === cachedPeople.read.currentUserId)
     ? cachedPeople.read : null;
-  const displayRead = cachedPeopleRead ?? read;
+  const cachedPeopleRead = scopedPeopleCache?.targets.length ? scopedPeopleCache : null;
+  const baseRead = cachedPeopleRead ?? read;
+  const calendarRead = (!read || read.peopleLoaded === false) ? scopedPeopleCache ?? read : baseRead;
+  const compatiblePreview = (part: { connection?: string; currentUserId?: string | null } | undefined) =>
+    part && !read?.accountError &&
+    (!baseRead?.connection || part.connection === baseRead.connection) &&
+    (!baseRead?.currentUserId || part.currentUserId === baseRead.currentUserId);
+  const stream = compatiblePreview(progress) ? progress : undefined;
+  const partial = view === "people" && compatiblePreview(preloadedSession?.partial) ? preloadedSession?.partial : undefined;
+  const displayRead = baseRead ?? partial ?? (stream && { ...stream, accountError: null, currentUserAvatar: null,
+    spaceNames: undefined, peopleLoaded: false, readAt: "", sessionId: "", sources: [], complete: false });
   const displayUserId = displayRead?.currentUserId;
   const cachedPeopleEntries = useMemo(() => cachedPeopleRead?.targets.map(createScheduleEntry), [cachedPeopleRead]);
-  const displayEntries = cachedPeopleEntries ?? entries;
+  const previewPeople = useMemo(() => [...partial?.people || [], ...stream?.people || []], [partial, stream]);
+  const displayEntries = useMemo(() => {
+    if (!cachedPeopleEntries && !partial && !stream) return entries;
+    const combined = new Map(cachedPeopleEntries?.map((entry) => [entry.id, entry]));
+    const liveIds = new Set(entries.map((entry) => entry.id));
+    for (const entry of entries) combined.set(entry.id, entry);
+    const start = read?.recentRange?.start ?? monday(today());
+    const end = read?.recentRange?.end ?? addDays(start, 13);
+    for (const target of [...partial?.targets || [], ...stream?.targets || []]) {
+      if (view === "mine" && (target.peopleOnly || (!target.mine && !target.sourceAggregate && !target.unknownOwner) ||
+        (validSchedule(target.dates) && (target.dates.end < start || target.dates.start > end)))) continue;
+      const existing = combined.get(target.id);
+      if (existing && liveIds.has(target.id) && (scheduleChanged(existing) || existing.result || !existing.readOnlyReason)) continue;
+      combined.set(target.id, createScheduleEntry({ ...target, readOnlyReason: target.readOnlyReason || "排期预览，仅供查看" }));
+    }
+    return [...combined.values()];
+  }, [cachedPeopleEntries, entries, partial, stream, view, read?.recentRange]);
   const viewModeRef = useRef(view);
   viewModeRef.current = view;
   const [mineWeek, setMineWeek] = useState(() => monday(today()));
@@ -433,7 +465,7 @@ export function SchedulePage({
   const viewingHistory = windowStart < thisWeek;
   const preloadsEnabled = preloadedSession?.calendarRefreshEnabled !== false;
   const [calendarKey, preloadCalendarKeys, calendarReady] = useMemo((): [string, string[], boolean] => {
-    const request = scheduleHistoryRequest(displayRead, snapshot, view, { start: windowStart, end: windowEnd });
+    const request = scheduleHistoryRequest(calendarRead, snapshot, view, { start: windowStart, end: windowEnd });
     if (!request) return ["", [], false];
     if (view === "people" && peopleCacheContext && request.connection && request.currentUser) request.cachePeople = true;
     const keyForWeek = (offset: number) => {
@@ -446,12 +478,12 @@ export function SchedulePage({
     // 个人待办没有事项时，日历接口仍可按已启用来源发现历史查询范围。
     const canDiscoverScopes = snapshot?.sources.some((source) => source.enabled && source.executable && source.kind === "personal_todo");
     const scopeReady = Boolean(request.connection && request.currentUser && (request.scopes.length || canDiscoverScopes) &&
-      !displayRead?.accountError && (view !== "people" || displayRead?.peopleLoaded !== false));
+      !calendarRead?.accountError && (view !== "people" || calendarRead?.peopleLoaded !== false));
     const neighbors = scopeReady && preloadsEnabled
       ? [-1, 1, -2, 2].map((step) => keyForWeek(step * viewDays)).filter(Boolean)
       : [];
     return [visibleKey, neighbors, scopeReady];
-  }, [displayRead, snapshot, view, calendarContext, peopleCacheContext, windowStart, windowEnd, viewDays, preloadsEnabled]);
+  }, [calendarRead, snapshot, view, calendarContext, peopleCacheContext, windowStart, windowEnd, viewDays, preloadsEnabled]);
   const defectWorkflowInteraction = Boolean(defectWorkflowLoading || defectWorkflow?.editing || defectWorkflow?.busy || defectWorkflow?.uncertain);
   const workflowInteraction = workflowEditorOpen || workflowLoading || defectWorkflowInteraction || viewSettingsOpen;
   const dirty = entries.some(scheduleChanged);
@@ -514,6 +546,7 @@ export function SchedulePage({
     setSuccessToast(null);
     setReviewOpen(false);
     setPeopleError("");
+    setLocalProgress(undefined);
     peopleLoadingRef.current = false;
     setPeopleLoading(false);
 
@@ -575,6 +608,7 @@ export function SchedulePage({
     setRead(null);
     setEntries([]);
     const request = loadScheduleSession();
+    setLocalProgress({ context: peopleCacheContext, request });
     request
       .then((result) => {
         if (!active) return;
@@ -586,7 +620,7 @@ export function SchedulePage({
         if (active) setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`);
       })
       .finally(() => {
-        if (active) { setLoading(false); setManualRefreshing(false); }
+        if (active) { setLoading(false); setManualRefreshing(false); setLocalProgress(undefined); }
       });
     return () => {
       active = false;
@@ -605,7 +639,9 @@ export function SchedulePage({
     peopleLoadingRef.current = true;
     setPeopleLoading(true);
     setPeopleError("");
-    const promise = loadSchedulePeople(targetSessionId)
+    const request = loadSchedulePeople(targetSessionId);
+    setLocalProgress({ context: peopleCacheContext, request });
+    const promise = request
       .then((nextRead) => {
         if (currentSessionIdRef.current !== targetSessionId) return;
         const latest = readRef.current ?? currentRead;
@@ -660,6 +696,7 @@ export function SchedulePage({
         if (currentSessionIdRef.current === targetSessionId) {
           peopleLoadingRef.current = false;
           setPeopleLoading(false);
+          setLocalProgress((prior) => prior?.request === request ? undefined : prior);
         }
       });
     peopleRequestRef.current = { sessionId: targetSessionId, promise };
@@ -737,16 +774,20 @@ export function SchedulePage({
     }
   }, [preloadedSession?.candidate, preloadedSession?.read, preloadedSession?.pending, dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen, workflowInteraction]);
 
-  const people = useMemo(
-    () =>
-      new Map(
-        [...currentHistory?.people || [], ...displayRead?.people || []].map((item) => [
-          JSON.stringify([item.connection || null, item.project || null, item.id]),
-          item,
-        ]),
-      ),
-    [displayRead?.people, currentHistory?.people],
-  );
+  const knownPeople = useMemo(() => [...currentHistory?.people || [], ...baseRead?.people || [], ...previewPeople],
+    [currentHistory?.people, baseRead?.people, previewPeople]);
+  const profiles = useScheduleProfiles(peopleCacheContext, displayRead?.connection, displayUserId, knownPeople);
+  const people = useMemo(() => {
+    const values = new Map<string, SchedulePerson>();
+    for (const item of knownPeople) {
+      const key = JSON.stringify([item.connection || null, item.project || null, item.id]);
+      const prior = values.get(key);
+      const profile = profiles?.get(item.id);
+      const name = [item.name, prior?.name, profile?.name].find((name) => name && !isFallbackPersonName(name, item.id));
+      values.set(key, { ...item, name: name || item.name, avatar: item.avatar || prior?.avatar || profile?.avatar });
+    }
+    return values;
+  }, [knownPeople, profiles]);
   const personFor = (entry: Entry, id: string): SchedulePerson | undefined => {
     if (!id) return undefined;
     const scoped = people.get(
@@ -784,35 +825,29 @@ export function SchedulePage({
     entry.record.ownerIds[0] ||
     (entry.record.mine ? displayUserId || "" : "") ||
     "";
+  const fallbackBySpace = useMemo(() => {
+    const groups = new Map<string, Map<string, number>>();
+    for (const entry of displayEntries) {
+      const key = JSON.stringify([entry.identity.connection, entry.identity.project]);
+      const owners = groups.get(key) || new Map<string, number>();
+      for (const id of [entry.record.ownerId, ...entry.record.ownerIds]) {
+        if (!id || id === displayUserId || owners.has(id)) continue;
+        const name = personFor(entry, id)?.name;
+        if (!name || isFallbackPersonName(name, id)) owners.set(id, owners.size + 1);
+      }
+      groups.set(key, owners);
+    }
+    return groups;
+  }, [displayEntries, displayUserId, people]);
   const displayPerson = (entry: Entry, id: string) => {
     if (!id) return "负责人不明";
     const rawName = personFor(entry, id)?.name;
     if (!rawName || isFallbackPersonName(rawName, id)) {
       if (id === displayUserId) return "当前用户";
-      const fallbackPeerIds = Array.from(
-        new Set(
-          displayEntries
-            .filter(
-              (item) =>
-                item.identity.connection === entry.identity.connection &&
-                item.identity.project === entry.identity.project,
-            )
-            .flatMap((item) => [
-              ...(item.record.ownerId ? [item.record.ownerId] : []),
-              ...item.record.ownerIds,
-            ])
-            .filter((peerId) => {
-              if (!peerId || peerId === displayUserId) return false;
-              const peerName = personFor(entry, peerId)?.name;
-              return !peerName || isFallbackPersonName(peerName, peerId);
-            }),
-        ),
-      );
-      if (fallbackPeerIds.length <= 1) return "团队成员";
-      const idx = fallbackPeerIds.indexOf(id);
-      return idx >= 0 ? `团队成员 ${idx + 1}` : "团队成员";
+      const group = fallbackBySpace.get(JSON.stringify([entry.identity.connection, entry.identity.project]));
+      return group && group.size > 1 && group.has(id) ? `团队成员 ${group.get(id)}` : "团队成员";
     }
-    const peers = (displayRead?.people || []).filter(
+    const peers = [...people.values()].filter(
       (item) =>
         item.connection === entry.identity.connection &&
         item.project === entry.identity.project &&
@@ -945,7 +980,7 @@ export function SchedulePage({
       : relatedProject === missingProject
         ? projects?.length === 0
         : projects?.some((entry) => relatedProjectKey(space, entry) === relatedProject));
-  const loadedSchedulePeople = [...displayRead?.people || [], ...currentHistory?.people || []];
+  const loadedSchedulePeople = useMemo(() => [...people.values()], [people]);
   const loadedOwnerKeys = new Set(loadedSchedulePeople
     .filter((owner) => owner.id && (!read?.connection || !owner.connection || owner.connection === read.connection))
     .map((owner) => JSON.stringify([owner.project || null, owner.id])));
@@ -1254,8 +1289,14 @@ export function SchedulePage({
     if (primaryEntry.identity.project && primaryEntry.identity.type && primaryEntry.identity.item &&
       (supplementNeedsStatus || needsNodeContext)) contextKeys.add(key);
   }
-  const contextRevision = useMemo(() => [displayRead?.targets, currentHistory?.targets, workflowRefreshRevision],
-    [displayRead?.targets, currentHistory?.targets, workflowRefreshRevision]);
+  // 新到的预览已经包含节点内容，等本轮结束再为缺少上下文的事项补查。
+  if (stream || calendarLoading) {
+    const settled = new Set((baseRead?.targets || []).map((target) => scheduleItemKey(target.identity)));
+    for (const key of contextKeys) if (!settled.has(key)) contextKeys.delete(key);
+  }
+  const settledHistory = calendarLoading ? undefined : currentHistory?.targets;
+  const contextRevision = useMemo(() => [baseRead?.targets, settledHistory, workflowRefreshRevision],
+    [baseRead?.targets, settledHistory, workflowRefreshRevision]);
   const itemContexts = useScheduleItemContexts(calendarContext, contextKeys, contextRevision);
   const rows = candidateRows.filter(({ primaryEntry, bars }) => {
     if (view !== "people" || bars.length > 0 || primaryEntry.record.itemClosed === false) return true;
@@ -1313,7 +1354,7 @@ export function SchedulePage({
     );
   };
   const selectedNodeKey = selectedEntry ? nodeKey(selectedEntry) : "";
-  const workflowKey = workflow && !cachedPeopleRead && selectedEntry && !selectedEntry.id.startsWith("history:") && selectedEntry.identity.node.trim() &&
+  const workflowKey = workflow && !cachedPeopleRead && selectedEntry && entries.some((entry) => entry.id === selectedEntry.id) && !selectedEntry.id.startsWith("history:") && selectedEntry.identity.node.trim() &&
     selectedEntry.identity.project.trim() && selectedEntry.identity.type.trim() && selectedEntry.identity.item.trim()
     ? JSON.stringify([workflow.context, selectedNodeKey]) : "";
   const workflowOpen = !!workflowKey && workflowSelection === workflowKey;
@@ -1919,12 +1960,12 @@ export function SchedulePage({
   const avatarConnection = displayRead?.connection || displayEntries[0]?.identity.connection;
   const avatarScope = !displayRead?.accountError && avatarConnection && displayRead?.currentUserId
     ? JSON.stringify([calendarContext, avatarConnection, displayRead.currentUserId]) : null;
-  const avatarPeople = useMemo(() => [...currentHistory?.people || [], ...displayRead?.people || []], [displayRead?.people, currentHistory?.people]);
+  const avatarPeople = loadedSchedulePeople;
   const notifyInteraction = (event: React.SyntheticEvent) => {
     if (event.target instanceof Element && !event.target.closest("[data-schedule-refresh]")) preloadedSession?.onInteraction?.();
   };
   const hasPeopleSnapshot = read?.peopleLoaded === true;
-  const readingPeople = view === "people" && (peopleLoading || (hasPeopleSnapshot && preloadedSession?.refreshing));
+  const readingPeople = view === "people" && (peopleLoading || preloadedSession?.refreshing);
   const displayedCheckTime = cachedPeopleRead ? cachedPeopleRead.readAtMs : lastCheckedAt;
   const checkedDate = displayedCheckTime === undefined ? undefined : new Date(displayedCheckTime);
   const checkTime = checkedDate ? (
@@ -1951,7 +1992,9 @@ export function SchedulePage({
                       <span>显示缓存{checkTime && <> · {checkTime}</>}</span>
                     </span> : checkedDate && <span>上次检查 {checkTime}</span>}
                   </div>
-                  {lastCheckFailed && <span>暂未取得最新排期{(displayRead || currentHistory) && !showingPartialPeople ? "，已保留上次内容" : ""}</span>}
+                  {lastCheckFailed && !readingPeople && <span>{partial?.itemErrors?.length
+                    ? `还有 ${partial.itemErrors.length} 项未能确认，稍后自动补查`
+                    : `暂未取得最新排期${(displayRead || currentHistory) && !showingPartialPeople ? "，已保留上次内容" : ""}`}</span>}
                 </div>}
                 <button
                   type="button"
@@ -1992,7 +2035,7 @@ export function SchedulePage({
 
             <ScheduleRefreshNotice refreshing={manualRefreshing} />
             {read && error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，可继续编辑，稍后重试。</p>}
-            {scopeSources.filter((item) => item.error).map((item) => (
+            {scopeSources.filter((item) => item.error && !readingPeople).map((item) => (
               <p key={item.id} className="banner warning">
                 {readableSourceName(item.name || item.id)}：{item.error}
               </p>
@@ -2003,7 +2046,7 @@ export function SchedulePage({
                 {read.accountError}；以下显示当前来源中可读取的安排，均为只读。
               </div>
             )}
-            {!!scopeErrors.length && (
+            {!!scopeErrors.length && !readingPeople && (
               <div className="banner warning">
                 <div>
                   <strong>部分事项读取不完整，已保留本次成功读取的内容。</strong>

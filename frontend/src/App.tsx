@@ -117,7 +117,7 @@ import {
 } from "./syncPolicy";
 
 type View = "work" | "sources" | "schedule" | "settings";
-type ScheduleCheck = { checkedAt?: number; attemptedAt?: number; error?: string };
+type ScheduleCheck = { checkedAt?: number; attemptedAt?: number; fullReadAt?: number; error?: string; partial?: ScheduleRead; fingerprint?: string };
 
 function isCompleteScheduleRead(read: ScheduleRead) {
   return !read.accountError && !read.itemErrors?.length && (read.complete || !read.sources.length);
@@ -525,17 +525,17 @@ function Workspace() {
   }, []);
   const confirmScheduleCheck = useCallback((read: ScheduleRead, includePeople: boolean) => {
     recordScheduleCheck(scheduleSessionRef.current.connectionKey, includePeople, {
-      checkedAt: read.readAtMs ?? Date.now(), error: "",
+      checkedAt: read.readAtMs ?? Date.now(), error: "", partial: undefined,
     }, includePeople);
   }, [recordScheduleCheck]);
   const openOrRecoverScheduleSession = useCallback(
-    async (
-      options: { includePeople: boolean; forceReset?: boolean },
+    (
+      options: { includePeople: boolean; forceReset?: boolean; resumePartial?: boolean },
     ): Promise<ScheduleRead> => {
       if (options.forceReset && !scheduleSessionRef.current.read) {
-        await resetScheduleSession({ force: true });
+        return loadScheduleSession({ includePeople: options.includePeople }, resetScheduleSession({ force: true }));
       }
-      return await loadScheduleSession({ includePeople: options.includePeople });
+      return loadScheduleSession({ includePeople: options.includePeople, ...(options.resumePartial ? { resumePartial: true } : {}) });
     },
     [],
   );
@@ -543,7 +543,7 @@ function Workspace() {
     (
       fingerprint: string,
       connectionKey: string,
-      options: { includePeople: boolean; forceReset?: boolean; afterWorkflow?: boolean },
+      options: { includePeople: boolean; forceReset?: boolean; afterWorkflow?: boolean; resumePartial?: boolean },
     ): Promise<ScheduleRead> => {
       // 写后刷新只复用包含本次流程成功版本的读取，写前旧请求结束后自行释放。
       const current = scheduleSessionRef.current;
@@ -590,6 +590,8 @@ function Workspace() {
           if (!complete) {
             recordScheduleCheck(scheduleSessionRef.current.connectionKey, options.includePeople, {
               attemptedAt: Date.now(),
+              ...(!options.resumePartial ? { fullReadAt: Date.now() } : {}),
+              ...(options.includePeople && !res.accountError && res.targets.length ? { partial: res, fingerprint } : {}),
               error: showPartialPeople ? "最新人员排期仅部分读取完成，已显示可确认的内容。" :
                 "最新排期仅部分读取完成，已保留上次内容，可继续编辑，稍后重试。",
             });
@@ -690,6 +692,8 @@ function Workspace() {
       (scheduleMode === "people" && scheduleSessionRef.current.read?.sessionId === schedulePeopleChecking.current)) return;
     void beginScheduleLoad(scheduleFingerprintRef.current, scheduleConnectionKeyRef.current, {
       includePeople: scheduleMode === "people",
+      resumePartial: scheduleMode === "people" && !!currentScheduleCheck?.error && !scheduleNeedsRefresh &&
+        Date.now() < (currentScheduleCheck.fullReadAt ?? 0) + RECENT_SCHEDULE_INTERVAL,
     }).catch(() => {});
   });
   useEffect(
@@ -746,6 +750,8 @@ function Workspace() {
       get pending() {
         return scheduleSessionRef.current.pending;
       },
+      progressRequest: scheduleSessionRef.current.fingerprint === scheduleFingerprintRef.current ? scheduleSessionRef.current.pending : null,
+      partial: currentScheduleCheck?.fingerprint === schedulePreloadFingerprint ? currentScheduleCheck?.partial : undefined,
       refreshing: scheduleRefreshing,
       refreshError: currentScheduleCheck?.error,
       checkedAt: currentScheduleCheck?.checkedAt,
@@ -758,7 +764,9 @@ function Workspace() {
           checkedAt: Math.min(scheduleChecks?.connectionKey === connectionKey
             ? scheduleChecks.mine.checkedAt ?? Infinity : Infinity, read.readAtMs ?? Date.now()),
           error: "",
-        } : { attemptedAt: Date.now(), error: "团队排期读取未完成，已保留上次内容，可稍后重试。" });
+          partial: undefined,
+        } : { attemptedAt: Date.now(), fullReadAt: Date.now(), error: "团队排期读取未完成，已保留上次内容，可稍后重试。",
+          ...(read?.targets.length && !read.accountError ? { partial: read, fingerprint: scheduleSessionRef.current.fingerprint } : {}) });
       },
       candidate: scheduleCandidate,
       consumeCandidate: (next, adopt) => {

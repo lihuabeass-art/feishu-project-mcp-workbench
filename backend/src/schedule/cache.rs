@@ -50,11 +50,6 @@ pub fn save_cached_people(session: &Session, scope: &str, view: &LoadResult, obs
     if !view.people_loaded
         || view.current_user.is_empty()
         || view.account_error.is_some()
-        || view.failed_items > 0
-        || !view
-            .sources
-            .iter()
-            .all(|source| source.complete && source.error.is_none())
     {
         return;
     }
@@ -63,6 +58,9 @@ pub fn save_cached_people(session: &Session, scope: &str, view: &LoadResult, obs
             return Ok(());
         }
         let mut snapshot = serde_json::to_value(view)?;
+        let complete = view.failed_items == 0 && view.item_errors.is_empty()
+            && view.sources.iter().all(|source| source.complete && source.error.is_none());
+        if !complete && view.targets.is_empty() { return Ok(()); }
         snapshot["session_id"] = json!("");
         snapshot["read_requests"] = json!(0);
         let people: BTreeMap<_, _> = view
@@ -73,7 +71,7 @@ pub fn save_cached_people(session: &Session, scope: &str, view: &LoadResult, obs
         snapshot["people"] = json!(people.values().collect::<Vec<_>>());
         session
             .store
-            .save_schedule_cache(scope, "recent", observed_at, snapshot)
+            .merge_schedule_cache(scope, "recent", observed_at, snapshot, complete)
     };
     let _ = save();
 }

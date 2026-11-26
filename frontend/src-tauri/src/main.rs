@@ -77,13 +77,16 @@ fn reset_schedule<T>(
 }
 
 #[tauri::command]
-async fn load_schedule_session(include_people: Option<bool>) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
+async fn load_schedule_session(webview: tauri::Webview, include_people: Option<bool>, resume_partial: Option<bool>, on_progress: Option<tauri::ipc::JavaScriptChannelId>) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
+    let on_progress = on_progress.map(|id| id.channel_on(webview));
     blocking(move || {
         let session = open_session()?;
         let observed_at = fstodo_backend::sync::now_ms();
         let cache_scope = (include_people == Some(true))
             .then(|| fstodo_backend::schedule::people_cache_scope(&session).ok()).flatten();
-        let schedule = fstodo_backend::schedule::ScheduleSession::load_recent(&session, include_people == Some(true))?;
+        let send = |batch| { if let Some(channel) = &on_progress { let _ = channel.send(batch); } };
+        let progress: fstodo_backend::schedule::ProgressSink = on_progress.as_ref().map(|_| &send as _);
+        let schedule = fstodo_backend::schedule::ScheduleSession::load_recent_with_progress(&session, include_people == Some(true), resume_partial == Some(true), progress)?;
         let view = schedule.view.clone();
         if let Some(scope) = cache_scope {
             fstodo_backend::schedule::save_cached_people(&session, &scope, &view, observed_at);
@@ -96,17 +99,20 @@ async fn load_schedule_session(include_people: Option<bool>) -> Result<fstodo_ba
 
 #[tauri::command]
 async fn load_schedule_calendar(
+    webview: tauri::Webview, on_progress: Option<tauri::ipc::JavaScriptChannelId>,
     connection: Option<String>,
     current_user: Option<String>,
     range: fstodo_backend::schedule::Dates,
     scopes: Vec<fstodo_backend::schedule::HistoryScope>,
     cache_people: Option<bool>,
 ) -> Result<fstodo_backend::schedule::CalendarResult, UiError> {
+    let on_progress = on_progress.map(|id| id.channel_on(webview));
     blocking(move || {
         let session = open_session()?;
-        let load = if cache_people == Some(true) { fstodo_backend::schedule::load_people_calendar }
-            else { fstodo_backend::schedule::load_calendar };
-        load(&session, connection.as_deref(), current_user.as_deref(), &range, scopes)
+        let send = |batch| { if let Some(channel) = &on_progress { let _ = channel.send(batch); } };
+        let progress: fstodo_backend::schedule::ProgressSink = on_progress.as_ref().map(|_| &send as _);
+        fstodo_backend::schedule::load_calendar_with_progress(&session, connection.as_deref(), current_user.as_deref(),
+            &range, scopes, cache_people == Some(true), progress)
     }).await
 }
 
@@ -128,6 +134,11 @@ async fn read_cached_schedule_people() -> Result<Option<serde_json::Value>, UiEr
 }
 
 #[tauri::command]
+async fn load_schedule_profiles(connection: String, current_user: String, ids: Vec<String>, cached_only: Option<bool>) -> Result<Vec<fstodo_backend::schedule::Person>, UiError> {
+    blocking(move || fstodo_backend::schedule::load_profiles(&open_session()?, &connection, &current_user, ids, cached_only == Some(true))).await
+}
+
+#[tauri::command]
 async fn load_schedule_avatar(connection: String, url: String) -> Result<Option<String>, UiError> {
     blocking(move || fstodo_backend::schedule::load_avatar(&open_session()?, &connection, &url)).await
 }
@@ -138,7 +149,8 @@ async fn load_schedule_defects(connection: String, projects: Vec<String>) -> Res
 }
 
 #[tauri::command]
-async fn load_schedule_people(session_id: String) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
+async fn load_schedule_people(webview: tauri::Webview, session_id: String, on_progress: Option<tauri::ipc::JavaScriptChannelId>) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
+    let on_progress = on_progress.map(|id| id.channel_on(webview));
     blocking(move || {
         let session = open_session()?;
         let observed_at = fstodo_backend::sync::now_ms();
@@ -148,7 +160,9 @@ async fn load_schedule_people(session_id: String) -> Result<fstodo_backend::sche
             guard.iter().find(|s| s.view.session_id == session_id).cloned()
                 .ok_or_else(|| BackendError::conflict("排期会话已结束，请重新读取"))?
         };
-        candidate.load_people(&session, &session_id)?;
+        let send = |batch| { if let Some(channel) = &on_progress { let _ = channel.send(batch); } };
+        let progress: fstodo_backend::schedule::ProgressSink = on_progress.as_ref().map(|_| &send as _);
+        candidate.load_people_with_progress(&session, &session_id, progress)?;
         let (view, cacheable) = {
             let mut guard = SCHEDULE_SESSION.lock().map_err(|_| BackendError::conflict("排期会话异常，请重新读取"))?;
             let schedule = guard.iter_mut().find(|s| s.view.session_id == session_id)
@@ -898,6 +912,7 @@ fn main() {
             load_schedule_calendar,
             read_cached_schedule_calendar,
             read_cached_schedule_people,
+            load_schedule_profiles,
             load_schedule_avatar,
             load_schedule_people,
             load_schedule_defects,

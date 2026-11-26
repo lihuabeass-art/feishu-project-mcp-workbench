@@ -481,6 +481,7 @@ fn retryable_read(tool: &str) -> bool {
     matches!(
         tool,
         "list_todo"
+            | "list_schedule"
             | "list_workitem_types"
             | "search_project_info"
             | "search_user_info"
@@ -537,6 +538,10 @@ fn throttle_value(code: i64, message: &str, data: Option<&Value>) -> Option<Opti
         );
     }
     None
+}
+
+pub(crate) fn is_read_throttle(error: &BackendError) -> bool {
+    matches!(error, BackendError::Tool { code, message, .. } if throttle_value(code.unwrap_or(0), message, None).is_some())
 }
 
 fn throttle_structured(value: &Value) -> Option<Option<Duration>> {

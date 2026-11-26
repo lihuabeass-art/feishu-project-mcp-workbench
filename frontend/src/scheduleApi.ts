@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { ScheduleProgressFeed, type ScheduleRequest } from "./scheduleProgress";
 import type { ScheduleDates, ScheduleIdentity, ScheduleResult } from "./scheduleSession";
 import type { RelatedProject } from "./types";
 
@@ -151,8 +152,8 @@ function mapHistory(result: WireHistory): ScheduleHistory {
   return { complete: result.complete, connection: result.connection, ...mapScheduleRecords({ targets: result.targets, current_user: result.current_user, current_user_name: "" }) };
 }
 
-export async function loadScheduleHistory(request: ScheduleHistoryRequest): Promise<ScheduleHistory> {
-  return mapHistory(await invoke<WireHistory>("load_schedule_calendar", { ...request }));
+export function loadScheduleHistory(request: ScheduleHistoryRequest) {
+  return streamRead("load_schedule_calendar", { ...request }, mapHistory);
 }
 
 export async function readCachedScheduleHistory({ cachePeople: _cachePeople, ...request }: ScheduleHistoryRequest): Promise<ScheduleHistory | undefined> {
@@ -165,19 +166,30 @@ export async function readCachedSchedulePeople(): Promise<ScheduleRead | null> {
   return result ? mapWireRead(result) : null;
 }
 // 候选读取不占编辑会话的串行队列；当前会话的提交无需等待后台网络读取。
-export const loadScheduleSession = async (options?: { includePeople?: boolean }): Promise<ScheduleRead> => {
-  const result =
-    options?.includePeople === undefined
-      ? await invoke<WireRead>("load_schedule_session")
-      : await invoke<WireRead>("load_schedule_session", { includePeople: options.includePeople });
-  return mapWireRead(result);
+function streamRead<Wire, T>(command: string, args: Record<string, unknown> | undefined, map: (wire: Wire) => T, ready?: Promise<void>): Promise<T> & { progress?: ScheduleProgressFeed } {
+  const progress = new ScheduleProgressFeed();
+  const run = async () => {
+    if (ready) await ready;
+    const native = (globalThis as { __TAURI_INTERNALS__?: { transformCallback?: unknown } }).__TAURI_INTERNALS__;
+    if (typeof native?.transformCallback === "function") {
+      const channel = new Channel<{ connection: string; current_user: string; targets: WireTarget[] }>();
+      channel.onmessage = (batch) => progress.append({ connection: batch.connection, currentUserId: batch.current_user,
+        ...mapScheduleRecords({ ...batch, current_user_name: "" }) });
+      args = { ...args, onProgress: channel };
+    }
+    return map(await (args ? invoke<Wire>(command, args) : invoke<Wire>(command)));
+  };
+  return Object.assign(run().finally(() => progress.finish()), { progress });
+}
+export const loadScheduleSession = (options?: { includePeople?: boolean; resumePartial?: boolean }, ready?: Promise<void>): ScheduleRequest => {
+  return streamRead("load_schedule_session", options, mapWireRead, ready);
 };
-const peopleRequests = new Map<string, Promise<ScheduleRead>>();
-export const loadSchedulePeople = (sessionId: string): Promise<ScheduleRead> => {
+const peopleRequests = new Map<string, ScheduleRequest>();
+export const loadSchedulePeople = (sessionId: string): ScheduleRequest => {
   const pending = peopleRequests.get(sessionId);
   if (pending) return pending;
-  const request = invoke<WireRead>("load_schedule_people", { sessionId }).then(mapWireRead)
-    .finally(() => peopleRequests.delete(sessionId));
+  const request = streamRead("load_schedule_people", { sessionId }, mapWireRead);
+  void request.then(() => peopleRequests.delete(sessionId), () => peopleRequests.delete(sessionId));
   peopleRequests.set(sessionId, request);
   return request;
 };

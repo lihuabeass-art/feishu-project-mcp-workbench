@@ -59,13 +59,20 @@ pub fn load_people_calendar(
     range: &Dates,
     scopes: Vec<HistoryScope>,
 ) -> Result<CalendarResult, BackendError> {
+    load_calendar_with_progress(session, connection, current_user, range, scopes, true, None)
+}
+
+pub fn load_calendar_with_progress(
+    session: &Session, connection: Option<&str>, current_user: Option<&str>, range: &Dates,
+    scopes: Vec<HistoryScope>, cache_people: bool, progress: ProgressSink,
+) -> Result<CalendarResult, BackendError> {
     let observed_at = crate::sync::now_ms();
-    let key = people_cache_key(session, connection, current_user, range, &scopes).ok().flatten();
-    let result = load_calendar(session, connection, current_user, range, scopes)?;
-    if result.complete {
+    let key = cache_people.then(|| people_cache_key(session, connection, current_user, range, &scopes).ok().flatten()).flatten();
+    let result = read_calendar(session, connection, current_user, range, scopes, progress)?;
+    if result.complete || !result.targets.is_empty() {
         if let Some((scope, page)) = key {
             if let Ok(snapshot) = serde_json::to_value(&result) {
-                let _ = session.store.save_schedule_cache(&scope, &page, observed_at, snapshot);
+                let _ = session.store.merge_schedule_cache(&scope, &page, observed_at, snapshot, result.complete);
             }
         }
     }
@@ -153,7 +160,14 @@ pub fn load_calendar(
     connection: Option<&str>,
     current_user: Option<&str>,
     range: &Dates,
-    mut scopes: Vec<HistoryScope>,
+    scopes: Vec<HistoryScope>,
+) -> Result<CalendarResult, BackendError> {
+    read_calendar(session, connection, current_user, range, scopes, None)
+}
+
+fn read_calendar(
+    session: &Session, connection: Option<&str>, current_user: Option<&str>, range: &Dates,
+    mut scopes: Vec<HistoryScope>, progress: ProgressSink,
 ) -> Result<CalendarResult, BackendError> {
     match (date_ms(&range.start), date_ms(&range.end)) {
         (Some(start), Some(end)) if (0..14 * 86_400_000).contains(&(end - start)) => {}
@@ -193,9 +207,11 @@ pub fn load_calendar(
                     scope,
                     users,
                     session.config.max_pages,
+                    &current_user,
+                    progress,
                 )
             })
-            .buffered(4);
+            .buffer_unordered(4);
         let mut result = HistoryResult {
             targets: Vec::new(),
             complete,
@@ -204,6 +220,7 @@ pub fn load_calendar(
             result.complete &= batch.complete;
             result.targets.extend(batch.targets);
         }
+        drop(pages);
         Ok::<_, BackendError>((current_user, result))
     })?;
     let mut details = HashMap::new();
@@ -295,11 +312,17 @@ mod tests {
             users: vec!["me".into()],
         };
         for fail_next in [false, true] {
+            let early = std::sync::Mutex::new(Vec::new());
+            let show = |batch: ScheduleProgress| {
+                assert_eq!(batch.current_user, "me");
+                early.lock().unwrap().extend(batch.targets.into_iter().map(|row| row.id));
+            };
             let result =
-                read_people(&Pages { fail_next }, "c", &range, &scope, &scope.users, 3).await;
+                read_people(&Pages { fail_next }, "c", &range, &scope, &scope.users, 3, "me", Some(&show)).await;
             assert_eq!(result.complete, !fail_next);
             assert_eq!(result.targets.len(), 1);
             let target = &result.targets[0];
+            assert_eq!(early.into_inner().unwrap(), [target.id.clone()]);
             assert_eq!(target.baseline.start, "2026-09-30");
             assert_eq!(target.baseline.end, "2026-10-06");
             assert_eq!(target.identity.owner.as_deref(), Some("me"));
@@ -317,6 +340,8 @@ async fn read_people(
     scope: &HistoryScope,
     users: &[String],
     max_pages: u32,
+    current_user: &str,
+    progress: ProgressSink<'_>,
 ) -> HistoryResult {
     let mut result = HistoryResult {
         targets: Vec::new(),
@@ -343,6 +368,7 @@ async fn read_people(
         let Some(people) = data["user_workload_list"].as_array() else {
             break;
         };
+        let start = result.targets.len();
         for person in people {
             let owner = txt(&person["user_info"]["userKey"]);
             if !users.contains(&owner) {
@@ -383,6 +409,9 @@ async fn read_people(
                     }
                 }
             }
+        }
+        if let Some(send) = progress.filter(|_| result.targets.len() > start) {
+            send(ScheduleProgress { connection: connection.into(), current_user: current_user.into(), targets: result.targets[start..].to_vec() });
         }
         match data["pagination"]["has_more"].as_bool() {
             Some(false) => {

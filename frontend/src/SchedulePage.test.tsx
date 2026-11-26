@@ -82,7 +82,8 @@ it("本机空的人员缓存不会盖住首次部分读取取得的关联事项"
   vi.mocked(loadSchedulePeople).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   render(<SchedulePage peopleCacheContext="connection-and-sources" onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
-  await screen.findByText(/显示缓存/);
+  await screen.findByText("正在加载人员排期");
+  expect(screen.queryByText(/显示缓存/)).toBeNull();
   await act(async () => finish({ ...initial, peopleLoaded: true, complete: false,
     targets: [{ ...data().targets[0], title: "本次查到的关联需求", nodeStatus: "doing" }] }));
   expect(screen.getAllByText("本次查到的关联需求").length).toBeGreaterThan(0);

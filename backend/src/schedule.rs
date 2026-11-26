@@ -23,8 +23,14 @@ pub use cache::{people_cache_scope, read_cached_people, save_cached_people};
 mod avatars;
 pub use avatars::load_avatar;
 mod history;
-pub use history::{load_calendar, load_people_calendar, read_cached_people_calendar, CalendarResult, HistoryScope};
+pub use history::{load_calendar, load_people_calendar, load_calendar_with_progress, read_cached_people_calendar, CalendarResult, HistoryScope};
 mod people;
+mod progress;
+mod recovery;
+use recovery::RepairRound;
+pub use progress::{ScheduleProgress, ProgressSink};
+pub use progress::load_profiles;
+use progress::{publish, read_item};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Dates {
@@ -180,6 +186,8 @@ struct LoadState {
 }
 
 type TodoItem = (WorkItemId, String, BTreeSet<String>, Vec<(String, Value)>, Option<detail::ItemDetail>);
+type TodoRead = (WorkItemId, String, BTreeSet<String>, Vec<(String, Value)>, Option<detail::ItemDetail>, Result<Vec<Value>, BackendError>);
+type ExtraRead = (WorkItemId, String, BTreeSet<String>, Option<detail::ItemDetail>, Result<Vec<Value>, BackendError>);
 type ScheduleConfigs = BTreeMap<(String, String), Result<bool, ()>>;
 
 #[derive(Clone)]
@@ -454,10 +462,14 @@ impl ScheduleSession {
     }
 
     pub fn load_recent(session: &Session, include_people: bool) -> Result<Self, BackendError> {
+        Self::load_recent_with_progress(session, include_people, false, None)
+    }
+
+    pub fn load_recent_with_progress(session: &Session, include_people: bool, resume: bool, progress: ProgressSink) -> Result<Self, BackendError> {
         let now = chrono::Utc::now().with_timezone(&FixedOffset::east_opt(8 * 3600).unwrap());
         let monday = now.date_naive().week(chrono::Weekday::Mon).first_day();
         let range = Dates { start: monday.to_string(), end: (monday + chrono::Days::new(13)).to_string() };
-        crate::diagnostics::schedule_read(|| Self::load_internal_traced(session, true, Some(range), include_people))
+        crate::diagnostics::schedule_read(|| Self::load_internal_traced(session, true, Some(range), include_people, resume, progress))
     }
 
     pub fn load_all(session: &Session) -> Result<Self, BackendError> {
@@ -481,10 +493,10 @@ impl ScheduleSession {
     }
 
     fn load_internal(session: &Session, filter_mine: bool) -> Result<Self, BackendError> {
-        crate::diagnostics::schedule_read(|| Self::load_internal_traced(session, filter_mine, None, false))
+        crate::diagnostics::schedule_read(|| Self::load_internal_traced(session, filter_mine, None, false, false, None))
     }
 
-    fn load_internal_traced(session: &Session, filter_mine: bool, recent_range: Option<Dates>, include_people: bool) -> Result<Self, BackendError> {
+    fn load_internal_traced(session: &Session, filter_mine: bool, recent_range: Option<Dates>, include_people: bool, resume: bool, progress: ProgressSink) -> Result<Self, BackendError> {
         crate::diagnostics::schedule_stage("schedule_credentials");
         let credential_started = std::time::Instant::now();
         let fingerprint = match fingerprint(session) {
@@ -524,6 +536,7 @@ impl ScheduleSession {
         };
         let mut state = LoadState::default();
         let mut deferred_targets = Vec::new();
+        let mut repair = RepairRound::default();
         let mut failed_extra_sources = BTreeMap::new();
         match session.credential() {
             Ok(credential) => {
@@ -539,12 +552,14 @@ impl ScheduleSession {
                             &mut view,
                             &mut sources,
                             &mut state,
+                            progress,
                         )
                         .await?;
                         retain_recent_targets(&mut view);
                         if filter_mine {
                             if !view.current_user.trim().is_empty() {
                                 let mut extra = Vec::new();
+                                if include_people { repair = RepairRound::start(session, &fingerprint, &view.current_user, resume); }
                                 crate::diagnostics::schedule_stage("schedule_related_items");
                                 expand_cached_non_todo_items(
                                     session,
@@ -563,6 +578,8 @@ impl ScheduleSession {
                                     &mut extra,
                                     &view.targets,
                                     include_people.then_some(view.history_scopes.as_slice()),
+                                    progress,
+                                    &mut repair,
                                 )
                                 .await;
                                 view.failed_items = view.item_errors.len();
@@ -586,6 +603,7 @@ impl ScheduleSession {
                                 &mut view,
                                 &mut state.detail_names,
                                 &mut state.detail_avatars,
+                                progress.is_some(),
                             )
                             .await;
                             if !include_people {
@@ -598,6 +616,7 @@ impl ScheduleSession {
                                 }
                             }
                             crate::diagnostics::schedule_stage("schedule_required_fields");
+                            state.transition_required.append(&mut repair.required);
                             resolve_schedule_required_remote(
                                 client.as_ref(),
                                 &mut view.targets,
@@ -652,6 +671,7 @@ impl ScheduleSession {
         }
         view.read_at_ms = crate::sync::now_ms();
         identify_targets(&mut view.targets);
+        repair.finish(&view, &state.schedule_configs, &state.transition_required);
         Ok(Self {
             view,
             fingerprint,
@@ -668,7 +688,11 @@ impl ScheduleSession {
     }
 
     pub fn load_people(&mut self, session: &Session, session_id: &str) -> Result<(), BackendError> {
-        crate::diagnostics::schedule_read(|| self.load_people_traced(session, session_id))
+        self.load_people_with_progress(session, session_id, None)
+    }
+
+    pub fn load_people_with_progress(&mut self, session: &Session, session_id: &str, progress: ProgressSink) -> Result<(), BackendError> {
+        crate::diagnostics::schedule_read(|| self.load_people_traced(session, session_id, progress))
     }
 
     /// 成员读取使用会话副本。只合并读取扩展，保留读取期间的写入基线与不确定状态。
@@ -695,7 +719,7 @@ impl ScheduleSession {
         cacheable
     }
 
-    fn load_people_traced(&mut self, session: &Session, session_id: &str) -> Result<(), BackendError> {
+    fn load_people_traced(&mut self, session: &Session, session_id: &str, progress: ProgressSink) -> Result<(), BackendError> {
         crate::diagnostics::schedule_stage("schedule_credentials");
         if self.view.session_id != session_id || fingerprint(session)? != self.fingerprint {
             return Err(BackendError::conflict("排期会话或连接已变化，请重新读取"));
@@ -709,9 +733,11 @@ impl ScheduleSession {
         let credential = session.credential()?;
         let client = crate::remote::shared(&session.config, &credential);
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut repair = RepairRound::start(session, &self.fingerprint, &self.view.current_user, false);
         crate::remote::runtime()?.block_on(crate::mcp::count_schedule_rpcs(count.clone(), async {
             crate::diagnostics::schedule_stage("schedule_team_items");
             self.view.targets.append(&mut self.deferred_targets);
+            publish(progress, &self.fingerprint, &self.view.current_user, &self.view.targets);
             let mut extra_targets = Vec::new();
             let mut failed_extra_sources = BTreeMap::new();
             expand_cached_non_todo_items(
@@ -731,6 +757,8 @@ impl ScheduleSession {
                 &mut extra_targets,
                 &self.view.targets,
                 Some(&self.view.history_scopes),
+                progress,
+                &mut repair,
             )
             .await;
             self.view.failed_items = self.view.item_errors.len();
@@ -766,6 +794,7 @@ impl ScheduleSession {
                 &mut self.view,
                 &mut self.detail_names,
                 &mut self.detail_avatars,
+                progress.is_some(),
             )
             .await;
             crate::diagnostics::schedule_result(self.view.targets.len(), self.view.item_errors.len(),
@@ -775,6 +804,7 @@ impl ScheduleSession {
         }))?;
         self.view.people_loaded = true;
         identify_targets(&mut self.view.targets);
+        repair.finish(&self.view, &self.schedule_configs, &self.transition_required);
         self.view.read_requests += count.load(Ordering::Relaxed);
         self.view.read_at_ms = crate::sync::now_ms();
         Ok(())
@@ -1103,6 +1133,7 @@ async fn load_remote(
     view: &mut LoadResult,
     statuses: &mut [SourceStatus],
     state: &mut LoadState,
+    progress: ProgressSink<'_>,
 ) -> Result<(), BackendError> {
     let account = async {
         crate::diagnostics::schedule_stage("schedule_account");
@@ -1160,7 +1191,7 @@ async fn load_remote(
             add_history_scope(&mut view.history_scopes, &project, &kind, owners.into_iter());
         }
     }
-    read_todo_nodes(session, client, fingerprint, view, statuses, state, todo_items).await;
+    read_todo_nodes(session, client, fingerprint, view, statuses, state, todo_items, progress).await;
     Ok(())
 }
 
@@ -1172,20 +1203,37 @@ async fn read_todo_nodes(
     statuses: &mut [SourceStatus],
     state: &mut LoadState,
     todo_items: Vec<TodoItem>,
+    progress: ProgressSink<'_>,
 ) {
     crate::diagnostics::schedule_stage("schedule_nodes");
-    let mut fetched = stream::iter(todo_items.into_iter().enumerate())
-        .map(|(index, (id, title, sources, rows, cached_detail))| async move {
-            let (nodes, item_detail) = read_nodes_and_detail(client, &id, cached_detail, session.config.max_pages).await;
-            (index, (id, title, sources, rows, item_detail, nodes))
+    let mut types = BTreeSet::new();
+    let first = view.targets.len();
+    let mut reads = stream::iter(todo_items)
+        .map(|(id, title, sources, rows, cached_detail)| async move {
+            let (nodes, item_detail) = read_item(client, fingerprint, &id, cached_detail, None, false, session.config.max_pages).await;
+            (id, title, sources, rows, item_detail, nodes)
         })
         .buffer_unordered(4)
-        .collect::<Vec<_>>()
-        .await;
-    fetched.sort_by_key(|(index, _)| *index);
-    read_schedule_configs(client, session.config.max_pages, &mut state.schedule_configs,
-        fetched.iter().map(|(_, (id, _, _, _, detail, nodes))| (id, detail.as_ref(), nodes))).await;
-    for (_, (id, mut title, sources, rows, cached_detail, nodes_result)) in fetched {
+        .ready_chunks(4);
+    while let Some(fetched) = reads.next().await {
+        types.extend(schedule_config_keys(fetched.iter().map(|(id, _, _, _, detail, nodes)| (id, detail.as_ref(), nodes))));
+        let start = view.targets.len();
+        append_todo_targets(session, fingerprint, view, statuses, state, fetched);
+        publish(progress, fingerprint, &view.current_user, &view.targets[start..]);
+    }
+    read_schedule_configs(client, session.config.max_pages, &mut state.schedule_configs, types).await;
+    apply_schedule_configs(&mut view.targets[first..], &state.schedule_configs, |id| {
+        if let Some(status) = statuses.iter_mut().find(|s| s.id == id) {
+            status.complete = false;
+            status.error = Some("节点排期字段配置读取未完成，请重试".into());
+        }
+    });
+    view.failed_items = view.item_errors.len();
+}
+
+fn append_todo_targets(session: &Session, fingerprint: &str, view: &mut LoadResult,
+    statuses: &mut [SourceStatus], state: &mut LoadState, fetched: Vec<TodoRead>) {
+    for (id, mut title, sources, rows, cached_detail, nodes_result) in fetched {
         let first = view.targets.len();
         let related_projects = cached_detail.as_ref().map(|detail| crate::catalog::related_projects(&detail.data));
         if let Some(detail) = cached_detail.as_ref() {
@@ -1232,15 +1280,6 @@ async fn read_todo_nodes(
                     continue;
                 }
                 let project = id.project_key.as_deref().unwrap_or_default();
-                let kind = id.work_item_type_key.as_deref().unwrap_or_default();
-                let config_key = (project.to_owned(), kind.to_owned());
-                let config = *state.schedule_configs.get(&config_key).unwrap();
-                if config.is_err() {
-                    for status in statuses.iter_mut().filter(|status| sources.contains(&status.id)) {
-                        status.complete = false;
-                        status.error = Some("节点排期字段配置读取未完成，请重试".into());
-                    }
-                }
                 if let Some(detail) = &detail {
                     if title.trim().is_empty() {
                         title = txt(&detail.data["work_item_attribute"]["work_item_name"]);
@@ -1265,9 +1304,6 @@ async fn read_todo_nodes(
                     target.item_closed = detail.as_ref().map(|_| false);
                     target.related_projects.clone_from(&related_projects);
                     target.node_started_at_ms = detail.as_ref().and_then(|d| current_node_started_at(&d.data, &target.identity.node));
-                    if target.read_only_reason.is_none() && !matches!(config, Ok(true)) {
-                        target.read_only_reason = Some(if config.is_err() { "节点排期配置读取失败，仅供查看" } else { "未找到节点排期字段配置，仅供查看" }.into());
-                    }
                 }
                 if nodes_incomplete || view.targets[first..].iter().any(incomplete_target) {
                     for status in statuses.iter_mut().filter(|status| sources.contains(&status.id)) {
@@ -1326,7 +1362,6 @@ async fn read_todo_nodes(
             }
         }
     }
-    view.failed_items = view.item_errors.len();
 }
 
 async fn read_nodes_and_detail(
@@ -1342,19 +1377,33 @@ async fn read_nodes_and_detail(
     (nodes, item_detail)
 }
 
-async fn read_schedule_configs<'a>(
-    client: &dyn TodoSource,
-    max_pages: u32,
-    configs: &mut ScheduleConfigs,
+fn schedule_config_keys<'a>(
     items: impl Iterator<Item = (&'a WorkItemId, Option<&'a detail::ItemDetail>, &'a Result<Vec<Value>, BackendError>)>,
-) {
-    let missing: BTreeSet<_> = items.filter(|(_, detail, nodes)| {
+) -> BTreeSet<(String, String)> {
+    items.filter(|(_, detail, nodes)| {
         nodes.as_ref().is_ok_and(|nodes| !nodes.is_empty()) &&
             !detail.is_some_and(|detail| is_state_flow_detail(&detail.data) || is_completed_or_aborted_detail(&detail.data))
     }).map(|(id, _, _)| (
         id.project_key.clone().unwrap_or_default(),
         id.work_item_type_key.clone().unwrap_or_default(),
-    )).filter(|key| !configs.contains_key(key)).collect();
+    )).collect()
+}
+
+fn apply_schedule_configs(targets: &mut [Target], configs: &ScheduleConfigs, mut failed: impl FnMut(&str)) {
+    for row in targets.iter_mut().filter(|r| !r.source_aggregate && r.item_closed != Some(true)) {
+        let config = configs.get(&(row.identity.project.clone(), row.identity.r#type.clone()));
+        if config == Some(&Ok(true)) { continue; }
+        let reason = if config == Some(&Err(())) {
+            for id in &row.sources { failed(id); }
+            "节点排期配置读取失败，仅供查看"
+        } else { "未找到节点排期字段配置，仅供查看" };
+        row.read_only_reason.get_or_insert_with(|| reason.into());
+    }
+}
+
+async fn read_schedule_configs(client: &dyn TodoSource, max_pages: u32, configs: &mut ScheduleConfigs,
+    types: BTreeSet<(String, String)>) {
+    let missing: Vec<_> = types.into_iter().filter(|key| !configs.contains_key(key)).collect();
     let mut reads = stream::iter(missing).map(|(project, kind)| async move {
         let result = fetch_node_schedule_config(client, &project, &kind, max_pages).await;
         ((project, kind), result.map_err(|_| ()))
@@ -1381,6 +1430,8 @@ async fn expand_cached_non_todo_items(
     out_targets: &mut Vec<Target>,
     live_targets: &[Target],
     history_scopes: Option<&[HistoryScope]>,
+    progress: ProgressSink<'_>,
+    repair: &mut RepairRound,
 ) {
     let mut allowed_sources: BTreeMap<String, Option<crate::store::TypeScope>> = BTreeMap::new();
     for source in &session.config.sources {
@@ -1456,7 +1507,7 @@ async fn expand_cached_non_todo_items(
     let max_pages = session.config.max_pages;
     read_extra_items(
         session, client.as_ref(), fingerprint, session_id, current_user, extra_items, None,
-        schedule_configs, detail_names, detail_avatars, item_errors, failed_sources, out_targets,
+        schedule_configs, detail_names, detail_avatars, item_errors, failed_sources, out_targets, progress, repair,
     ).await;
 
     let mut team_members = BTreeMap::<String, BTreeSet<String>>::new();
@@ -1488,7 +1539,7 @@ async fn expand_cached_non_todo_items(
         }).collect();
         read_extra_items(
             session, client.as_ref(), fingerprint, session_id, current_user, associated_items, None,
-            schedule_configs, detail_names, detail_avatars, item_errors, failed_sources, out_targets,
+            schedule_configs, detail_names, detail_avatars, item_errors, failed_sources, out_targets, progress, repair,
         ).await;
 
         for scope in history_scopes.iter().filter(|scope| scope.work_item_type == "story") {
@@ -1526,7 +1577,7 @@ async fn expand_cached_non_todo_items(
         }
         read_extra_items(
             session, client.as_ref(), fingerprint, session_id, current_user, team_items, Some(&team_members),
-            schedule_configs, detail_names, detail_avatars, item_errors, failed_sources, out_targets,
+            schedule_configs, detail_names, detail_avatars, item_errors, failed_sources, out_targets, progress, repair,
         ).await;
     }
 }
@@ -1588,24 +1639,42 @@ async fn read_extra_items(
     item_errors: &mut Vec<FailedItem>,
     failed_sources: &mut BTreeMap<String, String>,
     out_targets: &mut Vec<Target>,
+    progress: ProgressSink<'_>,
+    repair: &mut RepairRound,
 ) {
     let max_pages = session.config.max_pages;
-    let mut fetched_extra = stream::iter(items.into_iter().enumerate())
-        .map(|(index, ExtraItem { id, title, sources, cached_detail, finished })| async move {
-            let (nodes, item_detail) = if sources.contains(people::ASSOCIATED_SOURCE_ID) {
-                people::read_associated_nodes(client, fingerprint, &id, finished, max_pages).await
-            } else {
-                read_nodes_and_detail(client, &id, cached_detail, max_pages).await
-            };
-            (index, (id, title, sources, item_detail, nodes))
+    let first = out_targets.len();
+    let items: Vec<_> = items.into_iter().filter(|item| !repair.restore(item, current_user, team_members, schedule_configs, out_targets)).collect();
+    publish(progress, fingerprint, current_user, &out_targets[first..]);
+    let mut types = BTreeSet::new();
+    let mut reads = stream::iter(items)
+        .map(|ExtraItem { id, title, sources, cached_detail, finished }| async move {
+            let associated = sources.contains(people::ASSOCIATED_SOURCE_ID).then_some(finished);
+            let (nodes, item_detail) = read_item(client, fingerprint, &id, cached_detail,
+                associated, team_members.is_some(), max_pages).await;
+            (id, title, sources, item_detail, nodes)
         })
         .buffer_unordered(4)
-        .collect::<Vec<_>>()
-        .await;
-    fetched_extra.sort_by_key(|(index, _)| *index);
-    read_schedule_configs(client, max_pages, schedule_configs,
-        fetched_extra.iter().map(|(_, (id, _, _, detail, nodes))| (id, detail.as_ref(), nodes))).await;
-    for (_, (id, mut title, sources, cached_detail, nodes_result)) in fetched_extra {
+        .ready_chunks(4);
+    while let Some(fetched_extra) = reads.next().await {
+        types.extend(schedule_config_keys(fetched_extra.iter().map(|(id, _, _, detail, nodes)| (id, detail.as_ref(), nodes))));
+        let start = out_targets.len();
+        append_extra_targets(session, fingerprint, session_id, current_user, team_members,
+            detail_names, detail_avatars, item_errors, failed_sources, out_targets, fetched_extra);
+        publish(progress, fingerprint, current_user, &out_targets[start..]);
+    }
+    read_schedule_configs(client, max_pages, schedule_configs, types).await;
+    apply_schedule_configs(&mut out_targets[first..], schedule_configs, |id| {
+        failed_sources.insert(id.into(), "节点排期字段配置读取未完成，请重试".into());
+    });
+}
+
+fn append_extra_targets(session: &Session, fingerprint: &str, session_id: &str, current_user: &str,
+    team_members: Option<&BTreeMap<String, BTreeSet<String>>>,
+    detail_names: &mut BTreeMap<(String, String), String>, detail_avatars: &mut BTreeMap<(String, String), String>,
+    item_errors: &mut Vec<FailedItem>, failed_sources: &mut BTreeMap<String, String>,
+    out_targets: &mut Vec<Target>, fetched_extra: Vec<ExtraRead>) {
+    for (id, mut title, sources, cached_detail, nodes_result) in fetched_extra {
         let associated = sources.contains(people::ASSOCIATED_SOURCE_ID);
         let completed = cached_detail.as_ref().is_some_and(|d| is_completed_or_aborted_detail(&d.data));
         let state_flow = cached_detail.as_ref().is_some_and(|d| is_state_flow_detail(&d.data));
@@ -1657,18 +1726,12 @@ async fn read_extra_items(
         let kind = id.work_item_type_key.as_deref().unwrap_or_default();
         let team_only = team_members.is_some();
         if (team_only || associated) && detail.is_none() {
+            item_errors.push(FailedItem { project: project.into(), r#type: kind.into(), item: id.work_item_id.clone(),
+                title: title.clone(), sources: sources.iter().cloned().collect(), message: "事项详情尚未取得".into() });
             for source in &sources {
                 failed_sources.insert(source.clone(), "部分事项详情读取未完成，请重试".into());
             }
             continue;
-        }
-        let config_key = (project.to_owned(), kind.to_owned());
-        let config = schedule_configs.get(&config_key).copied().unwrap_or(Ok(false));
-        if !completed && config.is_err() {
-            for sid in &sources {
-                failed_sources
-                    .insert(sid.clone(), "节点排期字段配置读取未完成，请重试".into());
-            }
         }
         if let Some(detail) = &detail {
             if title.trim().is_empty() {
@@ -1732,16 +1795,6 @@ async fn read_extra_items(
                 } else {
                     "人员排期补充事项，仅供查看".into()
                 });
-            }
-            if target.read_only_reason.is_none() && !matches!(config, Ok(true)) {
-                target.read_only_reason = Some(
-                    if config.is_err() {
-                        "节点排期配置读取失败，仅供查看"
-                    } else {
-                        "未找到节点排期字段配置，仅供查看"
-                    }
-                    .into(),
-                );
             }
             out_targets.push(target);
         }
@@ -1808,7 +1861,12 @@ async fn backfill_missing_people_remote(
     view: &mut LoadResult,
     detail_names: &mut BTreeMap<(String, String), String>,
     detail_avatars: &mut BTreeMap<(String, String), String>,
+    independent: bool,
 ) {
+    if independent {
+        view.people = schedule_people(&view.targets);
+        return;
+    }
     let current_known = !view.current_user.trim().is_empty()
         && !needs_real_name(&view.current_user, &view.current_user_name);
     let mut missing_keys = BTreeSet::new();
@@ -3154,7 +3212,7 @@ mod tests {
         assert_eq!(calls[3].1["start_time"], range.start);
         assert_eq!(calls[3].1["end_time"], range.end);
 
-        let plan = ScheduleSession::load_internal_traced(&session, true, Some(range), false).unwrap();
+        let plan = ScheduleSession::load_internal_traced(&session, true, Some(range), false, false, None).unwrap();
         assert!(plan.view.targets.iter().any(|target| target.identity.node == "n1" && target.baseline.start.is_empty() && target.baseline.end.is_empty()));
         let calls = fake.calls.lock().unwrap();
         assert!(calls.iter().any(|(tool, _)| tool == "get_node_detail"));
@@ -4642,6 +4700,7 @@ mod tests {
     struct AssociatedStoriesScenario {
         calls: Mutex<Vec<(String, Value)>>,
         fail_secondary_space: bool,
+        fail_first_nodes: std::sync::atomic::AtomicUsize,
     }
 
     #[async_trait]
@@ -4701,6 +4760,10 @@ mod tests {
                 }),
                 "get_node_detail" => {
                     assert!(!state_flow);
+                    if project == "first" && self.fail_first_nodes.fetch_update(Ordering::SeqCst, Ordering::SeqCst,
+                        |n| n.checked_sub(1)).is_ok() {
+                        return Err(BackendError::Tool { tool: tool.into(), code: Some(429), message: "限流".into() });
+                    }
                     json!({"list":[{
                         "basic":{"node_key":"n","name":"设计","status":if done {"finished"} else {"doing"}},
                         "assignees":{"owners":[{"user_key":"peer","name":"测试同事"}]},
@@ -4720,7 +4783,7 @@ mod tests {
     fn people_schedule_loads_account_associations_without_todos_or_source_cache() {
         for fail_secondary_space in [false, true] {
             let (session, dir) = fixture();
-            let fake = Arc::new(AssociatedStoriesScenario { calls: Mutex::new(Vec::new()), fail_secondary_space });
+            let fake = Arc::new(AssociatedStoriesScenario { calls: Mutex::new(Vec::new()), fail_secondary_space, fail_first_nodes: 0.into() });
             let installed = crate::remote::install_test_client(&session.config, &session.credential().unwrap(), Box::new(fake.clone()));
             let mut lazy = ScheduleSession::load_recent(&session, false).unwrap();
             assert!(lazy.view.targets.is_empty());
@@ -4767,6 +4830,39 @@ mod tests {
             drop(session);
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn streamed_team_repair_keeps_successes_and_only_reopens_missing_item_details() {
+        let (session, dir) = fixture();
+        let fake = Arc::new(AssociatedStoriesScenario {
+            calls: Mutex::default(), fail_secondary_space: false, fail_first_nodes: 3.into(),
+        });
+        let installed = crate::remote::install_test_client(&session.config, &session.credential().unwrap(), Box::new(fake.clone()));
+        let early = std::sync::atomic::AtomicBool::new(false);
+        let show = |batch: ScheduleProgress| {
+            if fake.fail_first_nodes.load(Ordering::SeqCst) > 0 && batch.targets.iter().any(|r| r.identity.project == "state") {
+                early.store(true, Ordering::SeqCst);
+            }
+        };
+        let partial = ScheduleSession::load_recent_with_progress(&session, true, false, Some(&show)).unwrap();
+        assert!(early.load(Ordering::SeqCst));
+        assert_eq!(partial.view.item_errors.len(), 1);
+        let scope = people_cache_scope(&session).unwrap();
+        save_cached_people(&session, &scope, &partial.view, 1);
+        assert!(!read_cached_people(&session).unwrap().unwrap()["targets"].as_array().unwrap().is_empty());
+        fake.calls.lock().unwrap().clear();
+        let recovered = ScheduleSession::load_recent_with_progress(&session, true, true, Some(&show)).unwrap();
+        assert!(recovered.view.item_errors.is_empty());
+        assert!(recovered.view.sources.iter().all(|s| s.complete));
+        let requests = fake.calls.lock().unwrap();
+        let brief: Vec<_> = requests.iter().filter(|(tool, _)| tool == "get_workitem_brief").map(|(_, a)| a["project_key"].as_str()).collect();
+        assert_eq!(brief, [Some("first")]);
+        assert_eq!(requests.iter().filter(|(tool, _)| tool == "get_node_detail").count(), 1);
+        drop(requests);
+        drop(installed);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

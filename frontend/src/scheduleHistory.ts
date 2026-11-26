@@ -238,7 +238,7 @@ export function useScheduleCalendar(visibleKey: string, preloadKeys: string[], i
         if (protectedView) return { ...prior, loading: false, preloaded, attemptedAt: undefined };
         return {
           ...prior,
-          data: !data?.complete && prior?.data?.complete ? prior.data : preserveHistory(prior?.data, data),
+          data: !data?.complete && !data?.targets.length && prior?.data?.complete ? prior.data : preserveHistory(prior?.data, data),
           loading: false,
           preloaded,
           ...(data?.complete ? { checkedAt, failed: false } : { attemptedAt: checkedAt, failed: true }),
@@ -250,11 +250,24 @@ export function useScheduleCalendar(visibleKey: string, preloadKeys: string[], i
     if (request.cachePeople && !cache.getPages().get(key)?.data) {
       cached = readCachedScheduleHistory(request).then((data) => {
         if (data && !finished && !(cache.paused && cache.visibleKey === key)) {
-          cache.updatePage(key, (prior) => ({ ...prior, data: prior?.data ?? data, loading: true, preloaded }));
+          cache.updatePage(key, (prior) => ({ ...prior, data: prior?.data ? preserveHistory(data, prior.data) : data, loading: true, preloaded }));
         }
       }, () => {});
     }
-    const result = Promise.resolve().then(() => loadScheduleHistory(request)).then(
+    const result = Promise.resolve().then(() => {
+      const remote = loadScheduleHistory(request);
+      const feed = remote.progress;
+      if (!feed) return remote;
+      const publish = () => {
+        const batch = feed.getSnapshot();
+        if (!batch || (cache.paused && cache.visibleKey === key)) return;
+        cache.updatePage(key, (prior) => ({ ...prior, loading: true, preloaded,
+          data: preserveHistory(prior?.data, { ...batch, complete: false }) }));
+      };
+      const unsubscribe = feed.subscribe(publish);
+      publish();
+      return remote.finally(unsubscribe);
+    }).then(
       async (data) => { if (!data?.complete) await cached; finish(data); },
       async () => { await cached; finish(); },
     );
@@ -284,21 +297,28 @@ export function useScheduleCalendar(visibleKey: string, preloadKeys: string[], i
   useScheduleRevalidation(navigationSettled ? visibleKey : "", dueAt, freshUntil, () => { void load(visibleKey); });
   useEffect(() => {
     if (!navigationSettled || !preloadKeys.length) return;
+    let timer: number | undefined;
     const preloadNeighbors = () => {
+      window.clearTimeout(timer);
       if (!scheduleReadAvailable()) return;
       const now = Date.now();
+      let nextRetry = Infinity;
       for (const key of preloadKeys) {
         if (cache.preloading.size >= MAX_PRELOADS) break;
         const page = cache.getPages().get(key);
         if (!page || (page.failed && !page.loading && now - (page.attemptedAt ?? now) >= SCHEDULE_RETRY_DELAY)) {
           void load(key, true);
+        } else if (page.failed && !page.loading && page.attemptedAt !== undefined) {
+          nextRetry = Math.min(nextRetry, page.attemptedAt + SCHEDULE_RETRY_DELAY);
         }
       }
+      if (Number.isFinite(nextRetry)) timer = window.setTimeout(preloadNeighbors, Math.max(1, nextRetry - now));
     };
     preloadNeighbors();
     window.addEventListener("online", preloadNeighbors);
     document.addEventListener("visibilitychange", preloadNeighbors);
     return () => {
+      window.clearTimeout(timer);
       window.removeEventListener("online", preloadNeighbors);
       document.removeEventListener("visibilitychange", preloadNeighbors);
     };
