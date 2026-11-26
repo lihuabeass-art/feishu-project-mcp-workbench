@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
-import { loadScheduleHistory, type ScheduleHistory, type ScheduleHistoryRequest, type SchedulePerson, type ScheduleRead } from "./scheduleApi";
+import { loadScheduleHistory, readCachedScheduleHistory, type ScheduleHistory, type ScheduleHistoryRequest, type SchedulePerson, type ScheduleRead } from "./scheduleApi";
+import { patchScheduleData } from "./scheduleReadPatch";
 import type { ScheduleDates, ScheduleIdentity } from "./scheduleSession";
 import type { ItemDetail, Snapshot } from "./types";
 
@@ -59,12 +60,8 @@ export function scheduleHistoryRequest(
 type HistoryPage = { data?: ScheduleHistory; loading: boolean; preloaded: boolean };
 
 function preserveHistory(previous?: ScheduleHistory, incoming?: ScheduleHistory): ScheduleHistory | undefined {
-  if (!previous || incoming?.complete) return incoming;
-  const targets = new Map([...previous.targets, ...incoming?.targets || []].map((target) => [target.id, target]));
-  const people = new Map([...previous.people, ...incoming?.people || []].map((person) => [
-    JSON.stringify([person.connection, person.project, person.id]), person,
-  ]));
-  return { complete: false, connection: incoming?.connection ?? previous.connection, targets: [...targets.values()], people: [...people.values()] };
+  if (incoming) return patchScheduleData(previous, incoming, !incoming.complete);
+  return previous ? { ...previous, complete: false } : undefined;
 }
 
 const MAX_CACHED_PAGES = 12;
@@ -195,12 +192,24 @@ export function useScheduleCalendar(visibleKey: string, preloadKeys: string[]) {
     pending.current.add(key);
     if (preloaded) preloading.current.add(key);
     updatePage(key, (prior) => ({ data: prior?.data, loading: true, preloaded }));
+    let finished = false;
     const finish = (data?: ScheduleHistory) => {
+      finished = true;
       pending.current.delete(key);
       preloading.current.delete(key);
       updatePage(key, (prior) => ({ data: preserveHistory(prior?.data, data), loading: false, preloaded }));
     };
-    Promise.resolve().then(() => loadScheduleHistory(JSON.parse(key)[1])).then(finish, () => finish());
+    const request: ScheduleHistoryRequest = JSON.parse(key)[1];
+    let cached: Promise<void> | undefined;
+    if (request.cachePeople) {
+      cached = readCachedScheduleHistory(request).then((data) => {
+        if (data && !finished) updatePage(key, (prior) => ({ data: prior?.data ?? data, loading: true, preloaded }));
+      }, () => {});
+    }
+    Promise.resolve().then(() => loadScheduleHistory(request)).then(
+      async (data) => { if (!data?.complete) await cached; finish(data); },
+      async () => { await cached; finish(); },
+    );
   }, [updatePage]);
 
   const [context, request]: [string?, ScheduleHistoryRequest?] = visibleKey ? JSON.parse(visibleKey) : [];

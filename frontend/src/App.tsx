@@ -5,6 +5,7 @@ import { AppUpdateDialog, AppUpdateSettings } from "./AppUpdater";
 import { useAppUpdater } from "./useAppUpdater";
 import { SchedulePage, type ScheduleGuard, type ScheduleSessionController } from "./SchedulePage";
 import { closeScheduleSession, loadScheduleSession, resetScheduleSession, type ScheduleRead } from "./scheduleApi";
+import { patchScheduleData } from "./scheduleReadPatch";
 import { useScrollIsolation } from "./useScrollIsolation";
 import { prepareUpdateInstallation } from "./appUpdateSafety";
 import { workspaceActionBlocked, type WorkspaceActivity } from "./operationPolicy";
@@ -565,20 +566,21 @@ function Workspace() {
             void closeScheduleSession(Promise.resolve(res)).catch(() => {});
             return scheduleSessionRef.current.read ?? previousRead;
           }
+          const next = patchScheduleData(previousRead, res);
           if (previousRead && viewRef.current === "schedule") {
-            scheduleCandidateRef.current = { read: res, revision: interactionRevision };
-            setScheduleCandidate(res);
+            scheduleCandidateRef.current = { read: next, revision: interactionRevision };
+            setScheduleCandidate(next);
             return previousRead;
           }
-          scheduleSessionRef.current.read = res;
+          scheduleSessionRef.current.read = next;
           if (previousSession && previousSession.sessionId !== res.sessionId) {
             void closeScheduleSession(Promise.resolve(previousSession)).catch(() => {});
           }
           if (!res.accountError && (res.complete || (res.sources.length === 0 && !res.itemErrors?.length))) {
             scheduleLastSuccessRef.current = Date.now();
           }
-          setPreloadedSchedule(res);
-          return res;
+          setPreloadedSchedule(next);
+          return next;
         },
         (err) => {
           if (scheduleSessionRef.current.pending === req) {
@@ -2030,7 +2032,16 @@ function Workspace() {
           )}
           {!compact && alerts}
 
-          {view === "schedule" && !compact && <SchedulePage snapshot={data} waitingForSnapshot={desktop && loading && !data} calendarContext={scheduleConnectionKey} preloadedSession={desktop ? scheduleController : undefined} onGuardChange={updateScheduleGuard} requestReload={requestScheduleExit} defectRevision={scheduleWorkflowRevision} workflowRefreshRevision={scheduleWorkflowRevision}
+          {view === "schedule" && !compact && <SchedulePage
+            snapshot={data}
+            waitingForSnapshot={desktop && loading && !data}
+            calendarContext={scheduleConnectionKey}
+            peopleCacheContext={scheduleConnectionKey ? JSON.stringify([scheduleConnectionKey, scheduleSourcesSignature]) : ""}
+            preloadedSession={desktop ? scheduleController : undefined}
+            onGuardChange={updateScheduleGuard}
+            requestReload={requestScheduleExit}
+            defectRevision={scheduleWorkflowRevision}
+            workflowRefreshRevision={scheduleWorkflowRevision}
             workflow={desktop && data?.credential_ready && data.capabilities?.workflow ? {
               context: scheduleConnectionKey,
               busy: workspaceActionBlocked("workflow", activity),

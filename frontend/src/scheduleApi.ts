@@ -29,7 +29,7 @@ export interface ScheduleRead {
   itemErrors?: Array<{ project: string; type: string; item: string; title?: string; sources: string[]; message: string }>;
 }
 export interface ScheduleHistoryScope { project: string; work_item_type: string; users: string[] }
-export interface ScheduleHistoryRequest { connection?: string; range: ScheduleDates; scopes: ScheduleHistoryScope[]; currentUser?: string }
+export interface ScheduleHistoryRequest { connection?: string; range: ScheduleDates; scopes: ScheduleHistoryScope[]; currentUser?: string; cachePeople?: boolean }
 export interface ScheduleHistory { people: SchedulePerson[]; targets: ScheduleRecord[]; complete: boolean; connection?: string }
 export interface ScheduleWriteTarget { id: string; identity: ScheduleIdentity; dates: ScheduleDates; cancel: boolean }
 export interface ScheduleWriteResult {
@@ -138,9 +138,24 @@ function mapWireRead(result: WireRead): ScheduleRead {
   };
 }
 
-export async function loadScheduleHistory(request: ScheduleHistoryRequest): Promise<ScheduleHistory> {
-  const result = await invoke<{ targets: WireTarget[]; complete: boolean; connection: string; current_user: string }>("load_schedule_calendar", { ...request });
+interface WireHistory { targets: WireTarget[]; complete: boolean; connection: string; current_user: string }
+
+function mapHistory(result: WireHistory): ScheduleHistory {
   return { complete: result.complete, connection: result.connection, ...mapScheduleRecords({ targets: result.targets, current_user: result.current_user, current_user_name: "" }) };
+}
+
+export async function loadScheduleHistory(request: ScheduleHistoryRequest): Promise<ScheduleHistory> {
+  return mapHistory(await invoke<WireHistory>("load_schedule_calendar", { ...request }));
+}
+
+export async function readCachedScheduleHistory({ cachePeople: _cachePeople, ...request }: ScheduleHistoryRequest): Promise<ScheduleHistory | undefined> {
+  const result = await invoke<WireHistory | null>("read_cached_schedule_calendar", request);
+  return result ? mapHistory(result) : undefined;
+}
+
+export async function readCachedSchedulePeople(): Promise<ScheduleRead | null> {
+  const result = await invoke<WireRead | null>("read_cached_schedule_people");
+  return result ? mapWireRead(result) : null;
 }
 // 候选读取不占编辑会话的串行队列；当前会话的提交无需等待后台网络读取。
 export const loadScheduleSession = async (options?: { includePeople?: boolean }): Promise<ScheduleRead> => {
@@ -150,10 +165,15 @@ export const loadScheduleSession = async (options?: { includePeople?: boolean })
       : await invoke<WireRead>("load_schedule_session", { includePeople: options.includePeople });
   return mapWireRead(result);
 };
-export const loadSchedulePeople = (sessionId: string) => enqueue(async (): Promise<ScheduleRead> => {
-  const result = await invoke<WireRead>("load_schedule_people", { sessionId });
-  return mapWireRead(result);
-});
+const peopleRequests = new Map<string, Promise<ScheduleRead>>();
+export const loadSchedulePeople = (sessionId: string): Promise<ScheduleRead> => {
+  const pending = peopleRequests.get(sessionId);
+  if (pending) return pending;
+  const request = invoke<WireRead>("load_schedule_people", { sessionId }).then(mapWireRead)
+    .finally(() => peopleRequests.delete(sessionId));
+  peopleRequests.set(sessionId, request);
+  return request;
+};
 export const closeScheduleSession = async (request: Promise<ScheduleRead>) => {
   // 会话可能尚在等待关闭前序会话；不能占住 IPC 队列后再等它，
   // 否则它后续的 load 会排到本次 close 后面，形成循环等待。

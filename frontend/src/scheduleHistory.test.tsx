@@ -2,11 +2,13 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
-import { scheduleItemKey, useScheduleItemContexts } from "./scheduleHistory";
+import { scheduleItemKey, useScheduleCalendar, useScheduleItemContexts } from "./scheduleHistory";
+import { loadScheduleHistory, readCachedScheduleHistory, type ScheduleHistory } from "./scheduleApi";
 import { sortScheduleCurrentNodes } from "./scheduleNodeOrder";
 import type { ItemDetail } from "./types";
 
 vi.mock("./api", () => ({ cachedItemDetail: vi.fn(), refreshItemDetail: vi.fn() }));
+vi.mock("./scheduleApi", () => ({ loadScheduleHistory: vi.fn(), readCachedScheduleHistory: vi.fn() }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const keyFor = (item: string) => scheduleItemKey({ connection: "c", project: "p", type: "story", item, node: "n", scope: "node" });
 const detail = (item: string, name?: string): ItemDetail => ({
@@ -14,6 +16,26 @@ const detail = (item: string, name?: string): ItemDetail => ({
     work_item_attribute: { finish_status: !name, work_item_status: "需求上线" }, work_item_fields: [],
     work_item_current_node: name ? [{ id: "n", name, owners: [{ key: "person", name: "负责人甲" }] }] : [],
   },
+});
+
+it("日历本机页与网络读取并发，离线时保留最近一次确认的页", async () => {
+  const request = { cachePeople: true, connection: "c", currentUser: "me", scopes: [],
+    range: { start: "2026-11-23", end: "2026-11-29" } };
+  const cached: ScheduleHistory = { connection: "c", complete: true,
+    targets: [], people: [{ id: "peer", name: "上次读取人员" }] };
+  let finishCache!: (value: ScheduleHistory) => void;
+  let fail!: (reason: Error) => void;
+  vi.mocked(readCachedScheduleHistory).mockImplementationOnce(() => new Promise((resolve) => { finishCache = resolve; }));
+  vi.mocked(loadScheduleHistory).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+  const hook = renderHook(() => useScheduleCalendar(JSON.stringify(["context", request]), []));
+  await waitFor(() => expect(loadScheduleHistory).toHaveBeenCalledWith(request));
+  expect(readCachedScheduleHistory).toHaveBeenCalledWith(request);
+  await act(async () => finishCache(cached));
+  expect(hook.result.current.data).toBe(cached);
+  expect(hook.result.current.loading).toBe(true);
+  await act(async () => fail(new Error("offline")));
+  expect(hook.result.current.failed).toBe(true);
+  expect(hook.result.current.data?.people).toBe(cached.people);
 });
 
 it("历史独有事项重新补读失败时，旧缓存不能覆盖已由远端确认的节点和完成状态", async () => {

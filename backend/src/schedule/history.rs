@@ -21,6 +21,57 @@ pub struct CalendarResult {
     current_user: String,
 }
 
+fn people_cache_key(
+    session: &Session,
+    connection: Option<&str>,
+    current_user: Option<&str>,
+    range: &Dates,
+    scopes: &[HistoryScope],
+) -> Result<Option<(String, String)>, BackendError> {
+    let Some((connection, user)) = connection.zip(current_user) else { return Ok(None) };
+    if user.is_empty() || scopes.is_empty() || fingerprint(session)? != connection {
+        return Ok(None);
+    }
+    let mut normalized = BTreeMap::<_, BTreeSet<_>>::new();
+    for scope in scopes {
+        normalized.entry((&scope.project, &scope.work_item_type)).or_default()
+            .extend(scope.users.iter().filter(|member| member.as_str() != user));
+    }
+    let page = json!([user, range, normalized.into_iter().collect::<Vec<_>>()]);
+    Ok(Some((cache::scope(session, connection)?, page.to_string())))
+}
+
+pub fn read_cached_people_calendar(
+    session: &Session,
+    connection: Option<&str>,
+    current_user: Option<&str>,
+    range: &Dates,
+    scopes: &[HistoryScope],
+) -> Result<Option<Value>, BackendError> {
+    let Some((scope, page)) = people_cache_key(session, connection, current_user, range, scopes)? else { return Ok(None) };
+    session.store.read_schedule_cache(&scope, &page)
+}
+
+pub fn load_people_calendar(
+    session: &Session,
+    connection: Option<&str>,
+    current_user: Option<&str>,
+    range: &Dates,
+    scopes: Vec<HistoryScope>,
+) -> Result<CalendarResult, BackendError> {
+    let observed_at = crate::sync::now_ms();
+    let key = people_cache_key(session, connection, current_user, range, &scopes).ok().flatten();
+    let result = load_calendar(session, connection, current_user, range, scopes)?;
+    if result.complete {
+        if let Some((scope, page)) = key {
+            if let Ok(snapshot) = serde_json::to_value(&result) {
+                let _ = session.store.save_schedule_cache(&scope, &page, observed_at, snapshot);
+            }
+        }
+    }
+    Ok(result)
+}
+
 async fn discover_calendar_scopes(
     session: &Session,
     client: &dyn TodoSource,

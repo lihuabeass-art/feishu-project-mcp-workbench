@@ -16,6 +16,21 @@ it("后台候选读取未返回时，原编辑会话可独立提交", async () =
   invoke.mockClear();
 });
 
+it("人员读取按会话去重并与原会话提交独立", async () => {
+  invoke.mockClear();
+  let finish!: (value: unknown) => void;
+  invoke.mockImplementation((command: string) => command === "load_schedule_people"
+    ? new Promise((resolve) => { finish = resolve; })
+    : Promise.resolve({ targets: [], write_requests: 0 }));
+  const pending = loadSchedulePeople("editing");
+  expect(loadSchedulePeople("editing")).toBe(pending);
+  await expect(submitScheduleTargets("editing", [])).resolves.toEqual({ results: [], writeRequests: 0 });
+  expect(invoke.mock.calls.map(([command]) => command)).toEqual(["load_schedule_people", "sync_schedule_session"]);
+  finish({ session_id: "editing", current_user: "me", read_at_ms: 1, sources: [], targets: [], failed_items: 0 });
+  await pending;
+  invoke.mockClear();
+});
+
 it("桌面会话先结束旧会话再读取新会话，写入只传目标 ID 和日期", async () => {
   const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
   const wire = { session_id: "s1", current_user: "me", current_user_name: "本人", read_at_ms: 1, sources: [{ id: "a", name: "来源", complete: true }], failed_items: 0, targets: [{ id: "1", identity, title: "标题", node_name: "开发", node_started_at_ms: 1794809754000, owners: [{ id: "me", name: "本人" }], sources: ["a"], baseline: { start: "", end: "" } }] };

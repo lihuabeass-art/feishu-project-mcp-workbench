@@ -31,10 +31,11 @@ mod filter_schemes;
 mod detail_display;
 pub use type_preferences::{SourceTypePreferences, TypePreference, TypePreferences};
 mod creation_images;
+mod schedule_cache;
 pub(crate) use creation_images::{CreationImage, CreationImageKey, UploadedCreationImageKey};
 
 /// 当前 schema 版本。升高前请确认迁移语句可重入。
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 /// 事项离开所有来源后，详情与图片保留七天，期间重新出现则取消清理。
 const ITEM_CACHE_GRACE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -421,6 +422,7 @@ impl Store {
         tx.execute_batch(filter_schemes::SCHEMA)?;
         tx.execute_batch(detail_display::SCHEMA)?;
         tx.execute_batch(creation_images::SCHEMA)?;
+        tx.execute_batch(schedule_cache::SCHEMA)?;
         ensure_column(&tx, "creation_image", "uploaded_token", "TEXT")?;
         if version < 6 {
             // 旧库未记录完整来源归属，先保留为待认领缓存，交给已配置来源逐次核对。
@@ -2058,6 +2060,9 @@ fn schema_is_current(conn: &Connection) -> Result<bool, BackendError> {
         ("detail_display_preferences", &["account_key", "project_key", "type_key", "document_json"][..]),
         ("creation_people", &["context", "project_key", "user_key", "name"][..]),
         ("creation_image", &["context", "project_key", "type_key", "field_key", "image_id", "mime_type", "file_name", "bytes", "uploaded_url", "uploaded_token"][..]),
+        ("schedule_cache", &["scope", "page", "observed_at", "header"][..]),
+        ("schedule_cache_target", &["scope", "page", "id", "data"][..]),
+        ("schedule_avatar_cache", &["scope", "image_key", "mime", "data", "saved_at"][..]),
     ] {
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
         let columns = stmt.query_map([], |r|r.get::<_,String>(1))?.collect::<Result<Vec<_>,_>>()?;

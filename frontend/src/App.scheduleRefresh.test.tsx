@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import { executeWorkflowAction, getWorkflowActions, loadSnapshot } from "./api";
-import { closeScheduleSession, loadScheduleSession, submitScheduleTargets, type ScheduleRead, type ScheduleWriteResult } from "./scheduleApi";
+import { closeScheduleSession, loadScheduleSession, readCachedScheduleHistory, readCachedSchedulePeople, submitScheduleTargets, type ScheduleRead, type ScheduleWriteResult } from "./scheduleApi";
 
 vi.mock("./api", async (original) => ({
   ...await original<typeof import("./api")>(),
@@ -14,6 +14,8 @@ vi.mock("./api", async (original) => ({
 }));
 vi.mock("./scheduleApi", () => ({
   loadScheduleHistory: vi.fn().mockResolvedValue({ people: [], targets: [], complete: true }),
+  readCachedScheduleHistory: vi.fn(),
+  readCachedSchedulePeople: vi.fn(),
   loadScheduleSession: vi.fn(), loadSchedulePeople: vi.fn(),
   closeScheduleSession: vi.fn().mockResolvedValue(undefined),
   resetScheduleSession: vi.fn().mockResolvedValue(undefined), submitScheduleTargets: vi.fn(),
@@ -23,6 +25,8 @@ beforeEach(() => {
   localStorage.clear();
   vi.mocked(loadSnapshot).mockResolvedValue({ items: [], total: 0, last_success: null, runs: [], sources: [], config_path: "cfg", db_path: "db", credential_ready: true, credential_description: "已配置" });
   vi.mocked(closeScheduleSession).mockResolvedValue();
+  vi.mocked(readCachedScheduleHistory).mockResolvedValue(undefined);
+  vi.mocked(readCachedSchedulePeople).mockResolvedValue(null);
 });
 
 it("完整模式首屏先显示问候，排期读完后在同一张卡片补上姓名和头像", async () => {

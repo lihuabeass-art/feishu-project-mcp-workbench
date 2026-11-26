@@ -7,7 +7,7 @@ import { SchedulePage, type ScheduleSessionController } from "./SchedulePage";
 import { cachedItemDetail, getWorkflowActions, refreshItemDetail } from "./api";
 import { saveWorkflowSkipConfirmation } from "./workflowPreferences";
 import type { Snapshot, WorkflowAction, WorkflowOptions, WorkflowResult } from "./types";
-import { closeScheduleSession, loadScheduleHistory, loadSchedulePeople, loadScheduleSession, submitScheduleTargets, type ScheduleHistory, type ScheduleRead } from "./scheduleApi";
+import { closeScheduleSession, loadScheduleHistory, loadSchedulePeople, loadScheduleSession, readCachedScheduleHistory, readCachedSchedulePeople, submitScheduleTargets, type ScheduleHistory, type ScheduleRead } from "./scheduleApi";
 const loadCss = async (rel: string) => {
   const fsModule = "node:fs";
   const fs = (await import(/* @vite-ignore */ fsModule)) as {
@@ -15,7 +15,11 @@ const loadCss = async (rel: string) => {
   };
   return fs.readFileSync(new URL(rel, import.meta.url), "utf8");
 };
-vi.mock("./scheduleApi", () => ({ loadScheduleSession: vi.fn(), loadScheduleHistory: vi.fn(), loadSchedulePeople: vi.fn(), closeScheduleSession: vi.fn(), submitScheduleTargets: vi.fn() }));
+vi.mock("./scheduleApi", () => ({
+  loadScheduleSession: vi.fn(), loadScheduleHistory: vi.fn(), loadSchedulePeople: vi.fn(),
+  readCachedScheduleHistory: vi.fn(), readCachedSchedulePeople: vi.fn(),
+  closeScheduleSession: vi.fn(), submitScheduleTargets: vi.fn(),
+}));
 vi.mock("./api", () => ({ cachedItemDetail: vi.fn(), getWorkflowActions: vi.fn(), refreshItemDetail: vi.fn() }));
 const identity = { connection: "c", project: "p", type: "t", item: "i", node: "n", scope: "personal" as const, owner: "me" };
 const data = (): ScheduleRead => ({ sessionId: "session", currentUserId: "me", readAt: "today", complete: false, sources: [{ id: "s", name: "我的来源", complete: false, error: "部分事项读取失败" }], people: [{ id: "me", name: "本人" }], targets: [{ id: "one", identity, title: "任务一", nodeName: "开发", ownerId: "me", ownerIds: ["me"], sourceIds: ["s"], projectName: "空间", typeName: "需求", dates: { start: "", end: "" }, mine: true }] });
@@ -33,10 +37,33 @@ const projectSnapshot = (read: ScheduleRead): Snapshot => ({
 beforeEach(() => {
   vi.mocked(loadScheduleSession).mockResolvedValue(data());
   vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], targets: [], complete: true });
+  vi.mocked(readCachedScheduleHistory).mockResolvedValue(undefined);
+  vi.mocked(readCachedSchedulePeople).mockResolvedValue(null);
   vi.mocked(closeScheduleSession).mockResolvedValue();
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const setup = async () => { const guard = vi.fn(); render(<SchedulePage onGuardChange={guard} requestReload={(reload) => reload()} />); await screen.findByLabelText("今日问候"); return guard; };
+
+it("人员排期在网络返回前显示本机上次快照，部分成功时保留缓存", async () => {
+  const initial: ScheduleRead = { ...data(), connection: "c", complete: true, peopleLoaded: false, targets: [] };
+  const target = { ...data().targets[0], title: "本机缓存事项", nodeStatus: "doing" };
+  vi.mocked(readCachedSchedulePeople).mockResolvedValue({
+    ...initial, sessionId: "", peopleLoaded: true, readAt: "上次确认", targets: [target],
+  });
+  vi.mocked(loadScheduleSession).mockResolvedValue(initial);
+  let finish!: (value: ScheduleRead) => void;
+  vi.mocked(loadSchedulePeople).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  render(<SchedulePage peopleCacheContext="connection-and-sources" onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  expect(await screen.findByText(/正在显示上次读取的人员排期/)).toBeTruthy();
+  expect(screen.getAllByText("本机缓存事项").length).toBeGreaterThan(0);
+  await waitFor(() => expect(loadSchedulePeople).toHaveBeenCalledWith(initial.sessionId));
+  await act(async () => finish({ ...initial, peopleLoaded: true, complete: false,
+    sources: [{ id: "s", name: "来源", complete: false, error: "读取未完成" }] }));
+  expect(screen.getAllByText("本机缓存事项").length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
+  expect(screen.queryByText("本机缓存事项")).toBeNull();
+});
 
 it("日期格式化结果不是 ISO 文本时仍能打开事项安排", async () => {
   const NativeDateTimeFormat = Intl.DateTimeFormat;

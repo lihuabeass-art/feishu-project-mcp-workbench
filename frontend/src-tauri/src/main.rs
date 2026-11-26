@@ -79,11 +79,15 @@ fn reset_schedule<T>(
 #[tauri::command]
 async fn load_schedule_session(include_people: Option<bool>) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
     blocking(move || {
-        // 网络读取独立于现有会话的写锁，后台慢请求不能阻塞当前节点提交。
-        drop(lock_schedule(&SCHEDULE_SESSION)?);
         let session = open_session()?;
+        let observed_at = fstodo_backend::sync::now_ms();
+        let cache_scope = (include_people == Some(true))
+            .then(|| fstodo_backend::schedule::people_cache_scope(&session).ok()).flatten();
         let schedule = fstodo_backend::schedule::ScheduleSession::load_recent(&session, include_people == Some(true))?;
         let view = schedule.view.clone();
+        if let Some(scope) = cache_scope {
+            fstodo_backend::schedule::save_cached_people(&session, &scope, &view, observed_at);
+        }
         let mut guard = SCHEDULE_SESSION.lock().map_err(|_| BackendError::conflict("上次排期任务中断，结果可能不确定，请先在飞书核对并结束当前会话"))?;
         guard.push(schedule);
         Ok(view)
@@ -96,8 +100,36 @@ async fn load_schedule_calendar(
     current_user: Option<String>,
     range: fstodo_backend::schedule::Dates,
     scopes: Vec<fstodo_backend::schedule::HistoryScope>,
+    cache_people: Option<bool>,
 ) -> Result<fstodo_backend::schedule::CalendarResult, UiError> {
-    blocking(move || fstodo_backend::schedule::load_calendar(&open_session()?, connection.as_deref(), current_user.as_deref(), &range, scopes)).await
+    blocking(move || {
+        let session = open_session()?;
+        let load = if cache_people == Some(true) { fstodo_backend::schedule::load_people_calendar }
+            else { fstodo_backend::schedule::load_calendar };
+        load(&session, connection.as_deref(), current_user.as_deref(), &range, scopes)
+    }).await
+}
+
+#[tauri::command]
+async fn read_cached_schedule_calendar(
+    connection: Option<String>,
+    current_user: Option<String>,
+    range: fstodo_backend::schedule::Dates,
+    scopes: Vec<fstodo_backend::schedule::HistoryScope>,
+) -> Result<Option<serde_json::Value>, UiError> {
+    blocking(move || fstodo_backend::schedule::read_cached_people_calendar(
+        &open_session()?, connection.as_deref(), current_user.as_deref(), &range, &scopes
+    )).await
+}
+
+#[tauri::command]
+async fn read_cached_schedule_people() -> Result<Option<serde_json::Value>, UiError> {
+    blocking(move || fstodo_backend::schedule::read_cached_people(&open_session()?)).await
+}
+
+#[tauri::command]
+async fn load_schedule_avatar(connection: String, url: String) -> Result<Option<String>, UiError> {
+    blocking(move || fstodo_backend::schedule::load_avatar(&open_session()?, &connection, &url)).await
 }
 
 #[tauri::command]
@@ -108,10 +140,28 @@ async fn load_schedule_defects(connection: String, projects: Vec<String>) -> Res
 #[tauri::command]
 async fn load_schedule_people(session_id: String) -> Result<fstodo_backend::schedule::LoadResult, UiError> {
     blocking(move || {
-        let mut guard = lock_schedule(&SCHEDULE_SESSION)?;
-        let schedule = guard.iter_mut().find(|s| s.view.session_id == session_id).ok_or_else(|| BackendError::conflict("排期会话已结束，请重新读取"))?;
-        schedule.load_people(&open_session()?, &session_id)?;
-        Ok(schedule.view.clone())
+        let session = open_session()?;
+        let observed_at = fstodo_backend::sync::now_ms();
+        let cache_scope = fstodo_backend::schedule::people_cache_scope(&session).ok();
+        let mut candidate = {
+            let guard = SCHEDULE_SESSION.lock().map_err(|_| BackendError::conflict("排期会话异常，请重新读取"))?;
+            guard.iter().find(|s| s.view.session_id == session_id).cloned()
+                .ok_or_else(|| BackendError::conflict("排期会话已结束，请重新读取"))?
+        };
+        candidate.load_people(&session, &session_id)?;
+        let (view, cacheable) = {
+            let mut guard = SCHEDULE_SESSION.lock().map_err(|_| BackendError::conflict("排期会话异常，请重新读取"))?;
+            let schedule = guard.iter_mut().find(|s| s.view.session_id == session_id)
+                .ok_or_else(|| BackendError::conflict("排期会话已结束，请重新读取"))?;
+            let cacheable = schedule.merge_people(candidate);
+            (schedule.view.clone(), cacheable)
+        };
+        if cacheable {
+            if let Some(scope) = cache_scope {
+                fstodo_backend::schedule::save_cached_people(&session, &scope, &view, observed_at);
+            }
+        }
+        Ok(view)
     }).await
 }
 
@@ -830,6 +880,9 @@ fn main() {
             execute_workflow_action,
             load_schedule_session,
             load_schedule_calendar,
+            read_cached_schedule_calendar,
+            read_cached_schedule_people,
+            load_schedule_avatar,
             load_schedule_people,
             load_schedule_defects,
             sync_schedule_session,

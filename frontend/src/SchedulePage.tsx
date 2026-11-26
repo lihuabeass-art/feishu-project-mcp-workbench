@@ -33,11 +33,13 @@ import {
   closeScheduleSession,
   loadSchedulePeople,
   loadScheduleSession,
+  readCachedSchedulePeople,
   submitScheduleTargets,
   type SchedulePerson,
   type ScheduleRead,
   type ScheduleRecord,
 } from "./scheduleApi";
+import { patchScheduleData } from "./scheduleReadPatch";
 import { scheduleHistoryRequest, scheduleItemKey, useScheduleCalendar, useScheduleItemContexts, type ScheduleCurrentNode } from "./scheduleHistory";
 import {
   applyQuickSchedulePreset,
@@ -284,6 +286,7 @@ export function SchedulePage({
   snapshot,
   waitingForSnapshot = false,
   calendarContext = "",
+  peopleCacheContext = "",
   preloadedSession,
   workflow,
   defectRevision = 0,
@@ -294,6 +297,7 @@ export function SchedulePage({
   snapshot?: Snapshot | null;
   waitingForSnapshot?: boolean;
   calendarContext?: string;
+  peopleCacheContext?: string;
   preloadedSession?: ScheduleSessionController;
   workflow?: { context: string; busy: boolean; submit: WorkflowSubmit };
   defectRevision?: number;
@@ -301,7 +305,12 @@ export function SchedulePage({
 }) {
   const initialRead = preloadedSession?.read || null;
   const [epoch, setEpoch] = useState(0);
-  const [read, setRead] = useState<ScheduleRead | null>(() => initialRead);
+  const [read, storeRead] = useState<ScheduleRead | null>(() => initialRead);
+  const readRef = useRef(read);
+  const setRead = (next: ScheduleRead | null) => {
+    readRef.current = next;
+    storeRead(next);
+  };
   const [entries, setEntries] = useState<Entry[]>(() =>
     initialRead ? initialRead.targets.map(createScheduleEntry) : [],
   );
@@ -331,6 +340,26 @@ export function SchedulePage({
   const workflowTrigger = useRef<HTMLButtonElement>(null);
   useWorkflowSubmissions();
   const [view, setView] = useState<"mine" | "people">("mine");
+  const [cachedPeople, setCachedPeople] = useState<{ context: string; read: ScheduleRead }>();
+  useEffect(() => {
+    if (!peopleCacheContext) return;
+    let active = true;
+    readCachedSchedulePeople().then((cached) => {
+      if (active && cached) setCachedPeople((current) => current?.context === peopleCacheContext ? current :
+        { context: peopleCacheContext, read: cached });
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [peopleCacheContext]);
+  const livePeopleComplete = read && read.peopleLoaded !== false && !read.accountError &&
+    (read.complete || (!read.sources.length && !read.itemErrors?.length));
+  const cachedPeopleRead = view === "people" && !livePeopleComplete && cachedPeople?.context === peopleCacheContext &&
+      (!read?.connection || read.connection === cachedPeople.read.connection) &&
+      (!read?.currentUserId || read.currentUserId === cachedPeople.read.currentUserId)
+    ? cachedPeople.read : null;
+  const displayRead = cachedPeopleRead ?? read;
+  const displayUserId = displayRead?.currentUserId;
+  const cachedPeopleEntries = useMemo(() => cachedPeopleRead?.targets.map(createScheduleEntry), [cachedPeopleRead]);
+  const displayEntries = cachedPeopleEntries ?? entries;
   const viewModeRef = useRef(view);
   viewModeRef.current = view;
   const [mineWeek, setMineWeek] = useState(() => monday(today()));
@@ -378,8 +407,9 @@ export function SchedulePage({
   const thisWeek = read?.recentRange?.start ?? monday(currentToday);
   const viewingHistory = windowStart < thisWeek;
   const [calendarKey, preloadCalendarKeys] = useMemo((): [string, string[]] => {
-    const request = scheduleHistoryRequest(read, snapshot, view, { start: windowStart, end: windowEnd });
+    const request = scheduleHistoryRequest(displayRead, snapshot, view, { start: windowStart, end: windowEnd });
     if (!request) return ["", []];
+    if (view === "people" && peopleCacheContext && request.connection && request.currentUser) request.cachePeople = true;
     const keyForWeek = (offset: number) => {
       const start = addDays(windowStart, offset);
       const end = addDays(windowEnd, offset);
@@ -388,9 +418,9 @@ export function SchedulePage({
     };
     const visibleKey = keyForWeek(0);
     const scopeReady = request.connection && request.currentUser && request.scopes.length &&
-      !read?.accountError && (view !== "people" || read?.peopleLoaded !== false);
+      !displayRead?.accountError && (view !== "people" || displayRead?.peopleLoaded !== false);
     return [visibleKey, scopeReady ? [-7, 7, -14, 14].map(keyForWeek).filter(Boolean) : []];
-  }, [read, snapshot, view, calendarContext, windowStart, windowEnd]);
+  }, [displayRead, snapshot, view, calendarContext, peopleCacheContext, windowStart, windowEnd]);
   const { data: currentHistory, loading: calendarLoading, failed: calendarFailed, retry: retryCalendar } =
     useScheduleCalendar(calendarKey, preloadCalendarKeys);
   const historicalEntries = useMemo(
@@ -530,16 +560,25 @@ export function SchedulePage({
     loadSchedulePeople(targetSessionId)
       .then((nextRead) => {
         if (currentSessionIdRef.current !== targetSessionId) return;
-        setRead(nextRead);
+        const latest = readRef.current ?? currentRead;
+        const local = new Map(latest.targets.filter((target) => target.result).map((target) => [target.id, target]));
+        const targets = nextRead.targets.map((target) => {
+          const result = local.get(target.id);
+          return result ? { ...target, dates: result.dates, result: result.result,
+            resultMessage: result.resultMessage, resultWarning: result.resultWarning } : target;
+        });
+        const compatible = patchScheduleData(latest, { ...nextRead, targets }, !nextRead.complete);
+        setRead(compatible);
         setEntries((current) => {
           const existingMap = new Map(current.map((item) => [item.id, item]));
           const merged: Entry[] = [];
           const seen = new Set<string>();
-          for (const record of nextRead.targets) {
+          for (const record of compatible.targets) {
             seen.add(record.id);
             const prevEntry = existingMap.get(record.id);
             if (prevEntry) {
               const keepLocal = scheduleChanged(prevEntry) || prevEntry.result === "uncertain";
+              if (prevEntry.record === record) { merged.push(prevEntry); continue; }
               merged.push({
                 ...prevEntry,
                 baseline: keepLocal ? prevEntry.baseline : { ...record.dates },
@@ -556,7 +595,7 @@ export function SchedulePage({
           }
           return merged;
         });
-        preloadedSession?.updateRead(nextRead);
+        preloadedSession?.updateRead(compatible);
       })
       .catch((failure: unknown) => {
         if (currentSessionIdRef.current !== targetSessionId) return;
@@ -590,9 +629,20 @@ export function SchedulePage({
       setPeopleLoading(false);
       setPeopleError("");
       setRead(next);
-      const selectedIdentity = entries.find((entry) => entry.id === selected)?.identity;
-      setSelected(selectedIdentity ? next.targets.find((target) => JSON.stringify(target.identity) === JSON.stringify(selectedIdentity))?.id || "" : "");
-      setEntries(next.targets.map(createScheduleEntry));
+      if (next.peopleLoaded === true && (next.complete || (!next.sources.length && !next.itemErrors?.length)) && !next.accountError) {
+        setCachedPeople({ context: peopleCacheContext, read: next });
+      }
+      const selectedIdentity = displayEntries.find((entry) => entry.id === selected)?.identity;
+      setSelected(selectedIdentity ? next.targets.find((target) => target.id === selected)?.id ??
+        next.targets.find((target) => JSON.stringify(target.identity) === JSON.stringify(selectedIdentity))?.id ?? "" : selected);
+      setEntries((current) => {
+        const prior = new Map(current.map((entry) => [entry.id, entry]));
+        const updated = next.targets.map((record) => {
+          const entry = prior.get(record.id);
+          return entry?.record === record ? entry : createScheduleEntry(record);
+        });
+        return updated.length === current.length && updated.every((entry, index) => entry === current[index]) ? current : updated;
+      });
       setError("");
       setLoading(false);
       if (viewModeRef.current === "people" && next.peopleLoaded === false) {
@@ -634,12 +684,12 @@ export function SchedulePage({
   const people = useMemo(
     () =>
       new Map(
-        [...currentHistory?.people || [], ...read?.people || []].map((item) => [
+        [...currentHistory?.people || [], ...displayRead?.people || []].map((item) => [
           JSON.stringify([item.connection || null, item.project || null, item.id]),
           item,
         ]),
       ),
-    [read, currentHistory],
+    [displayRead?.people, currentHistory?.people],
   );
   const personFor = (entry: Entry, id: string): SchedulePerson | undefined => {
     if (!id) return undefined;
@@ -648,7 +698,7 @@ export function SchedulePage({
     );
     const global = people.get(JSON.stringify([null, null, id]));
     const fallbackAvatar =
-      id === read?.currentUserId ? read?.currentUserAvatar || undefined : undefined;
+      id === displayRead?.currentUserId ? displayRead?.currentUserAvatar || undefined : undefined;
     if (scoped && !isFallbackPersonName(scoped.name, id)) {
       return {
         ...scoped,
@@ -676,16 +726,16 @@ export function SchedulePage({
     owner ||
     entry.record.ownerId ||
     entry.record.ownerIds[0] ||
-    (entry.record.mine ? read?.currentUserId || "" : "") ||
+    (entry.record.mine ? displayUserId || "" : "") ||
     "";
   const displayPerson = (entry: Entry, id: string) => {
     if (!id) return "负责人不明";
     const rawName = personFor(entry, id)?.name;
     if (!rawName || isFallbackPersonName(rawName, id)) {
-      if (id === read?.currentUserId) return "当前用户";
+      if (id === displayUserId) return "当前用户";
       const fallbackPeerIds = Array.from(
         new Set(
-          entries
+          displayEntries
             .filter(
               (item) =>
                 item.identity.connection === entry.identity.connection &&
@@ -696,7 +746,7 @@ export function SchedulePage({
               ...item.record.ownerIds,
             ])
             .filter((peerId) => {
-              if (!peerId || peerId === read?.currentUserId) return false;
+              if (!peerId || peerId === displayUserId) return false;
               const peerName = personFor(entry, peerId)?.name;
               return !peerName || isFallbackPersonName(peerName, peerId);
             }),
@@ -706,7 +756,7 @@ export function SchedulePage({
       const idx = fallbackPeerIds.indexOf(id);
       return idx >= 0 ? `团队成员 ${idx + 1}` : "团队成员";
     }
-    const peers = (read?.people || []).filter(
+    const peers = (displayRead?.people || []).filter(
       (item) =>
         item.connection === entry.identity.connection &&
         item.project === entry.identity.project &&
@@ -826,7 +876,7 @@ export function SchedulePage({
       : relatedProject === missingProject
         ? !!item && !item.related_projects?.length
         : item?.related_projects?.some((entry) => relatedProjectKey(space, entry) === relatedProject));
-  const loadedSchedulePeople = [...read?.people || [], ...currentHistory?.people || []];
+  const loadedSchedulePeople = [...displayRead?.people || [], ...currentHistory?.people || []];
   const loadedOwnerKeys = new Set(loadedSchedulePeople
     .filter((owner) => owner.id && (!read?.connection || !owner.connection || owner.connection === read.connection))
     .map((owner) => JSON.stringify([owner.project || null, owner.id])));
@@ -847,7 +897,7 @@ export function SchedulePage({
   const cachedItemFor = (entry: Entry) => cachedItems.get(JSON.stringify([
     entry.identity.project, entry.identity.type, entry.identity.item,
   ]));
-  const filterEntries = [...entries, ...historicalEntries];
+  const filterEntries = [...displayEntries, ...historicalEntries];
   const projectItems = filterEntries
     .filter((entry) => !project || entry.identity.project === project)
     .map(cachedItemFor)
@@ -876,7 +926,7 @@ export function SchedulePage({
           (entry.record.unknownOwner ||
             (!entry.identity.owner && !entry.record.ownerIds.some(Boolean))))) &&
       (view !== "mine" || !editableOnly || isEditableTarget(entry));
-  const visible = entries.filter(matchesFilters);
+  const visible = displayEntries.filter(matchesFilters);
   const liveSchedules = new Set<string>();
   const calendarOwnerKey = (entry: Entry, owner?: string | null) => JSON.stringify([nodeKey(entry), owner]);
   for (const entry of visible) {
@@ -906,7 +956,7 @@ export function SchedulePage({
     const baseLabel =
       realNames.length > 0
         ? realNames.join(" / ")
-        : id === read?.currentUserId
+        : id === displayUserId
           ? "当前用户"
           : "成员";
     return [id, baseLabel] as const;
@@ -933,27 +983,24 @@ export function SchedulePage({
     }
     return [id, `${label} (${chars.slice(-length).join("")})`];
   });
-  const currentUserGlobal = read?.currentUserId
-    ? people.get(JSON.stringify([null, null, read.currentUserId]))
+  const currentUserGlobal = displayUserId
+    ? people.get(JSON.stringify([null, null, displayUserId]))
     : undefined;
-  const currentUserScopedReal = read?.currentUserId
-    ? read.people.find(
-        (item) =>
-          item.id === read.currentUserId && !isFallbackPersonName(item.name, read.currentUserId!),
-      )
+  const currentUserScopedReal = displayUserId
+    ? displayRead?.people.find((item) => item.id === displayUserId && !isFallbackPersonName(item.name, displayUserId))
     : undefined;
   const currentUserDisplayName =
-    (currentUserGlobal && !isFallbackPersonName(currentUserGlobal.name, read?.currentUserId || "")
+    (currentUserGlobal && !isFallbackPersonName(currentUserGlobal.name, displayUserId || "")
       ? currentUserGlobal.name
       : currentUserScopedReal?.name) || "当前用户";
-  const currentUserPerson: SchedulePerson | undefined = read?.currentUserId
+  const currentUserPerson: SchedulePerson | undefined = displayUserId
     ? {
-        id: read.currentUserId,
+        id: displayUserId,
         name: currentUserDisplayName,
         avatar:
           currentUserGlobal?.avatar ||
           currentUserScopedReal?.avatar ||
-          read.currentUserAvatar ||
+          displayRead?.currentUserAvatar ||
           undefined,
       }
     : currentUserGlobal;
@@ -990,7 +1037,7 @@ export function SchedulePage({
   );
   // 事项当前节点独立于本行人员、日期及人员筛选；并行节点分别展示完整负责人。
   const currentNodesByItem = new Map<string, Map<string, { entry: Entry; owners: Set<string>; unknownOwner: boolean; mine: boolean }>>();
-  for (const entry of entries) {
+  for (const entry of displayEntries) {
     if (entry.record.sourceAggregate || !entry.record.nodeName.trim() || normalizeNodeStatus(entry.record.nodeStatus) !== "doing") continue;
     const key = scheduleItemKey(entry.identity);
     const nodes = currentNodesByItem.get(key) || new Map();
@@ -1093,7 +1140,8 @@ export function SchedulePage({
     if (!primaryEntry.record.sourceAggregate && primaryEntry.identity.project && primaryEntry.identity.type &&
       primaryEntry.identity.item && (!currentNodesByItem.has(key) || (view === "mine" && read?.peopleLoaded === false))) contextKeys.add(key);
   }
-  const contextRevision = useMemo(() => [read, currentHistory], [read, currentHistory]);
+  const contextRevision = useMemo(() => [displayRead?.targets, currentHistory?.targets, workflowRefreshRevision],
+    [displayRead?.targets, currentHistory?.targets, workflowRefreshRevision]);
   const itemContexts = useScheduleItemContexts(calendarContext, contextKeys, contextRevision);
 
   const pending = visible.filter(
@@ -1130,7 +1178,7 @@ export function SchedulePage({
     );
   };
   const selectedNodeKey = selectedEntry ? nodeKey(selectedEntry) : "";
-  const workflowKey = workflow && selectedEntry && !selectedEntry.id.startsWith("history:") && selectedEntry.identity.node.trim() &&
+  const workflowKey = workflow && !cachedPeopleRead && selectedEntry && !selectedEntry.id.startsWith("history:") && selectedEntry.identity.node.trim() &&
     selectedEntry.identity.project.trim() && selectedEntry.identity.type.trim() && selectedEntry.identity.item.trim()
     ? JSON.stringify([workflow.context, selectedNodeKey]) : "";
   const workflowOpen = !!workflowKey && workflowSelection === workflowKey;
@@ -1584,10 +1632,11 @@ export function SchedulePage({
           };
         }),
       );
-      if (preloadedSession && read) {
+      const latest = readRef.current;
+      if (latest && latest.sessionId === read?.sessionId) {
         const nextRead: ScheduleRead = {
-          ...read,
-          targets: read.targets.map((record) => {
+          ...latest,
+          targets: latest.targets.map((record) => {
             const submission = frozen.find((item) => item.id === record.id);
             if (!submission) return record;
             const outcome = results.get(record.id)?.result || "uncertain";
@@ -1606,7 +1655,7 @@ export function SchedulePage({
           }),
         };
         setRead(nextRead);
-        preloadedSession.updateRead(nextRead);
+        preloadedSession?.updateRead(nextRead);
       }
       const count = (result: string) =>
         frozen.filter((item) => (results.get(item.id)?.result || "uncertain") === result).length;
@@ -1643,10 +1692,11 @@ export function SchedulePage({
             : entry;
         }),
       );
-      if (!unsent && preloadedSession && read) {
+      const latest = readRef.current;
+      if (!unsent && latest && latest.sessionId === read?.sessionId) {
         const nextRead: ScheduleRead = {
-          ...read,
-          targets: read.targets.map((record) => {
+          ...latest,
+          targets: latest.targets.map((record) => {
             const item = frozen.find((value) => value.id === record.id);
             return item
               ? { ...record, dates: { ...item.dates }, result: "uncertain" }
@@ -1654,7 +1704,7 @@ export function SchedulePage({
           }),
         };
         setRead(nextRead);
-        preloadedSession.updateRead(nextRead);
+        preloadedSession?.updateRead(nextRead);
       }
       setSuccessToast(null);
       setReport(
@@ -1719,16 +1769,16 @@ export function SchedulePage({
     refreshSchedule(true);
   }, [workflowRefreshRevision, workflow?.busy, workflowInteraction]);
 
-  const avatarConnection = read?.connection || entries[0]?.identity.connection;
-  const avatarScope = !read?.accountError && avatarConnection && read?.currentUserId
-    ? JSON.stringify([calendarContext, avatarConnection, read.currentUserId]) : null;
-  const avatarPeople = useMemo(() => [...currentHistory?.people || [], ...read?.people || []], [read?.people, currentHistory?.people]);
+  const avatarConnection = displayRead?.connection || displayEntries[0]?.identity.connection;
+  const avatarScope = !displayRead?.accountError && avatarConnection && displayRead?.currentUserId
+    ? JSON.stringify([calendarContext, avatarConnection, displayRead.currentUserId]) : null;
+  const avatarPeople = useMemo(() => [...currentHistory?.people || [], ...displayRead?.people || []], [displayRead?.people, currentHistory?.people]);
   return (
-    <ScheduleAvatarCacheProvider scope={avatarScope} people={avatarPeople}>
+    <ScheduleAvatarCacheProvider scope={avatarScope} connection={peopleCacheContext && avatarScope ? avatarConnection : undefined} people={avatarPeople}>
     <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={() => preloadedSession?.onInteraction?.()} onFocusCapture={() => preloadedSession?.onInteraction?.()}>
           <>
             <div className="overview schedule-overview">
-              <ScheduleGreeting person={currentUserPerson} name={read?.currentUserId ? currentUserDisplayName : undefined} />
+              <ScheduleGreeting person={currentUserPerson} name={displayUserId ? currentUserDisplayName : undefined} />
               <div className="overview-actions schedule-overview-actions">
                 <button
                   type="button"
@@ -1795,6 +1845,7 @@ export function SchedulePage({
                 <span>正在加载团队成员排期…</span>
               </div>
             )}
+            {cachedPeopleRead && <p className="banner preview" role="status">正在显示上次读取的人员排期（{cachedPeopleRead.readAt}）。</p>}
             {read && peopleError && !peopleLoading && (
               <div className="banner warning" role="alert">
                 <span>{peopleError}</span>
@@ -2001,7 +2052,7 @@ export function SchedulePage({
                         className={poolTab === "pending" ? "active" : ""}
                         onClick={() => setPoolTab("pending")}
                       >
-                        {read ? `待排期 (${pendingRows.length})` : "待排期"}
+                        {displayRead ? `待排期 (${pendingRows.length})` : "待排期"}
                       </button>
                       <button
                         type="button"
@@ -2010,7 +2061,7 @@ export function SchedulePage({
                         className={poolTab === "outside" ? "active" : ""}
                         onClick={() => setPoolTab("outside")}
                       >
-                        {read ? `已排期 (${outsideRows.length})` : "已排期"}
+                        {displayRead ? `已排期 (${outsideRows.length})` : "已排期"}
                       </button>
                       <button type="button" role="tab" aria-selected={poolTab === "defects"} aria-label={showDefectCount ? `未解决缺陷 ${defects.length}` : "未解决缺陷"}
                         className={poolTab === "defects" ? "active" : ""} onClick={() => setPoolTab("defects")}>
@@ -2025,7 +2076,7 @@ export function SchedulePage({
                         groupStates={defectGroups} onGroupChange={(owner, expanded) => setDefectGroups((current) => new Map(current).set(owner, expanded))}
                         loading={(!read && !error) || defectLoading} failed={defectReadFailed || (!read && !!error)} ready={defectRead.ready}
                         retry={read ? defectRead.retry : () => requestReload(() => { forceResetRef.current = true; setEpoch((value) => value + 1); })} />
-                    ) : !read ? (
+                    ) : !displayRead ? (
                       error ? <p className="schedule-pool-empty" role="alert">{error}，可重新读取。</p>
                         : <p className="schedule-pool-empty" role="status">正在读取事项清单…</p>
                     ) : poolTab === "pending" ? (
