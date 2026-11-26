@@ -10,7 +10,7 @@ import type { ItemDetail } from "./types";
 
 vi.mock("./api", () => ({ cachedItemDetail: vi.fn(), refreshItemDetail: vi.fn() }));
 vi.mock("./scheduleApi", () => ({ loadScheduleHistory: vi.fn(), readCachedScheduleHistory: vi.fn() }));
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); vi.restoreAllMocks(); });
 const keyFor = (item: string) => scheduleItemKey({ connection: "c", project: "p", type: "story", item, node: "n", scope: "node" });
 const detail = (item: string, name?: string): ItemDetail => ({
   id: { project_key: "p", work_item_type_key: "story", work_item_id: item }, fetched_at_ms: 1, pages: [], data: {
@@ -123,6 +123,29 @@ it("离开事项安排再进入时复用未完成的日历读取与仍新鲜的�
   expect(third.result.current.data).toBe(read);
   await act(async () => {});
   expect(loadScheduleHistory).toHaveBeenCalledOnce();
+});
+
+it("恢复联网会继续预取邻页，编辑暂停仅保护当前页，翻页立即使用已预取结果", async () => {
+  const online = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+  const key = (start: string, end: string) => JSON.stringify(["account", { range: { start, end }, scopes: [] }]);
+  const current = key("2026-11-23", "2026-11-29");
+  const neighbor = key("2026-11-16", "2026-11-22");
+  const currentRead: ScheduleHistory = { connection: "c", complete: true, targets: [], people: [] };
+  const neighborRead = { ...currentRead, people: [{ id: "peer", name: "提前读取" }] };
+  const cache = createScheduleCalendarCache();
+  cache.updatePage(current, () => ({ data: currentRead, checkedAt: Date.now(), loading: false, preloaded: false }));
+  vi.mocked(loadScheduleHistory).mockResolvedValue(neighborRead);
+  const hook = renderHook(({ page, next }) => useScheduleCalendar(page, [next], HISTORICAL_SCHEDULE_INTERVAL, true, cache), {
+    initialProps: { page: current, next: neighbor },
+  });
+  expect(loadScheduleHistory).not.toHaveBeenCalled();
+  online.mockReturnValue(true);
+  await act(async () => { window.dispatchEvent(new Event("online")); });
+  expect(loadScheduleHistory).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ range: { start: "2026-11-16", end: "2026-11-22" } }));
+  expect(hook.result.current.data).toBe(currentRead);
+  hook.rerender({ page: neighbor, next: current });
+  expect(hook.result.current.data).toBe(neighborRead);
+  expect(hook.result.current.loading).toBe(false);
 });
 
 it("历史独有事项重新补读失败时，旧缓存不能覆盖已由远端确认的节点和完成状态", async () => {

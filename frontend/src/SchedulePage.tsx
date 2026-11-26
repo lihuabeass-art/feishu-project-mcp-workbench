@@ -422,6 +422,7 @@ export function SchedulePage({
   const windowEnd = days[days.length - 1];
   const thisWeek = read?.recentRange?.start ?? monday(currentToday);
   const viewingHistory = windowStart < thisWeek;
+  const preloadsEnabled = preloadedSession?.calendarRefreshEnabled !== false;
   const [calendarKey, preloadCalendarKeys, calendarReady] = useMemo((): [string, string[], boolean] => {
     const request = scheduleHistoryRequest(displayRead, snapshot, view, { start: windowStart, end: windowEnd });
     if (!request) return ["", [], false];
@@ -433,10 +434,15 @@ export function SchedulePage({
       return JSON.stringify([calendarContext, { ...request, range: { start, end } }]);
     };
     const visibleKey = keyForWeek(0);
-    const scopeReady = Boolean(request.connection && request.currentUser && request.scopes.length &&
+    // 个人待办没有事项时，日历接口仍可按已启用来源发现历史查询范围。
+    const canDiscoverScopes = snapshot?.sources.some((source) => source.enabled && source.executable && source.kind === "personal_todo");
+    const scopeReady = Boolean(request.connection && request.currentUser && (request.scopes.length || canDiscoverScopes) &&
       !displayRead?.accountError && (view !== "people" || displayRead?.peopleLoaded !== false));
-    return [visibleKey, scopeReady ? [-7, 7, -14, 14].map(keyForWeek).filter(Boolean) : [], scopeReady];
-  }, [displayRead, snapshot, view, calendarContext, peopleCacheContext, windowStart, windowEnd]);
+    const neighbors = scopeReady && preloadsEnabled
+      ? [-1, 1, -2, 2].map((step) => keyForWeek(step * viewDays)).filter(Boolean)
+      : [];
+    return [visibleKey, neighbors, scopeReady];
+  }, [displayRead, snapshot, view, calendarContext, peopleCacheContext, windowStart, windowEnd, viewDays, preloadsEnabled]);
   const defectWorkflowInteraction = Boolean(defectWorkflowLoading || defectWorkflow?.editing || defectWorkflow?.busy || defectWorkflow?.uncertain);
   const workflowInteraction = workflowEditorOpen || workflowLoading || defectWorkflowInteraction || viewSettingsOpen;
   const dirty = entries.some(scheduleChanged);
@@ -457,9 +463,8 @@ export function SchedulePage({
     [currentHistory],
   );
   const recentCheckedAt = cachedPeopleRead?.readAtMs ?? preloadedSession?.checkedAt;
-  const lastCheckedAt = managedCalendar
-    ? viewingHistory ? calendarCheckedAt
-      : recentCheckedAt !== undefined && calendarCheckedAt !== undefined ? Math.min(recentCheckedAt, calendarCheckedAt) : undefined
+  const lastCheckedAt = viewingHistory ? calendarCheckedAt : managedCalendar
+    ? recentCheckedAt !== undefined && calendarCheckedAt !== undefined ? Math.min(recentCheckedAt, calendarCheckedAt) : undefined
     : recentCheckedAt;
   const lastCheckFailed = Boolean(preloadedSession?.refreshError || (managedCalendar && calendarFailed));
   const persistentWarnings = Array.from(new Set(entries.flatMap((entry) =>

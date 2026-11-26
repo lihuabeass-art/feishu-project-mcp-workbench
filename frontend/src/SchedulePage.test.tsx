@@ -1406,6 +1406,10 @@ it.each([
     range: { start: currentWeekDay(weekOffset - 14), end: currentWeekDay(weekOffset - 8) },
     scopes: [{ project: "p", work_item_type: "t", users: isPeople ? ["peer"] : [] }],
   })));
+  await waitFor(() => expect(loadScheduleHistory).toHaveBeenCalledWith(expect.objectContaining({
+    range: { start: currentWeekDay(weekOffset + 14), end: currentWeekDay(weekOffset + 20) },
+    scopes: [{ project: "p", work_item_type: "t", users: isPeople ? ["peer"] : [] }],
+  })));
   if (isPeople) expect(finishTeamCalendar).toBeTypeOf("function");
   const calendar = within(document.querySelector(".schedule-calendar") as HTMLElement);
   expect(calendar.queryByRole("button", { name: /旧周完成事项/ })).toBeNull();
@@ -1516,6 +1520,29 @@ it("当前节点缺少完整日期时保留历史排期补充，编辑产生草�
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: currentWeekDay(2) } });
   expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
   expect(calendar.querySelectorAll(".schedule-bar.is-draft")).toHaveLength(1);
+});
+
+it("人员待办为空时仍预取邻周，切到已预取的历史周立即显示排期", async () => {
+  const read: ScheduleRead = { ...data(), connection: "c", peopleLoaded: true, complete: true, sources: [], targets: [] };
+  const snapshot = projectSnapshot(read);
+  snapshot.sources = [{ id: "todo", kind: "personal_todo", enabled: true, executable: true, reason: null, action: "todo", todo_scope: "in_progress" }];
+  const previousStart = currentWeekDay(-7);
+  const target = { ...data().targets[0], title: "提前读到的历史排期", dates: { start: previousStart, end: currentWeekDay(-6) } };
+  const controller: ScheduleSessionController = { read, pending: null, calendarRefreshEnabled: true, updateRead: vi.fn(), reload: vi.fn() };
+  vi.mocked(loadScheduleHistory).mockImplementation(async ({ range }) => ({
+    connection: "c", complete: true, people: [], targets: range.start === previousStart ? [target] : [],
+  }));
+  render(<SchedulePage snapshot={snapshot} viewMode="people" preloadedSession={controller} peopleCacheContext="account"
+    onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
+
+  const previousWeekReads = () => vi.mocked(loadScheduleHistory).mock.calls.filter(([request]) => request.range.start === previousStart);
+  await waitFor(() => expect(previousWeekReads()).toHaveLength(1));
+  expect(previousWeekReads()[0][0].scopes).toEqual([]);
+  expect(screen.queryByText(target.title)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "上一周" }));
+  expect(screen.getByText(target.title, { selector: ".schedule-row-label strong" })).toBeTruthy();
+  expect(screen.queryByText("正在读取历史排期…")).toBeNull();
+  expect(previousWeekReads()).toHaveLength(1);
 });
 
 it("快速往返只补最终日期附近的缓存，后台预取最多同时两页", async () => {

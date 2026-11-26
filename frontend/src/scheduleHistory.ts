@@ -283,12 +283,26 @@ export function useScheduleCalendar(visibleKey: string, preloadKeys: string[], i
   );
   useScheduleRevalidation(navigationSettled ? visibleKey : "", dueAt, freshUntil, () => { void load(visibleKey); });
   useEffect(() => {
-    if (!navigationSettled || (interval !== undefined && (paused || !scheduleReadAvailable()))) return;
-    for (const key of preloadKeys) {
-      if (cache.preloading.size >= MAX_PRELOADS) break;
-      if (!pages.has(key)) void load(key, true);
-    }
-  }, [cache, preloadKeys, pages, navigationSettled, load, interval, paused]);
+    if (!navigationSettled || !preloadKeys.length) return;
+    const preloadNeighbors = () => {
+      if (!scheduleReadAvailable()) return;
+      const now = Date.now();
+      for (const key of preloadKeys) {
+        if (cache.preloading.size >= MAX_PRELOADS) break;
+        const page = cache.getPages().get(key);
+        if (!page || (page.failed && !page.loading && now - (page.attemptedAt ?? now) >= SCHEDULE_RETRY_DELAY)) {
+          void load(key, true);
+        }
+      }
+    };
+    preloadNeighbors();
+    window.addEventListener("online", preloadNeighbors);
+    document.addEventListener("visibilitychange", preloadNeighbors);
+    return () => {
+      window.removeEventListener("online", preloadNeighbors);
+      document.removeEventListener("visibilitychange", preloadNeighbors);
+    };
+  }, [cache, preloadKeys, pages, navigationSettled, load]);
 
   return {
     data: visible?.data ?? compatible?.[1].data,
