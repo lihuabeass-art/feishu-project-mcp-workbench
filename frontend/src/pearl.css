@@ -56,6 +56,8 @@
   --button-secondary-shadow: 0 2px 6px var(--pearl-shadow);
   --button-secondary-hover-shadow: 0 2px 8px var(--pearl-shadow);
   --switch-off: #959eaf;
+  --scroll-thumb-fill: linear-gradient(130deg, #617b89f0, #6d7498ed 54%, #83708ef0);
+  --scroll-thumb-hover-fill: linear-gradient(130deg, #577782, #646c90 54%, #806a85);
   --pearl-cyan: #9ce9ed70;
   --pearl-violet: #c1b1f566;
   --pearl-rose: #f4bfdc59;
@@ -122,6 +124,8 @@
     var(--input-bg);
   --button-secondary-hover-border: #59647f;
   --switch-off: #626e88;
+  --scroll-thumb-fill: linear-gradient(130deg, #7fa6b6f2, #9797c3f2 54%, #b495b6f2);
+  --scroll-thumb-hover-fill: linear-gradient(130deg, #94b8c5, #a7a7d2 54%, #c4a4c4);
   --pearl-cyan: #62c8d026;
   --pearl-violet: #9c84e833;
   --pearl-rose: #ce7aaf21;

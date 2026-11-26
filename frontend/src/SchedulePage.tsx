@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { DateRangePicker } from "./DateRangePicker";
 import { ScheduleDateControls, ScheduleViewControls } from "./ScheduleViewControls";
+import { ScheduleScrollbars } from "./ScheduleScrollbars";
 import { fitScheduleView, scheduleViewsKey, validViewDate, type ScheduleViewSettings } from "./scheduleViews";
 import { Select } from "./Select";
 import { ScheduleDescription } from "./ScheduleDescription";
@@ -415,6 +416,7 @@ export function SchedulePage({
   const [poolSelection, setPoolSelection] = useState<{ identity: string; owner: string; view: "mine" | "people"; week: string } | null>(null);
   const scrolledPoolSelection = useRef<NonNullable<typeof poolSelection> | null>(null);
   const calendarScrollRef = useRef<HTMLDivElement>(null);
+  const calendarRef = useRef<HTMLDivElement>(null);
   const calendarHeaderRef = useRef<HTMLDivElement>(null);
   const poolCalendarRowRef = useRef<HTMLDivElement>(null);
   const [defectSelection, setDefectSelection] = useState<{ defect: ScheduleDefect; auth: string } | null>(null);
@@ -2558,7 +2560,8 @@ export function SchedulePage({
                   </aside>
                 )}
 
-                <div className="schedule-main" ref={calendarScrollRef}>
+                <div className="schedule-main" ref={calendarScrollRef} role="region" aria-label="排期甘特图" tabIndex={0}>
+                  <ScheduleScrollbars scrollRef={calendarScrollRef} calendarRef={calendarRef} headerRef={calendarHeaderRef} />
                   {calendarLoading && !currentHistory && <div className="banner" role="status">{viewingHistory ? "正在读取历史排期…" : "正在读取日历排期…"}</div>}
                   {calendarFailed && (!managedCalendar || !currentHistory) && (
                     <div className="banner" role="status">
@@ -2568,6 +2571,7 @@ export function SchedulePage({
                   )}
                   <div
                     className={`schedule-calendar is-${view}`}
+                    ref={calendarRef}
                     style={{ "--schedule-cols": days.length } as React.CSSProperties}
                   >
                     <div className="schedule-calendar-header" ref={calendarHeaderRef}>

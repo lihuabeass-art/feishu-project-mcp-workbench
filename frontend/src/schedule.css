@@ -770,6 +770,82 @@
   background: var(--surface);
 }
 
+.schedule-main:focus-visible {
+  outline: var(--control-focus-ring);
+  outline-offset: -2px;
+}
+
+.schedule-scrollbars {
+  /* 留在原生滚动容器内以接收滚轮，并放在黏性日期表头下方。 */
+  position: sticky;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  flex: none;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.schedule-scroll-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: opacity 160ms ease;
+}
+
+.schedule-scroll-thumb[hidden] {
+  display: none;
+}
+
+.schedule-scroll-thumb::before {
+  content: "";
+  border-radius: 999px;
+  background: var(--scroll-thumb-fill);
+}
+
+.schedule-scroll-thumb.is-vertical::before {
+  width: 4px;
+  height: 100%;
+}
+
+.schedule-scroll-thumb.is-horizontal::before {
+  width: 100%;
+  height: 4px;
+}
+
+.schedule-scroll-thumb.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  will-change: transform;
+}
+
+.schedule-scroll-thumb:is(:hover, :active)::before {
+  background: var(--scroll-thumb-hover-fill);
+}
+
+.schedule-scroll-thumb:active {
+  cursor: grabbing;
+}
+
+.schedule-page.is-scrollbar-dragging .schedule-current-node.is-mine::before,
+.schedule-page.is-scrollbar-dragging .schedule-current-node.is-mine::after,
+.schedule-page.is-scrollbar-dragging .schedule-bar.is-schedulable::after {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .schedule-scroll-thumb {
+    transition: none;
+  }
+}
+
 .schedule-calendar {
   --schedule-cols: 7;
   --schedule-label-width: 248px;

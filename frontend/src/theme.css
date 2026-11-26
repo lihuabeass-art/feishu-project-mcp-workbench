@@ -66,6 +66,8 @@
   --button-secondary-shadow: none;
   --button-secondary-hover-shadow: none;
   --switch-off: #a1aca5;
+  --scroll-thumb-fill: #6a8679;
+  --scroll-thumb-hover-fill: var(--green);
   --success-text: #527c61;
   --success-bg: #edf6eb;
   --success-border: #dcead6;
@@ -125,6 +127,7 @@
   --primary-hover: #8dcfb4;
   --on-primary: #10271c;
   --switch-off: #6b6b6b;
+  --scroll-thumb-fill: #729684;
   --success-text: #a1d7ac;
   --success-bg: #22352a;
   --success-border: #426b4c;
