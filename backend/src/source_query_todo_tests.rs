@@ -83,6 +83,28 @@ async fn todo_readers_preserve_structured_authority_and_tool_errors() {
 }
 
 #[tokio::test]
+async fn todo_readers_accept_explicit_zero_count_with_null_list_on_first_page() {
+    let empty = json!({"total":0,"list":null});
+    both_pages(ToolResultPayload { text_blocks: vec![empty.to_string(), "log_id: synthetic-log".into()],
+        ..Default::default() }, vec![], Some(0)).await;
+    both_pages(ToolResultPayload::from_json(empty.clone()), vec![], Some(0)).await;
+
+    let fake = PayloadSource(ToolResultPayload::from_json(empty.clone()));
+    let store = Store::in_memory().unwrap();
+    let source = source();
+    let reader = SourceReader::new(&fake, &source, &store, None, 5);
+    let args = query().to_arguments(2);
+    assert_eq!(reader.personal_page(&args).await.unwrap_err().kind(), ErrorKind::Parse);
+    assert_eq!(reader.schedule_page(&args).await.unwrap_err().kind(), ErrorKind::Parse);
+
+    let fake = PayloadSource(ToolResultPayload { structured: Some(empty), is_error: true, ..Default::default() });
+    let reader = SourceReader::new(&fake, &source, &store, None, 5);
+    let args = query().to_arguments(1);
+    assert_eq!(reader.personal_page(&args).await.unwrap_err().kind(), ErrorKind::Tool);
+    assert_eq!(reader.schedule_page(&args).await.unwrap_err().kind(), ErrorKind::Tool);
+}
+
+#[tokio::test]
 async fn unknown_todo_shape_is_diagnostic_failure_and_keeps_cached_source_items() {
     let store = Store::in_memory().unwrap();
     let source = source();
@@ -101,6 +123,7 @@ async fn unknown_todo_shape_is_diagnostic_failure_and_keeps_cached_source_items(
         ToolResultPayload::from_json(json!({"code":42,"data":{"items":[]},"msg":"private-business-value"})),
         ToolResultPayload::from_json(json!({"total":0})),
         ToolResultPayload::from_json(json!({"list":null})),
+        ToolResultPayload::from_json(json!({"list":null,"total":1})),
     ];
     for payload in invalid_payloads {
         let fake = PayloadSource(payload);

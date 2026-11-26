@@ -4,8 +4,8 @@
 //!
 //! 1. `isError = true` 一律是**工具错误**，绝不退化成空页。
 //! 2. 载荷里既没有 `structuredContent` 也没有可解析的文本 JSON → **解析错误**。
-//!    「什么都没解析出来」和「服务端说你就是没待办」是两件事，后者必须真的带 `list: []`。
-//! 3. 只接受三种顶层形状：`{"total":..,"list":[..]}`、`{"list":[..]}`、裸数组。
+//! 3. 接受含数组 `list` 的对象或裸数组。已实测的飞书首个待办页
+//!    `{"total":0,"list":null}` 也明确表示零条待办。
 //!    出现别的形状就报错并把顶层键列出来，**不去猜** `data`/`items`/`records` 哪个才是清单
 //!    （猜错的代价是把「零条」当成「取完了」）。
 //! 4. 单条结构不符只拒绝该条并记录原因，其他条照常保留；页级形状问题才让整页失败。
@@ -22,7 +22,11 @@ use crate::model::raw::{RawTodoItem, RawTodoPage, RawTodoRecord};
 const TEXT_PREVIEW: usize = 600;
 
 pub fn parse_todo_page(tool: &str, payload: &ToolResultPayload) -> Result<RawTodoPage, BackendError> {
-    let (items, top_level) = parse_todo_page_parts(tool, payload)?;
+    parse_todo_page_at(tool, payload, 1)
+}
+
+pub(crate) fn parse_todo_page_at(tool: &str, payload: &ToolResultPayload, page_num: u32) -> Result<RawTodoPage, BackendError> {
+    let (items, top_level) = parse_todo_page_parts(tool, payload, page_num)?;
     Ok(build_from_parts(tool, items, top_level))
 }
 
@@ -31,6 +35,7 @@ pub fn parse_todo_page(tool: &str, payload: &ToolResultPayload) -> Result<RawTod
 pub(crate) fn parse_todo_page_parts(
     tool: &str,
     payload: &ToolResultPayload,
+    page_num: u32,
 ) -> Result<(Vec<Value>, Map<String, Value>), BackendError> {
     reject_tool_error(tool, payload)?;
 
@@ -40,6 +45,9 @@ pub(crate) fn parse_todo_page_parts(
         Value::Object(mut map) => {
             let items = match map.remove("list") {
                 Some(Value::Array(items)) => items,
+                // 后续页声称总数为零与已读待办冲突，继续报错以保护来源缓存。
+                Some(Value::Null) if tool == super::feishu::TOOL_LIST_TODO && page_num == 1
+                    && map.get("total").and_then(Value::as_i64) == Some(0) => Vec::new(),
                 Some(other) => return Err(BackendError::parse(
                     format!("{tool}.result.list"),
                     format!("list 字段应为数组，实际是 {}", kind_of(&other)),

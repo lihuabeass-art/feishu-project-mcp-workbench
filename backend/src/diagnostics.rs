@@ -93,6 +93,12 @@ pub(crate) fn schedule_stage(stage: &'static str) {
     record(stage, Instant::now(), "started", false);
 }
 
+pub(crate) fn schedule_todo_page_failure(page: u32, started: Instant, error: &crate::BackendError) {
+    let mut value = event("schedule_todo_page", started, error.kind().as_str(), false);
+    value["page"] = page.into();
+    write_event("performance", &value);
+}
+
 pub(crate) fn schedule_result(targets: usize, failed_items: usize, complete: bool) {
     if !complete {
         let _ = TRACE.try_with(|trace| trace.partial.store(true, Ordering::Relaxed));

@@ -1015,9 +1015,14 @@ async fn read_todo_source(session: &Session, client: &dyn TodoSource, status: &m
         let mut seen_pages = HashSet::new();
         let mut seen_rows = HashSet::new();
         for page in crate::config::page_numbers(session.config.max_pages) {
+            let started = std::time::Instant::now();
             let (rows, page_total) = match reader.schedule_page(&query.to_arguments(page)).await {
                 Ok(result) => result,
-                Err(_) => { status.error = Some("个人待办读取未完成，请重试".into()); break; }
+                Err(error) => {
+                    crate::diagnostics::schedule_todo_page_failure(page, started, &error);
+                    status.error = Some("个人待办读取未完成，请重试".into());
+                    break;
+                }
             };
             status.pages += 1;
             if let Some(next_total) = page_total {
@@ -2962,6 +2967,21 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_empty_first_todo_page_completes_schedule_read() {
+        let (session, dir) = fixture();
+        let fake = Arc::new(Fake { calls: Mutex::new(vec![]), fail_detail: AtomicBool::new(false), partial_page: AtomicBool::new(false), receipts: Mutex::new(vec![]) });
+        let installed = crate::remote::install_test_client(&session.config, &session.credential().unwrap(),
+            Box::new(ReadScenario { fake: fake.clone(), pages: vec![json!({"list":null,"total":0})], config: None }));
+        let plan = ScheduleSession::load(&session).unwrap();
+        assert!(plan.view.sources[0].complete);
+        assert!(plan.view.sources[0].error.is_none());
+        assert_eq!(plan.view.sources[0].pages, 1);
+        assert!(plan.view.targets.is_empty());
+        assert_eq!(fake.calls.lock().unwrap().iter().filter(|(tool, _)| tool == "list_todo").count(), 1);
+        drop(installed); drop(session); std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn inconsistent_totals_and_missing_item_identity_are_not_complete() {
         let row = json!({"project_key":"p","work_item_info":{"work_item_id":"1","work_item_type_key":"story","work_item_name":"任务"}});
         let other = json!({"project_key":"p","work_item_info":{"work_item_id":"2","work_item_type_key":"story"}});
@@ -2970,6 +2990,7 @@ mod tests {
             vec![json!({"list":[row.clone()],"total":"invalid"})],
             vec![json!({"list":[row.clone(), other.clone()],"total":1})],
             vec![json!({"list":[row.clone()],"total":3}), json!({"list":[other.clone()],"total":2})],
+            vec![json!({"list":[row.clone()],"total":2}), json!({"list":null,"total":0})],
             vec![json!({"list":[row.clone()],"total":3}), json!({"list":[row, other],"total":3})],
             vec![json!({"list":[missing],"total":1})],
         ];

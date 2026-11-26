@@ -25,7 +25,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::error::BackendError;
-use crate::mcp::{parse_todo_page, TodoSource};
+use crate::mcp::{parse::parse_todo_page_at, TodoSource};
 use crate::model::domain::{to_work_item, RejectReason, WorkItem};
 use crate::model::source::PersonalTodoQuery;
 use crate::store::{RunStatus, RunTrigger, StopReason, Store, TypeScope, UpsertStats};
@@ -189,7 +189,7 @@ pub async fn sync_personal_todos(
     for page_num in crate::config::page_numbers(max_pages) {
         let outcome = async {
             let payload = source.call_list_todo(&query.to_arguments(page_num)).await?;
-            parse_todo_page(crate::mcp::feishu::TOOL_LIST_TODO, &payload)
+            parse_todo_page_at(crate::mcp::feishu::TOOL_LIST_TODO, &payload, page_num)
         }
         .await;
         let early = source.drain_early_upserts();

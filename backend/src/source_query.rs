@@ -237,7 +237,7 @@ impl<'a> SourceReader<'a> {
     async fn personal_page(&self, args: &Map<String, Value>) -> Result<(Vec<Value>, Option<i64>), BackendError> {
         let payload = self.measured_check().call_list_todo(args).await?;
         // 原始待办解析器负责逐条拒绝统计；不能在这里把异常条目丢掉。
-        let (rows, metadata) = parse_todo_page_parts("list_todo", &payload)?;
+        let (rows, metadata) = parse_todo_page_parts("list_todo", &payload, page_number(args))?;
         let total = metadata.get("total").and_then(|n| {
             n.as_i64().or_else(|| n.as_str().and_then(|s| s.parse().ok()))
         });
@@ -389,7 +389,7 @@ impl TodoSource for SourceReader<'_> {
         &self,
         args: &Map<String, Value>,
     ) -> Result<ToolResultPayload, BackendError> {
-        let page = args.get("page_num").and_then(Value::as_u64).unwrap_or(1) as u32;
+        let page = page_number(args);
         let waiting = Instant::now();
         let pending = self.prefetched.lock().expect("prefetch poisoned").take();
         let raw = match pending {
@@ -457,7 +457,7 @@ impl SourceReader<'_> {
     /// 只取本轮来源原始页，不使用详情缓存，也不更新共享缓存。
     pub(crate) async fn schedule_page(&self, args: &Map<String, Value>) -> Result<(Vec<Value>, Option<i64>), BackendError> {
         let payload = self.measured_check().call_list_todo(args).await?;
-        let (rows, metadata) = parse_todo_page_parts("list_todo", &payload)?;
+        let (rows, metadata) = parse_todo_page_parts("list_todo", &payload, page_number(args))?;
         let total = match metadata.get("total") {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_i64().or_else(|| value.as_str().and_then(|text| text.parse().ok()))
@@ -466,7 +466,7 @@ impl SourceReader<'_> {
         Ok((rows, total))
     }
     async fn query_page(&self, args: &Map<String, Value>) -> Result<RawPage, BackendError> {
-        let page = args.get("page_num").and_then(Value::as_u64).unwrap_or(1) as u32;
+        let page = page_number(args);
         let _query_timer = self.metrics.phase(true);
         let (rows, total) = match &self.source.kind {
             SourceKind::PersonalTodo => self.personal_page(args).await?,
@@ -522,6 +522,10 @@ impl SourceReader<'_> {
         let versions = self.store.detail_versions(&rows.iter().map(row_identity).collect::<Vec<_>>())?;
         Ok(RawPage { rows, total, versions })
     }
+}
+
+fn page_number(args: &Map<String, Value>) -> u32 {
+    args.get("page_num").and_then(Value::as_u64).unwrap_or(1) as u32
 }
 
 fn row_identity(row: &Value) -> WorkItemId {

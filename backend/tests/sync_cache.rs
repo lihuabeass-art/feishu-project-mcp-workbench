@@ -368,11 +368,14 @@ async fn source_memberships_survive_overlap_failures_and_log_rotation() {
     assert!(run_sync(&mut failed, &store, &query(), 10).await.is_err());
     let mut truncated = FakeSource::new(vec![Scripted::Json(page(3, &["new"]))]);
     assert!(!run_sync(&mut truncated, &store, &query(), 1).await.unwrap().complete);
+    let mut inconsistent = FakeSource::new(vec![Scripted::Json(page(3, &["new"])),
+        Scripted::Json(serde_json::json!({"list":null,"total":0}))]);
+    assert_eq!(run_sync(&mut inconsistent, &store, &query(), 10).await.unwrap_err().kind(), ErrorKind::Parse);
     let mut rejected = FakeSource::new(vec![Scripted::Json(fixture("page_mixed_quality.json"))]);
     assert!(!run_sync(&mut rejected, &store, &query(), 10).await.unwrap().complete);
     assert!(store.query_items(&ItemFilter::default()).unwrap().iter().any(|r|r.item.id.work_item_id=="gone"));
 
-    let mut empty = FakeSource::new(vec![Scripted::Json(page(0, &[]))]);
+    let mut empty = FakeSource::new(vec![Scripted::Json(serde_json::json!({"list":null,"total":0}))]);
     run_sync(&mut empty, &store, &query(), 10).await.unwrap();
     let rows = store.query_items(&ItemFilter::default()).unwrap();
     assert_eq!(rows.len(), 2);
