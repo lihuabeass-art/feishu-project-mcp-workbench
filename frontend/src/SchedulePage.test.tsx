@@ -47,22 +47,135 @@ const setup = async () => { const guard = vi.fn(); render(<SchedulePage onGuardC
 it("人员排期在网络返回前显示本机上次快照，部分成功时保留缓存", async () => {
   const initial: ScheduleRead = { ...data(), connection: "c", complete: true, peopleLoaded: false, targets: [] };
   const target = { ...data().targets[0], title: "本机缓存事项", nodeStatus: "doing" };
+  const cachedAt = new Date("2026-11-26T11:01:43+08:00");
   vi.mocked(readCachedSchedulePeople).mockResolvedValue({
-    ...initial, sessionId: "", peopleLoaded: true, readAt: "上次确认", targets: [target],
+    ...initial, sessionId: "", peopleLoaded: true, readAt: "上次确认", readAtMs: cachedAt.getTime(), targets: [target],
   });
   vi.mocked(loadScheduleSession).mockResolvedValue(initial);
   let finish!: (value: ScheduleRead) => void;
   vi.mocked(loadSchedulePeople).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   render(<SchedulePage peopleCacheContext="connection-and-sources" onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
-  expect(await screen.findByText(/正在显示上次读取的人员排期/)).toBeTruthy();
+  const progress = await screen.findByText("正在更新人员排期");
+  const status = within(document.querySelector<HTMLElement>(".schedule-overview-actions")!).getByRole("status");
+  expect(status.contains(progress)).toBe(true);
+  expect(within(status).getByText(/显示缓存/)).toBeTruthy();
+  expect(status.querySelector("time")?.dateTime).toBe(cachedAt.toISOString());
+  expect(document.querySelector(".schedule-page > .banner.preview")).toBeNull();
   expect(screen.getAllByText("本机缓存事项").length).toBeGreaterThan(0);
   await waitFor(() => expect(loadSchedulePeople).toHaveBeenCalledWith(initial.sessionId));
   await act(async () => finish({ ...initial, peopleLoaded: true, complete: false,
     sources: [{ id: "s", name: "来源", complete: false, error: "读取未完成" }] }));
+  expect(within(status).queryByText("正在更新人员排期")).toBeNull();
+  expect(within(status).getByText(/显示缓存/)).toBeTruthy();
   expect(screen.getAllByText("本机缓存事项").length).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
   expect(screen.queryByText("本机缓存事项")).toBeNull();
+  expect(screen.queryByText(/显示缓存/)).toBeNull();
+});
+
+it("本机空的人员缓存不会盖住首次部分读取取得的关联事项", async () => {
+  const initial: ScheduleRead = { ...data(), connection: "c", complete: true, peopleLoaded: false, targets: [] };
+  vi.mocked(readCachedSchedulePeople).mockResolvedValue({ ...initial, sessionId: "", peopleLoaded: true });
+  vi.mocked(loadScheduleSession).mockResolvedValue(initial);
+  let finish!: (value: ScheduleRead) => void;
+  vi.mocked(loadSchedulePeople).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  render(<SchedulePage peopleCacheContext="connection-and-sources" onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  await screen.findByText(/显示缓存/);
+  await act(async () => finish({ ...initial, peopleLoaded: true, complete: false,
+    targets: [{ ...data().targets[0], title: "本次查到的关联需求", nodeStatus: "doing" }] }));
+  expect(screen.getAllByText("本次查到的关联需求").length).toBeGreaterThan(0);
+  expect(screen.queryByText(/显示缓存/)).toBeNull();
+});
+
+it("首次加载团队排期时在工具栏反馈，完整读取后让出位置", async () => {
+  const initial: ScheduleRead = { ...data(), complete: true, peopleLoaded: false, sources: [] };
+  vi.mocked(loadScheduleSession).mockResolvedValue(initial);
+  let finish!: (value: ScheduleRead) => void;
+  vi.mocked(loadSchedulePeople).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const progress = await screen.findByText("正在加载人员排期");
+  expect(progress.closest(".schedule-overview-actions")).toBeTruthy();
+  expect(screen.queryByText(/显示缓存/)).toBeNull();
+  await act(async () => finish({ ...initial, peopleLoaded: true }));
+  expect(screen.queryByText("正在加载人员排期")).toBeNull();
+});
+
+it.each([
+  { name: "测试本人", label: "测试本人（我）" },
+  { name: "当前用户", label: "我" },
+])("本人以「$label」固定在人员选择顶部，清除筛选后恢复同事排期", async ({ name, label }) => {
+  const original = data();
+  const read: ScheduleRead = {
+    ...original, peopleLoaded: true, complete: true, sources: [],
+    people: [
+      { id: "peer", name: "测试同事", project: "p", connection: "c" },
+      { id: "me", name: "当前用户" },
+      { id: "me", name, project: "p", connection: "c" },
+    ],
+    targets: [{
+      ...original.targets[0], title: "同事的已排期事项", identity: { ...identity, owner: "peer" },
+      ownerId: "peer", ownerIds: ["peer"], mine: false, peopleOnly: true, nodeStatus: "doing",
+      dates: { start: currentWeekDay(0), end: currentWeekDay(0) },
+    }],
+  };
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const selector = screen.getByRole("combobox", { name: "筛选人员" });
+  fireEvent.click(selector);
+  const menu = await screen.findByRole("listbox", { name: "筛选人员" });
+  expect(within(menu).getAllByRole("option").map((option) => option.textContent)).toEqual([label, "全部人员", "测试同事"]);
+  fireEvent.click(within(menu).getByRole("option", { name: label }));
+  expect(selector.textContent).toBe(label);
+  expect(await screen.findByText("当前范围未包含该人员的安排")).toBeTruthy();
+  fireEvent.click(screen.getByRole("option", { name: "全部人员" }));
+  expect(screen.getByRole("button", { name: /同事的已排期事项/ })).toBeTruthy();
+});
+
+it.each(["empty", "partial", "rejected"] as const)("区分账号没有关联排期与读取失败（%s）", async (outcome) => {
+  const complete = outcome === "empty";
+  const read: ScheduleRead = {
+    ...data(), peopleLoaded: true, complete, targets: [],
+    sources: [{ id: "associated", name: "我参与的需求", complete, ...(complete ? {} : { error: "关联需求读取未完成" }) }],
+  };
+  if (outcome === "rejected") vi.mocked(loadScheduleSession).mockRejectedValueOnce({ kind: "connection" });
+  else vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  render(<SchedulePage onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const emptyText = "当前账号暂无可显示的关联需求排期。";
+  if (complete) {
+    expect(await screen.findByText(emptyText)).toBeTruthy();
+  } else {
+    expect(await screen.findByText("暂未取得人员排期，请重新读取。")).toBeTruthy();
+    expect(screen.queryByText("本周暂无可显示的安排")).toBeNull();
+    expect(screen.queryByText(emptyText)).toBeNull();
+  }
+});
+
+it("关联的状态流需求按真实事项排期展示，缺日期仍保留只读需求行", async () => {
+  const initial = data();
+  const item = {
+    ...initial.targets[0], identity: { ...identity, node: "", scope: "node" as const, owner: undefined },
+    nodeName: "", mine: false, peopleOnly: true, sourceAggregate: true, ownerId: null, ownerIds: [],
+    cacheKind: "associated_item", scheduleRequired: false, readOnlyReason: "事项级排期，仅供查看",
+  };
+  vi.mocked(loadScheduleSession).mockResolvedValue({
+    ...initial, complete: true, peopleLoaded: true, sources: [],
+    targets: [
+      { ...item, title: "状态流关联需求", dates: { start: currentWeekDay(0), end: currentWeekDay(1) } },
+      { ...item, id: "undated", title: "尚无日期的关联需求", identity: { ...item.identity, item: "undated" } },
+    ],
+  });
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
+  expect(within(calendar).getByText("尚无日期的关联需求")).toBeTruthy();
+  const bar = within(calendar).getByRole("button", { name: "状态流关联需求" });
+  expect(bar.getAttribute("draggable")).toBe("false");
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
 });
 
 it("日期格式化结果不是 ISO 文本时仍能打开事项安排", async () => {
@@ -884,7 +997,7 @@ it("默认显示来源聚合日期且保持只读，人员排期不虚构负责�
   expect(screen.getByText("负责人不明")).toBeTruthy();
   expect(screen.queryByText(/节点共同排期/)).toBeNull();
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
-  fireEvent.click(screen.getByRole("option", { name: "本人" }));
+  fireEvent.click(screen.getByRole("option", { name: "本人（我）" }));
   expect(screen.queryByRole("button", { name: /来源记录/ })).toBeNull();
   expect(await screen.findByText("当前范围未包含该人员的安排")).toBeTruthy();
   expect(submitScheduleTargets).not.toHaveBeenCalled();
@@ -1044,9 +1157,9 @@ it("已有多日排期可移到下方留白并拉伸，取消拖动或外部拖�
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
-it("搜索人员时自动展开筛选并显示匹配项", async () => {
+it("搜索人员时保留置顶的本人并筛出匹配的其他成员", async () => {
   const read = data();
-  read.people.push({ id: "other", name: "刘同事" });
+  read.people.push({ id: "other", name: "刘同事" }, { id: "third", name: "张同事" });
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
@@ -1054,15 +1167,15 @@ it("搜索人员时自动展开筛选并显示匹配项", async () => {
   const filter = screen.getByRole("combobox", { name: "筛选人员" });
   fireEvent.change(search, { target: { value: "刘" } });
   expect(filter.getAttribute("aria-expanded")).toBe("true");
-  expect(screen.getByRole("option", { name: "刘同事" })).toBeTruthy();
-  expect(screen.queryByRole("option", { name: "本人" })).toBeNull();
+  const menu = screen.getByRole("listbox", { name: "筛选人员" });
+  expect(within(menu).getAllByRole("option").map((option) => option.textContent)).toEqual(["本人（我）", "全部人员", "刘同事"]);
   fireEvent.click(screen.getByRole("option", { name: "刘同事" }));
   expect(screen.getByRole("option", { name: "刘同事" }).getAttribute("aria-selected")).toBe("true");
   fireEvent.click(filter);
   expect(filter.getAttribute("aria-expanded")).toBe("false");
   fireEvent.change(search, { target: { value: "" } });
   expect(filter.getAttribute("aria-expanded")).toBe("true");
-  expect(screen.getByRole("option", { name: "本人" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "张同事" })).toBeTruthy();
 });
 
 it("按人筛选后切回我的排期不会沿用隐藏的人员筛选", async () => {
@@ -1088,16 +1201,18 @@ it("人员筛选支持连续多选、取消及清空，并按负责人显示共�
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
-  fireEvent.click(screen.getByRole("option", { name: "本人" }));
+  fireEvent.click(screen.getByRole("option", { name: "本人（我）" }));
   fireEvent.click(screen.getByRole("option", { name: "同事" }));
-  expect(screen.getByRole("option", { name: "本人" }).getAttribute("aria-selected")).toBe("true");
+  const menu = screen.getByRole("listbox", { name: "筛选人员" });
+  expect(within(menu).getAllByRole("option").slice(0, 2).map((option) => option.textContent)).toEqual(["本人（我）", "全部人员"]);
+  expect(screen.getByRole("option", { name: "本人（我）" }).getAttribute("aria-selected")).toBe("true");
   expect(screen.getByRole("option", { name: "同事" }).getAttribute("aria-selected")).toBe("true");
   const pending = document.querySelector(".schedule-pending")!;
   expect(pending.textContent).toContain("本人");
   expect(pending.textContent).toContain("同事");
   expect(pending.textContent).not.toContain("第三人任务");
   expect(pending.textContent).not.toContain("第三人");
-  fireEvent.click(screen.getByRole("option", { name: "本人" }));
+  fireEvent.click(screen.getByRole("option", { name: "本人（我）" }));
   expect(pending.textContent).not.toContain("任务一");
   expect(pending.textContent).toContain("同事");
   fireEvent.click(screen.getByRole("option", { name: "全部人员" }));
@@ -1126,7 +1241,7 @@ it("人员有待安排事项但本周无排期时仍补齐事项行", async () =
   await setup();
   fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
-  fireEvent.click(screen.getByRole("option", { name: "本人" }));
+  fireEvent.click(screen.getByRole("option", { name: "本人（我）" }));
   const calendar = document.querySelector(".schedule-calendar")!;
   expect(calendar.querySelector(".schedule-row-label strong")?.textContent).toBe("任务一");
   expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(0);
@@ -2232,7 +2347,7 @@ it("本人尾号兜底自动替换为真实姓名与头像，纯数字回退名�
   expect(avatars.some((el) => el.textContent === "9" || el.textContent === "6")).toBe(false);
   // 筛选人员下拉框不裸露 19 位 user_key，纯数字回退名展示为“成员”
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
-  expect(screen.getByRole("option", { name: "王小明" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "王小明（我）" })).toBeTruthy();
   expect(screen.getByRole("option", { name: "成员" })).toBeTruthy();
   expect(screen.queryByRole("option", { name: new RegExp(uid) })).toBeNull();
   expect(screen.queryByRole("option", { name: /1000000000000999999/ })).toBeNull();
@@ -3133,7 +3248,7 @@ it("人员排期展示事项的全部当前节点及负责人，排期条和详�
     expect(scope.queryByRole("button", { name: new RegExp(other) })).toBeNull();
   }
   fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
-  fireEvent.click(screen.getByRole("option", { name: "前端同事" }));
+  fireEvent.click(screen.getByRole("option", { name: "前端同事（我）" }));
   fireEvent.keyDown(screen.getByRole("combobox", { name: "筛选人员" }), { key: "Escape" });
   const calendar = document.querySelector(".schedule-calendar")!;
   expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(1);

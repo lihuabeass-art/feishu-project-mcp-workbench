@@ -1399,17 +1399,17 @@ async fn expand_cached_non_todo_items(
         if processed_items.contains(&(project.clone(), kind.clone(), item_num.clone())) {
             continue;
         }
-        if cached.is_completed == Some(true)
-            || cached.item.flow.kind == crate::model::domain::FlowKind::State
-        {
-            processed_items.insert((project, kind, item_num));
+        if cached.is_completed == Some(true) {
+            continue;
+        }
+        if cached.item.flow.kind == crate::model::domain::FlowKind::State {
             continue;
         }
         let cached_detail = session.store.item_detail(&id).ok().flatten();
-        if cached_detail.as_ref().is_some_and(|d| {
-            is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data)
-        }) {
-            processed_items.insert((project, kind, item_num));
+        if cached_detail.as_ref().is_some_and(|d| is_completed_or_aborted_detail(&d.data)) {
+            continue;
+        }
+        if cached_detail.as_ref().is_some_and(|d| is_state_flow_detail(&d.data)) {
             continue;
         }
         if only_mine_related {
@@ -1423,12 +1423,13 @@ async fn expand_cached_non_todo_items(
             }
         }
         processed_items.insert((project, kind, item_num));
-        extra_items.push((
+        extra_items.push(ExtraItem {
             id,
-            cached.item.name.unwrap_or_default(),
+            title: cached.item.name.unwrap_or_default(),
             sources,
             cached_detail,
-        ));
+            finished: false,
+        });
     }
     let max_pages = session.config.max_pages;
     read_extra_items(
@@ -1438,6 +1439,24 @@ async fn expand_cached_non_todo_items(
 
     let mut team_members = BTreeMap::<String, BTreeSet<String>>::new();
     if let Some(history_scopes) = history_scopes {
+        crate::diagnostics::schedule_stage("schedule_associated_stories");
+        let (associated, complete) = people::associated_stories(client.as_ref(), max_pages)
+            .await.unwrap_or_else(|_| (Vec::new(), false));
+        if !complete {
+            failed_sources.insert(people::ASSOCIATED_SOURCE_ID.into(), "部分关联需求读取未完成，请重试".into());
+        }
+        let associated_items = associated.into_iter().filter_map(|story| {
+            if !processed_items.insert(story.id.key_tuple()) { return None; }
+            Some(ExtraItem {
+                id: story.id, title: story.title, sources: BTreeSet::from([people::ASSOCIATED_SOURCE_ID.into()]),
+                cached_detail: None, finished: story.finished,
+            })
+        }).collect();
+        read_extra_items(
+            session, client.as_ref(), fingerprint, session_id, current_user, associated_items, None,
+            schedule_configs, detail_names, detail_avatars, item_errors, failed_sources, out_targets,
+        ).await;
+
         for scope in history_scopes.iter().filter(|scope| scope.work_item_type == "story") {
             team_members.entry(scope.project.clone()).or_default().extend(scope.users.iter().cloned());
         }
@@ -1458,9 +1477,12 @@ async fn expand_cached_non_todo_items(
         let mut team_items = Vec::new();
         while let Some(response) = reads.next().await {
             match response {
-                Ok(items) => for (id, title) in items {
-                    if processed_items.insert(id.key_tuple()) {
-                        team_items.push((id, title, BTreeSet::from([people::SOURCE_ID.into()]), None));
+                Ok(items) => for story in items {
+                    if processed_items.insert(story.id.key_tuple()) {
+                        team_items.push(ExtraItem {
+                            id: story.id, title: story.title, sources: BTreeSet::from([people::SOURCE_ID.into()]),
+                            cached_detail: None, finished: false,
+                        });
                     }
                 },
                 Err(_) => {
@@ -1475,7 +1497,45 @@ async fn expand_cached_non_todo_items(
     }
 }
 
-type ExtraItem = (WorkItemId, String, BTreeSet<String>, Option<detail::ItemDetail>);
+struct ExtraItem {
+    id: WorkItemId,
+    title: String,
+    sources: BTreeSet<String>,
+    cached_detail: Option<detail::ItemDetail>,
+    finished: bool,
+}
+
+fn associated_item_target(
+    session: &Session, fingerprint: &str, id: &WorkItemId, title: &str,
+    sources: &BTreeSet<String>, item: &detail::ItemDetail,
+) -> Target {
+    let summary = detail::summary(item, Value::Null);
+    let schedule = &summary["schedule"];
+    let baseline = Dates {
+        start: schedule.get("start_time").and_then(date).unwrap_or_default(),
+        end: schedule.get("end_time").and_then(date).unwrap_or_default(),
+    };
+    let scheduled = !baseline.start.is_empty() || !baseline.end.is_empty();
+    let node_status = if is_completed_or_aborted_detail(&item.data) { "finished" } else { "" };
+    Target {
+        id: String::new(), node_id: String::new(),
+        identity: Identity {
+            connection: fingerprint.into(), project: id.project_key.clone().unwrap_or_default(),
+            r#type: id.work_item_type_key.clone().unwrap_or_default(), item: id.work_item_id.clone(),
+            node: String::new(), scope: "node".into(), owner: None,
+        },
+        title: if title.is_empty() {
+            detail::text(&item.data["work_item_attribute"]["work_item_name"]).unwrap_or_else(|| id.work_item_id.clone())
+        } else { title.into() },
+        node_name: String::new(), node_status: node_status.into(), node_started_at_ms: None, node_order: 0,
+        schedule_required: false, owner_name: String::new(), owners: Vec::new(), unknown_owner: true,
+        item_url: crate::workflow::item_url(&session.config.endpoint, id, &item.data),
+        sources: sources.iter().cloned().collect(), baseline,
+        read_only_reason: Some(if scheduled { "事项级排期，仅供查看" } else { "暂无可显示的排期，仅供查看" }.into()),
+        source_aggregate: true, people_only: true, cache_kind: "associated_item",
+        start_state: "unknown", end_state: "unknown", fetched_at_ms: Some(item.fetched_at_ms),
+    }
+}
 
 async fn read_extra_items(
     session: &Session,
@@ -1494,8 +1554,12 @@ async fn read_extra_items(
 ) {
     let max_pages = session.config.max_pages;
     let mut fetched_extra = stream::iter(items.into_iter().enumerate())
-        .map(|(index, (id, title, sources, cached_detail))| async move {
-            let (nodes, item_detail) = read_nodes_and_detail(client, &id, cached_detail, max_pages).await;
+        .map(|(index, ExtraItem { id, title, sources, cached_detail, finished })| async move {
+            let (nodes, item_detail) = if sources.contains(people::ASSOCIATED_SOURCE_ID) {
+                people::read_associated_nodes(client, fingerprint, &id, finished, max_pages).await
+            } else {
+                read_nodes_and_detail(client, &id, cached_detail, max_pages).await
+            };
             (index, (id, title, sources, item_detail, nodes))
         })
         .buffer_unordered(4)
@@ -1505,13 +1569,22 @@ async fn read_extra_items(
     read_schedule_configs(client, max_pages, schedule_configs,
         fetched_extra.iter().map(|(_, (id, _, _, detail, nodes))| (id, detail.as_ref(), nodes))).await;
     for (_, (id, mut title, sources, cached_detail, nodes_result)) in fetched_extra {
+        let associated = sources.contains(people::ASSOCIATED_SOURCE_ID);
+        let completed = cached_detail.as_ref().is_some_and(|d| is_completed_or_aborted_detail(&d.data));
+        let state_flow = cached_detail.as_ref().is_some_and(|d| is_state_flow_detail(&d.data));
+        if associated {
+            if let Some(item) = &cached_detail {
+                if state_flow || !nodes_result.as_ref().is_ok_and(|nodes| !nodes.is_empty()) {
+                    out_targets.push(associated_item_target(session, fingerprint, &id, &title, &sources, item));
+                    if state_flow || (completed && nodes_result.is_ok()) { continue; }
+                }
+            }
+        }
         let nodes = match nodes_result {
             Ok(nodes) if !nodes.is_empty() => nodes,
             empty_or_err => {
                 let detail = cached_detail;
-                if detail.as_ref().is_some_and(|d| {
-                    is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data)
-                }) {
+                if state_flow || (completed && !associated) {
                     continue;
                 }
                 if let Some(d) = &detail {
@@ -1540,21 +1613,21 @@ async fn read_extra_items(
             }
         };
         let detail = cached_detail;
-        if detail.as_ref().is_some_and(|d| {
-            is_state_flow_detail(&d.data) || is_completed_or_aborted_detail(&d.data)
-        }) {
+        if state_flow || (completed && !associated) {
             continue;
         }
         let project = id.project_key.as_deref().unwrap_or_default();
         let kind = id.work_item_type_key.as_deref().unwrap_or_default();
         let team_only = team_members.is_some();
-        if team_only && detail.is_none() {
-            failed_sources.insert(people::SOURCE_ID.into(), "部分人员当前事项详情读取未完成，请重试".into());
+        if (team_only || associated) && detail.is_none() {
+            for source in &sources {
+                failed_sources.insert(source.clone(), "部分事项详情读取未完成，请重试".into());
+            }
             continue;
         }
         let config_key = (project.to_owned(), kind.to_owned());
-        let config = *schedule_configs.get(&config_key).unwrap();
-        if config.is_err() {
+        let config = schedule_configs.get(&config_key).copied().unwrap_or(Ok(false));
+        if !completed && config.is_err() {
             for sid in &sources {
                 failed_sources
                     .insert(sid.clone(), "节点排期字段配置读取未完成，请重试".into());
@@ -1589,6 +1662,15 @@ async fn read_extra_items(
             );
         }
         let has_incomplete_target = temp.iter().any(incomplete_target);
+        if completed {
+            temp.retain(|target| !target.baseline.start.is_empty() || !target.baseline.end.is_empty());
+        }
+        if associated && !temp.iter().any(|target| !target.owners.is_empty() ||
+            !target.baseline.start.is_empty() || !target.baseline.end.is_empty()) {
+            if let Some(item) = &detail {
+                out_targets.push(associated_item_target(session, fingerprint, &id, &title, &sources, item));
+            }
+        }
         if let Some(members) = team_members.and_then(|members| members.get(project)) {
             // 补查只提供当前节点。已流转或未来节点的真实排期由日期查询返回。
             temp.retain(|target| target.node_status == "doing");
@@ -1603,9 +1685,13 @@ async fn read_extra_items(
         for mut target in temp {
             target.item_url = item_url.clone();
             target.node_started_at_ms = detail.as_ref().and_then(|d| current_node_started_at(&d.data, &target.identity.node));
-            if team_only {
+            if team_only || associated {
                 target.people_only = true;
-                target.read_only_reason.get_or_insert_with(|| "人员排期补充事项，仅供查看".into());
+                target.read_only_reason.get_or_insert_with(|| if associated {
+                    "关联需求排期，仅供查看".into()
+                } else {
+                    "人员排期补充事项，仅供查看".into()
+                });
             }
             if target.read_only_reason.is_none() && !matches!(config, Ok(true)) {
                 target.read_only_reason = Some(
@@ -1652,7 +1738,9 @@ fn ensure_target_sources_in_view(
         if !seen.insert(sid.clone()) {
             continue;
         }
-        let name = if sid == people::SOURCE_ID { "人员当前事项".into() } else { tables
+        let name = if sid == people::SOURCE_ID { "人员当前事项".into() }
+        else if sid == people::ASSOCIATED_SOURCE_ID { "我参与的需求".into() }
+        else { tables
             .iter()
             .find(|t| &t.id == sid)
             .and_then(|t| t.display_name.clone())
@@ -4398,6 +4486,7 @@ mod tests {
                     ],
                     "total": 1
                 }),
+                "search_project_info" => json!({"projects":[],"pagination":{"has_more":false}}),
                 "search_by_mql" => {
                     let row = |id, title| json!({"moql_field_list":[
                         {"key":"work_item_id","value":{"long_value":id}},
@@ -4505,6 +4594,122 @@ mod tests {
                 _ => panic!("unexpected tool {tool}"),
             };
             Ok(ToolResultPayload::from_json(v))
+        }
+    }
+
+    struct AssociatedStoriesScenario {
+        calls: Mutex<Vec<(String, Value)>>,
+        fail_secondary_space: bool,
+    }
+
+    #[async_trait]
+    impl TodoSource for Arc<AssociatedStoriesScenario> {
+        async fn describe(&self) -> Result<ConnectionInfo, BackendError> { unreachable!() }
+        async fn close(&mut self) {}
+        async fn call_tool(
+            &self, tool: &str, args: &Map<String, Value>,
+        ) -> Result<ToolResultPayload, BackendError> {
+            self.calls.lock().unwrap().push((tool.into(), Value::Object(args.clone())));
+            let project = args.get("project_key").and_then(Value::as_str).unwrap_or_default();
+            let done = project == "second";
+            let state_flow = matches!(project, "state" | "state_without_dates");
+            let response = match tool {
+                "search_user_info" => json!([{"user_key":"me","name_cn":"测试账号"}]),
+                "list_todo" => json!({"list":null,"total":0}),
+                "search_project_info" if args["page_num"] == 1 => json!({
+                    "projects":[{"project_key":"first","name":"测试空间一"}],"pagination":{"has_more":true}
+                }),
+                "search_project_info" => json!({"projects":[
+                    {"project_key":"second","name":"测试空间二"},{"project_key":"issues","name":"测试缺陷空间"},
+                    {"project_key":"state","name":"测试状态流空间"},{"project_key":"state_without_dates","name":"测试空排期空间"}
+                ],"pagination":{"has_more":false}}),
+                "list_workitem_types" => json!({"list":[{"type_key":if project == "issues" {"issue"} else {"story"}}]}),
+                "search_by_mql" => {
+                    assert_ne!(project, "issues");
+                    let query = args["mql"].as_str().unwrap();
+                    if query.contains("all_participate_persons()") {
+                        assert!(query.contains("current_login_user()"));
+                        assert!(query.contains("`finish_status` FROM"));
+                        assert!(!query.contains("AND `finish_status`"));
+                        if done && self.fail_secondary_space {
+                            return Err(BackendError::parse(tool, "测试空间读取失败"));
+                        }
+                        json!({"session_id":"cursor","list":[{"count":1,"group_infos":[{"group_id":"g"}]}],
+                            "data":{"g":[{"moql_field_list":[
+                                {"key":"work_item_id","value":{"long_value":4}},
+                                {"key":"name","value":{"string_value":"测试关联需求"}},
+                                {"key":"finish_status","value":{"bool_value":done}}
+                            ]}]}})
+                    } else {
+                        assert!(query.contains("`current_status_operator` IN"));
+                        json!({"session_id":"empty","list":null,"data":{},"extra_info":null,"search_status_info":null})
+                    }
+                }
+                "get_workitem_brief" => json!({
+                    "work_item_attribute":{"work_item_id":"4","work_item_name":"测试关联需求",
+                        "owned_project":{"key":project},"work_item_type":{"key":"story"},
+                        "work_item_mod":if state_flow {"状态流"} else {"节点流"},"finish_status":done},
+                    "work_item_fields":if project == "state" {json!([
+                        {"key":"schedule","value":{"start_time":"2026-11-16","end_time":"2026-11-17"}}
+                    ])} else {json!([])},
+                    "pagination":{"has_more":false}
+                }),
+                "get_node_detail" => {
+                    assert!(!state_flow);
+                    json!({"list":[{
+                        "basic":{"node_key":"n","name":"设计","status":if done {"finished"} else {"doing"}},
+                        "assignees":{"owners":[{"user_key":"peer","name":"测试同事"}]},
+                        "schedule":{"estimate_start_time":done.then_some(1794499200000i64),
+                            "estimate_finish_time":done.then_some(1794585600000i64)}
+                    }],"pagination":{"has_more":false}})
+                }
+                "list_node_field_config" => json!({"list":[{"field_key":"schedule","field_type":"schedule"}],"pagination":{"has_more":false}}),
+                "get_transition_required" => json!({"node_fields":[{"field_key":"schedule"}]}),
+                _ => panic!("unexpected tool {tool}"),
+            };
+            Ok(ToolResultPayload::from_json(response))
+        }
+    }
+
+    #[test]
+    fn people_schedule_loads_account_associations_without_todos_or_source_cache() {
+        for fail_secondary_space in [false, true] {
+            let (session, dir) = fixture();
+            let fake = Arc::new(AssociatedStoriesScenario { calls: Mutex::new(Vec::new()), fail_secondary_space });
+            let installed = crate::remote::install_test_client(&session.config, &session.credential().unwrap(), Box::new(fake.clone()));
+            let mut lazy = ScheduleSession::load_recent(&session, false).unwrap();
+            assert!(lazy.view.targets.is_empty());
+            assert!(!fake.calls.lock().unwrap().iter().any(|(tool, _)| tool == "search_project_info"));
+            let sid = lazy.view.session_id.clone();
+            lazy.load_people(&session, &sid).unwrap();
+            let eager = ScheduleSession::load_recent(&session, true).unwrap();
+            for schedule in [&lazy, &eager] {
+                let pending = schedule.view.targets.iter().find(|target| target.identity.project == "first").unwrap();
+                assert!(pending.owners.iter().any(|owner| owner.id == "peer"));
+                assert!(pending.baseline.start.is_empty() && pending.schedule_required);
+                assert!(pending.people_only && pending.read_only_reason.is_some());
+                let completed = schedule.view.targets.iter().find(|target| target.identity.project == "second");
+                assert_eq!(completed.is_some(), !fail_secondary_space);
+                if let Some(completed) = completed {
+                    assert_eq!(completed.identity.item, pending.identity.item);
+                    assert!(has_complete_schedule_dates(&completed.baseline));
+                    assert!(completed.read_only_reason.is_some());
+                }
+                let state = schedule.view.targets.iter().find(|target| target.identity.project == "state").unwrap();
+                assert_eq!(state.baseline.start, "2026-11-16");
+                assert!(state.identity.node.is_empty() && state.source_aggregate && state.read_only_reason.is_some());
+                let unscheduled = schedule.view.targets.iter().find(|target| target.identity.project == "state_without_dates").unwrap();
+                assert!(unscheduled.baseline.start.is_empty() && !unscheduled.schedule_required);
+                assert_eq!(schedule.view.sources.iter().all(|source| source.complete), !fail_secondary_space);
+            }
+            let calls = fake.calls.lock().unwrap();
+            assert_eq!(calls.iter().filter(|(tool, args)| tool == "get_workitem_brief" && args["project_key"] == "first").count(), 2);
+            assert_eq!(calls.iter().filter(|(tool, args)| tool == "get_workitem_brief" && args["project_key"] == "second").count(), usize::from(!fail_secondary_space));
+            drop(calls);
+            assert!(session.store.query_items(&crate::store::ItemFilter::default()).unwrap().is_empty());
+            drop(installed);
+            drop(session);
+            std::fs::remove_dir_all(dir).unwrap();
         }
     }
 
@@ -5005,6 +5210,7 @@ mod tests {
                             }
                         ]
                     }),
+                    "search_project_info" => json!({"projects":[],"pagination":{"has_more":false}}),
                     "search_by_mql" => json!({"session_id":"empty","list":null,"data":{},"extra_info":null,"search_status_info":null}),
                     "get_transition_required" => {
                         let state_key = args["state_key"].as_str().unwrap_or_default();

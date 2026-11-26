@@ -585,13 +585,17 @@ function Workspace() {
           setScheduleRefreshing(false);
           // 候选结果不完整时只释放候选会话，原编辑基线仍有效。
           const complete = isCompleteScheduleRead(res) && (!options.includePeople || res.peopleLoaded !== false);
+          const showPartialPeople = options.includePeople && !previousRead?.targets.length &&
+            res.targets.length > 0 && res.peopleLoaded !== false && !res.accountError;
           if (!complete) {
             recordScheduleCheck(scheduleSessionRef.current.connectionKey, options.includePeople, {
               attemptedAt: Date.now(),
-              error: "最新排期仅部分读取完成，已保留上次内容，可继续编辑，稍后重试。",
+              error: showPartialPeople ? "最新人员排期仅部分读取完成，已显示可确认的内容。" :
+                "最新排期仅部分读取完成，已保留上次内容，可继续编辑，稍后重试。",
             });
           }
-          if (previousRead && !complete) {
+          // 团队首次取得部分结果时，已确认的安排应能替换没有任何事项的旧快照。
+          if (previousRead && !complete && !showPartialPeople) {
             void closeScheduleSession(Promise.resolve(res)).catch(() => {});
             return previousRead;
           }
@@ -773,7 +777,9 @@ function Workspace() {
         }
         const previous = scheduleSessionRef.current.read;
         scheduleSessionRef.current.read = next;
-        confirmScheduleCheck(next, candidate.includePeople);
+        if (isCompleteScheduleRead(next) && (!candidate.includePeople || next.peopleLoaded !== false)) {
+          confirmScheduleCheck(next, candidate.includePeople);
+        }
         setPreloadedSchedule(next);
         if (previous && previous.sessionId !== next.sessionId) void closeScheduleSession(Promise.resolve(previous)).catch(() => {});
         return true;

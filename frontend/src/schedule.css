@@ -97,6 +97,29 @@
   font-variant-numeric: tabular-nums;
 }
 
+.schedule-check-details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 12px;
+}
+
+.schedule-check-progress,
+.schedule-check-cache {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.schedule-check-progress svg,
+.schedule-check-cache svg {
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .schedule-check-progress svg { animation: schedule-refresh-spin 1.4s linear infinite; }
+}
+
 .schedule-greeting {
   display: flex;
   align-items: center;

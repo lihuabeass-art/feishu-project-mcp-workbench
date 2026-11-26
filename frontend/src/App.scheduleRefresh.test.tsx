@@ -219,9 +219,11 @@ it("人员排期从成功读取起算，合并手动刷新，离开、最小化�
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
   await act(async () => { await vi.advanceTimersByTimeAsync(1); });
   expect(loadScheduleSession).toHaveBeenLastCalledWith({ includePeople: true });
+  expect(screen.getByText("正在更新人员排期").closest(".schedule-overview-actions")).toBeTruthy();
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重新读取" })); });
   expect(loadScheduleSession).toHaveBeenCalledTimes(2);
   await act(async () => { finish({ ...team, sessionId: "updated", readAtMs: Date.now() }); });
+  expect(screen.queryByText("正在更新人员排期")).toBeNull();
   expect(time()).toBe("2026-11-26T02:05:00.000Z");
 
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: /我的工作/ })); });
@@ -248,4 +250,30 @@ it("人员排期从成功读取起算，合并手动刷新，离开、最小化�
   await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
   expect(loadScheduleSession).toHaveBeenCalledTimes(5);
   expect(loadScheduleSession).toHaveBeenLastCalledWith({ includePeople: false });
+});
+
+it("从空的团队会话刷新取得部分关联需求时显示可确认事项并保留上次完整检查时间", async () => {
+  let now = 1_000_000;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const empty: ScheduleRead = { sessionId: "blank", currentUserId: "me", peopleLoaded: false,
+    complete: true, readAt: "刚刚", people: [], targets: [], sources: [] };
+  const partial: ScheduleRead = { ...empty, sessionId: "partial", peopleLoaded: true, complete: false,
+    people: [{ id: "peer", name: "测试同事" }],
+    targets: [{ id: "related", identity: { connection: "c", project: "p", type: "story", item: "i", node: "n", scope: "node" },
+      title: "部分成功读取的需求", nodeName: "设计", ownerId: "peer", ownerIds: ["peer"], sourceIds: [],
+      projectName: "测试空间", typeName: "需求", dates: { start: "", end: "" }, nodeStatus: "doing", mine: false, peopleOnly: true }],
+    sources: [{ id: "associated", name: "我参与的需求", complete: false, error: "部分节点读取未完成" }],
+  };
+  vi.mocked(loadScheduleSession).mockResolvedValueOnce(empty).mockResolvedValueOnce(partial);
+  vi.mocked(loadSchedulePeople).mockResolvedValueOnce({ ...empty, peopleLoaded: true });
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "人员排期" }));
+  await screen.findByText(/上次检查/);
+  const time = () => document.querySelector(".schedule-check-status time")?.getAttribute("datetime");
+  const previous = time();
+  now += 300_000;
+  fireEvent(window, new Event("focus"));
+  expect((await screen.findAllByText("部分成功读取的需求")).length).toBeGreaterThan(0);
+  expect(screen.getByText("暂未取得最新排期")).toBeTruthy();
+  expect(time()).toBe(previous);
 });

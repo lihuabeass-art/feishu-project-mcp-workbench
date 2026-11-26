@@ -4,8 +4,10 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  Clock3,
   GitBranch,
   Info,
+  LoaderCircle,
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
@@ -145,6 +147,7 @@ const createScheduleEntry = (record: ScheduleRecord): Entry => ({
 const isFallbackPersonName = (name: string | undefined | null, id: string) =>
   !name ||
   !name.trim() ||
+  name.trim() === "当前用户" ||
   name === id ||
   /^\d+$/.test(name.trim()) ||
   (id.length >= 6 && name === Array.from(id).slice(-6).join(""));
@@ -370,7 +373,8 @@ export function SchedulePage({
     (read.complete || (!read.sources.length && !read.itemErrors?.length));
   const cachedPeopleRead = view === "people" && !livePeopleComplete && cachedPeople?.context === peopleCacheContext &&
       (!read?.connection || read.connection === cachedPeople.read.connection) &&
-      (!read?.currentUserId || read.currentUserId === cachedPeople.read.currentUserId)
+      (!read?.currentUserId || read.currentUserId === cachedPeople.read.currentUserId) &&
+      (cachedPeople.read.targets.length > 0 || read?.peopleLoaded === false || !read?.targets.length)
     ? cachedPeople.read : null;
   const displayRead = cachedPeopleRead ?? read;
   const displayUserId = displayRead?.currentUserId;
@@ -463,10 +467,12 @@ export function SchedulePage({
     [currentHistory],
   );
   const recentCheckedAt = cachedPeopleRead?.readAtMs ?? preloadedSession?.checkedAt;
-  const lastCheckedAt = viewingHistory ? calendarCheckedAt : managedCalendar
-    ? recentCheckedAt !== undefined && calendarCheckedAt !== undefined ? Math.min(recentCheckedAt, calendarCheckedAt) : undefined
-    : recentCheckedAt;
   const lastCheckFailed = Boolean(preloadedSession?.refreshError || (managedCalendar && calendarFailed));
+  const showingPartialPeople = view === "people" && !livePeopleComplete && !cachedPeopleRead;
+  const lastCheckedAt = viewingHistory ? calendarCheckedAt : managedCalendar
+    ? recentCheckedAt !== undefined && calendarCheckedAt !== undefined ? Math.min(recentCheckedAt, calendarCheckedAt)
+      : lastCheckFailed ? recentCheckedAt : undefined
+    : recentCheckedAt;
   const persistentWarnings = Array.from(new Set(entries.flatMap((entry) =>
     entry.resultWarning ? entry.resultWarning.split("\n") : [],
   )));
@@ -862,7 +868,9 @@ export function SchedulePage({
     return labels.join("、") || "负责人不明";
   };
   const targetScopeLabel = (entry: Entry) =>
-    entry.record.cacheKind === "detail_node"
+    entry.record.cacheKind === "associated_item"
+      ? "事项排期"
+      : entry.record.cacheKind === "detail_node"
       ? "事项详情缓存节点"
       : entry.record.sourceAggregate
         ? "来源聚合日期"
@@ -942,6 +950,14 @@ export function SchedulePage({
     entry.identity.project, entry.identity.type, entry.identity.item,
   ]));
   const filterEntries = [...displayEntries, ...historicalEntries];
+  const teamReadMissing = view === "people" && filterEntries.length === 0 &&
+    (loading || !!error || (read !== null && !livePeopleComplete) || lastCheckFailed);
+  const teamReadMessage = teamReadMissing
+    ? loading || peopleLoading || (read?.peopleLoaded === false && !peopleError)
+      ? "正在读取人员排期…"
+      : "暂未取得人员排期，请重新读取。"
+    : "";
+  const noAssociatedSchedule = view === "people" && livePeopleComplete && filterEntries.length === 0;
   const projectItems = filterEntries
     .filter((entry) => !project || entry.identity.project === project)
     .map(cachedItemFor)
@@ -989,6 +1005,7 @@ export function SchedulePage({
 
   const personOptions = new Map<string, Set<string>>();
   for (const item of loadedSchedulePeople) {
+    if (item.id === displayUserId) continue;
     if (project && item.project && item.project !== project) continue;
     if (!person.includes(item.id) && !`${item.name} ${item.id}`.toLowerCase().includes(personQuery.toLowerCase())) continue;
     const names = personOptions.get(item.id) || new Set<string>();
@@ -996,13 +1013,8 @@ export function SchedulePage({
     personOptions.set(item.id, names);
   }
   const personBaseLabels = Array.from(personOptions, ([id, names]) => {
-    const realNames = Array.from(names).filter((n) => !isFallbackPersonName(n, id));
-    const baseLabel =
-      realNames.length > 0
-        ? realNames.join(" / ")
-        : id === displayUserId
-          ? "当前用户"
-          : "成员";
+    const realNames = Array.from(names).filter((name) => !isFallbackPersonName(name, id));
+    const baseLabel = realNames.length ? realNames.join(" / ") : "成员";
     return [id, baseLabel] as const;
   });
   const personLabelCounts = new Map<string, string[]>();
@@ -1031,12 +1043,12 @@ export function SchedulePage({
     ? people.get(JSON.stringify([null, null, displayUserId]))
     : undefined;
   const currentUserScopedReal = displayUserId
-    ? displayRead?.people.find((item) => item.id === displayUserId && !isFallbackPersonName(item.name, displayUserId))
+    ? loadedSchedulePeople.find((item) => item.id === displayUserId && !isFallbackPersonName(item.name, displayUserId))
     : undefined;
-  const currentUserDisplayName =
-    (currentUserGlobal && !isFallbackPersonName(currentUserGlobal.name, displayUserId || "")
-      ? currentUserGlobal.name
-      : currentUserScopedReal?.name) || "当前用户";
+  const currentUserName = currentUserGlobal && !isFallbackPersonName(currentUserGlobal.name, displayUserId || "")
+    ? currentUserGlobal.name
+    : currentUserScopedReal?.name;
+  const currentUserDisplayName = currentUserName || "当前用户";
   const currentUserPerson: SchedulePerson | undefined = displayUserId
     ? {
         id: displayUserId,
@@ -1096,8 +1108,9 @@ export function SchedulePage({
   const supplementPeopleItems = view === "people" && monday(windowStart) === monday(currentToday);
   const peopleCalendarEntries = supplementPeopleItems
     ? [...scheduled, ...visible.filter((entry) =>
-        !inWindow(entry) && !entry.record.sourceAggregate && !!entry.identity.node &&
-        entry.record.ownerIds.some(Boolean) && cachedItemFor(entry)?.is_completed !== true)]
+        !inWindow(entry) && (entry.record.cacheKind === "associated_item" && !validSchedule(entry.dates) ||
+          !entry.record.sourceAggregate && !!entry.identity.node && entry.record.ownerIds.some(Boolean) &&
+          cachedItemFor(entry)?.is_completed !== true))]
     : scheduled;
   const rawScheduledRows =
     view === "people"
@@ -1352,7 +1365,7 @@ export function SchedulePage({
       entry.record.cacheKind === "detail_node"
         ? "事项详情缓存节点"
         : entry.identity.scope === "node" && !entry.record.sourceAggregate && "节点共同排期",
-      entry.record.sourceAggregate && "来源聚合日期",
+      entry.record.sourceAggregate && targetScopeLabel(entry),
       entry.record.unknownOwner && "尚有负责人身份不明",
       status !== "待安排" && status,
     ].filter(Boolean).join(" ");
@@ -1825,7 +1838,16 @@ export function SchedulePage({
   const notifyInteraction = (event: React.SyntheticEvent) => {
     if (event.target instanceof Element && !event.target.closest("[data-schedule-refresh]")) preloadedSession?.onInteraction?.();
   };
-  const checkedDate = lastCheckedAt === undefined ? undefined : new Date(lastCheckedAt);
+  const hasPeopleSnapshot = read?.peopleLoaded === true;
+  const readingPeople = view === "people" && (peopleLoading || (hasPeopleSnapshot && preloadedSession?.refreshing));
+  const displayedCheckTime = cachedPeopleRead ? cachedPeopleRead.readAtMs : lastCheckedAt;
+  const checkedDate = displayedCheckTime === undefined ? undefined : new Date(displayedCheckTime);
+  const checkTime = checkedDate ? (
+    <time dateTime={checkedDate.toISOString()} title={checkedDate.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}>
+      {today(checkedDate) !== currentToday && `${checkedDate.toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric" })} `}
+      {checkedDate.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false })}
+    </time>
+  ) : cachedPeopleRead?.readAt;
   return (
     <ScheduleAvatarCacheProvider scope={avatarScope} connection={peopleCacheContext && avatarScope ? avatarConnection : undefined} people={avatarPeople}>
     <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={notifyInteraction} onFocusCapture={notifyInteraction}>
@@ -1833,12 +1855,18 @@ export function SchedulePage({
             <div className="overview schedule-overview">
               <ScheduleGreeting person={currentUserPerson} name={displayUserId ? currentUserDisplayName : undefined} />
               <div className="overview-actions schedule-overview-actions">
-                {(checkedDate || lastCheckFailed) && <div className="schedule-check-status" role="status">
-                  {checkedDate && <span>上次检查 <time dateTime={checkedDate.toISOString()} title={checkedDate.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}>
-                    {today(checkedDate) !== currentToday && `${checkedDate.toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric" })} `}
-                    {checkedDate.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false })}
-                  </time></span>}
-                  {lastCheckFailed && <span>暂未取得最新排期{displayRead || currentHistory ? "，已保留上次内容" : ""}</span>}
+                {(readingPeople || cachedPeopleRead || checkedDate || lastCheckFailed) && <div className="schedule-check-status" role="status">
+                  <div className="schedule-check-details">
+                    {readingPeople && <span className="schedule-check-progress">
+                      <LoaderCircle size={14} aria-hidden="true" />
+                      {cachedPeopleRead || hasPeopleSnapshot ? "正在更新人员排期" : "正在加载人员排期"}
+                    </span>}
+                    {cachedPeopleRead ? <span className="schedule-check-cache">
+                      {!readingPeople && <Clock3 size={14} aria-hidden="true" />}
+                      <span>显示缓存{checkTime && <> · {checkTime}</>}</span>
+                    </span> : checkedDate && <span>上次检查 {checkTime}</span>}
+                  </div>
+                  {lastCheckFailed && <span>暂未取得最新排期{(displayRead || currentHistory) && !showingPartialPeople ? "，已保留上次内容" : ""}</span>}
                 </div>}
                 <button
                   type="button"
@@ -1900,12 +1928,6 @@ export function SchedulePage({
                 </div>
               </div>
             )}
-            {peopleLoading && (
-              <div className="banner preview" role="status">
-                <span>正在加载团队成员排期…</span>
-              </div>
-            )}
-            {cachedPeopleRead && <p className="banner preview" role="status">正在显示上次读取的人员排期（{cachedPeopleRead.readAt}）。</p>}
             {read && peopleError && !peopleLoading && (
               <div className="banner warning" role="alert">
                 <span>{peopleError}</span>
@@ -2033,7 +2055,10 @@ export function SchedulePage({
                         multiple
                         value={person}
                         onChange={setPerson}
-                        options={options(personFilterEntries, "全部人员")}
+                        options={[
+                          ...(displayUserId ? [{ value: displayUserId, label: currentUserName ? `${currentUserName}（我）` : "我" }] : []),
+                          ...options(personFilterEntries, "全部人员"),
+                        ]}
                       />
                     </>
                   )}
@@ -2222,7 +2247,7 @@ export function SchedulePage({
                               </div>
                             </Fragment>
                           ))}
-                          {pendingRows.length === 0 && (
+                          {pendingRows.length === 0 && !teamReadMessage && (
                             <p className="schedule-pool-empty">
                               当前筛选下暂无待排期事项
                             </p>
@@ -2315,7 +2340,7 @@ export function SchedulePage({
                             </Fragment>
                           ))}
                           {outsideRows.length === 0 && (
-                            <p className="schedule-pool-empty">当前筛选下暂无已排期节点</p>
+                            !teamReadMessage && <p className="schedule-pool-empty">当前筛选下暂无已排期节点</p>
                           )}
                         </div>
                       </>
@@ -2763,9 +2788,11 @@ export function SchedulePage({
                           className="schedule-empty-grid"
                         />
                           {rows.length === 0 && !calendarLoading && !calendarFailed && <p className="schedule-empty">
-                          {view === "people" && person.length > 0 && visible.length === 0
-                            ? "当前范围未包含该人员的安排"
-                            : viewingHistory ? "所选日期暂无可显示的安排" : "本周暂无可显示的安排"}
+                          {teamReadMessage || (noAssociatedSchedule
+                            ? "当前账号暂无可显示的关联需求排期。"
+                            : view === "people" && person.length > 0 && visible.length === 0
+                              ? "当前范围未包含该人员的安排"
+                              : viewingHistory ? "所选日期暂无可显示的安排" : "本周暂无可显示的安排")}
                         </p>}
                       </div>
                     </div>
