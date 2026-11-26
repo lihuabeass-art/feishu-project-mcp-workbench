@@ -34,13 +34,24 @@ pub(super) async fn read_associated_nodes(
     finished: bool,
     max_pages: u32,
 ) -> NodeRead {
+    read_associated_nodes_with_ttl(client, connection, id, finished, max_pages, CLOSED_STORY_TTL).await
+}
+
+async fn read_associated_nodes_with_ttl(
+    client: &dyn TodoSource,
+    connection: &str,
+    id: &WorkItemId,
+    finished: bool,
+    max_pages: u32,
+    ttl: Duration,
+) -> NodeRead {
     let key = (connection.to_owned(), id.key_tuple());
     let cache = CLOSED_STORIES.get_or_init(Mutex::default);
     {
         let mut entries = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if finished {
             if let Some((at, nodes, detail)) = entries.get(&key) {
-                if at.elapsed() < CLOSED_STORY_TTL {
+                if at.elapsed() < ttl {
                     return (Ok(nodes.clone()), Some(detail.clone()));
                 }
             }
@@ -259,8 +270,7 @@ mod tests {
         assert!(read("second-account", true).await.1.is_some());
         assert_eq!(calls(), 2);
         let key = ("first-account".to_owned(), id.key_tuple());
-        CLOSED_STORIES.get().unwrap().lock().unwrap().get_mut(&key).unwrap().0 = Instant::now() - CLOSED_STORY_TTL;
-        assert!(read("first-account", true).await.1.is_some());
+        assert!(read_associated_nodes_with_ttl(&client, "first-account", &id, true, 2, Duration::ZERO).await.1.is_some());
         assert_eq!(calls(), 3);
         assert!(read("first-account", false).await.1.is_some());
         assert_eq!(calls(), 4);
