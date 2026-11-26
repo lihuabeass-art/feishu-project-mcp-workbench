@@ -666,6 +666,7 @@ impl ScheduleSession {
                 session,
                 &mut view.sources,
                 &view.targets,
+                &view.item_errors,
                 &failed_extra_sources,
             );
         }
@@ -768,6 +769,7 @@ impl ScheduleSession {
                 session,
                 &mut self.view.sources,
                 &self.view.targets,
+                &self.view.item_errors,
                 &failed_extra_sources,
             );
             crate::diagnostics::schedule_stage("schedule_required_fields");
@@ -1257,7 +1259,6 @@ fn append_todo_targets(session: &Session, fingerprint: &str, view: &mut LoadResu
                     }
                     for status in statuses.iter_mut().filter(|status| sources.contains(&status.id)) {
                         status.complete = false;
-                        status.error = Some("未取得该待办的节点排期，请重试".into());
                     }
                     build_aggregate_targets(&mut view.targets, &view.session_id, &id, &rows, "节点详情为空，来源排期仅供查看");
                     for target in &mut view.targets[first..] {
@@ -1308,7 +1309,6 @@ fn append_todo_targets(session: &Session, fingerprint: &str, view: &mut LoadResu
                 if nodes_incomplete || view.targets[first..].iter().any(incomplete_target) {
                     for status in statuses.iter_mut().filter(|status| sources.contains(&status.id)) {
                         status.complete = false;
-                        status.error = Some("部分节点身份或排期数据不完整，请重试".into());
                     }
                     view.item_errors.push(FailedItem {
                         project: id.project_key.clone().unwrap_or_default(),
@@ -1345,7 +1345,6 @@ fn append_todo_targets(session: &Session, fingerprint: &str, view: &mut LoadResu
                 }
                 for status in statuses.iter_mut().filter(|status| sources.contains(&status.id)) {
                     status.complete = false;
-                    status.error = Some("部分事项节点读取未完成，请重试".into());
                 }
                 build_aggregate_targets(&mut view.targets, &view.session_id, &id, &rows, "节点读取未完成，来源排期仅供查看");
                 for target in &mut view.targets[first..] {
@@ -1660,7 +1659,7 @@ async fn read_extra_items(
         types.extend(schedule_config_keys(fetched_extra.iter().map(|(id, _, _, detail, nodes)| (id, detail.as_ref(), nodes))));
         let start = out_targets.len();
         append_extra_targets(session, fingerprint, session_id, current_user, team_members,
-            detail_names, detail_avatars, item_errors, failed_sources, out_targets, fetched_extra);
+            detail_names, detail_avatars, item_errors, out_targets, fetched_extra);
         publish(progress, fingerprint, current_user, &out_targets[start..]);
     }
     read_schedule_configs(client, max_pages, schedule_configs, types).await;
@@ -1672,7 +1671,7 @@ async fn read_extra_items(
 fn append_extra_targets(session: &Session, fingerprint: &str, session_id: &str, current_user: &str,
     team_members: Option<&BTreeMap<String, BTreeSet<String>>>,
     detail_names: &mut BTreeMap<(String, String), String>, detail_avatars: &mut BTreeMap<(String, String), String>,
-    item_errors: &mut Vec<FailedItem>, failed_sources: &mut BTreeMap<String, String>,
+    item_errors: &mut Vec<FailedItem>,
     out_targets: &mut Vec<Target>, fetched_extra: Vec<ExtraRead>) {
     for (id, mut title, sources, cached_detail, nodes_result) in fetched_extra {
         let associated = sources.contains(people::ASSOCIATED_SOURCE_ID);
@@ -1697,10 +1696,6 @@ fn append_extra_targets(session: &Session, fingerprint: &str, session_id: &str, 
                     if title.trim().is_empty() {
                         title = txt(&d.data["work_item_attribute"]["work_item_name"]);
                     }
-                }
-                for sid in &sources {
-                    failed_sources
-                        .insert(sid.clone(), "部分事项节点读取未完成，请重试".into());
                 }
                 let message = if empty_or_err.is_ok() {
                     "未取得该事项的节点排期，请重试"
@@ -1728,9 +1723,6 @@ fn append_extra_targets(session: &Session, fingerprint: &str, session_id: &str, 
         if (team_only || associated) && detail.is_none() {
             item_errors.push(FailedItem { project: project.into(), r#type: kind.into(), item: id.work_item_id.clone(),
                 title: title.clone(), sources: sources.iter().cloned().collect(), message: "事项详情尚未取得".into() });
-            for source in &sources {
-                failed_sources.insert(source.clone(), "部分事项详情读取未完成，请重试".into());
-            }
             continue;
         }
         if let Some(detail) = &detail {
@@ -1799,10 +1791,6 @@ fn append_extra_targets(session: &Session, fingerprint: &str, session_id: &str, 
             out_targets.push(target);
         }
         if nodes_incomplete || has_incomplete_target {
-            for sid in &sources {
-                failed_sources
-                    .insert(sid.clone(), "部分节点身份或排期数据不完整，请重试".into());
-            }
             item_errors.push(FailedItem {
                 project: id.project_key.clone().unwrap_or_default(),
                 r#type: id.work_item_type_key.clone().unwrap_or_default(),
@@ -1819,13 +1807,16 @@ fn ensure_target_sources_in_view(
     session: &Session,
     view_sources: &mut Vec<SourceStatus>,
     targets: &[Target],
+    item_errors: &[FailedItem],
     failed_sources: &BTreeMap<String, String>,
 ) {
     let tables = session.config.source_tables().unwrap_or_default();
     let mut seen: BTreeSet<String> = view_sources.iter().map(|s| s.id.clone()).collect();
+    let item_failure_sources: BTreeSet<_> = item_errors.iter().flat_map(|item| &item.sources).collect();
     let all_sids = targets
         .iter()
         .flat_map(|t| t.sources.iter())
+        .chain(item_failure_sources.iter().copied())
         .chain(failed_sources.keys());
     for sid in all_sids {
         if !seen.insert(sid.clone()) {
@@ -1848,6 +1839,9 @@ fn ensure_target_sources_in_view(
         });
     }
     for source in view_sources.iter_mut() {
+        if item_failure_sources.contains(&source.id) {
+            source.complete = false;
+        }
         if let Some(err) = failed_sources.get(&source.id) {
             source.complete = false;
             source.error = Some(err.clone());
@@ -2040,6 +2034,24 @@ fn is_completed_node_status(status: &str) -> bool {
     !status.is_empty() && status != "doing" && status != "not_started"
 }
 
+fn personal_schedule_rows(node: &Value) -> &Value {
+    let personal = &node["assignee_schedule_list"];
+    if normalized_node_status(node) == "finished"
+        && node.pointer("/assignees/owners").and_then(Value::as_array).is_some_and(Vec::is_empty)
+        && personal.as_array().is_some_and(|rows| {
+            matches!(rows.as_slice(), [row] if row.get("assignee") == Some(&Value::Null)
+                && dates(&node["schedule"]).is_some_and(|node_dates| {
+                    (!node_dates.start.is_empty() || !node_dates.end.is_empty())
+                        && dates(&row["schedule_info"]).as_ref() == Some(&node_dates)
+                }))
+        })
+    {
+        // Feishu can include an anonymous schedule row for a finished node with no owners.
+        return &Value::Null;
+    }
+    personal
+}
+
 fn node_data_incomplete(node: &Value) -> bool {
     if node_key(node).is_empty() { return true; }
     let status = normalized_node_status(node);
@@ -2051,10 +2063,10 @@ fn node_data_incomplete(node: &Value) -> bool {
         _ => return true,
     };
     if owners.iter().any(|owner| txt(&owner["user_key"]).trim().is_empty()) { return true; }
-    match node.get("assignee_schedule_list") {
-        None | Some(Value::Null) => dates(&node["schedule"]).is_none(),
-        Some(Value::Array(rows)) if rows.is_empty() => dates(&node["schedule"]).is_none(),
-        Some(Value::Array(rows)) => {
+    match personal_schedule_rows(node) {
+        Value::Null => dates(&node["schedule"]).is_none(),
+        Value::Array(rows) if rows.is_empty() => dates(&node["schedule"]).is_none(),
+        Value::Array(rows) => {
             let mut seen = BTreeMap::new();
             for row in rows {
                 let owner = txt(&row["assignee"]["user_key"]);
@@ -2070,7 +2082,7 @@ fn node_data_incomplete(node: &Value) -> bool {
             }
             false
         },
-        Some(_) => true,
+        _ => true,
     }
 }
 
@@ -2697,10 +2709,9 @@ fn build_targets_with_order(
     let owners_complete = declared_owners.is_some() && owners.iter().all(|owner| {
         detail::text(&owner["user_key"]).is_some_and(|key| !key.trim().is_empty())
     });
-    let personal = node["assignee_schedule_list"].as_array();
-    let invalid_personal = node
-        .get("assignee_schedule_list")
-        .is_some_and(|v| !v.is_null() && !v.is_array());
+    let personal_rows = personal_schedule_rows(node);
+    let personal = personal_rows.as_array();
+    let invalid_personal = !personal_rows.is_null() && !personal_rows.is_array();
     let mut rows: Vec<(Option<String>, String, Option<String>, &Value)> = match personal {
         Some(rows) if !rows.is_empty() => rows
             .iter()
@@ -3764,6 +3775,43 @@ mod tests {
     }
 
     #[test]
+    fn finished_ownerless_schedule_uses_node_dates_without_an_item_failure() {
+        let id = WorkItemId { project_key: Some("p".into()), work_item_type_key: Some("story".into()), work_item_id: "1".into() };
+        let node = json!({
+            "basic":{"node_key":"n","status":"finished"},
+            "assignees":{"owners":[]},
+            "schedule":{"estimate_start_time":"2026-11-13","estimate_finish_time":"2026-11-14"},
+            "assignee_schedule_list":[{"assignee":null,"schedule_info":{"estimate_start_time":"2026-11-13","estimate_finish_time":"2026-11-14"}}]
+        });
+        assert!(!node_data_incomplete(&node));
+        let mut targets = Vec::new();
+        build_targets(&mut targets, "s", "c", "me", &id, "测试需求", &BTreeSet::new(), &node);
+        assert_eq!(targets.len(), 1);
+        let target = &targets[0];
+        assert!(!incomplete_target(target));
+        assert_eq!(target.identity.scope, "node");
+        assert!(target.identity.owner.is_none() && target.owners.is_empty());
+        assert_eq!(target.baseline.start, "2026-11-13");
+        assert_eq!(target.baseline.end, "2026-11-14");
+        assert!(target.read_only_reason.is_some());
+
+        let mut active = node.clone();
+        active["basic"]["status"] = json!("doing");
+        let mut missing_dates = node.clone();
+        missing_dates["schedule"] = Value::Null;
+        let mut different_dates = node.clone();
+        different_dates["assignee_schedule_list"][0]["schedule_info"]["estimate_start_time"] = json!("2026-11-12");
+        let mut assigned = node;
+        assigned["assignees"]["owners"] = json!([{"user_key":"me"}]);
+        for incomplete in [active, missing_dates, different_dates, assigned] {
+            assert!(node_data_incomplete(&incomplete));
+            let mut targets = Vec::new();
+            build_targets(&mut targets, "s", "c", "me", &id, "测试需求", &BTreeSet::new(), &incomplete);
+            assert!(targets.iter().all(|target| target.read_only_reason.is_some()));
+        }
+    }
+
+    #[test]
     fn conflicting_node_or_owner_identity_cannot_be_edited() {
         let id = WorkItemId { project_key: Some("p".into()), work_item_type_key: Some("t".into()), work_item_id: "1".into() };
         let base = json!({"basic":{"node_key":"n","status":"doing"},"assignees":{"owners":[{"user_key":"me"}]},
@@ -4764,11 +4812,13 @@ mod tests {
                         |n| n.checked_sub(1)).is_ok() {
                         return Err(BackendError::Tool { tool: tool.into(), code: Some(429), message: "限流".into() });
                     }
+                    let schedule = json!({"estimate_start_time":done.then_some(1794499200000i64),
+                        "estimate_finish_time":done.then_some(1794585600000i64)});
                     json!({"list":[{
                         "basic":{"node_key":"n","name":"设计","status":if done {"finished"} else {"doing"}},
-                        "assignees":{"owners":[{"user_key":"peer","name":"测试同事"}]},
-                        "schedule":{"estimate_start_time":done.then_some(1794499200000i64),
-                            "estimate_finish_time":done.then_some(1794585600000i64)}
+                        "assignees":{"owners":if done {json!([])} else {json!([{"user_key":"peer","name":"测试同事"}])}},
+                        "schedule":schedule,
+                        "assignee_schedule_list":if done {json!([{"assignee":null,"schedule_info":schedule}])} else {Value::Null}
                     }],"pagination":{"has_more":false}})
                 }
                 "list_node_field_config" => json!({"list":[{"field_key":"schedule","field_type":"schedule"}],"pagination":{"has_more":false}}),
@@ -4810,7 +4860,10 @@ mod tests {
                     assert!(has_complete_schedule_dates(&completed.baseline));
                     assert!(completed.read_only_reason.is_some());
                     assert_eq!(completed.item_closed, Some(true));
+                    assert_eq!(completed.identity.scope, "node");
+                    assert!(completed.owners.is_empty() && !completed.unknown_owner);
                 }
+                assert!(schedule.view.item_errors.is_empty());
                 let state = schedule.view.targets.iter().find(|target| target.identity.project == "state").unwrap();
                 assert_eq!(state.related_projects.as_ref().unwrap()[0].name, "状态流项目");
                 assert_eq!(state.baseline.start, "2026-11-16");
@@ -4848,6 +4901,8 @@ mod tests {
         let partial = ScheduleSession::load_recent_with_progress(&session, true, false, Some(&show)).unwrap();
         assert!(early.load(Ordering::SeqCst));
         assert_eq!(partial.view.item_errors.len(), 1);
+        let associated = partial.view.sources.iter().find(|s| s.id == people::ASSOCIATED_SOURCE_ID).unwrap();
+        assert!(!associated.complete && associated.error.is_none());
         let scope = people_cache_scope(&session).unwrap();
         save_cached_people(&session, &scope, &partial.view, 1);
         assert!(!read_cached_people(&session).unwrap().unwrap()["targets"].as_array().unwrap().is_empty());

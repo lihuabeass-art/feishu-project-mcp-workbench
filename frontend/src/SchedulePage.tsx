@@ -1120,7 +1120,7 @@ export function SchedulePage({
       }
     : currentUserGlobal;
 
-  const scopeSources = read?.sources || [];
+  const scopeSourceErrors = read?.sources.filter((source) => source.error) || [];
   const scopeErrors = read?.itemErrors || [];
 
   const personRows = (items: Entry[]) =>
@@ -2035,21 +2035,20 @@ export function SchedulePage({
 
             <ScheduleRefreshNotice refreshing={manualRefreshing} />
             {read && error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，可继续编辑，稍后重试。</p>}
-            {scopeSources.filter((item) => item.error && !readingPeople).map((item) => (
-              <p key={item.id} className="banner warning">
-                {readableSourceName(item.name || item.id)}：{item.error}
-              </p>
-            ))}
-
             {read?.accountError && (
               <div className="banner warning" role="alert">
                 {read.accountError}；以下显示当前来源中可读取的安排，均为只读。
               </div>
             )}
-            {!!scopeErrors.length && !readingPeople && (
+            {(scopeSourceErrors.length > 0 || scopeErrors.length > 0) && !readingPeople && (
               <div className="banner warning">
                 <div>
-                  <strong>部分事项读取不完整，已保留本次成功读取的内容。</strong>
+                  {scopeErrors.length > 0 && (
+                    <strong>部分事项读取不完整，已保留本次成功读取的内容。</strong>
+                  )}
+                  {scopeSourceErrors.map((source) => (
+                    <p key={source.id}>{readableSourceName(source.name || source.id)}：{source.error}</p>
+                  ))}
                   {scopeErrors.map((item, index) => (
                     <p key={index}>{formatScopeError(item)}</p>
                   ))}

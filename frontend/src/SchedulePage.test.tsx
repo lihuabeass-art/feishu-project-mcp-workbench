@@ -686,9 +686,11 @@ it("删除常驻来源栏后仍展示所有关联读取失败", async () => {
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
   expect(screen.queryByRole("combobox", { name: "筛选来源" })).toBeNull();
-  expect(screen.getByText(/分页失败/)).toBeTruthy();
-  expect(screen.getByText(/详情失败/)).toBeTruthy();
-  expect(screen.getByText(/共同事项失败/)).toBeTruthy();
+  const warning = screen.getByText(/部分事项读取不完整/).closest(".banner");
+  expect(warning).not.toBeNull();
+  expect(within(warning as HTMLElement).getByText(/分页失败/)).toBeTruthy();
+  expect(within(warning as HTMLElement).getByText(/详情失败/)).toBeTruthy();
+  expect(within(warning as HTMLElement).getByText(/共同事项失败/)).toBeTruthy();
   expect(document.querySelector(".schedule-scope")).toBeNull();
   expect(screen.getByText(/详情失败/)).toBeTruthy();
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
