@@ -121,6 +121,11 @@ const isPastTransitionedStatus = (status?: string | null) => {
   return normalized !== "" && normalized !== "doing" && normalized !== "not_started";
 };
 
+const belongsInMine = (record: ScheduleRecord, accountUnconfirmed = false) =>
+  !record.peopleOnly && (record.mine || record.sourceAggregate ||
+    (accountUnconfirmed && (Boolean(record.identity.owner || record.ownerIds.some(Boolean)) ||
+      (record.cacheKind === "detail_node" && !record.identity.node))));
+
 const resolveDefaultReadOnlyReason = (record: ScheduleRecord): string | undefined => {
   if (record.readOnlyReason) return record.readOnlyReason;
   if (isPastTransitionedStatus(record.nodeStatus)) return "该节点已流转完成，排期仅供查看";
@@ -409,8 +414,8 @@ export function SchedulePage({
     const start = read?.recentRange?.start ?? monday(today());
     const end = read?.recentRange?.end ?? addDays(start, 13);
     for (const target of [...partial?.targets || [], ...stream?.targets || []]) {
-      if (view === "mine" && (target.peopleOnly || (!target.mine && !target.sourceAggregate && !target.unknownOwner) ||
-        (validSchedule(target.dates) && (target.dates.end < start || target.dates.start > end)))) continue;
+      // 预览也提供事项的并行节点上下文，排期行在视图内按归属筛选。
+      if (view === "mine" && validSchedule(target.dates) && (target.dates.end < start || target.dates.start > end)) continue;
       const existing = combined.get(target.id);
       if (existing && liveIds.has(target.id) && (scheduleChanged(existing) || existing.result || !existing.readOnlyReason)) continue;
       combined.set(target.id, createScheduleEntry({ ...target, readOnlyReason: target.readOnlyReason || "排期预览，仅供查看" }));
@@ -966,7 +971,8 @@ export function SchedulePage({
     ]);
 
   const cachedItems = new Map((snapshot?.items || []).map((item) => [itemKey(item), item]));
-  const filterEntries = [...displayEntries, ...historicalEntries];
+  const inViewScope = (entry: Entry) => view === "people" || belongsInMine(entry.record, !!read?.accountError);
+  const filterEntries = [...displayEntries, ...historicalEntries].filter(inViewScope);
   const scheduleProjectsByItem = new Map<string, RelatedProject[]>();
   for (const entry of [...historicalEntries, ...cachedPeopleEntries || [], ...entries]) {
     if (entry.record.relatedProjects !== undefined) {
@@ -1031,16 +1037,9 @@ export function SchedulePage({
 
   const matchesFilters = (entry: Entry) =>
       (!project || entry.identity.project === project) &&
-      (view === "people" || !entry.record.peopleOnly) &&
+      inViewScope(entry) &&
       matchesRelatedProject(entry.identity.project, itemProjects(itemKey(workflowItemFor(entry)))) &&
       (view !== "people" || person.length === 0 || entry.record.ownerIds.some((id) => person.includes(id))) &&
-      (view === "people" ||
-        !!read?.accountError ||
-        entry.record.mine ||
-        entry.record.sourceAggregate ||
-        (!isPastTransitionedNode(entry) &&
-          (entry.record.unknownOwner ||
-            (!entry.identity.owner && !entry.record.ownerIds.some(Boolean))))) &&
       (view !== "mine" || !editableOnly || isEditableTarget(entry));
   const visible = displayEntries.filter(matchesFilters);
   const liveSchedules = new Set<string>();

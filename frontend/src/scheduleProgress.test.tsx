@@ -47,6 +47,37 @@ it("慢事项在途时逐项显示，人员资料独立补齐且同一成员只�
   expect(screen.getAllByText("林晓").length).toBeGreaterThan(0);
 });
 
+it("我的排期预览保留本人事项的并行节点信息，但隐藏无人负责的独立事项", async () => {
+  vi.stubGlobal("__TAURI_INTERNALS__", { transformCallback: () => {} });
+  let deliver!: (value: unknown) => void;
+  ipc.invoke.mockImplementation((command, args) => {
+    if (command === "load_schedule_session") {
+      deliver = (value) => args.onProgress.onmessage(value);
+      return new Promise(() => {});
+    }
+    if (command === "load_schedule_calendar") return Promise.resolve({ complete: true, targets: [], current_user: "me" });
+    return Promise.resolve(null);
+  });
+  const request = loadScheduleSession({ includePeople: true });
+  const page = render(<SchedulePage viewMode="mine"
+    preloadedSession={{ pending: request, progressRequest: request, read: null, updateRead: vi.fn(), reload: () => request }}
+    onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
+  const id = { connection: "c", project: "p", type: "story", item: "shared", node: "mine", scope: "personal", owner: "me" };
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const baseline = { start: day, end: day };
+  const parallel = { id: "parallel", identity: { ...id, node: "parallel", scope: "node", owner: null }, title: "本人事项",
+    node_name: "并行节点", node_status: "doing", owners: [], people_only: true, baseline };
+  act(() => deliver({ current_user: "me", connection: "c", targets: [
+    { id: "mine", identity: id, title: "本人事项", node_name: "本人节点", node_status: "doing", owners: [{ id: "me", name: "本人" }], baseline },
+    parallel,
+    { ...parallel, id: "unassigned", identity: { ...parallel.identity, item: "unassigned" }, title: "无人负责事项", people_only: false },
+  ] }));
+  await screen.findByRole("button", { name: "本人事项 本人节点" });
+  expect(page.container.querySelector(".schedule-row-current")?.textContent).toContain("并行节点");
+  expect(page.container.querySelectorAll(".schedule-bar")).toHaveLength(1);
+  expect(screen.queryByText("无人负责事项")).toBeNull();
+});
+
 it("人员资料遇到断网后重新联网会补查，换账号后丢弃旧结果", async () => {
   const online = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
   const people = [{ connection: "c", project: "p", id: "a", name: "a" }];

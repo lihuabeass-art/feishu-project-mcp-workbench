@@ -972,34 +972,52 @@ it("提交结果保留汇总与不确定保护，排期条、行标题和待排�
 
 it("账号识别失败时显示原因和可读目标，禁止编辑", async () => {
   const read = data(); read.currentUserId = ""; read.accountError = "未能确认当前飞书账号"; read.targets[0].mine = false;
+  read.targets.push({ ...read.targets[0], id: "unassigned", title: "无人负责的节点", identity: { ...identity, item: "unassigned", owner: undefined, scope: "node" },
+    ownerId: null, ownerIds: [], readOnlyReason: "节点无人负责，排期仅供查看" });
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   await setup();
   expect(screen.getByRole("alert").textContent).toContain("未能确认当前飞书账号");
+  expect(screen.queryByRole("button", { name: /无人负责的节点/ })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: /任务一/ }));
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
   expect((screen.getByRole("button", { name: "同步排期" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
-it("我的排期保留负责人不明目标及只读原因，排除明确属于他人的目标", async () => {
-  const read = data(); const base = read.targets[0];
+it("我的排期只展示有本人归属的节点，无人负责和身份不明的记录留在人员排期", async () => {
+  const read = { ...data(), peopleLoaded: true }; const base = read.targets[0];
   read.people.push({ id: "other", name: "同事" });
+  const ownerless = { ...base, ownerId: null, ownerIds: [], mine: false, nodeStatus: "doing",
+    identity: { ...identity, scope: "node" as const, owner: "" } };
+  const dates = { start: currentWeekDay(0), end: currentWeekDay(0) };
   read.targets = [base,
-    { ...base, id: "unknown", title: "身份不明", identity: { ...identity, scope: "node", owner: "" }, ownerId: null, ownerIds: [], mine: false, readOnlyReason: "负责人排期数据不完整", dates: { start: currentWeekDay(0), end: currentWeekDay(0) } },
-    { ...base, id: "none", title: "无人负责", identity: { ...identity, scope: "node", owner: "" }, ownerId: null, ownerIds: [], mine: false },
-    { ...base, id: "mixed", title: "共同负责人未确认", identity: { ...identity, scope: "node", owner: "" }, ownerId: "other", ownerIds: ["other"], unknownOwner: true, mine: false, readOnlyReason: "仅可编辑明确属于自己的排期" },
-    { ...base, id: "other", title: "他人排期", identity: { ...identity, owner: "other" }, ownerId: "other", ownerIds: ["other"], mine: false, readOnlyReason: "仅可编辑明确属于自己的排期" },
+    { ...ownerless, id: "unknown", title: "身份不明", identity: { ...ownerless.identity, item: "unknown" }, unknownOwner: true, readOnlyReason: "负责人排期数据不完整", dates },
+    { ...ownerless, id: "none", title: "无人负责", identity: { ...ownerless.identity, item: "none" }, readOnlyReason: "节点无人负责，排期仅供查看" },
+    { ...ownerless, id: "mixed", title: "他人共同节点", identity: { ...ownerless.identity, item: "mixed" }, ownerIds: ["other"], unknownOwner: true },
+    { ...ownerless, id: "mine-shared", title: "本人共同节点", identity: { ...ownerless.identity, item: "mine-shared" }, ownerIds: ["me"], mine: true, unknownOwner: true, readOnlyReason: "仅可编辑明确属于自己的排期", dates },
   ];
+  vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], complete: true, connection: "c", targets: [
+    { ...ownerless, id: "history:ownerless", title: "历史无人节点", identity: { ...ownerless.identity, item: "history-ownerless" }, dates },
+  ] });
   vi.mocked(loadScheduleSession).mockResolvedValue(read); await setup();
-  expect(screen.queryByRole("button", { name: /他人排期/ })).toBeNull();
-  expect(screen.getByRole("button", { name: /共同负责人未确认/ }).textContent).toContain("尚有负责人身份不明");
-  expect(screen.getByRole("button", { name: /无人负责/ }).textContent).toContain("负责人不明");
-  expect(document.querySelector(".schedule-row-current .schedule-current-node")).toBeNull();
-  const bar = screen.getByRole("button", { name: /^身份不明/ });
-  expect(bar.getAttribute("draggable")).toBe("false"); fireEvent.click(bar);
-  expect(screen.getByText("负责人排期数据不完整")).toBeTruthy();
+  const pool = within(document.querySelector<HTMLElement>(".schedule-pending")!);
+  const calendar = within(document.querySelector<HTMLElement>(".schedule-calendar")!);
+  expect(pool.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
+  const bar = calendar.getByRole("button", { name: "本人共同节点 开发" });
+  expect(bar.getAttribute("draggable")).toBe("false");
+  fireEvent.click(bar);
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: /无人负责/ }));
-  expect(screen.getAllByText("未能确认负责人，排期仅供查看").length).toBeGreaterThan(0);
+
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  fireEvent.click(pool.getByRole("button", { name: /^无人负责/ }));
+  expect(calendar.getByText("无人负责")).toBeTruthy();
+  expect(calendar.getByRole("button", { name: "身份不明 开发" })).toBeTruthy();
+  expect(calendar.getByText("他人共同节点")).toBeTruthy();
+  expect(await calendar.findByRole("button", { name: "历史无人节点 开发" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
+  expect(pool.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
+  for (const title of ["无人负责", "身份不明", "他人共同节点", "历史无人节点"]) {
+    expect(screen.queryByText(title)).toBeNull();
+  }
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
