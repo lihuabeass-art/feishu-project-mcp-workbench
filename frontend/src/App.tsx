@@ -7,6 +7,7 @@ import { SchedulePage, type ScheduleGuard, type ScheduleMode, type ScheduleSessi
 import { closeScheduleSession, loadScheduleSession, resetScheduleSession, type ScheduleRead } from "./scheduleApi";
 import { patchScheduleData } from "./scheduleReadPatch";
 import { createScheduleCalendarCache } from "./scheduleHistory";
+import { scheduleChangedItemKey, type PeopleScheduleRefreshCache } from "./usePeopleScheduleRefresh";
 import { RECENT_SCHEDULE_INTERVAL, SCHEDULE_RETRY_DELAY, scheduleReadAvailable, useScheduleRevalidation } from "./useScheduleRevalidation";
 import { useScrollIsolation } from "./useScrollIsolation";
 import { prepareUpdateInstallation } from "./appUpdateSafety";
@@ -316,7 +317,7 @@ function Workspace() {
   const scheduleInteractionRevision = useRef(0);
   const schedulePeopleChecking = useRef("");
   const [scheduleCandidate, setScheduleCandidate] = useState<ScheduleRead | null>(null);
-  const scheduleCandidateRef = useRef<{ read: ScheduleRead; revision: number; includePeople: boolean } | null>(null);
+  const scheduleCandidateRef = useRef<{ read: ScheduleRead; revision: number; includePeople: boolean; sourceSignature: string } | null>(null);
   const [scheduleExit, setScheduleExit] = useState<{ action?: () => void; defectBusy?: boolean } | null>(null);
   const scheduleExitScrollRef = useScrollIsolation();
   const updateScheduleGuard = useCallback((guard: typeof scheduleGuard) => { scheduleGuardRef.current = guard; setScheduleGuard(guard); }, []);
@@ -466,6 +467,9 @@ function Workspace() {
   const syncPatchRevision = useRef(0);
   const scheduleBusinessRevision = useRef(0);
   const [scheduleWorkflowRevision, setScheduleWorkflowRevision] = useState(0);
+  const [scheduleItemChanges, setScheduleItemChanges] = useState<{ context: string; revisions: Map<string, number> }>();
+  const peopleRefreshCache = useRef<PeopleScheduleRefreshCache>({});
+  const scheduleItemChangeRevision = useRef(0);
   const syncProgressAbort = useRef<AbortController | null>(null);
   useEffect(() => () => { syncProgressAbort.current?.abort(); }, []);
   const syncConfiguration = (snapshot: Snapshot) => JSON.stringify([
@@ -484,6 +488,7 @@ function Workspace() {
     connectionKey: string;
     pending: Promise<ScheduleRead> | null;
     includePeople?: boolean;
+    sourceSignature?: string;
     read: ScheduleRead | null;
   }>({ fingerprint: "", connectionKey: "", pending: null, read: null });
   const scheduleConnectionKey =
@@ -511,8 +516,27 @@ function Workspace() {
       : "";
   const scheduleConnectionKeyRef = useRef(scheduleConnectionKey);
   scheduleConnectionKeyRef.current = scheduleConnectionKey;
+  const markScheduleItemsChanged = (context: string, ids: CachedItem["id"][]) => {
+    if (!context || context !== scheduleConnectionKeyRef.current || !ids.length) return;
+    const revision = ++scheduleItemChangeRevision.current;
+    setScheduleItemChanges((current) => {
+      const revisions = new Map(current?.context === context ? current.revisions : []);
+      for (const id of ids) {
+        const key = scheduleChangedItemKey(id);
+        revisions.delete(key);
+        revisions.set(key, revision);
+      }
+      for (const key of revisions.keys()) {
+        if (revisions.size <= 512) break;
+        revisions.delete(key);
+      }
+      return { context, revisions };
+    });
+  };
   const scheduleFingerprintRef = useRef(schedulePreloadFingerprint);
   scheduleFingerprintRef.current = schedulePreloadFingerprint;
+  const scheduleSourcesSignatureRef = useRef(scheduleSourcesSignature);
+  scheduleSourcesSignatureRef.current = scheduleSourcesSignature;
   const recordScheduleCheck = useCallback((connectionKey: string, includePeople: boolean, check: ScheduleCheck, both = false) => {
     setScheduleChecks((previous) => {
       const current = previous?.connectionKey === connectionKey ? previous : { connectionKey, mine: {}, people: {} };
@@ -566,12 +590,14 @@ function Workspace() {
       }
       if (!previousRead && previousSession) void closeScheduleSession(Promise.resolve(previousSession)).catch(() => {});
       const interactionRevision = scheduleInteractionRevision.current;
+      const sourceSignature = scheduleSourcesSignatureRef.current;
       const req = openOrRecoverScheduleSession(options);
       scheduleSessionRef.current = {
         fingerprint,
         connectionKey,
         pending: req,
         includePeople: options.includePeople,
+        sourceSignature: previousRead ? current.sourceSignature : sourceSignature,
         read: previousRead,
       };
       if (!previousRead) setPreloadedSchedule(null);
@@ -610,11 +636,12 @@ function Workspace() {
           }
           const next = patchScheduleData(previousRead, res);
           if (previousRead && viewRef.current === "schedule") {
-            scheduleCandidateRef.current = { read: next, revision: interactionRevision, includePeople: options.includePeople };
+            scheduleCandidateRef.current = { read: next, revision: interactionRevision, includePeople: options.includePeople, sourceSignature };
             setScheduleCandidate(next);
             return previousRead;
           }
           scheduleSessionRef.current.read = next;
+          scheduleSessionRef.current.sourceSignature = sourceSignature;
           if (previousSession && previousSession.sessionId !== res.sessionId) {
             void closeScheduleSession(Promise.resolve(previousSession)).catch(() => {});
           }
@@ -665,6 +692,7 @@ function Workspace() {
     ) {
       scheduleSessionRef.current.fingerprint = schedulePreloadFingerprint;
       scheduleSessionRef.current.connectionKey = scheduleConnectionKey;
+      scheduleSessionRef.current.sourceSignature = scheduleSourcesSignature;
       return;
     }
     if (!scheduleSessionRef.current.read && !scheduleSessionRef.current.pending && scheduleReadAvailable() && !contextRef.current) {
@@ -685,7 +713,10 @@ function Workspace() {
     currentScheduleCheck?.attemptedAt === undefined ? 0 : currentScheduleCheck.attemptedAt + SCHEDULE_RETRY_DELAY,
     scheduleFreshUntil,
   );
-  useScheduleRevalidation(view === "schedule" && schedulePreloadFingerprint ? scheduleMode : "", scheduleDueAt, scheduleFreshUntil, () => {
+  const teamRead = scheduleSessionRef.current.connectionKey === scheduleConnectionKey ? scheduleSessionRef.current.read : null;
+  const peopleItemsReady = scheduleMode === "people" && scheduleSessionRef.current.sourceSignature === scheduleSourcesSignature && teamRead?.peopleLoaded === true &&
+    !!teamRead.connection && !!teamRead.currentUserId && !teamRead.accountError;
+  useScheduleRevalidation(view === "schedule" && schedulePreloadFingerprint && !peopleItemsReady ? scheduleMode : "", scheduleDueAt, scheduleFreshUntil, () => {
     const guard = scheduleGuardRef.current;
     if (contextRef.current || guard.dirty || guard.busy || guard.uncertain || guard.interacting ||
       scheduleSessionRef.current.pending || scheduleCandidateRef.current ||
@@ -756,6 +787,7 @@ function Workspace() {
       refreshError: currentScheduleCheck?.error,
       checkedAt: currentScheduleCheck?.checkedAt,
       calendarRefreshEnabled: Boolean(schedulePreloadFingerprint) && !contextOperation,
+      itemRefreshEnabled: peopleItemsReady,
       onPeopleChecking: (sessionId) => { schedulePeopleChecking.current = sessionId; },
       onPeopleChecked: (read) => {
         schedulePeopleChecking.current = "";
@@ -785,6 +817,7 @@ function Workspace() {
         }
         const previous = scheduleSessionRef.current.read;
         scheduleSessionRef.current.read = next;
+        scheduleSessionRef.current.sourceSignature = candidate.sourceSignature;
         if (isCompleteScheduleRead(next) && (!candidate.includePeople || next.peopleLoaded !== false)) {
           confirmScheduleCheck(next, candidate.includePeople);
         }
@@ -801,7 +834,7 @@ function Workspace() {
       reload: reloadScheduleSession,
     }),
     [preloadedSchedule, scheduleCandidate, scheduleRefreshing, currentScheduleCheck, scheduleChecks, schedulePreloadFingerprint,
-      contextOperation, confirmScheduleCheck, recordScheduleCheck, updateScheduleRead, reloadScheduleSession, updateScheduleGuard],
+      contextOperation, peopleItemsReady, confirmScheduleCheck, recordScheduleCheck, updateScheduleRead, reloadScheduleSession, updateScheduleGuard],
   );
   useEffect(() => {
     if (view !== "schedule" && scheduleCandidate) scheduleController.consumeCandidate?.(scheduleCandidate, true);
@@ -1261,7 +1294,11 @@ function Workspace() {
       ++syncPatchRevision.current;
       const patch = report.patch;
       // 缓存迁移/上下文补齐也会传 modified 补丁；只有确认的业务变化才使排期失效。
-      if (patch.added.length || patch.updated_count || patch.removed.length) ++scheduleBusinessRevision.current;
+      if (patch.added.length || patch.updated_count || patch.removed.length) {
+        ++scheduleBusinessRevision.current;
+        markScheduleItemsChanged(scheduleConnectionKey, [...patch.added.map((item) => item.id),
+          ...patch.modified.map((item) => item.id), ...patch.removed]);
+      }
       const key = (id: CachedItem["id"]) => JSON.stringify([id.project_key, id.work_item_type_key, id.work_item_id]);
       setData((current) => {
         if (!current || syncConfiguration(current) !== patchContext) return current;
@@ -1491,6 +1528,7 @@ function Workspace() {
         kind: result.outcome === "failed" ? "action_failed" : "unknown_result", message: result.message,
       };
       report(result.message, resultError);
+      if (result.outcome === "verified" && result.verified) markScheduleItemsChanged(scheduleConnectionKey, [request.item_id]);
       const refreshLists = async () => {
         try {
           if (result.outcome === "verified" && result.verified) await refreshAfterWrite();
@@ -2108,6 +2146,8 @@ function Workspace() {
             requestReload={requestScheduleExit}
             defectRevision={scheduleWorkflowRevision}
             workflowRefreshRevision={scheduleWorkflowRevision}
+            changedScheduleItems={scheduleItemChanges?.context === scheduleConnectionKey ? scheduleItemChanges.revisions : undefined}
+            peopleRefreshCache={peopleRefreshCache.current}
             workflow={desktop && data?.credential_ready && data.capabilities?.workflow ? {
               context: scheduleConnectionKey,
               busy: workspaceActionBlocked("workflow", activity),

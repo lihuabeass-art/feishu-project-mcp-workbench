@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import { executeWorkflowAction, getWorkflowActions, loadSnapshot } from "./api";
-import { closeScheduleSession, loadSchedulePeople, loadScheduleSession, readCachedScheduleHistory, readCachedSchedulePeople, submitScheduleTargets, type ScheduleRead, type ScheduleWriteResult } from "./scheduleApi";
+import { closeScheduleSession, discoverSchedulePeopleItems, loadSchedulePeople, loadScheduleSession, readCachedScheduleHistory, readCachedSchedulePeople, refreshSchedulePeopleItem, submitScheduleTargets, type ScheduleRead, type ScheduleRecord, type ScheduleWriteResult } from "./scheduleApi";
 
 vi.mock("./api", async (original) => ({
   ...await original<typeof import("./api")>(),
@@ -16,6 +16,7 @@ vi.mock("./scheduleApi", () => ({
   loadScheduleHistory: vi.fn().mockResolvedValue({ people: [], targets: [], complete: true }),
   readCachedScheduleHistory: vi.fn(),
   readCachedSchedulePeople: vi.fn(),
+  discoverSchedulePeopleItems: vi.fn(), refreshSchedulePeopleItem: vi.fn(),
   loadScheduleSession: vi.fn(), loadSchedulePeople: vi.fn(),
   closeScheduleSession: vi.fn().mockResolvedValue(undefined),
   resetScheduleSession: vi.fn().mockResolvedValue(undefined), submitScheduleTargets: vi.fn(),
@@ -27,6 +28,148 @@ beforeEach(() => {
   vi.mocked(closeScheduleSession).mockResolvedValue();
   vi.mocked(readCachedScheduleHistory).mockResolvedValue(undefined);
   vi.mocked(readCachedSchedulePeople).mockResolvedValue(null);
+});
+
+it("人员排期逐项移除完成节点，保留同编号的其他空间和原编辑会话", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-26T14:05:00+08:00"));
+  const record = (id: string, project: string, node: string, title: string): ScheduleRecord => ({
+    id, title, identity: { connection: "c", project, type: "story", item: "42", node, scope: "node" },
+    nodeName: node === "backend" ? "后端研发" : "前端研发", ownerIds: [], sourceIds: ["schedule-associated-stories"],
+    projectName: project, typeName: "需求", dates: { start: "", end: "" }, nodeStatus: "doing", mine: false, peopleOnly: true,
+  });
+  const backend = record("backend", "space-a", "backend", "体验优化");
+  const frontend = record("frontend", "space-a", "frontend", "体验优化");
+  const unrelated = record("other", "space-b", "backend", "另一空间的需求");
+  const read: ScheduleRead = { sessionId: "team", connection: "c", currentUserId: "me", peopleLoaded: true,
+    readAt: "", readAtMs: Date.now(), complete: true, sources: [], people: [], targets: [backend, frontend, unrelated] };
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(discoverSchedulePeopleItems).mockResolvedValue({ items: [], complete: true });
+  let finish!: (patch: Awaited<ReturnType<typeof refreshSchedulePeopleItem>>) => void;
+  let finishOther!: typeof finish;
+  vi.mocked(refreshSchedulePeopleItem)
+    .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
+    .mockImplementationOnce(() => new Promise((resolve) => { finishOther = resolve; }));
+  await act(async () => { render(<App />); });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "人员排期" })); });
+  expect(screen.getByRole("tab", { name: "待排期 (3)" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /体验优化.*后端研发/ }));
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重新读取" })); });
+  expect((screen.getByRole("button", { name: "正在刷新…" }) as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+  expect(refreshSchedulePeopleItem).toHaveBeenCalledExactlyOnceWith("c", "me", {
+    id: { project_key: "space-a", work_item_type_key: "story", work_item_id: "42" }, sources: backend.sourceIds,
+  });
+  await act(async () => finish({ complete: true, closed: false, people: [], targets: [frontend] }));
+  expect(screen.getByRole("tab", { name: "待排期 (2)" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /体验优化.*后端研发/ })).toBeNull();
+  expect(screen.getByRole("button", { name: /另一空间的需求.*后端研发/ })).toBeTruthy();
+  expect(within(screen.getByLabelText("排期检查器")).getByText("体验优化")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /另一空间的需求.*后端研发/ }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+  const status = () => document.querySelector(".schedule-check-status")?.textContent;
+  expect(status()).toContain("正在更新人员排期 1/2");
+  expect(status()).not.toContain("已是最新");
+  expect(refreshSchedulePeopleItem).toHaveBeenLastCalledWith("c", "me", {
+    id: { project_key: "space-b", work_item_type_key: "story", work_item_id: "42" }, sources: unrelated.sourceIds,
+  });
+  fireEvent.click(screen.getByRole("button", { name: "关闭排期检查器" }));
+  vi.setSystemTime(new Date("2026-11-26T14:06:00+08:00"));
+  await act(async () => finishOther({ complete: true, closed: false, people: [], targets: [unrelated] }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+  expect(status()).toContain("人员排期已是最新 14:06");
+  fireEvent.click(screen.getByRole("button", { name: /另一空间的需求.*后端研发/ }));
+  expect(status()).toContain("人员排期已是最新 14:06");
+  expect(screen.getByRole("button", { name: "重新读取" })).toBeTruthy();
+  await act(async () => { fireEvent(window, new Event("focus")); });
+  expect(loadScheduleSession).toHaveBeenCalledTimes(1);
+  expect(closeScheduleSession).not.toHaveBeenCalled();
+  expect(screen.queryByText("正在更新人员排期")).toBeNull();
+});
+
+it("人员排期只有整体核对成功后才显示本次时间，失败时保留上次成功时间", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-26T14:34:00+08:00"));
+  const team: ScheduleRead = { sessionId: "team", connection: "c", currentUserId: "me", peopleLoaded: true,
+    complete: true, readAt: "", readAtMs: Date.now(), sources: [], people: [], targets: [] };
+  vi.mocked(loadScheduleSession).mockResolvedValue({ ...team, peopleLoaded: false });
+  vi.mocked(loadSchedulePeople).mockResolvedValueOnce(team);
+  let finish!: (value: Awaited<ReturnType<typeof discoverSchedulePeopleItems>>) => void;
+  vi.mocked(discoverSchedulePeopleItems)
+    .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
+    .mockRejectedValueOnce({ kind: "connection", message: "内部连接错误" })
+    .mockResolvedValueOnce({ items: [{ id: { project_key: "p", work_item_type_key: "story", work_item_id: "1" }, sources: [] }], complete: true });
+
+  await act(async () => { render(<App />); });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "人员排期" })); });
+  const status = () => document.querySelector(".schedule-check-status")?.textContent;
+  expect(status()).toContain("人员排期已是最新 14:34");
+  expect(screen.getByRole("button", { name: "重新读取" }).title).toBe("每隔 5 分钟自动检查人员排期");
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+  expect(discoverSchedulePeopleItems).toHaveBeenCalledTimes(1);
+  expect(status()).toContain("正在更新人员排期");
+  expect((screen.getByRole("button", { name: "正在刷新…" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(discoverSchedulePeopleItems).toHaveBeenCalledTimes(1);
+  vi.setSystemTime(new Date("2026-11-26T14:45:00+08:00"));
+  await act(async () => finish({ items: [], complete: true }));
+  expect(status()).toContain("人员排期已是最新 14:45");
+  expect(status()).not.toContain("14:34");
+
+  vi.setSystemTime(new Date("2026-11-26T14:46:00+08:00"));
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重新读取" })); });
+  expect(status()).toContain("排期上次完整读取 14:45");
+  expect(screen.getByText("部分排期未能确认，已保留可用内容，可重新读取。")).toBeTruthy();
+
+  vi.mocked(refreshSchedulePeopleItem).mockResolvedValueOnce({ complete: true, closed: false, people: [], targets: [] });
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(discoverSchedulePeopleItems).toHaveBeenCalledTimes(3);
+  expect(status()).not.toContain("14:47");
+  await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+  expect(status()).toContain("人员排期已是最新 14:47");
+  fireEvent.click(screen.getByRole("button", { name: /我的工作/ }));
+  fireEvent.click(screen.getByRole("button", { name: "事项安排" }));
+  expect(status()).toContain("人员排期已是最新 14:47");
+});
+
+it.each(["success", "partial", "failure"])("人员排期读取%s与拖动、核对交错时保留日期草稿和会话", async (outcome) => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-26T14:05:00+08:00"));
+  const entry: ScheduleRecord = {
+    id: "mine", title: "需要核对的事项", identity: { connection: "c", project: "p", type: "story", item: "one", node: "dev", scope: "personal", owner: "me" },
+    nodeName: "开发", ownerId: "me", ownerIds: ["me"], sourceIds: ["todo"], projectName: "空间", typeName: "需求",
+    dates: { start: "", end: "" }, nodeStatus: "doing", mine: true,
+  };
+  const read: ScheduleRead = { sessionId: "editing", connection: "c", currentUserId: "me", peopleLoaded: true,
+    readAt: "", readAtMs: Date.now(), complete: true, sources: [], people: [], targets: [entry] };
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(discoverSchedulePeopleItems).mockResolvedValue({ items: [], complete: true });
+  let finish!: (patch: Awaited<ReturnType<typeof refreshSchedulePeopleItem>>) => void;
+  let fail!: (reason: unknown) => void;
+  vi.mocked(refreshSchedulePeopleItem).mockImplementationOnce(() => new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
+  await act(async () => { render(<App />); });
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  fireEvent.click(screen.getByRole("button", { name: /需要核对的事项.*开发/ }));
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重新读取" })); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+  fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
+  const transfer = { effectAllowed: "", dropEffect: "", setData: vi.fn() };
+  fireEvent.dragStart(screen.getByRole("button", { name: /需要核对的事项.*开发/ }), { dataTransfer: transfer });
+  if (outcome === "success") await act(async () => finish({ complete: true, closed: true, people: [], targets: [] }));
+  fireEvent.drop(document.querySelectorAll(".schedule-days > div")[3], { dataTransfer: transfer });
+  fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "2026-11-27" } });
+  fireEvent.click(screen.getByRole("button", { name: /核对并同步|同步排期/ }));
+  const review = screen.getByRole("dialog", { name: "核对排期变更并同步" });
+  const content = review.textContent;
+  await act(async () => {
+    if (outcome === "partial") finish({ complete: false, closed: true, people: [], targets: [] });
+    if (outcome === "failure") fail({ kind: "connection", message: "offline" });
+  });
+  expect(screen.getByRole("dialog", { name: "核对排期变更并同步" })).toBe(review);
+  expect(review.textContent).toBe(content);
+  expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe("2026-11-26");
+  expect(loadScheduleSession).toHaveBeenCalledTimes(1);
+  expect(closeScheduleSession).not.toHaveBeenCalled();
 });
 
 it("完整模式首屏先显示问候，排期读完后在同一张卡片补上姓名和头像", async () => {
@@ -79,7 +222,6 @@ it.each([
   fireEvent.click(await screen.findByRole("button", { name: "事项安排" }));
   const nextWeek = await screen.findByRole("button", { name: "下一周" });
   fireEvent.click(nextWeek);
-  const range = nextWeek.parentElement!.querySelector("strong")!.textContent;
   if (refreshOutcome === "stale") {
     now += 300_000;
     fireEvent(window, new Event("focus"));
@@ -87,6 +229,7 @@ it.each([
   }
   fireEvent.click(await screen.findByRole("tab", { name: "已排期 (1)" }));
   fireEvent.click(screen.getAllByRole("button", { name: /待处理事项.*开发/ })[0]);
+  const range = nextWeek.parentElement!.querySelector("strong")!.textContent;
   const inspector = within(screen.getByLabelText("排期检查器"));
   expect(getWorkflowActions).not.toHaveBeenCalled();
   fireEvent.click(inspector.getByRole("button", { name: "查看可用流程动作" }));
@@ -268,7 +411,7 @@ it("从空的团队会话刷新取得部分关联需求时显示可确认事项�
   vi.mocked(loadSchedulePeople).mockResolvedValueOnce({ ...empty, peopleLoaded: true });
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "人员排期" }));
-  await screen.findByText(/上次检查/);
+  await screen.findByText(/人员排期已是最新|排期上次完整读取/);
   const time = () => document.querySelector(".schedule-check-status time")?.getAttribute("datetime");
   const previous = time();
   now += 300_000;

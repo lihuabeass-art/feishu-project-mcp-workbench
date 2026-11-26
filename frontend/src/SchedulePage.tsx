@@ -39,12 +39,14 @@ import {
   readCachedSchedulePeople,
   submitScheduleTargets,
   type SchedulePerson,
+  type SchedulePeopleItem,
   type ScheduleRead,
   type ScheduleRecord,
 } from "./scheduleApi";
 import { patchScheduleData } from "./scheduleReadPatch";
 import { useScheduleProgress, type ScheduleRequest } from "./scheduleProgress";
 import { useScheduleProfiles } from "./useScheduleProfiles";
+import { peopleScheduleItemKey, usePeopleScheduleRefresh, type PeopleScheduleRefreshCache, type ScheduleItemChanges } from "./usePeopleScheduleRefresh";
 import { scheduleHistoryRequest, scheduleItemKey, useScheduleCalendar, useScheduleItemContexts, type ScheduleCalendarCache, type ScheduleCurrentNode } from "./scheduleHistory";
 import { HISTORICAL_SCHEDULE_INTERVAL, RECENT_SCHEDULE_INTERVAL } from "./useScheduleRevalidation";
 import {
@@ -101,6 +103,7 @@ export interface ScheduleSessionController {
   refreshError?: string;
   checkedAt?: number;
   calendarRefreshEnabled?: boolean;
+  itemRefreshEnabled?: boolean;
   onPeopleChecking?: (sessionId: string) => void;
   onPeopleChecked?: (read?: ScheduleRead) => void;
   onInteraction?: () => void;
@@ -372,6 +375,8 @@ export function SchedulePage({
   workflow,
   defectRevision = 0,
   workflowRefreshRevision = 0,
+  changedScheduleItems,
+  peopleRefreshCache,
 }: {
   onGuardChange: (guard: ScheduleGuard) => void;
   requestReload: (reload: () => void) => void;
@@ -386,6 +391,8 @@ export function SchedulePage({
   workflow?: { context: string; busy: boolean; submit: WorkflowSubmit };
   defectRevision?: number;
   workflowRefreshRevision?: number;
+  changedScheduleItems?: ScheduleItemChanges;
+  peopleRefreshCache?: PeopleScheduleRefreshCache;
 }) {
   const initialRead = preloadedSession?.read || null;
   const [epoch, setEpoch] = useState(0);
@@ -413,6 +420,7 @@ export function SchedulePage({
   const [report, setReport] = useState("");
   const [successToast, setSuccessToast] = useState<{ id: number; accepted: number } | null>(null);
   const [selected, setSelected] = useState("");
+  const [selectedPeopleItem, setSelectedPeopleItem] = useState<{ target: string; item: SchedulePeopleItem }>();
   const [poolSelection, setPoolSelection] = useState<{ identity: string; owner: string; view: "mine" | "people"; week: string } | null>(null);
   const scrolledPoolSelection = useRef<NonNullable<typeof poolSelection> | null>(null);
   const calendarScrollRef = useRef<HTMLDivElement>(null);
@@ -466,7 +474,7 @@ export function SchedulePage({
   const displayUserId = displayRead?.currentUserId;
   const cachedPeopleEntries = useMemo(() => cachedPeopleRead?.targets.map(createScheduleEntry), [cachedPeopleRead]);
   const previewPeople = useMemo(() => [...partial?.people || [], ...stream?.people || []], [partial, stream]);
-  const displayEntries = useMemo(() => {
+  const unpatchedEntries = useMemo(() => {
     if (!cachedPeopleEntries && !partial && !stream) return entries;
     const combined = new Map(cachedPeopleEntries?.map((entry) => [entry.id, entry]));
     const liveIds = new Set(entries.map((entry) => entry.id));
@@ -554,13 +562,79 @@ export function SchedulePage({
   const dirty = entries.some(scheduleChanged);
   const uncertain = entries.some((entry) => entry.result === "uncertain");
   const interacting = reviewOpen || dragging || peopleLoading || datePickerOpen || workflowInteraction;
+  const itemRefreshReady = Boolean(peopleCacheContext && preloadedSession?.calendarRefreshEnabled &&
+    preloadedSession.itemRefreshEnabled !== false &&
+    read?.peopleLoaded === true && read.connection && read.currentUserId && !read.accountError);
+  const peopleItems = useMemo(() => {
+    const items = new Map<string, SchedulePeopleItem>();
+    const connection = read?.connection;
+    if (!connection) return items;
+    for (const { record, identity } of unpatchedEntries) {
+      if (identity.connection !== connection || !identity.project || !identity.type || !identity.item ||
+        record.itemClosed === true || !isCurrentSchedulableStatus(record.nodeStatus)) continue;
+      const key = scheduleItemKey(identity);
+      const id = { project_key: identity.project, work_item_type_key: identity.type, work_item_id: identity.item };
+      const prior = items.get(key);
+      items.set(key, { id, sources: [...new Set([...prior?.sources || [], ...record.sourceIds])] });
+    }
+    for (const failed of [...read?.itemErrors || [], ...partial?.itemErrors || []]) {
+      const id = { project_key: failed.project, work_item_type_key: failed.type, work_item_id: failed.item };
+      const key = peopleScheduleItemKey(connection, id);
+      if (failed.project && failed.type && failed.item && !items.has(key)) items.set(key, { id, sources: failed.sources });
+    }
+    return items;
+  }, [unpatchedEntries, partial?.itemErrors, read?.connection, read?.itemErrors]);
+  const failedPeopleKeys = useMemo(() => new Set([...read?.itemErrors || [], ...partial?.itemErrors || []].map((item) =>
+    JSON.stringify([read?.connection, item.project, item.type, item.item]))), [read?.connection, read?.itemErrors, partial?.itemErrors]);
+  const selectedBase = unpatchedEntries.find((entry) => entry.id === selected);
+  const selectedItem = selectedPeopleItem?.target === selected ? selectedPeopleItem.item : selectedBase &&
+    { id: workflowItemFor(selectedBase).id, sources: selectedBase.record.sourceIds };
+  const selectedPeopleKey = selectedItem && read?.connection ? peopleScheduleItemKey(read.connection, selectedItem.id) : undefined;
+  const localProtectedItems = useMemo(() => new Set(entries.filter((entry) => scheduleChanged(entry) || entry.result === "uncertain")
+    .map((entry) => scheduleItemKey(entry.identity))), [entries]);
+  const protectedPeopleKeys = new Set(localProtectedItems);
+  if (selectedPeopleKey && (workflowInteraction || reviewOpen || dragging || datePickerOpen)) protectedPeopleKeys.add(selectedPeopleKey);
+  const peopleRefresh = usePeopleScheduleRefresh({
+    scope: JSON.stringify([peopleCacheContext, read?.sessionId]), connection: read?.connection, user: read?.currentUserId,
+    active: view === "people" && itemRefreshReady, checkedAt: read?.readAtMs, failedKeys: failedPeopleKeys,
+    scopes: read?.historyScopes || [], items: peopleItems,
+    selected: selectedItem, protectedKeys: protectedPeopleKeys, changes: changedScheduleItems, cache: peopleRefreshCache,
+  });
+  const itemPatches = useMemo(() => {
+    if (view !== "people" || !peopleRefresh.patches) return undefined;
+    if (!localProtectedItems.size) return peopleRefresh.patches;
+    return new Map([...peopleRefresh.patches].filter(([key]) => !localProtectedItems.has(key)));
+  }, [view, peopleRefresh.patches, localProtectedItems]);
+  const displayEntries = useMemo(() => {
+    if (!itemPatches?.size) return unpatchedEntries;
+    const prior = new Map(unpatchedEntries.map((entry) => [entry.id, entry]));
+    const replacements = new Map([...itemPatches].map(([key, { targets }]) => [key, targets.map((target) => {
+      const entry = prior.get(target.id);
+      const record = entry && target.relatedProjects === undefined
+        ? { ...target, relatedProjects: entry.record.relatedProjects } : target;
+      return createScheduleEntry(record);
+    })]));
+    const updated = unpatchedEntries.flatMap((entry) => {
+      const key = scheduleItemKey(entry.identity);
+      const patch = itemPatches.get(key);
+      if (!patch) return [entry];
+      const replacement = replacements.get(key) || [];
+      replacements.delete(key);
+      if (!patch.complete && patch.closed && validSchedule(entry.dates) &&
+        !patch.targets.some((target) => target.id === entry.id)) {
+        return [...replacement, { ...entry, record: { ...entry.record, itemClosed: true } }];
+      }
+      return replacement;
+    });
+    return updated.concat(...replacements.values());
+  }, [itemPatches, unpatchedEntries]);
   const managedCalendar = preloadedSession?.calendarRefreshEnabled !== undefined && calendarReady;
   const {
     data: currentHistory, loading: calendarLoading, failed: calendarFailed, checkedAt: calendarCheckedAt, retry: retryCalendar,
   } = useScheduleCalendar(
     calendarKey,
     preloadCalendarKeys,
-    managedCalendar ? (viewingHistory ? HISTORICAL_SCHEDULE_INTERVAL : RECENT_SCHEDULE_INTERVAL) : undefined,
+    managedCalendar ? (viewingHistory || view === "people" ? HISTORICAL_SCHEDULE_INTERVAL : RECENT_SCHEDULE_INTERVAL) : undefined,
     managedCalendar && (!preloadedSession?.calendarRefreshEnabled || dirty || busy || uncertain || interacting),
     calendarCache,
   );
@@ -839,8 +913,9 @@ export function SchedulePage({
     }
   }, [preloadedSession?.candidate, preloadedSession?.read, preloadedSession?.pending, dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen, workflowInteraction]);
 
-  const knownPeople = useMemo(() => [...currentHistory?.people || [], ...baseRead?.people || [], ...previewPeople],
-    [currentHistory?.people, baseRead?.people, previewPeople]);
+  const knownPeople = useMemo(() => [...currentHistory?.people || [], ...baseRead?.people || [], ...previewPeople,
+    ...[...itemPatches?.values() || []].flatMap((patch) => patch.people)],
+    [currentHistory?.people, baseRead?.people, previewPeople, itemPatches]);
   const profiles = useScheduleProfiles(peopleCacheContext, displayRead?.connection, displayUserId, knownPeople);
   const people = useMemo(() => {
     const values = new Map<string, SchedulePerson>();
@@ -1004,7 +1079,7 @@ export function SchedulePage({
   );
 
   const isCurrentSchedulablePoolNode = (entry: Entry) =>
-    isCurrentSchedulableStatus(entry.record.nodeStatus) &&
+    entry.record.itemClosed !== true && isCurrentSchedulableStatus(entry.record.nodeStatus) &&
     (entry.record.scheduleRequired !== false ||
       validSchedule(entry.dates) ||
       scheduleChanged(entry));
@@ -1116,7 +1191,8 @@ export function SchedulePage({
   }
   const calendarEntries = [...visible, ...historicalEntries.filter((entry) => {
     const ownerKey = calendarOwnerKey(entry, entry.record.ownerId);
-    return matchesFilters(entry) && !liveSchedules.has(ownerKey);
+    const patch = itemPatches?.get(scheduleItemKey(entry.identity));
+    return matchesFilters(entry) && !liveSchedules.has(ownerKey) && (!patch || !patch.complete);
   })];
 
   const personOptions = new Map<string, Set<string>>();
@@ -1196,6 +1272,7 @@ export function SchedulePage({
     setPoolSelection(null);
     setDefectSelection(null);
     setSelected(entry.id);
+    setSelectedPeopleItem({ target: entry.id, item: { id: workflowItemFor(entry).id, sources: entry.record.sourceIds } });
     setSelectedPerson(view === "people" ? owner : null);
   };
   const personItemKey = (entry: Entry, owner: string) =>
@@ -1355,7 +1432,7 @@ export function SchedulePage({
     const supplementNeedsStatus = view === "people" && bars.length === 0 && primaryEntry.record.itemClosed === undefined;
     const needsNodeContext = !primaryEntry.record.sourceAggregate &&
       (!currentNodesByItem.has(key) || (view === "mine" && read?.peopleLoaded === false));
-    if (primaryEntry.identity.project && primaryEntry.identity.type && primaryEntry.identity.item &&
+    if (!itemPatches?.has(key) && primaryEntry.identity.project && primaryEntry.identity.type && primaryEntry.identity.item &&
       (supplementNeedsStatus || needsNodeContext)) contextKeys.add(key);
   }
   // 新到的预览已经包含节点内容，等本轮结束再为缺少上下文的事项补查。
@@ -1418,7 +1495,7 @@ export function SchedulePage({
 
   // 已排期是稳定清单；日历导航只改变视窗，不改变成员或计数。
   const outside = visible.filter(
-    (entry) => !isPastTransitionedNode(entry) && validSchedule(entry.dates) &&
+    (entry) => entry.record.itemClosed !== true && !isPastTransitionedNode(entry) && validSchedule(entry.dates) &&
       (view === "people" || isEditableTarget(entry)),
   );
   const outsideRows =
@@ -1428,6 +1505,16 @@ export function SchedulePage({
 
   const selectedEntry = calendarEntries.find((entry) => entry.id === selected)
     ?? historicalEntries.find((entry) => entry.id === selected && matchesFilters(entry));
+  useLayoutEffect(() => {
+    if (selectedEntry || !selectedItem || !read?.connection) return;
+    const patch = itemPatches?.get(peopleScheduleItemKey(read.connection, selectedItem.id));
+    if (!patch) return;
+    const next = patch.targets.find((target) => !target.itemClosed && normalizeNodeStatus(target.nodeStatus) === "doing");
+    if (next) {
+      setSelected(next.id);
+      setSelectedPeopleItem({ target: next.id, item: selectedItem });
+    }
+  }, [selectedEntry, selectedItem, read?.connection, itemPatches]);
   const selectedScopeLabel = selectedEntry ? targetScopeLabel(selectedEntry) : "";
   const selectedPeopleRows = view === "people" && selectedEntry ? personRows([selectedEntry]) : [];
   const activePerson = selectedPeopleRows.find(({ owner }) => owner === selectedPerson)?.owner
@@ -1443,7 +1530,9 @@ export function SchedulePage({
     );
   };
   const selectedNodeKey = selectedEntry ? nodeKey(selectedEntry) : "";
-  const workflowKey = workflow && !cachedPeopleRead && selectedEntry && entries.some((entry) => entry.id === selectedEntry.id) && !selectedEntry.id.startsWith("history:") && selectedEntry.identity.node.trim() &&
+  const workflowKey = workflow && !cachedPeopleRead && selectedEntry &&
+    (entries.some((entry) => entry.id === selectedEntry.id) || itemPatches?.has(scheduleItemKey(selectedEntry.identity))) &&
+    !selectedEntry.id.startsWith("history:") && selectedEntry.identity.node.trim() &&
     selectedEntry.identity.project.trim() && selectedEntry.identity.type.trim() && selectedEntry.identity.item.trim()
     ? JSON.stringify([workflow.context, selectedNodeKey]) : "";
   const workflowOpen = !!workflowKey && workflowSelection === workflowKey;
@@ -1879,6 +1968,8 @@ export function SchedulePage({
       if (!read) throw new Error("排期会话已结束");
       const response = await submitScheduleTargets(read.sessionId, frozen);
       const results = new Map(response.results.map((result) => [result.id, result]));
+      peopleRefresh.invalidate(frozen.filter((item) => results.get(item.id)?.result === "accepted")
+        .map((item) => scheduleItemKey(item.identity)));
       setEntries((current) =>
         current.map((entry) => {
           const submission = frozen.find((item) => item.id === entry.id);
@@ -2020,6 +2111,10 @@ export function SchedulePage({
   };
 
   const refreshSchedule = (afterWorkflow = false) => {
+    if (viewModeRef.current === "people" && itemRefreshReady) {
+      if (!afterWorkflow) peopleRefresh.refresh();
+      return;
+    }
     setManualRefreshing(true);
     setError("");
     const calendarRequest = retryCalendar(afterWorkflow);
@@ -2054,15 +2149,24 @@ export function SchedulePage({
     if (event.target instanceof Element && !event.target.closest("[data-schedule-refresh]")) preloadedSession?.onInteraction?.();
   };
   const hasPeopleSnapshot = read?.peopleLoaded === true;
-  const readingPeople = view === "people" && (peopleLoading || preloadedSession?.refreshing);
-  const displayedCheckTime = cachedPeopleRead ? cachedPeopleRead.readAtMs : lastCheckedAt;
+  const peopleRefreshAvailable = view === "people" && itemRefreshReady;
+  const peopleCheck = peopleRefreshAvailable ? peopleRefresh.teamCheck : undefined;
+  const checkingPeople = peopleCheck !== undefined && peopleCheck.complete === undefined;
+  const readingPeople = view === "people" && (peopleLoading || preloadedSession?.refreshing || checkingPeople);
+  const peopleFeedback = peopleRefreshAvailable && !readingPeople && (peopleRefresh.issue ? readFailureMessage(peopleRefresh.issue)
+    : peopleCheck?.complete === false ? "部分排期未能确认，已保留可用内容，可重新读取。" : undefined);
+  const showingPeopleCache = peopleCheck?.checkedAt === undefined ? cachedPeopleRead : null;
+  const displayedCheckTime = peopleCheck?.checkedAt ?? (showingPeopleCache ? showingPeopleCache.readAtMs : lastCheckedAt);
+  const fullPeopleCheckIsFresh = !readingPeople && !showingPeopleCache && displayedCheckTime !== undefined &&
+    (peopleCheck ? peopleCheck.complete === true : livePeopleComplete && !lastCheckFailed) &&
+    Date.now() - displayedCheckTime < RECENT_SCHEDULE_INTERVAL;
   const checkedDate = displayedCheckTime === undefined ? undefined : new Date(displayedCheckTime);
   const checkTime = checkedDate ? (
     <time dateTime={checkedDate.toISOString()} title={checkedDate.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}>
       {today(checkedDate) !== currentToday && `${checkedDate.toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric" })} `}
       {checkedDate.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false })}
     </time>
-  ) : cachedPeopleRead?.readAt;
+  ) : showingPeopleCache?.readAt;
   return (
     <ScheduleAvatarCacheProvider scope={avatarScope} connection={peopleCacheContext && avatarScope ? avatarConnection : undefined} people={avatarPeople}>
     <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={notifyInteraction} onFocusCapture={notifyInteraction}>
@@ -2070,30 +2174,35 @@ export function SchedulePage({
             <div className="overview schedule-overview">
               <ScheduleGreeting person={currentUserPerson} name={displayUserId ? currentUserDisplayName : undefined} />
               <div className="overview-actions schedule-overview-actions">
-                {(readingPeople || cachedPeopleRead || checkedDate || lastCheckFailed) && <div className="schedule-check-status" role="status">
+                {(readingPeople || showingPeopleCache || checkedDate || lastCheckFailed || peopleFeedback) && <div className="schedule-check-status" role="status">
                   <div className="schedule-check-details">
                     {readingPeople && <span className="schedule-check-progress">
                       <LoaderCircle size={14} aria-hidden="true" />
                       {cachedPeopleRead || hasPeopleSnapshot ? "正在更新人员排期" : "正在加载人员排期"}
+                      {peopleCheck?.total !== undefined && checkingPeople && ` ${peopleCheck.confirmed}/${peopleCheck.total}`}
                     </span>}
-                    {cachedPeopleRead ? <span className="schedule-check-cache">
+                    {showingPeopleCache ? <span className="schedule-check-cache">
                       {!readingPeople && <Clock3 size={14} aria-hidden="true" />}
-                      <span>显示缓存{checkTime && <> · {checkTime}</>}</span>
-                    </span> : checkedDate && <span>上次检查 {checkTime}</span>}
+                      <span>显示缓存{checkTime && <> {checkTime}</>}</span>
+                    </span> : checkedDate && <span>{view === "people" && (peopleCheck || !viewingHistory)
+                      ? fullPeopleCheckIsFresh ? "人员排期已是最新 " : "排期上次完整读取 "
+                      : "上次检查 "}{checkTime}</span>}
                   </div>
-                  {lastCheckFailed && !readingPeople && <span>{partial?.itemErrors?.length
+                  {lastCheckFailed && !readingPeople && !peopleCheck && <span>{partial?.itemErrors?.length
                     ? `还有 ${partial.itemErrors.length} 项未能确认，稍后自动补查`
                     : `暂未取得最新排期${(displayRead || currentHistory) && !showingPartialPeople ? "，已保留上次内容" : ""}`}</span>}
+                  {peopleFeedback && <span>{peopleFeedback}</span>}
                 </div>}
                 <button
                   type="button"
                   className="secondary"
                   data-schedule-refresh
-                  disabled={busy || manualRefreshing || (loading && !read)}
-                  onClick={() => requestReload(() => refreshSchedule())}
+                  title={peopleRefreshAvailable ? `每隔 ${RECENT_SCHEDULE_INTERVAL / 60_000} 分钟自动检查人员排期` : undefined}
+                  disabled={peopleRefreshAvailable ? checkingPeople : busy || manualRefreshing || (loading && !read)}
+                  onClick={() => peopleRefreshAvailable ? refreshSchedule() : requestReload(() => refreshSchedule())}
                 >
                   <RefreshCw size={14} aria-hidden="true" />
-                  {manualRefreshing || (loading && !read) ? "正在刷新…" : "重新读取"}
+                  {checkingPeople || manualRefreshing || (loading && !read) ? "正在刷新…" : "重新读取"}
                 </button>
                 {changedEntries.length > 0 && (
                   <button
