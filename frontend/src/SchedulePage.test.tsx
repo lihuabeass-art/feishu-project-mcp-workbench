@@ -533,7 +533,7 @@ it("概览保留头像与今日问候，日期统计标明草稿且保留真实�
   expect(greeting.querySelector("p")?.textContent).toBeTruthy();
   expect(screen.queryByText("含未同步草稿")).toBeNull();
   fireEvent.click(within(screen.getByLabelText("任务一快捷排期")).getByRole("button", { name: "今天" }));
-  const summary = within(screen.getByRole("group", { name: "当前日期范围排期统计" }));
+  const summary = within(screen.getByRole("group", { name: "已排期清单统计" }));
   expect(summary.getByText("含未同步草稿")).toBeTruthy();
   expect(screen.getAllByText("含未同步草稿")).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "全部还原" }));
@@ -1587,24 +1587,57 @@ it("详情缓存节点保留日期状态与抓取时间，无法编辑或误称�
   expect(submitScheduleTargets).not.toHaveBeenCalled();
 });
 
-it("在日期范围旁统计排期，翻到其他周时隐藏今日统计", async () => {
-  const read = data();
+it("我的排期与人员排期按已排期清单统计总数和今日数量", async () => {
+  const read = { ...data(), peopleLoaded: true };
+  const base = read.targets[0];
+  const todayDates = { start: currentWeekDay(0), end: currentWeekDay(6) };
+  read.people.push({ id: "peer", name: "同事" });
   read.targets.push({
-    ...read.targets[0],
+    ...base,
     id: "scheduled",
     identity: { ...identity, node: "scheduled" },
-    dates: { start: currentWeekDay(0), end: currentWeekDay(6) },
+    dates: todayDates,
+  }, {
+    ...base,
+    id: "next-week",
+    identity: { ...identity, node: "next-week" },
+    dates: { start: currentWeekDay(7), end: currentWeekDay(7) },
+  }, {
+    ...base,
+    id: "finished",
+    identity: { ...identity, node: "finished" },
+    nodeName: "已流转节点",
+    nodeStatus: "finished",
+    dates: todayDates,
+  }, {
+    ...base,
+    id: "shared",
+    identity: { ...identity, node: "shared", scope: "node", owner: "" },
+    ownerId: null,
+    ownerIds: ["me", "peer"],
+    readOnlyReason: "共同排期仅供查看",
+    dates: todayDates,
   });
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
 
   await setup();
-  const summary = screen.getByRole("group", { name: "当前日期范围排期统计" });
-  expect(summary.textContent).toBe("已排 1今日有排期 1");
+  const summary = screen.getByRole("group", { name: "已排期清单统计" });
+  expect(summary.textContent).toBe("已排 2今日有排期 1");
+  expect(screen.getByRole("tab", { name: "已排期 (2)" })).toBeTruthy();
   expect(screen.getByRole("tab", { name: "待排期 (1)" })).toBeTruthy();
-  expect(screen.queryByText(/其中 .* 项可排期/)).toBeNull();
+  expect(screen.getByRole("button", { name: "任务一 已流转节点" })).toBeTruthy();
 
   fireEvent.click(screen.getByRole("button", { name: "下一周" }));
-  expect(summary.textContent).toBe("已排 0");
+  expect(summary.textContent).toBe("已排 2");
+  expect(screen.getByRole("tab", { name: "已排期 (2)" })).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  expect(summary.textContent).toBe("已排 4今日有排期 3");
+  expect(screen.getByRole("tab", { name: "已排期 (4)" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
+  fireEvent.click(screen.getByRole("option", { name: "同事" }));
+  expect(summary.textContent).toBe("已排 1今日有排期 1");
+  expect(screen.getByRole("tab", { name: "已排期 (1)" })).toBeTruthy();
 });
 
 it.each([
@@ -3471,7 +3504,7 @@ it.each([7, 14] as const)("人员 %s 天视图覆盖本周时补齐未上线事�
   expect(within(calendar).queryByText("未进入清单的已上线需求")).toBeNull();
   expect(within(calendar).queryByText("旧缓存的无日期已上线需求")).toBeNull();
   expect(screen.getByRole("button", { name: "收起本人的日历安排，共3项" })).toBeTruthy();
-  expect(screen.getByRole("group", { name: "当前日期范围排期统计" }).textContent).toContain("已排 0");
+  expect(screen.getByRole("group", { name: "已排期清单统计" }).textContent).toBe("已排 1今日有排期 0");
   fireEvent.click(within(calendar).getByText("未来才排期"));
   expect(screen.getByLabelText("排期检查器").querySelector("h3")?.textContent).toBe("未来才排期");
   expect(screen.queryByLabelText("开始日期")).toBeNull();

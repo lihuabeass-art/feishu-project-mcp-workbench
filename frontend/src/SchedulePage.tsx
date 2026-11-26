@@ -1896,8 +1896,8 @@ export function SchedulePage({
   }
 
   const todayInWindow = currentToday >= windowStart && currentToday <= windowEnd;
-  const scheduledTodayCount = scheduled.filter(
-    (entry) => entry.dates.start <= currentToday && entry.dates.end >= currentToday,
+  const scheduledTodayCount = outsideRows.filter(
+    ({ entry }) => entry.dates.start <= currentToday && entry.dates.end >= currentToday,
   ).length;
   const editablePendingCount = view === "mine" ? pending.filter(isEditableTarget).length : null;
   const viewStorageKey = scheduleViewsKey(snapshot?.settings?.endpoint, read?.accountError ? null : read?.currentUserId);
@@ -2227,8 +2227,8 @@ export function SchedulePage({
                       setPeopleWeek(fitScheduleView({ start: peopleWeek, days: peopleViewDays * periods, perspective: "people", project: peopleProject, relatedProject: peopleRelatedProject, people: person, editableOnly: false }).start);
                       setPeoplePeriods(periods);
                     }} today={currentToday} onApply={applyViewSettings} onOpenChange={setViewSettingsOpen} />
-                  <div className="schedule-range-summary" role="group" aria-label="当前日期范围排期统计">
-                    <span>已排 <strong>{scheduled.length}</strong></span>
+                  <div className="schedule-range-summary" role="group" aria-label="已排期清单统计">
+                    <span>已排 <strong>{outsideRows.length}</strong></span>
                     {todayInWindow && <span>今日有排期 <strong>{scheduledTodayCount}</strong></span>}
                     {changedEntries.length > 0 && <span>含未同步草稿</span>}
                   </div>
