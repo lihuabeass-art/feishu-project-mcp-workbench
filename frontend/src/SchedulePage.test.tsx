@@ -106,7 +106,7 @@ it("首次加载团队排期时在工具栏反馈，完整读取后让出位置"
 it.each([
   { name: "测试本人", label: "测试本人（我）" },
   { name: "当前用户", label: "我" },
-])("本人以「$label」固定在人员选择顶部，清除筛选后恢复同事排期", async ({ name, label }) => {
+])("本人以「$label」固定在全部人员下方，清除筛选后恢复同事排期", async ({ name, label }) => {
   const original = data();
   const read: ScheduleRead = {
     ...original, peopleLoaded: true, complete: true, sources: [],
@@ -127,7 +127,7 @@ it.each([
   const selector = screen.getByRole("combobox", { name: "筛选人员" });
   fireEvent.click(selector);
   const menu = await screen.findByRole("listbox", { name: "筛选人员" });
-  expect(within(menu).getAllByRole("option").map((option) => option.textContent)).toEqual([label, "全部人员", "测试同事"]);
+  expect(within(menu).getAllByRole("option").map((option) => option.textContent)).toEqual(["全部人员", label, "测试同事"]);
   fireEvent.click(within(menu).getByRole("option", { name: label }));
   expect(selector.textContent).toBe(label);
   expect(await screen.findByText("当前范围未包含该人员的安排")).toBeTruthy();
@@ -1168,7 +1168,7 @@ it("搜索人员时保留置顶的本人并筛出匹配的其他成员", async (
   fireEvent.change(search, { target: { value: "刘" } });
   expect(filter.getAttribute("aria-expanded")).toBe("true");
   const menu = screen.getByRole("listbox", { name: "筛选人员" });
-  expect(within(menu).getAllByRole("option").map((option) => option.textContent)).toEqual(["本人（我）", "全部人员", "刘同事"]);
+  expect(within(menu).getAllByRole("option").map((option) => option.textContent)).toEqual(["全部人员", "本人（我）", "刘同事"]);
   fireEvent.click(screen.getByRole("option", { name: "刘同事" }));
   expect(screen.getByRole("option", { name: "刘同事" }).getAttribute("aria-selected")).toBe("true");
   fireEvent.click(filter);
@@ -1204,7 +1204,7 @@ it("人员筛选支持连续多选、取消及清空，并按负责人显示共�
   fireEvent.click(screen.getByRole("option", { name: "本人（我）" }));
   fireEvent.click(screen.getByRole("option", { name: "同事" }));
   const menu = screen.getByRole("listbox", { name: "筛选人员" });
-  expect(within(menu).getAllByRole("option").slice(0, 2).map((option) => option.textContent)).toEqual(["本人（我）", "全部人员"]);
+  expect(within(menu).getAllByRole("option").slice(0, 2).map((option) => option.textContent)).toEqual(["全部人员", "本人（我）"]);
   expect(screen.getByRole("option", { name: "本人（我）" }).getAttribute("aria-selected")).toBe("true");
   expect(screen.getByRole("option", { name: "同事" }).getAttribute("aria-selected")).toBe("true");
   const pending = document.querySelector(".schedule-pending")!;

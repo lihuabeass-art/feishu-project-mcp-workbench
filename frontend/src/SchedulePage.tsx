@@ -1048,6 +1048,9 @@ export function SchedulePage({
   const currentUserName = currentUserGlobal && !isFallbackPersonName(currentUserGlobal.name, displayUserId || "")
     ? currentUserGlobal.name
     : currentUserScopedReal?.name;
+  if (displayUserId) {
+    personFilterEntries.unshift([displayUserId, currentUserName ? `${currentUserName}（我）` : "我"]);
+  }
   const currentUserDisplayName = currentUserName || "当前用户";
   const currentUserPerson: SchedulePerson | undefined = displayUserId
     ? {
@@ -2055,10 +2058,7 @@ export function SchedulePage({
                         multiple
                         value={person}
                         onChange={setPerson}
-                        options={[
-                          ...(displayUserId ? [{ value: displayUserId, label: currentUserName ? `${currentUserName}（我）` : "我" }] : []),
-                          ...options(personFilterEntries, "全部人员"),
-                        ]}
+                        options={options(personFilterEntries, "全部人员")}
                       />
                     </>
                   )}
