@@ -448,9 +448,14 @@ it("空闲采用候选时按业务身份保留选中节点，使用新会话目�
   const props = { onGuardChange: vi.fn(), requestReload: (reload: () => void) => reload(), preloadedSession: controller };
   const page = render(<SchedulePage {...props} />);
   fireEvent.click(await screen.findByText("任务一"));
+  const calendar = document.querySelector<HTMLDivElement>(".schedule-main")!;
+  expect(calendar.querySelector(".schedule-row.selected strong")?.textContent).toBe("任务一");
+  calendar.scrollTop = 75;
   const candidate = { ...read, sessionId: "candidate", targets: [{ ...read.targets[0], id: "new-id" }] };
   page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller, candidate }} />);
   expect(consumeCandidate).toHaveBeenCalledWith(candidate, true);
+  expect(calendar.querySelector(".schedule-row.selected strong")?.textContent).toBe("任务一");
+  expect(calendar.scrollTop).toBe(75);
   fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: "2026-11-16" } });
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "2026-11-17" } });
   vi.mocked(submitScheduleTargets).mockResolvedValueOnce({ results: [{ id: "new-id", result: "accepted" }], writeRequests: 1 });
@@ -1290,6 +1295,62 @@ it("人员有待安排事项但本周无排期时仍补齐事项行", async () =
   expect(screen.queryByText("当前范围未包含该人员的安排")).toBeNull();
 });
 
+it("点击待排卡片会展开对应负责人的甘特图分组，并仅滚动甘特图", async () => {
+  const read = { ...data(), peopleLoaded: true };
+  read.targets[0].ownerIds = ["me", "peer"];
+  read.people.push({ id: "peer", name: "同事" });
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const client = document.querySelector<HTMLDivElement>(".schedule-main")!;
+  const header = client.querySelector<HTMLDivElement>(".schedule-calendar-header")!;
+  const target = screen.getByRole("button", { name: "收起同事的日历安排，共1项" }).nextElementSibling as HTMLDivElement;
+  const other = screen.getByRole("button", { name: "收起本人的日历安排，共1项" }).nextElementSibling!;
+  const left = document.querySelector<HTMLDivElement>(".schedule-pending")!;
+  Object.defineProperty(client, "clientHeight", { value: 300 });
+  vi.spyOn(header, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 50));
+  vi.spyOn(target, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, 420 - client.scrollTop, 600, 40));
+  fireEvent.click(screen.getByRole("button", { name: "收起同事的日历安排，共1项" }));
+  const card = screen.getByRole("button", { name: "收起同事的待排期，共1项" }).nextElementSibling as HTMLElement;
+  left.scrollTop = 17;
+  client.scrollLeft = 23;
+  fireEvent.click(within(card).getByRole("button", { name: /任务一/ }));
+  expect(target.hidden).toBe(false);
+  expect(target.classList.contains("selected")).toBe(true);
+  expect(other.classList.contains("selected")).toBe(false);
+  expect(client.scrollTop).toBe(370);
+  expect(client.scrollLeft).toBe(23);
+  expect(left.scrollTop).toBe(17);
+  expect(document.querySelector(".schedule-editor")?.textContent).toContain("任务一");
+  client.scrollTop = 500;
+  fireEvent.click(within(card).getByRole("button", { name: /任务一/ }));
+  expect(client.scrollTop).toBe(370);
+});
+
+it("我的排期定位到同一事项的已有行，也能定位没有排期条的事项", async () => {
+  const read = data();
+  read.targets.push(
+    { ...read.targets[0], id: "scheduled", identity: { ...identity, node: "scheduled" }, nodeName: "测试", dates: { start: currentWeekDay(0), end: currentWeekDay(0) } },
+    { ...read.targets[0], id: "unscheduled", identity: { ...identity, item: "unscheduled" }, title: "尚无排期" },
+    { ...read.targets[0], id: "another-week", identity: { ...identity, item: "another-week" }, title: "其他周事项", dates: { start: "2020-01-01", end: "2020-01-02" } },
+  );
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  const calendar = document.querySelector(".schedule-calendar")!;
+  const pool = within(document.querySelector<HTMLElement>(".schedule-pending")!);
+  const selectedRow = () => calendar.querySelector(".schedule-row.selected");
+  fireEvent.click(pool.getByRole("button", { name: /^任务一/ }));
+  expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(1);
+  expect(selectedRow()?.querySelector(".schedule-bar")?.textContent).toContain("测试");
+  fireEvent.click(pool.getByRole("button", { name: /^尚无排期/ }));
+  expect(selectedRow()?.querySelector(".schedule-row-label strong")?.textContent).toBe("尚无排期");
+  expect(selectedRow()?.querySelector(".schedule-bar")).toBeNull();
+  fireEvent.click(screen.getByRole("tab", { name: /已排期/ }));
+  fireEvent.click(pool.getByRole("button", { name: /^其他周事项/ }));
+  expect(selectedRow()?.querySelector(".schedule-row-label strong")?.textContent).toBe("其他周事项");
+  expect(selectedRow()?.querySelector(".schedule-bar")).not.toBeNull();
+});
+
 it("人员分组在待排池和日历独立折叠，键盘展开并保留选择与草稿", async () => {
   const read = data();
   read.targets.push({ ...read.targets[0], id: "scheduled", title: "已安排任务", identity: { ...identity, item: "scheduled" }, dates: { start: currentWeekDay(0), end: currentWeekDay(0) } });
@@ -2091,13 +2152,15 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   expect(outsideCard.textContent).toContain(`${farStart} ~ ${farEnd}`);
   expect(outsideCard.getAttribute("draggable")).toBe("true");
 
-  // 1. 点击卡片主体仅在右侧检查器选中该事项，不强制跳离当前周
+  // 1. 点击已排期卡片，甘特图定位到排期所在周，检查器打开该事项。
   fireEvent.click(outsideCard);
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).value).toBe(farStart);
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe(farEnd);
   expect(outsideCard.className).toContain("schedule-outside-item");
+  expect(document.querySelector(".schedule-calendar .schedule-row.selected strong")?.textContent).toBe("三周后专项");
 
   // 2. 将已排期事项直接拖入当前周日历第 2 列（索引 1），保留其原本 3 天跨度
+  fireEvent.click(screen.getByRole("button", { name: "本周", exact: true }));
   const singleWeekHeaders = document.querySelectorAll(".schedule-days > div");
   fireEvent.dragStart(outsideCard, { dataTransfer: transfer });
   fireEvent.drop(singleWeekHeaders[1], { dataTransfer: transfer });

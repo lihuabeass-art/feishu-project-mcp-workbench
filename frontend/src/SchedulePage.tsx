@@ -345,6 +345,11 @@ export function SchedulePage({
   const [report, setReport] = useState("");
   const [successToast, setSuccessToast] = useState<{ id: number; accepted: number } | null>(null);
   const [selected, setSelected] = useState("");
+  const [poolSelection, setPoolSelection] = useState<{ identity: string; owner: string; view: "mine" | "people"; week: string } | null>(null);
+  const scrolledPoolSelection = useRef<NonNullable<typeof poolSelection> | null>(null);
+  const calendarScrollRef = useRef<HTMLDivElement>(null);
+  const calendarHeaderRef = useRef<HTMLDivElement>(null);
+  const poolCalendarRowRef = useRef<HTMLDivElement>(null);
   const [defectSelection, setDefectSelection] = useState<{ defect: ScheduleDefect; auth: string } | null>(null);
   const [defectGroups, setDefectGroups] = useState(() => new Map<string, boolean>());
   const [defectWorkflow, setDefectWorkflow] = useState<WorkflowNavigationState | null>(null);
@@ -1098,6 +1103,7 @@ export function SchedulePage({
       );
 
   const selectPersonRow = (entry: Entry, owner: string) => {
+    setPoolSelection(null);
     setDefectSelection(null);
     setSelected(entry.id);
     setSelectedPerson(view === "people" ? owner : null);
@@ -1107,6 +1113,27 @@ export function SchedulePage({
 
   const inWindow = (entry: Entry) => validSchedule(entry.dates) &&
     entry.dates.start <= windowEnd && entry.dates.end >= windowStart;
+  const selectPoolRow = (entry: Entry, owner: string, locateWeek = false) => {
+    selectPersonRow(entry, owner);
+    const targetWeek = validSchedule(entry.dates) && (locateWeek || !inWindow(entry))
+      ? monday(entry.dates.start) : week;
+    if (targetWeek !== week) setWeek(targetWeek);
+    setPoolSelection({ identity: JSON.stringify(entry.identity), owner, view, week: targetWeek });
+    if (groupHidden("calendar", entry, owner)) {
+      setCollapsedGroups((current) => {
+        const next = new Set(current);
+        next.delete(collapseKey("calendar", entry, owner));
+        return next;
+      });
+    }
+  };
+  const poolEntry = poolSelection?.view === view && poolSelection.week === week
+    ? visible.find((entry) => entry.id === selected && JSON.stringify(entry.identity) === poolSelection.identity)
+    : undefined;
+  const activePoolSelection = poolEntry ? poolSelection : null;
+  const matchesPoolItem = (entry: Entry, owner: string) => poolEntry &&
+    scheduleItemKey(entry.identity) === scheduleItemKey(poolEntry.identity) &&
+    (view !== "people" || owner === activePoolSelection?.owner);
   const scheduled = calendarEntries.filter(
     inWindow,
   );
@@ -1139,6 +1166,10 @@ export function SchedulePage({
     view === "people"
       ? personRows(peopleCalendarEntries)
       : scheduled.map((entry) => ({ entry, owner: entry.record.ownerId || "" }));
+  if (poolEntry && activePoolSelection && !validSchedule(poolEntry.dates) &&
+    !rawScheduledRows.some(({ entry, owner }) => matchesPoolItem(entry, owner))) {
+    rawScheduledRows.push({ entry: poolEntry, owner: activePoolSelection.owner });
+  }
 
   const groupedRowMap = new Map<string, { key: string; owner: string; entries: Entry[] }>();
   for (const { entry, owner } of rawScheduledRows) {
@@ -1230,6 +1261,22 @@ export function SchedulePage({
     if (view !== "people" || bars.length > 0 || primaryEntry.record.itemClosed === false) return true;
     return !itemContexts?.get(scheduleItemKey(primaryEntry.identity))?.completedStatus;
   });
+  const poolRowKey = poolEntry && (rows.find(({ owner, primaryEntry, bars }) =>
+    matchesPoolItem(primaryEntry, owner) && (primaryEntry.id === poolEntry.id || bars.some(({ entry }) => entry.id === poolEntry.id))) ??
+    rows.find(({ owner, primaryEntry }) => matchesPoolItem(primaryEntry, owner)))?.key;
+  useLayoutEffect(() => {
+    const container = calendarScrollRef.current;
+    const header = calendarHeaderRef.current;
+    const row = poolCalendarRowRef.current;
+    if (!activePoolSelection || scrolledPoolSelection.current === activePoolSelection || !container || !header || !row || row.hidden) return;
+    scrolledPoolSelection.current = activePoolSelection;
+    const rowBounds = row.getBoundingClientRect();
+    const visibleTop = header.getBoundingClientRect().bottom;
+    const visibleBottom = container.getBoundingClientRect().top + container.clientTop + container.clientHeight;
+    if (rowBounds.top < visibleTop || rowBounds.bottom > visibleBottom) {
+      container.scrollTop += rowBounds.top - visibleTop;
+    }
+  }, [activePoolSelection, poolRowKey]);
 
   const pending = visible.filter(
     (entry) => isCurrentSchedulablePoolNode(entry) && !validSchedule(entry.dates),
@@ -2226,7 +2273,7 @@ export function SchedulePage({
                                     setDragging(false);
                                     setPreview(null);
                                   }}
-                                  onClick={() => selectPersonRow(entry, owner)}
+                                  onClick={() => selectPoolRow(entry, owner)}
                                 >
                                   <span className="schedule-pending-head">
                                     <strong>{entry.record.title}</strong>
@@ -2313,7 +2360,7 @@ export function SchedulePage({
                                     setDragging(false);
                                     setPreview(null);
                                   }}
-                                  onClick={() => selectPersonRow(entry, owner)}
+                                  onClick={() => selectPoolRow(entry, owner)}
                                 >
                                   <span className="schedule-pending-head">
                                     <strong>{entry.record.title}</strong>
@@ -2363,8 +2410,7 @@ export function SchedulePage({
                                     className="schedule-quick-chip"
                                     onClick={(event) => {
                                       event.stopPropagation();
-                                      setWeek(monday(entry.dates.start));
-                                      selectPersonRow(entry, owner);
+                                      selectPoolRow(entry, owner, true);
                                     }}
                                   >
                                     定位该周 ↗
@@ -2382,7 +2428,7 @@ export function SchedulePage({
                   </aside>
                 )}
 
-                <div className="schedule-main">
+                <div className="schedule-main" ref={calendarScrollRef}>
                   {calendarLoading && !currentHistory && <div className="banner" role="status">{viewingHistory ? "正在读取历史排期…" : "正在读取日历排期…"}</div>}
                   {calendarFailed && (!managedCalendar || !currentHistory) && (
                     <div className="banner" role="status">
@@ -2394,7 +2440,7 @@ export function SchedulePage({
                     className={`schedule-calendar is-${view}`}
                     style={{ "--schedule-cols": days.length } as React.CSSProperties}
                   >
-                    <div className="schedule-calendar-header">
+                    <div className="schedule-calendar-header" ref={calendarHeaderRef}>
                       <div className="schedule-corner-cell">
                         <span>事项 / 节点归属</span>
                         <small>共 {rows.length} 项</small>
@@ -2446,7 +2492,7 @@ export function SchedulePage({
 
                     {rows.map((row, rowIndex) => {
                       const { key, owner, primaryEntry, bars, laneCount } = row;
-                      const rowSelected = (view !== "people" || owner === activePerson) &&
+                      const rowSelected = poolRowKey ? key === poolRowKey : (view !== "people" || owner === activePerson) &&
                         (bars.some((b) => b.entry.id === selected) || primaryEntry.id === selected);
                       const cachedItem = cachedItemFor(primaryEntry);
                       const historyKey = scheduleItemKey(primaryEntry.identity);
@@ -2508,7 +2554,7 @@ export function SchedulePage({
                                 groupKey(primaryEntry, owner)) && (
                               renderGroupToggle("calendar", primaryEntry, owner, rows.filter((item) => groupKey(item.primaryEntry, item.owner) === groupKey(primaryEntry, owner)).length)
                             )}
-                          <div hidden={groupHidden("calendar", primaryEntry, owner)} className={`schedule-row ${rowSelected ? "selected" : ""}`}>
+                          <div ref={key === poolRowKey ? poolCalendarRowRef : undefined} hidden={groupHidden("calendar", primaryEntry, owner)} className={`schedule-row ${rowSelected ? "selected" : ""}`}>
                             <div
                               className="schedule-row-label"
                               onClick={() => selectPersonRow(primaryEntry, owner)}
