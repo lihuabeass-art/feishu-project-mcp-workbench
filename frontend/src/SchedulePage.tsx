@@ -1288,7 +1288,8 @@ export function SchedulePage({
 
   // 已排期是稳定清单；日历导航只改变视窗，不改变成员或计数。
   const outside = visible.filter(
-    (entry) => validSchedule(entry.dates) && (view === "people" || isEditableTarget(entry)),
+    (entry) => !isPastTransitionedNode(entry) && validSchedule(entry.dates) &&
+      (view === "people" || isEditableTarget(entry)),
   );
   const outsideRows =
     view === "people"

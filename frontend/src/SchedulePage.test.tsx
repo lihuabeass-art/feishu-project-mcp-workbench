@@ -1415,6 +1415,43 @@ it("人员排期计入当前周和其他周的只读排期，跨空间相同人�
   expect(screen.getByRole("button", { name: /另一空间待排/ })).toBeTruthy();
 });
 
+it("人员排期刷新后，已流转节点退出左侧清单但仍可在日历回看", () => {
+  const initial = { ...data(), peopleLoaded: true };
+  const base = initial.targets[0];
+  const dates = { start: currentWeekDay(0), end: currentWeekDay(1) };
+  initial.targets = [
+    { ...base, nodeName: "联调与自测", nodeStatus: "doing", dates },
+    { ...base, id: "active", identity: { ...identity, node: "active" }, nodeName: "继续开发", nodeStatus: "doing", dates },
+    { ...base, id: "pending", identity: { ...identity, node: "pending" }, nodeName: "后端代码合入", nodeStatus: "doing" },
+    { ...base, id: "finished", identity: { ...identity, node: "finished" }, nodeName: "已完成无排期", nodeStatus: "finished" },
+  ];
+  const controller = { read: initial, pending: null, updateRead: vi.fn(), reload: vi.fn() };
+  const props = { viewMode: "people" as const, onGuardChange: vi.fn(), requestReload: vi.fn() };
+  const page = render(<SchedulePage {...props} preloadedSession={controller} />);
+  fireEvent.click(screen.getByRole("tab", { name: "已排期 (2)" }));
+  const pool = within(document.querySelector<HTMLElement>(".schedule-pool-list")!);
+  expect(pool.getByRole("button", { name: /联调与自测/ })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "收起本人的已排期，共2项" })).toBeTruthy();
+
+  const refreshed = {
+    ...initial,
+    sessionId: "refreshed",
+    targets: initial.targets.map((target) => target.id === base.id ? { ...target, nodeStatus: "finished" } : target),
+  };
+  page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller, read: refreshed }} />);
+  expect(screen.getByRole("tab", { name: "已排期 (1)" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("button", { name: "收起本人的已排期，共1项" })).toBeTruthy();
+  expect(pool.queryByRole("button", { name: /联调与自测/ })).toBeNull();
+  expect(pool.getByRole("button", { name: /继续开发/ })).toBeTruthy();
+  const pendingTab = screen.getByRole("tab", { name: "待排期 (1)" });
+  fireEvent.click(pendingTab);
+  const pending = within(document.querySelector<HTMLElement>(".schedule-pool-list")!);
+  expect(pending.getByRole("button", { name: /后端代码合入/ })).toBeTruthy();
+  expect(pending.queryByRole("button", { name: /联调与自测|已完成无排期/ })).toBeNull();
+  const calendar = within(document.querySelector<HTMLElement>(".schedule-calendar")!);
+  expect(calendar.getByRole("button", { name: "任务一 联调与自测" }).classList.contains("is-past-node")).toBe(true);
+});
+
 it("按人分组待安排及日历，跨空间同 ID 保留姓名头像与共同排期归属", async () => {
   const read = data();
   read.people = [{ id: "same", name: "张三", avatar: "a.png", connection: "c", project: "p" }, { id: "same", name: "李四", avatar: "b.png", connection: "c", project: "q" }, { id: "other", name: "张三", connection: "c", project: "p" }];
