@@ -24,6 +24,7 @@ mod avatars;
 pub use avatars::load_avatar;
 mod history;
 pub use history::{load_calendar, load_people_calendar, read_cached_people_calendar, CalendarResult, HistoryScope};
+mod people;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Dates {
@@ -93,7 +94,7 @@ pub struct Target {
     pub read_only_reason: Option<String>,
     /// 来源待办的聚合日期，没有确认节点或负责人归属。
     pub source_aggregate: bool,
-    /// 超出近期窗口的节点仅供人员排期补齐事项，不进入我的排期。
+    /// 超出近期窗口或仅从人员查询发现的节点，不进入我的排期。
     pub people_only: bool,
     pub cache_kind: &'static str,
     pub start_state: &'static str,
@@ -549,6 +550,8 @@ impl ScheduleSession {
                                     &mut view.item_errors,
                                     &mut failed_extra_sources,
                                     &mut extra,
+                                    &view.targets,
+                                    include_people.then_some(view.history_scopes.as_slice()),
                                 )
                                 .await;
                                 view.failed_items = view.item_errors.len();
@@ -714,6 +717,8 @@ impl ScheduleSession {
                 &mut self.view.item_errors,
                 &mut failed_extra_sources,
                 &mut extra_targets,
+                &self.view.targets,
+                Some(&self.view.history_scopes),
             )
             .await;
             self.view.failed_items = self.view.item_errors.len();
@@ -946,7 +951,7 @@ fn is_mine_target(target: &Target, current_user: &str) -> bool {
 fn retain_recent_targets(view: &mut LoadResult) {
     if let Some(range) = &view.recent_range {
         for target in &mut view.targets {
-            target.people_only = target.baseline.outside(range);
+            target.people_only |= target.baseline.outside(range);
             if target.people_only {
                 add_history_scope(&mut view.history_scopes, &target.identity.project, &target.identity.r#type,
                     target.owners.iter().map(|owner| owner.id.as_str()));
@@ -1352,6 +1357,8 @@ async fn expand_cached_non_todo_items(
     item_errors: &mut Vec<FailedItem>,
     failed_sources: &mut BTreeMap<String, String>,
     out_targets: &mut Vec<Target>,
+    live_targets: &[Target],
+    history_scopes: Option<&[HistoryScope]>,
 ) {
     let mut allowed_sources: BTreeMap<String, Option<crate::store::TypeScope>> = BTreeMap::new();
     for source in &session.config.sources {
@@ -1364,16 +1371,11 @@ async fn expand_cached_non_todo_items(
             }
         }
     }
-    if allowed_sources.is_empty() {
-        return;
-    }
-    let cached_items = session
-        .store
-        .query_items(&crate::store::ItemFilter {
-            limit: Some(i64::MAX),
-            ..Default::default()
-        })
-        .unwrap_or_default();
+    let cached_items = if allowed_sources.is_empty() { Vec::new() } else {
+        session.store.query_items(&crate::store::ItemFilter {
+            limit: Some(i64::MAX), ..Default::default()
+        }).unwrap_or_default()
+    };
     let mut extra_items = Vec::new();
     for cached in cached_items {
         let id = cached.item.id.clone();
@@ -1429,19 +1431,78 @@ async fn expand_cached_non_todo_items(
         ));
     }
     let max_pages = session.config.max_pages;
-    let mut fetched_extra = stream::iter(extra_items.into_iter().enumerate())
-        .map(|(index, (id, title, sources, cached_detail))| {
-            let client = client.clone();
-            async move {
-                let (nodes, item_detail) = read_nodes_and_detail(client.as_ref(), &id, cached_detail, max_pages).await;
-                (index, (id, title, sources, item_detail, nodes))
+    read_extra_items(
+        session, client.as_ref(), fingerprint, session_id, current_user, extra_items, None,
+        schedule_configs, detail_names, detail_avatars, item_errors, failed_sources, out_targets,
+    ).await;
+
+    let mut team_members = BTreeMap::<String, BTreeSet<String>>::new();
+    if let Some(history_scopes) = history_scopes {
+        for scope in history_scopes.iter().filter(|scope| scope.work_item_type == "story") {
+            team_members.entry(scope.project.clone()).or_default().extend(scope.users.iter().cloned());
+        }
+        // 有些成员只出现在按需展开的工作来源里，应在读取这些节点后再补查成员事项。
+        for target in live_targets.iter().chain(out_targets.iter())
+            .filter(|target| target.identity.r#type == "story" && !target.source_aggregate) {
+            team_members.entry(target.identity.project.clone()).or_default()
+                .extend(target.owners.iter().map(|owner| owner.id.clone()));
+        }
+        let scopes: Vec<_> = team_members.iter().filter_map(|(project, members)| {
+            let users: Vec<_> = members.iter().filter(|id| !id.is_empty() && id.as_str() != current_user).cloned().collect();
+            (!users.is_empty()).then(|| HistoryScope { project: project.clone(), work_item_type: "story".into(), users })
+        }).collect();
+        let requests = scopes.iter().flat_map(|scope| scope.users.chunks(people::MEMBERS_PER_QUERY).map(move |users| (scope, users)));
+        let mut reads = stream::iter(requests)
+            .map(|(scope, users)| people::current_stories(client.as_ref(), scope, users, max_pages))
+            .buffered(3);
+        let mut team_items = Vec::new();
+        while let Some(response) = reads.next().await {
+            match response {
+                Ok(items) => for (id, title) in items {
+                    if processed_items.insert(id.key_tuple()) {
+                        team_items.push((id, title, BTreeSet::from([people::SOURCE_ID.into()]), None));
+                    }
+                },
+                Err(_) => {
+                    failed_sources.insert(people::SOURCE_ID.into(), "部分人员当前事项读取未完成，请重试".into());
+                }
             }
+        }
+        read_extra_items(
+            session, client.as_ref(), fingerprint, session_id, current_user, team_items, Some(&team_members),
+            schedule_configs, detail_names, detail_avatars, item_errors, failed_sources, out_targets,
+        ).await;
+    }
+}
+
+type ExtraItem = (WorkItemId, String, BTreeSet<String>, Option<detail::ItemDetail>);
+
+async fn read_extra_items(
+    session: &Session,
+    client: &dyn TodoSource,
+    fingerprint: &str,
+    session_id: &str,
+    current_user: &str,
+    items: Vec<ExtraItem>,
+    team_members: Option<&BTreeMap<String, BTreeSet<String>>>,
+    schedule_configs: &mut ScheduleConfigs,
+    detail_names: &mut BTreeMap<(String, String), String>,
+    detail_avatars: &mut BTreeMap<(String, String), String>,
+    item_errors: &mut Vec<FailedItem>,
+    failed_sources: &mut BTreeMap<String, String>,
+    out_targets: &mut Vec<Target>,
+) {
+    let max_pages = session.config.max_pages;
+    let mut fetched_extra = stream::iter(items.into_iter().enumerate())
+        .map(|(index, (id, title, sources, cached_detail))| async move {
+            let (nodes, item_detail) = read_nodes_and_detail(client, &id, cached_detail, max_pages).await;
+            (index, (id, title, sources, item_detail, nodes))
         })
         .buffer_unordered(4)
         .collect::<Vec<_>>()
         .await;
     fetched_extra.sort_by_key(|(index, _)| *index);
-    read_schedule_configs(client.as_ref(), max_pages, schedule_configs,
+    read_schedule_configs(client, max_pages, schedule_configs,
         fetched_extra.iter().map(|(_, (id, _, _, detail, nodes))| (id, detail.as_ref(), nodes))).await;
     for (_, (id, mut title, sources, cached_detail, nodes_result)) in fetched_extra {
         let nodes = match nodes_result {
@@ -1486,6 +1547,11 @@ async fn expand_cached_non_todo_items(
         }
         let project = id.project_key.as_deref().unwrap_or_default();
         let kind = id.work_item_type_key.as_deref().unwrap_or_default();
+        let team_only = team_members.is_some();
+        if team_only && detail.is_none() {
+            failed_sources.insert(people::SOURCE_ID.into(), "部分人员当前事项详情读取未完成，请重试".into());
+            continue;
+        }
         let config_key = (project.to_owned(), kind.to_owned());
         let config = *schedule_configs.get(&config_key).unwrap();
         if config.is_err() {
@@ -1523,9 +1589,24 @@ async fn expand_cached_non_todo_items(
             );
         }
         let has_incomplete_target = temp.iter().any(incomplete_target);
+        if let Some(members) = team_members.and_then(|members| members.get(project)) {
+            // 补查只提供当前节点。已流转或未来节点的真实排期由日期查询返回。
+            temp.retain(|target| target.node_status == "doing");
+            if !has_incomplete_target && !nodes_incomplete && !temp.iter().any(|target| {
+                target.owners.iter().any(|owner| {
+                    owner.id != current_user && members.contains(&owner.id)
+                })
+            }) {
+                continue;
+            }
+        }
         for mut target in temp {
             target.item_url = item_url.clone();
             target.node_started_at_ms = detail.as_ref().and_then(|d| current_node_started_at(&d.data, &target.identity.node));
+            if team_only {
+                target.people_only = true;
+                target.read_only_reason.get_or_insert_with(|| "人员排期补充事项，仅供查看".into());
+            }
             if target.read_only_reason.is_none() && !matches!(config, Ok(true)) {
                 target.read_only_reason = Some(
                     if config.is_err() {
@@ -1571,12 +1652,12 @@ fn ensure_target_sources_in_view(
         if !seen.insert(sid.clone()) {
             continue;
         }
-        let name = tables
+        let name = if sid == people::SOURCE_ID { "人员当前事项".into() } else { tables
             .iter()
             .find(|t| &t.id == sid)
             .and_then(|t| t.display_name.clone())
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| sid.clone());
+            .unwrap_or_else(|| sid.clone()) };
         view_sources.push(SourceStatus {
             id: sid.clone(),
             name,
@@ -4251,6 +4332,7 @@ mod tests {
 
     struct TieredPeopleScenario {
         calls: Mutex<Vec<(String, Value)>>,
+        discover_pending: bool,
     }
     #[async_trait]
     impl TodoSource for Arc<TieredPeopleScenario> {
@@ -4316,6 +4398,25 @@ mod tests {
                     ],
                     "total": 1
                 }),
+                "search_by_mql" => {
+                    let row = |id, title| json!({"moql_field_list":[
+                        {"key":"work_item_id","value":{"long_value":id}},
+                        {"key":"name","value":{"string_value":title}}
+                    ]});
+                    if !self.discover_pending {
+                        json!({"session_id":"empty","list":null,"data":{},"extra_info":null,"search_status_info":null})
+                    } else if let Some(query) = args.get("mql").and_then(Value::as_str) {
+                        assert!(query.contains("`current_status_operator` IN"));
+                        assert!(query.contains("'X<id:u_peer3>'"));
+                        assert!(!query.contains("'X<id:me>'"));
+                        json!({"session_id":"cursor","list":[{"count":2,"group_infos":[{"group_id":"g"}]}],
+                            "data":{"g":[row(1,"核心事项")]}})
+                    } else {
+                        assert_eq!(args["session_id"], "cursor");
+                        assert_eq!(args["group_pagination_list"], json!([{"group_id":"g","page_num":2}]));
+                        json!({"data":{"g":[row(4,"仅同事负责的待排需求")]}})
+                    }
+                }
                 "get_node_detail" => {
                     let wid = args["work_item_id"].as_str().unwrap_or_default();
                     if wid == "1" {
@@ -4360,6 +4461,18 @@ mod tests {
                             ],
                             "pagination": { "has_more": false }
                         })
+                    } else if wid == "4" && self.discover_pending {
+                        json!({"list":[{
+                            "basic":{"node_key":"n_design","status":"doing","name":"后端方案设计"},
+                            "assignees":{"owners":[{"user_key":"u_peer3"}]},
+                            "assignee_schedule_list":[{"assignee":{"user_key":"u_peer3"},
+                                "schedule_info":{"estimate_start_time":null,"estimate_finish_time":null}}],
+                            "schedule":{"estimate_start_time":null,"estimate_finish_time":null}
+                        }, {
+                            "basic":{"node_key":"n_next","status":"not_started","name":"研发"},
+                            "assignees":{"owners":[{"user_key":"u_peer3"}]},
+                            "schedule":{"estimate_start_time":1794499200000i64,"estimate_finish_time":1794585600000i64}
+                        }],"pagination":{"has_more":false}})
                     } else {
                         panic!("unexpected work_item_id {wid}")
                     }
@@ -4374,6 +4487,9 @@ mod tests {
                             "work_item_mod": "节点流",
                             "work_item_name": if wid == "1" { "核心事项" } else { "团队事项" }
                         },
+                        "work_item_current_node": if wid == "4" {
+                            json!([{"id":"n_design","actual_begin_time":"2026-11-16T14:15:54+08:00"}])
+                        } else { json!([]) },
                         "work_item_fields": [],
                         "pagination": { "has_more": false }
                     })
@@ -4390,6 +4506,55 @@ mod tests {
             };
             Ok(ToolResultPayload::from_json(v))
         }
+    }
+
+    #[test]
+    fn people_read_discovers_pending_story_outside_local_sources() {
+        let (mut session, dir) = fixture();
+        session.config.sources.push(crate::model::source::WorkSource {
+            id: "team_stories".into(),
+            kind: crate::model::source::SourceKind::WorkItemType {
+                project_key: Some("p".into()), type_key: Some("story".into()),
+            },
+            enabled: true, todo: None, association_rule: None,
+        });
+        let run = session.store.begin_run("work_item_type", Some("p"), crate::store::RunTrigger::Manual, Some("team_stories"), 1).unwrap();
+        let cached = crate::model::domain::WorkItem {
+            id: WorkItemId { project_key: Some("p".into()), work_item_type_key: Some("story".into()), work_item_id: "2".into() },
+            project_name: None, name: Some("团队事项".into()),
+            flow: crate::model::domain::FlowInfo { kind: crate::model::domain::FlowKind::Node, node_name: None,
+                node_state_key: None, start_state_key_name: None, end_state_key_name: None },
+            schedule: Default::default(), raw_json: "{}".into(),
+        };
+        session.store.upsert_items(run, &[cached], 1).unwrap();
+        let fake = Arc::new(TieredPeopleScenario {
+            calls: Mutex::new(vec![]),
+            discover_pending: true,
+        });
+        let installed = crate::remote::install_test_client(&session.config, &session.credential().unwrap(), Box::new(fake.clone()));
+        let mut lazy = ScheduleSession::load_recent(&session, false).unwrap();
+        assert!(!fake.calls.lock().unwrap().iter().any(|(tool, _)| tool == "search_by_mql"));
+        let sid = lazy.view.session_id.clone();
+        lazy.load_people(&session, &sid).unwrap();
+        let eager = ScheduleSession::load_recent(&session, true).unwrap();
+        for plan in [&lazy, &eager] {
+            let matches: Vec<_> = plan.view.targets.iter().filter(|target| target.identity.item == "4").collect();
+            assert_eq!(matches.len(), 1);
+            let target = matches[0];
+            assert_eq!(target.identity.owner.as_deref(), Some("u_peer3"));
+            assert_eq!(target.node_status, "doing");
+            assert!(target.baseline.start.is_empty() && target.baseline.end.is_empty());
+            assert!(target.people_only && target.schedule_required && target.read_only_reason.is_some());
+            assert_eq!(target.node_started_at_ms, Some(1794809754000));
+            assert!(plan.view.sources.iter().all(|source| source.complete));
+        }
+        assert_eq!(session.store.query_items(&crate::store::ItemFilter::default()).unwrap().len(), 1);
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls.iter().filter(|(tool, args)| tool == "get_node_detail" && args["work_item_id"] == "1").count(), 2);
+        drop(calls);
+        drop(installed);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -4461,6 +4626,7 @@ mod tests {
 
         let fake = Arc::new(TieredPeopleScenario {
             calls: Mutex::new(vec![]),
+            discover_pending: false,
         });
         let installed = crate::remote::install_test_client(
             &session.config,
@@ -4607,6 +4773,7 @@ mod tests {
 
         let fake = Arc::new(TieredPeopleScenario {
             calls: Mutex::new(vec![]),
+            discover_pending: false,
         });
         let installed = crate::remote::install_test_client(
             &session.config,
@@ -4838,6 +5005,7 @@ mod tests {
                             }
                         ]
                     }),
+                    "search_by_mql" => json!({"session_id":"empty","list":null,"data":{},"extra_info":null,"search_status_info":null}),
                     "get_transition_required" => {
                         let state_key = args["state_key"].as_str().unwrap_or_default();
                         match state_key {

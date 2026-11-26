@@ -19,7 +19,7 @@ beforeEach(() => {
   vi.mocked(loadScheduleHistory).mockResolvedValue({ people: [], targets: [], complete: true });
   vi.mocked(closeScheduleSession).mockResolvedValue();
 });
-afterEach(() => { cleanup(); vi.resetAllMocks(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); vi.restoreAllMocks(); });
 const mount = async (people = true) => {
   const page = render(<SchedulePage onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
   await screen.findByLabelText("今日问候");
@@ -64,6 +64,32 @@ it("周二到下周二显示完整 8 列，跨范围裁切正确，草稿与后�
   expect(document.querySelector(".schedule-days > div")?.textContent).toContain("12-02");
   expect(submitScheduleTargets).not.toHaveBeenCalled();
   page.unmount();
+});
+
+it("包含今天的自定义人员视图保留待排需求行，只有真实日期才画排期条", async () => {
+  vi.setSystemTime(new Date(2026, 10, 26, 12));
+  const data = read();
+  const member = { ...data.targets[0], ownerId: "peer", ownerIds: ["peer"], mine: false };
+  data.people.push({ id: "peer", name: "同事" });
+  data.targets = [
+    { ...member, identity: { ...identity, owner: "peer", item: "unscheduled" }, title: "待排技术方案",
+      nodeName: "后端方案设计", nodeStatus: "doing", scheduleRequired: true, readOnlyReason: "仅供查看", peopleOnly: true },
+    { ...member, id: "two", identity: { ...identity, owner: "peer", item: "scheduled" }, title: "已排技术方案",
+      nodeStatus: "doing", dates: { start: "2026-11-24", end: "2026-11-25" } },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(data);
+  await mount();
+  const dialog = editor();
+  dates();
+  fireEvent.click(dialog.getByRole("button", { name: "应用" }));
+  const calendar = screen.getByText("已排技术方案", { selector: ".schedule-row-label strong" }).closest(".schedule-calendar")!;
+  expect(within(document.querySelector(".schedule-pending") as HTMLElement).getByText("待排技术方案")).toBeTruthy();
+  const row = within(calendar as HTMLElement).getByText("待排技术方案").closest(".schedule-row")!;
+  expect(row.querySelector(".schedule-bar")).toBeNull();
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "下一周" }));
+  expect(within(calendar as HTMLElement).queryByText("待排技术方案")).toBeNull();
+  expect(within(document.querySelector(".schedule-pending") as HTMLElement).getByText("待排技术方案")).toBeTruthy();
 });
 
 it("保存固定日期与筛选，重进页面恢复，改名更新与删除仅影响当前视图", async () => {
