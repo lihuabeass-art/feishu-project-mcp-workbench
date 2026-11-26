@@ -793,8 +793,7 @@ function Workspace() {
         schedulePeopleChecking.current = "";
         const connectionKey = scheduleSessionRef.current.connectionKey;
         recordScheduleCheck(connectionKey, true, read && isCompleteScheduleRead(read) && read.peopleLoaded !== false ? {
-          checkedAt: Math.min(scheduleChecks?.connectionKey === connectionKey
-            ? scheduleChecks.mine.checkedAt ?? Infinity : Infinity, read.readAtMs ?? Date.now()),
+          checkedAt: read.readAtMs ?? Date.now(),
           error: "",
           partial: undefined,
         } : { attemptedAt: Date.now(), fullReadAt: Date.now(), error: "团队排期读取未完成，已保留上次内容，可稍后重试。",
@@ -833,7 +832,7 @@ function Workspace() {
       updateRead: updateScheduleRead,
       reload: reloadScheduleSession,
     }),
-    [preloadedSchedule, scheduleCandidate, scheduleRefreshing, currentScheduleCheck, scheduleChecks, schedulePreloadFingerprint,
+    [preloadedSchedule, scheduleCandidate, scheduleRefreshing, currentScheduleCheck, schedulePreloadFingerprint,
       contextOperation, peopleItemsReady, confirmScheduleCheck, recordScheduleCheck, updateScheduleRead, reloadScheduleSession, updateScheduleGuard],
   );
   useEffect(() => {

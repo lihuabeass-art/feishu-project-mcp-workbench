@@ -12,7 +12,7 @@ export type PeopleScheduleRefreshCache = {
   teamCheck?: { scope: string; result: TeamCheck };
 };
 type ItemCheck = { at: number; sequence: number; complete: boolean; change?: number; failures?: number; closed?: boolean; blocked?: boolean };
-type TeamCheck = { checkedAt?: number; complete?: boolean; confirmed?: number; total?: number };
+type TeamCheck = { attemptedAt?: number; checkedAt?: number; complete?: boolean; confirmed?: number; total?: number };
 type TeamRound = { after: number; manual: boolean; discovered?: boolean; items?: Map<string, SchedulePeopleItem> };
 const CHECK_SPACING = 1_500;
 const MAX_AUTOMATIC_ATTEMPTS = 2;
@@ -47,7 +47,8 @@ export function usePeopleScheduleRefresh(input: Input) {
     discovered: new Map<string, SchedulePeopleItem>(),
     checked: new Map<string, ItemCheck>(),
     deferred: new Map<string, { patch: PeopleSchedulePatch; itemKey: string; change?: number }>(),
-    discoveryAt: Date.now(),
+    createdAt: Date.now(),
+    discoveryAt: undefined as number | undefined,
     discoveryFailures: 0,
     round: undefined as TeamRound | undefined,
     sequence: 0,
@@ -111,12 +112,13 @@ export function usePeopleScheduleRefresh(input: Input) {
     if (changed) setAccessIssues({ queue, entries: new Map(queue.issues) });
   };
 
-  const reportTeamCheck = (result: Omit<TeamCheck, "checkedAt">) => {
+  const reportTeamCheck = (result: Omit<TeamCheck, "attemptedAt" | "checkedAt">) => {
     if (!currentQueue()) return;
     const previous = queue.teamCheck;
     if (result.complete === undefined && previous && previous.complete === undefined &&
       previous.confirmed === result.confirmed && previous.total === result.total) return;
-    const check = { ...result, checkedAt: result.complete ? Date.now() : previous?.checkedAt };
+    const check = { ...result, attemptedAt: queue.discoveryAt ?? previous?.attemptedAt,
+      checkedAt: result.complete ? Date.now() : previous?.checkedAt };
     queue.teamCheck = check;
     const cache = latest.current.cache;
     if (cache && result.complete !== undefined) cache.teamCheck = { scope: input.scope, result: check };
@@ -222,9 +224,12 @@ export function usePeopleScheduleRefresh(input: Input) {
         else if (!protectedKeys.has(key)) actions.current.publish(key, patch, itemKey, change);
       }
       const now = Date.now();
-      const discoveryDelay = queue.discoveryFailures ? SCHEDULE_RETRY_DELAY : RECENT_SCHEDULE_INTERVAL;
+      const lastDiscoveryAt = queue.discoveryAt ?? queue.teamCheck?.attemptedAt ?? checkedAt ?? queue.createdAt;
+      const lastCheckAt = Math.max(lastDiscoveryAt, queue.teamCheck?.checkedAt ?? 0);
+      // 一次快速重试后回到定期检查，后台暂态失败不会停掉五分钟刷新。
+      const discoveryDelay = queue.discoveryFailures === 1 ? SCHEDULE_RETRY_DELAY : RECENT_SCHEDULE_INTERVAL;
       if (!queue.round && !queue.issues.has("") && !queue.issues.has("discovery") &&
-        queue.discoveryFailures < MAX_AUTOMATIC_ATTEMPTS && now - queue.discoveryAt >= discoveryDelay) actions.current.discover();
+        now - lastCheckAt >= discoveryDelay) actions.current.discover();
       const round = queue.round;
       const remaining = new Map<string, SchedulePeopleItem>();
       if (round?.items) {
@@ -235,7 +240,7 @@ export function usePeopleScheduleRefresh(input: Input) {
           const attempted = prior && prior.sequence > round.after && prior.change === change;
           if (attempted && prior.complete && !queue.deferred.has(key)) confirmed++;
           if (attempted || protectedKeys.has(key) || queue.issues.has("")) continue;
-          if (!round.manual && prior && prior.change === change && (prior.blocked || (prior.failures ?? 0) >= MAX_AUTOMATIC_ATTEMPTS)) continue;
+          if (!round.manual && prior?.blocked && prior.change === change) continue;
           remaining.set(key, item);
         }
         const total = round.items.size;
@@ -263,7 +268,7 @@ export function usePeopleScheduleRefresh(input: Input) {
         if (!dueForRound && prior?.blocked && !changed) continue;
         if (!dueForRound && !changed && (prior?.failures ?? 0) >= MAX_AUTOMATIC_ATTEMPTS) continue;
         if (!dueForRound && !changed && prior?.closed && !prior.failures && key !== selectedKey &&
-          (!queue.discovered.has(key) || queue.discoveryAt <= prior.at)) continue;
+          (!queue.discovered.has(key) || lastDiscoveryAt <= prior.at)) continue;
         const at = prior?.at ?? (items.has(key) && key !== selectedKey && !failedKeys.has(key) && !queue.invalidated.has(key) ? checkedAt ?? 0 : 0);
         if (!dueForRound && !changed && at > 0 && now - at < (prior?.failures === 1 ? SCHEDULE_RETRY_DELAY : RECENT_SCHEDULE_INTERVAL)) continue;
         const priority = changed ? 3 : dueForRound ? 2 : key === selectedKey ? 1 : 0;
@@ -275,8 +280,17 @@ export function usePeopleScheduleRefresh(input: Input) {
       }
       if (next) void actions.current.read(next);
     };
+    tick();
     const timer = window.setInterval(tick, CHECK_SPACING);
-    return () => window.clearInterval(timer);
+    window.addEventListener("focus", tick);
+    window.addEventListener("online", tick);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", tick);
+      window.removeEventListener("online", tick);
+      document.removeEventListener("visibilitychange", tick);
+    };
   }, [queue, input.active]);
 
   const issues = accessIssues?.queue === queue ? accessIssues.entries : undefined;

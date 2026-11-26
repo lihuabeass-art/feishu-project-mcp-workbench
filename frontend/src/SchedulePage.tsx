@@ -596,7 +596,7 @@ export function SchedulePage({
   if (selectedPeopleKey && (workflowInteraction || reviewOpen || dragging || datePickerOpen)) protectedPeopleKeys.add(selectedPeopleKey);
   const peopleRefresh = usePeopleScheduleRefresh({
     scope: JSON.stringify([peopleCacheContext, read?.sessionId]), connection: read?.connection, user: read?.currentUserId,
-    active: view === "people" && itemRefreshReady, checkedAt: read?.readAtMs, failedKeys: failedPeopleKeys,
+    active: view === "people" && itemRefreshReady, checkedAt: read?.readAtMs ?? preloadedSession?.checkedAt, failedKeys: failedPeopleKeys,
     scopes: read?.historyScopes || [], items: peopleItems,
     selected: selectedItem, protectedKeys: protectedPeopleKeys, changes: changedScheduleItems, cache: peopleRefreshCache,
   });
@@ -642,8 +642,8 @@ export function SchedulePage({
     () => currentHistory?.targets.map(createScheduleEntry) || [],
     [currentHistory],
   );
-  const recentCheckedAt = cachedPeopleRead?.readAtMs ?? preloadedSession?.checkedAt;
-  const lastCheckFailed = Boolean(preloadedSession?.refreshError || (managedCalendar && calendarFailed));
+  const recentCheckedAt = preloadedSession?.checkedAt;
+  const lastCheckFailed = Boolean(preloadedSession?.refreshError || (view === "mine" && managedCalendar && calendarFailed));
   const showingPartialPeople = view === "people" && !livePeopleComplete && !cachedPeopleRead;
   const lastCheckedAt = viewingHistory ? calendarCheckedAt : managedCalendar
     ? recentCheckedAt !== undefined && calendarCheckedAt !== undefined ? Math.min(recentCheckedAt, calendarCheckedAt)
@@ -2156,7 +2156,9 @@ export function SchedulePage({
   const peopleFeedback = peopleRefreshAvailable && !readingPeople && (peopleRefresh.issue ? readFailureMessage(peopleRefresh.issue)
     : peopleCheck?.complete === false ? "部分排期未能确认，已保留可用内容，可重新读取。" : undefined);
   const showingPeopleCache = peopleCheck?.checkedAt === undefined ? cachedPeopleRead : null;
-  const displayedCheckTime = peopleCheck?.checkedAt ?? (showingPeopleCache ? showingPeopleCache.readAtMs : lastCheckedAt);
+  const displayedCheckTime = view === "people"
+    ? peopleCheck?.checkedAt ?? (showingPeopleCache ? showingPeopleCache.readAtMs : recentCheckedAt)
+    : lastCheckedAt;
   const fullPeopleCheckIsFresh = !readingPeople && !showingPeopleCache && displayedCheckTime !== undefined &&
     (peopleCheck ? peopleCheck.complete === true : livePeopleComplete && !lastCheckFailed) &&
     Date.now() - displayedCheckTime < RECENT_SCHEDULE_INTERVAL;
@@ -2184,7 +2186,7 @@ export function SchedulePage({
                     {showingPeopleCache ? <span className="schedule-check-cache">
                       {!readingPeople && <Clock3 size={14} aria-hidden="true" />}
                       <span>显示缓存{checkTime && <> {checkTime}</>}</span>
-                    </span> : checkedDate && <span>{view === "people" && (peopleCheck || !viewingHistory)
+                    </span> : checkedDate && <span>{view === "people"
                       ? fullPeopleCheckIsFresh ? "人员排期已是最新 " : "排期上次完整读取 "
                       : "上次检查 "}{checkTime}</span>}
                   </div>
@@ -2674,7 +2676,7 @@ export function SchedulePage({
                 <div className="schedule-main" ref={calendarScrollRef} role="region" aria-label="排期甘特图" tabIndex={0}>
                   <ScheduleScrollbars scrollRef={calendarScrollRef} calendarRef={calendarRef} headerRef={calendarHeaderRef} />
                   {calendarLoading && !currentHistory && <div className="banner" role="status">{viewingHistory ? "正在读取历史排期…" : "正在读取日历排期…"}</div>}
-                  {calendarFailed && (!managedCalendar || !currentHistory) && (
+                  {calendarFailed && (view === "people" || !managedCalendar || !currentHistory) && (
                     <div className="banner" role="status">
                       <span>{viewingHistory ? "暂时无法完整读取历史排期。" : "暂时无法完整读取日历排期。"}</span>
                       <button type="button" className="secondary" onClick={() => void retryCalendar()}>{viewingHistory ? "重试历史排期" : "重试日历排期"}</button>
