@@ -71,11 +71,11 @@ pub(super) async fn read_associated_nodes(
 
 pub(super) async fn associated_stories(
     client: &dyn TodoSource,
+    spaces: &[crate::catalog::SpaceCatalog],
     max_pages: u32,
-) -> Result<(Vec<Story>, bool), BackendError> {
-    let spaces = crate::catalog::discover_spaces(client, Vec::new(), max_pages).await?.spaces;
+) -> (Vec<Story>, bool) {
     let mut reads = stream::iter(spaces).map(|space| async move {
-        let project = space.project_key;
+        let project = &space.project_key;
         let tool = crate::mcp::feishu::TOOL_LIST_WORKITEM_TYPES;
         let args = json!({"project_key": project});
         let response = parse_tool_json(tool, &client.call_tool(tool, args.as_object().unwrap()).await?)?;
@@ -86,10 +86,10 @@ pub(super) async fn associated_stories(
         if !types.iter().any(|kind| kind["type_key"] == "story") {
             return Ok(Vec::new());
         }
-        let identifier = crate::association::identifier(&project)?;
+        let identifier = crate::association::identifier(project)?;
         let association = crate::association::AssociationRule::AllParticipants.expression()?;
         let query = format!("SELECT `work_item_id`, `name`, `finish_status` FROM {identifier}.`story` WHERE {association}");
-        read_stories(client, &project, query, max_pages).await
+        read_stories(client, project, query, max_pages).await
     }).buffered(3);
     let mut items = Vec::new();
     let mut complete = true;
@@ -99,7 +99,7 @@ pub(super) async fn associated_stories(
             Err(_) => complete = false,
         }
     }
-    Ok((items, complete))
+    (items, complete)
 }
 
 /// `list_schedule` 只返回有日期的记录。按已知人员读取当前需求，再用节点详情确认归属和日期。

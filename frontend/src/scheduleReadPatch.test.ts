@@ -1,11 +1,24 @@
 import { expect, it } from "vitest";
-import type { ScheduleHistory, ScheduleRecord } from "./scheduleApi";
+import type { ScheduleHistory, ScheduleRead, ScheduleRecord } from "./scheduleApi";
 import { patchScheduleData } from "./scheduleReadPatch";
 
 const record = (id: string): ScheduleRecord => ({
   id, identity: { connection: "c", project: "p", type: "story", item: id, node: "n", scope: "node" },
   title: id, nodeName: "开发", ownerIds: ["owner"], sourceIds: [], projectName: "空间", typeName: "需求",
   dates: { start: "2026-11-26", end: "2026-11-26" }, mine: false,
+});
+
+it("排期重读缺少元数据时保留已知空间和项目，确认项目清空或切换连接时采用新值", () => {
+  const target = { ...record("a"), relatedProjects: [{ field_key: "project", id: "one", name: "项目甲" }] };
+  const previous: ScheduleRead = { sessionId: "previous", connection: "c", complete: true, readAt: "",
+    sources: [], people: [], targets: [target], spaceNames: { p: "空间甲" } };
+  const next: ScheduleRead = { ...previous, sessionId: "next", complete: false, targets: [record("a")], spaceNames: {} };
+  const partial = patchScheduleData(previous, next, true);
+  expect(partial.spaceNames).toEqual(previous.spaceNames);
+  expect(partial.targets[0]).toBe(target);
+  expect(patchScheduleData(partial, { ...next, targets: [{ ...record("a"), relatedProjects: [] }] }).targets[0].relatedProjects).toEqual([]);
+  const otherConnection = { ...next, connection: "other" };
+  expect(patchScheduleData(previous, otherConnection)).toBe(otherConnection);
 });
 
 it("重复与重排结果复用原行，真实改期、空值、新增和移除只更新受影响的行", () => {

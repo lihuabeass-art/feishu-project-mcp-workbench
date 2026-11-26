@@ -206,10 +206,10 @@ pub fn load_calendar(
         }
         Ok::<_, BackendError>((current_user, result))
     })?;
-    let mut urls = HashMap::new();
+    let mut details = HashMap::new();
     for target in &mut result.targets {
         let identity = &target.identity;
-        target.item_url = urls
+        let metadata = details
             .entry((
                 identity.project.clone(),
                 identity.r#type.clone(),
@@ -221,10 +221,15 @@ pub fn load_calendar(
                     work_item_type_key: Some(identity.r#type.clone()),
                     work_item_id: identity.item.clone(),
                 };
-                let detail = session.store.item_detail(&id).ok().flatten()?;
-                crate::workflow::item_url(&session.config.endpoint, &id, &detail.data)
-            })
-            .clone();
+                session.store.item_detail(&id).ok().flatten().map(|detail| (
+                    crate::workflow::item_url(&session.config.endpoint, &id, &detail.data),
+                    crate::catalog::related_projects(&detail.data),
+                ))
+            });
+        if let Some((url, projects)) = metadata {
+            target.item_url.clone_from(url);
+            target.related_projects = Some(projects.clone());
+        }
     }
     Ok(CalendarResult {
         targets: result.targets,
@@ -483,6 +488,7 @@ fn history_target(
         owners: vec![owner.clone()],
         unknown_owner: false,
         item_url: None,
+        related_projects: None,
         sources: Vec::new(),
         baseline,
         read_only_reason: Some("历史排期，仅供查看".into()),

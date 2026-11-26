@@ -27,7 +27,7 @@ import { useScrollIsolation } from "./useScrollIsolation";
 import { nodeWorkflowActionIds, Workflow, type WorkflowItem, type WorkflowNavigationState, type WorkflowSubmit } from "./Workflow";
 import { draftKey, readDraft } from "./workflowDrafts";
 import { useWorkflowSubmissions, workflowSubmissions } from "./workflowSubmissions";
-import type { Snapshot } from "./types";
+import type { RelatedProject, Snapshot } from "./types";
 import { asError, itemKey, missingProject, projectFilterOptions, relatedProjectKey, workItemStatusName } from "./model";
 import { readFailureMessage } from "./readFeedback";
 import { sourceName, sourcePresets } from "./sourcePresets";
@@ -879,12 +879,16 @@ export function SchedulePage({
           : "";
   const targetLabel = (entry: Entry, owner: string) =>
     [targetScopeLabel(entry), ownerLabel(entry, owner)].filter(Boolean).join(" ");
-  const projectNames = new Map(
-    (snapshot?.workspace_catalog || []).map((item) => [
-      item.project_key,
-      item.name || item.simple_name || item.project_key,
-    ]),
-  );
+  const projectNames = new Map<string, string>();
+  for (const space of snapshot?.workspace_catalog || []) {
+    const name = space.name || space.simple_name;
+    if (!name) continue;
+    projectNames.set(space.project_key, name);
+    if (space.simple_name) projectNames.set(space.simple_name, name);
+  }
+  for (const [space, name] of Object.entries({ ...displayRead?.spaceNames, ...read?.spaceNames })) {
+    projectNames.set(space, name);
+  }
   const typeNames = new Map(
     (snapshot?.sources || []).flatMap((item) =>
       (item.type_scope?.types || []).map(
@@ -922,18 +926,26 @@ export function SchedulePage({
     ]);
 
   const cachedItems = new Map((snapshot?.items || []).map((item) => [itemKey(item), item]));
-  const matchesRelatedProject = (space: string, item: ReturnType<typeof cachedItems.get>) =>
+  const filterEntries = [...displayEntries, ...historicalEntries];
+  const scheduleProjectsByItem = new Map<string, RelatedProject[]>();
+  for (const entry of [...historicalEntries, ...cachedPeopleEntries || [], ...entries]) {
+    if (entry.record.relatedProjects !== undefined) {
+      scheduleProjectsByItem.set(itemKey(workflowItemFor(entry)), entry.record.relatedProjects);
+    }
+  }
+  const itemProjects = (key: string) => scheduleProjectsByItem.get(key) ?? cachedItems.get(key)?.related_projects;
+  const matchesRelatedProject = (space: string, projects: RelatedProject[] | undefined) =>
     !relatedProject || (relatedProject === unreadRelatedProject
-      ? !item
+      ? projects === undefined
       : relatedProject === missingProject
-        ? !!item && !item.related_projects?.length
-        : item?.related_projects?.some((entry) => relatedProjectKey(space, entry) === relatedProject));
+        ? projects?.length === 0
+        : projects?.some((entry) => relatedProjectKey(space, entry) === relatedProject));
   const loadedSchedulePeople = [...displayRead?.people || [], ...currentHistory?.people || []];
   const loadedOwnerKeys = new Set(loadedSchedulePeople
     .filter((owner) => owner.id && (!read?.connection || !owner.connection || owner.connection === read.connection))
     .map((owner) => JSON.stringify([owner.project || null, owner.id])));
   const defects = defectRead.defects.flatMap((defect) => {
-    if ((project && defect.project !== project) || !matchesRelatedProject(defect.project, cachedItems.get(defectKey(defect)))) return [];
+    if ((project && defect.project !== project) || !matchesRelatedProject(defect.project, itemProjects(defectKey(defect)))) return [];
     const owners = defect.owners.filter((owner) => view === "mine" ? owner.id === read?.currentUserId
       : (!person.length || person.includes(owner.id)) && (loadedOwnerKeys.has(JSON.stringify([defect.project, owner.id]))
         || loadedOwnerKeys.has(JSON.stringify([null, owner.id]))));
@@ -949,7 +961,6 @@ export function SchedulePage({
   const cachedItemFor = (entry: Entry) => cachedItems.get(JSON.stringify([
     entry.identity.project, entry.identity.type, entry.identity.item,
   ]));
-  const filterEntries = [...displayEntries, ...historicalEntries];
   const teamReadMissing = view === "people" && filterEntries.length === 0 &&
     (loading || !!error || (read !== null && !livePeopleComplete) || lastCheckFailed);
   const teamReadMessage = teamReadMissing
@@ -958,12 +969,17 @@ export function SchedulePage({
       : "暂未取得人员排期，请重新读取。"
     : "";
   const noAssociatedSchedule = view === "people" && livePeopleComplete && filterEntries.length === 0;
-  const projectItems = filterEntries
-    .filter((entry) => !project || entry.identity.project === project)
-    .map(cachedItemFor)
-    .filter((item) => item !== undefined);
+  const projectItems = [];
+  let hasUnreadProjects = false;
+  for (const entry of filterEntries) {
+    if (project && entry.identity.project !== project) continue;
+    const item = workflowItemFor(entry);
+    const projects = itemProjects(itemKey(item));
+    if (projects === undefined) hasUnreadProjects = true;
+    else projectItems.push({ id: item.id, related_projects: projects });
+  }
   const relatedProjectOptions = projectFilterOptions(projectItems, snapshot?.workspace_catalog || [], "", "");
-  if (filterEntries.some((entry) => (!project || entry.identity.project === project) && !cachedItemFor(entry))) {
+  if (hasUnreadProjects) {
     relatedProjectOptions.push({ value: unreadRelatedProject, label: "项目信息未读取" });
   }
   if (relatedProject && !relatedProjectOptions.some((option) => option.value === relatedProject)) {
@@ -976,7 +992,7 @@ export function SchedulePage({
   const matchesFilters = (entry: Entry) =>
       (!project || entry.identity.project === project) &&
       (view === "people" || !entry.record.peopleOnly) &&
-      matchesRelatedProject(entry.identity.project, cachedItemFor(entry)) &&
+      matchesRelatedProject(entry.identity.project, itemProjects(itemKey(workflowItemFor(entry)))) &&
       (view !== "people" || person.length === 0 || entry.record.ownerIds.some((id) => person.includes(id))) &&
       (view === "people" ||
         !!read?.accountError ||
@@ -1411,6 +1427,7 @@ export function SchedulePage({
     participated_story: "参与的需求",
     "participating-requirements": "参与的需求",
     participating_requirements: "参与的需求",
+    "schedule-associated-stories": "人员排期关联需求",
     "related-story": "我参与的需求",
     related_story: "我参与的需求",
     "related-issue": "关联缺陷",
@@ -1420,8 +1437,10 @@ export function SchedulePage({
     const trimmed = raw.trim();
     if (!trimmed) return "工作来源";
     const matched = read?.sources.find((src) => src.id === trimmed || src.name === trimmed);
-    if (matched?.name && !isOpaqueKey(matched.name)) return matched.name;
     const lookupId = matched?.id || trimmed;
+    // 兼容旧排期快照中和工作来源同名的查询状态。
+    if (lookupId === "schedule-associated-stories") return knownSourceMap[lookupId];
+    if (matched?.name && !isOpaqueKey(matched.name)) return matched.name;
     const snapMatched = snapshot?.sources.find((src) => src.id === lookupId || src.id === trimmed);
     if (snapMatched) {
       const presetResolved = sourceName(snapMatched);
@@ -1800,17 +1819,21 @@ export function SchedulePage({
     const projects = new Set([
       ...entries.map((entry) => entry.identity.project),
       ...(read?.historyScopes || []).map((scope) => scope.project),
-      ...(snapshot?.workspace_catalog || []).map((space) => space.project_key),
+      ...projectNames.keys(),
     ]);
-    const project = restoring && read?.complete && settings.project && !projects.has(settings.project) ? "" : settings.project;
+    const peopleReadComplete = read?.complete && read.peopleLoaded !== false;
+    const project = restoring && peopleReadComplete && settings.project && !projects.has(settings.project) ? "" : settings.project;
     setPeopleProject(project);
-    // 排期或缓存事项中没有出现，不能证明项目已删除；只有对应空间的目录可核对项目身份。
+    // 清单目录只覆盖已读取的类型，不能用缺少候选推断某个排期项目已删除。
     let related = settings.relatedProject;
-    if (restoring && snapshot?.workspace_catalog && related && related !== missingProject && related !== unreadRelatedProject) {
+    if (restoring && related && related !== missingProject && related !== unreadRelatedProject) {
       try {
-        const [space, id] = JSON.parse(related);
-        const catalog = snapshot.workspace_catalog.find((entry) => entry.project_key === space);
-        if (catalog && !catalog.projects.some((entry) => entry.id === id)) related = "";
+        const key: unknown = JSON.parse(related);
+        if (!Array.isArray(key) || key.length !== 2 || key.some((value) => typeof value !== "string" || !value)) {
+          related = "";
+        } else if (peopleReadComplete && read.spaceNames && !projects.has(key[0])) {
+          related = "";
+        }
       } catch { related = ""; }
     }
     setPeopleRelatedProject(related);

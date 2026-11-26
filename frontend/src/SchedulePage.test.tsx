@@ -629,6 +629,47 @@ it("项目筛选区分缺少事项缓存与已读取但未提供项目，候选�
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);
 });
 
+it("仅有我的待办且没有关联需求缓存时，人员排期仍能按真实空间和项目筛选", async () => {
+  const read = data();
+  const [base] = read.targets;
+  const space = "opaque-space-key";
+  const source = "schedule-associated-stories";
+  const related = [{ field_key: "project", id: "business-project", name: "测试业务项目" }];
+  read.peopleLoaded = true;
+  read.spaceNames = { [space]: "排期空间甲" };
+  read.sources = [{ id: "todo", name: "我的待办", complete: true },
+    { id: source, name: "我参与的需求", complete: false, error: "部分节点读取未完成" }];
+  read.targets = [
+    { ...base, title: "无清单缓存的关联需求", identity: { ...identity, project: space, type: "story" },
+      sourceIds: [source], projectName: space, peopleOnly: true, relatedProjects: related },
+    { ...base, id: "empty", title: "项目已清空的需求", identity: { ...identity, project: space, type: "story", item: "empty" },
+      sourceIds: [source], projectName: space, peopleOnly: true, relatedProjects: [] },
+  ];
+  read.itemErrors = [{ project: space, type: "story", item: "partial", title: "仍需重试的需求", sources: [source], message: "节点数据不完整" }];
+  const snapshot = projectSnapshot(read);
+  snapshot.items = [{ ...snapshot.items[1], related_projects: [{ field_key: "project", id: "old", name: "旧项目" }] }];
+  snapshot.sources = [{ id: "todo", kind: "personal_todo", enabled: true, executable: true, reason: null, action: "todo", todo_scope: "in_progress" }];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  render(<SchedulePage snapshot={snapshot} onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
+  await screen.findByLabelText("今日问候");
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  expect(screen.getByText(/排期空间甲.*仍需重试的需求.*人员排期关联需求.*节点数据不完整/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选空间" }));
+  expect(screen.queryByRole("option", { name: space })).toBeNull();
+  fireEvent.click(screen.getByRole("option", { name: "排期空间甲" }));
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选所属项目" }));
+  expect(screen.queryByRole("option", { name: "项目信息未读取" })).toBeNull();
+  expect(screen.queryByRole("option", { name: "旧项目" })).toBeNull();
+  fireEvent.click(screen.getByRole("option", { name: "测试业务项目" }));
+  const pending = document.querySelector(".schedule-pending") as HTMLElement;
+  expect(within(pending).getByText("无清单缓存的关联需求")).toBeTruthy();
+  expect(within(pending).queryByText("项目已清空的需求")).toBeNull();
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选所属项目" }));
+  fireEvent.click(screen.getByRole("option", { name: "未提供所属项目" }));
+  expect(within(pending).queryByText("无清单缓存的关联需求")).toBeNull();
+  expect(within(pending).getByText("项目已清空的需求")).toBeTruthy();
+});
+
 it("删除常驻来源栏后仍展示所有关联读取失败", async () => {
   const read = data();
   read.sources = [{ id: "a", name: "完整来源", complete: true }, { id: "b", name: "失败来源", complete: false, error: "分页失败" }];

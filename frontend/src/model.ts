@@ -67,7 +67,7 @@ export const relatedProjectKey = (space: string | null, project: RelatedProject)
   // 关联字段属于事项类型；同一个项目可被多个类型的不同字段引用。
   JSON.stringify([space, project.id]);
 
-export function projectFilterOptions(items: CachedItem[], catalog: SpaceCatalog[], type: FilterSelection, space: FilterSelection) {
+export function projectFilterOptions(items: Pick<CachedItem, "id" | "related_projects">[], catalog: SpaceCatalog[], type: FilterSelection, space: FilterSelection) {
   // 目录只补充正式名称，候选身份由当前工作事项决定。
   const names = new Map<string, string>();
   for (const entry of catalog) {

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ScheduleDates, ScheduleIdentity, ScheduleResult } from "./scheduleSession";
+import type { RelatedProject } from "./types";
 
 /** 排期专用 IPC 契约；不使用工作流提交或共享缓存刷新。 */
 export interface SchedulePerson { id: string; name: string; avatar?: string | null; position?: string | null; connection?: string; project?: string }
@@ -9,6 +10,7 @@ export interface ScheduleRecord {
   nodeStatus?: string; nodeOrder?: number; scheduleRequired?: boolean; itemClosed?: boolean;
   nodeStartedAtMs?: number | null;
   ownerId?: string | null; sourceIds: string[]; projectName: string; typeName: string;
+  relatedProjects?: RelatedProject[];
   dates: ScheduleDates; mine: boolean; readOnlyReason?: string | null; itemUrl?: string | null;
   ownerIds: string[];
   sourceAggregate?: boolean;
@@ -23,6 +25,7 @@ export interface ScheduleRead {
   recentRange?: ScheduleDates | null;
   historyScopes?: ScheduleHistoryScope[];
   defectProjects?: string[];
+  spaceNames?: Record<string, string>;
   sources: ScheduleSource[]; people: SchedulePerson[]; targets: ScheduleRecord[];
   currentUserId?: string | null; currentUserAvatar?: string | null; peopleLoaded?: boolean;
   accountError?: string | null; readAt: string; readAtMs?: number; complete: boolean; readRequests?: number;
@@ -37,8 +40,8 @@ export interface ScheduleWriteResult {
   writeRequests: number;
 }
 
-interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; node_status?: string; item_closed?: boolean; node_started_at_ms?: number | null; node_order?: number; schedule_required?: boolean; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; people_only?: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
-interface WireRead { session_id: string; connection?: string; recent_range?: ScheduleDates | null; history_scopes?: ScheduleHistoryScope[]; defect_projects?: string[]; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; people?: SchedulePerson[]; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
+interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; node_status?: string; item_closed?: boolean; node_started_at_ms?: number | null; node_order?: number; schedule_required?: boolean; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; related_projects?: RelatedProject[]; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; people_only?: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
+interface WireRead { session_id: string; connection?: string; recent_range?: ScheduleDates | null; history_scopes?: ScheduleHistoryScope[]; defect_projects?: string[]; space_names?: Record<string, string>; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; people?: SchedulePerson[]; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
 interface WireResult { targets: ScheduleWriteResult["results"]; write_requests: number }
 let lifecycle: Promise<unknown> = Promise.resolve();
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -112,6 +115,7 @@ function mapScheduleRecords(result: Pick<WireRead, "targets" | "current_user" | 
       ownerId: target.identity.owner || (target.owners.length === 1 ? target.owners[0].id : null),
       ownerIds: target.owners.map((owner) => owner.id), unknownOwner: target.unknown_owner, sourceIds: target.sources,
       projectName: target.identity.project, typeName: target.identity.type, dates: target.baseline,
+      relatedProjects: target.related_projects,
       mine: !!result.current_user && (target.identity.owner === result.current_user || target.owners.some((owner) => owner.id === result.current_user)),
       sourceAggregate: target.source_aggregate, readOnlyReason: target.source_aggregate ? target.read_only_reason || "来源聚合日期缺少准确节点和负责人信息，仅供查看" : target.read_only_reason, itemUrl: target.item_url,
       peopleOnly: target.people_only ?? false,
@@ -126,6 +130,7 @@ function mapWireRead(result: WireRead): ScheduleRead {
     recentRange: result.recent_range,
     historyScopes: result.history_scopes,
     defectProjects: result.defect_projects,
+    spaceNames: result.space_names,
     currentUserId: result.current_user,
     currentUserAvatar: result.current_user_avatar,
     peopleLoaded: result.people_loaded ?? true,

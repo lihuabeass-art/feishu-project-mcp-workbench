@@ -240,6 +240,31 @@ it("恢复历史范围时不因历史事项尚未加载而清空目录中仍存�
   expect(document.querySelectorAll(".schedule-days > div")).toHaveLength(8);
 });
 
+it.each([
+  { caseName: "排期已确认项目存在", exists: true, complete: true, space: "p", label: "排期项目" },
+  { caseName: "完整空间读取后所属空间已不可用", exists: false, complete: true, space: "removed", label: "全部项目" },
+  { caseName: "项目暂未出现在排期和清单目录", exists: false, complete: true, space: "p", label: "已保存的项目筛选（暂无事项）" },
+  { caseName: "排期部分读取失败", exists: false, complete: false, space: "removed", label: "已保存的项目筛选（暂无事项）" },
+])("恢复已保存项目筛选时核对有效性（$caseName）", async ({ exists, complete, space, label }) => {
+  const id = "saved-project";
+  saveScheduleViews(key, { active: "v", views: [{ id: "v", name: "按项目排期", dateMode: "fixed", settings: {
+    start: "2025-01-01", days: 8, perspective: "people", project: space,
+    relatedProject: JSON.stringify([space, id]), people: [], editableOnly: false,
+  } }] });
+  const data = read();
+  data.complete = complete;
+  data.spaceNames = { p: "空间" };
+  data.targets[0].relatedProjects = exists ? [{ field_key: "project", id, name: "排期项目" }] : [];
+  const snapshot: Snapshot = { items: [], total: 0, runs: [], sources: [], last_success: null, config_path: "", db_path: "",
+    credential_ready: true, credential_description: "", workspace_catalog: [{ project_key: "p", name: "空间", simple_name: null,
+      projects: [{ field_key: "project", id: "another-project", name: "其他项目", type_key: "t" }] }] };
+  vi.mocked(loadScheduleSession).mockResolvedValue(data);
+  render(<SchedulePage snapshot={snapshot} onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
+  await screen.findByLabelText("今日问候");
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  expect(screen.getByRole("combobox", { name: "筛选所属项目" }).textContent).toBe(label);
+});
+
 it.each(["0001-01-01", "9999-12-31"])("边界 %s 切换单周双周与前后周保持合法日期", async (date) => {
   await mount(); const dialog = editor(); dates(date, date);
   fireEvent.click(dialog.getByRole("button", { name: "应用" }));

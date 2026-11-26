@@ -92,6 +92,9 @@ pub struct Target {
     pub owners: Vec<Person>,
     pub unknown_owner: bool,
     pub item_url: Option<String>,
+    /// None 表示没有完整详情，空数组表示详情已读取但未提供所属项目。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_projects: Option<Vec<crate::catalog::RelatedProject>>,
     pub sources: Vec<String>,
     pub baseline: Dates,
     pub read_only_reason: Option<String>,
@@ -129,6 +132,7 @@ pub struct LoadResult {
     pub recent_range: Option<Dates>,
     pub history_scopes: Vec<HistoryScope>,
     pub defect_projects: Vec<String>,
+    pub space_names: BTreeMap<String, String>,
     pub current_user: String,
     pub current_user_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -380,6 +384,7 @@ fn build_aggregate_targets(
             owners: Vec::new(),
             unknown_owner: false,
             item_url: None,
+            related_projects: None,
             sources: vec![source.clone()],
             baseline: Dates { start, end },
             read_only_reason: Some(reason.into()),
@@ -503,6 +508,7 @@ impl ScheduleSession {
             recent_range,
             history_scopes: Vec::new(),
             defect_projects: Vec::new(),
+            space_names: BTreeMap::new(),
             current_user: String::new(),
             current_user_name: String::new(),
             current_user_avatar: None,
@@ -551,6 +557,7 @@ impl ScheduleSession {
                                     &mut state.schedule_configs,
                                     &mut state.detail_names,
                                     &mut state.detail_avatars,
+                                    &mut view.space_names,
                                     &mut view.item_errors,
                                     &mut failed_extra_sources,
                                     &mut extra,
@@ -718,6 +725,7 @@ impl ScheduleSession {
                 &mut self.schedule_configs,
                 &mut self.detail_names,
                 &mut self.detail_avatars,
+                &mut self.view.space_names,
                 &mut self.view.item_errors,
                 &mut failed_extra_sources,
                 &mut extra_targets,
@@ -1178,6 +1186,8 @@ async fn read_todo_nodes(
     read_schedule_configs(client, session.config.max_pages, &mut state.schedule_configs,
         fetched.iter().map(|(_, (id, _, _, _, detail, nodes))| (id, detail.as_ref(), nodes))).await;
     for (_, (id, mut title, sources, rows, cached_detail, nodes_result)) in fetched {
+        let first = view.targets.len();
+        let related_projects = cached_detail.as_ref().map(|detail| crate::catalog::related_projects(&detail.data));
         if let Some(detail) = cached_detail.as_ref() {
             if title.trim().is_empty() {
                 title = txt(&detail.data["work_item_attribute"]["work_item_name"]);
@@ -1202,6 +1212,9 @@ async fn read_todo_nodes(
                         status.error = Some("未取得该待办的节点排期，请重试".into());
                     }
                     build_aggregate_targets(&mut view.targets, &view.session_id, &id, &rows, "节点详情为空，来源排期仅供查看");
+                    for target in &mut view.targets[first..] {
+                        target.related_projects.clone_from(&related_projects);
+                    }
                     view.item_errors.push(FailedItem {
                         project: id.project_key.clone().unwrap_or_default(),
                         r#type: id.work_item_type_key.clone().unwrap_or_default(),
@@ -1242,7 +1255,6 @@ async fn read_todo_nodes(
                 let item_url = detail
                     .as_ref()
                     .and_then(|d| crate::workflow::item_url(&session.config.endpoint, &id, &d.data));
-                let first = view.targets.len();
                 let nodes_incomplete = nodes.iter().any(node_data_incomplete);
                 for (node_order, node) in nodes.into_iter().enumerate() {
                     build_targets_with_order(&mut view.targets, &view.session_id, fingerprint, &view.current_user, &id,
@@ -1251,6 +1263,7 @@ async fn read_todo_nodes(
                 for target in &mut view.targets[first..] {
                     target.item_url = item_url.clone();
                     target.item_closed = detail.as_ref().map(|_| false);
+                    target.related_projects.clone_from(&related_projects);
                     target.node_started_at_ms = detail.as_ref().and_then(|d| current_node_started_at(&d.data, &target.identity.node));
                     if target.read_only_reason.is_none() && !matches!(config, Ok(true)) {
                         target.read_only_reason = Some(if config.is_err() { "节点排期配置读取失败，仅供查看" } else { "未找到节点排期字段配置，仅供查看" }.into());
@@ -1299,6 +1312,9 @@ async fn read_todo_nodes(
                     status.error = Some("部分事项节点读取未完成，请重试".into());
                 }
                 build_aggregate_targets(&mut view.targets, &view.session_id, &id, &rows, "节点读取未完成，来源排期仅供查看");
+                for target in &mut view.targets[first..] {
+                    target.related_projects.clone_from(&related_projects);
+                }
                 view.item_errors.push(FailedItem {
                     project: id.project_key.unwrap_or_default(),
                     r#type: id.work_item_type_key.unwrap_or_default(),
@@ -1359,6 +1375,7 @@ async fn expand_cached_non_todo_items(
     schedule_configs: &mut BTreeMap<(String, String), Result<bool, ()>>,
     detail_names: &mut BTreeMap<(String, String), String>,
     detail_avatars: &mut BTreeMap<(String, String), String>,
+    space_names: &mut BTreeMap<String, String>,
     item_errors: &mut Vec<FailedItem>,
     failed_sources: &mut BTreeMap<String, String>,
     out_targets: &mut Vec<Target>,
@@ -1445,8 +1462,20 @@ async fn expand_cached_non_todo_items(
     let mut team_members = BTreeMap::<String, BTreeSet<String>>::new();
     if let Some(history_scopes) = history_scopes {
         crate::diagnostics::schedule_stage("schedule_associated_stories");
-        let (associated, complete) = people::associated_stories(client.as_ref(), max_pages)
-            .await.unwrap_or_else(|_| (Vec::new(), false));
+        let (associated, complete) = match crate::catalog::discover_spaces(client.as_ref(), Vec::new(), max_pages).await {
+            Ok(discovery) => {
+                for space in &discovery.spaces {
+                    if let Some(name) = &space.name {
+                        space_names.insert(space.project_key.clone(), name.clone());
+                        if let Some(alias) = &space.simple_name {
+                            space_names.entry(alias.clone()).or_insert_with(|| name.clone());
+                        }
+                    }
+                }
+                people::associated_stories(client.as_ref(), &discovery.spaces, max_pages).await
+            }
+            Err(_) => (Vec::new(), false),
+        };
         if !complete {
             failed_sources.insert(people::ASSOCIATED_SOURCE_ID.into(), "部分关联需求读取未完成，请重试".into());
         }
@@ -1537,6 +1566,7 @@ fn associated_item_target(
         item_closed: Some(closed),
         schedule_required: false, owner_name: String::new(), owners: Vec::new(), unknown_owner: true,
         item_url: crate::workflow::item_url(&session.config.endpoint, id, &item.data),
+        related_projects: Some(crate::catalog::related_projects(&item.data)),
         sources: sources.iter().cloned().collect(), baseline,
         read_only_reason: Some(if scheduled { "事项级排期，仅供查看" } else { "暂无可显示的排期，仅供查看" }.into()),
         source_aggregate: true, people_only: true, cache_kind: "associated_item",
@@ -1649,6 +1679,7 @@ async fn read_extra_items(
         let item_url = detail
             .as_ref()
             .and_then(|d| crate::workflow::item_url(&session.config.endpoint, &id, &d.data));
+        let related_projects = detail.as_ref().map(|detail| crate::catalog::related_projects(&detail.data));
         let nodes_incomplete = nodes.iter().any(node_data_incomplete);
         let mut temp = Vec::new();
         for (node_order, node) in nodes.into_iter().enumerate() {
@@ -1692,6 +1723,7 @@ async fn read_extra_items(
         for mut target in temp {
             target.item_url = item_url.clone();
             target.item_closed = detail.as_ref().map(|_| completed);
+            target.related_projects.clone_from(&related_projects);
             target.node_started_at_ms = detail.as_ref().and_then(|d| current_node_started_at(&d.data, &target.identity.node));
             if team_only || associated {
                 target.people_only = true;
@@ -1747,7 +1779,7 @@ fn ensure_target_sources_in_view(
             continue;
         }
         let name = if sid == people::SOURCE_ID { "人员当前事项".into() }
-        else if sid == people::ASSOCIATED_SOURCE_ID { "我参与的需求".into() }
+        else if sid == people::ASSOCIATED_SOURCE_ID { "人员排期关联需求".into() }
         else { tables
             .iter()
             .find(|t| &t.id == sid)
@@ -2806,6 +2838,7 @@ fn build_targets_with_order(
             unknown_owner: unconfirmed_owner
                 || (scope == "node" && owners.iter().any(|o| detail::text(&o["user_key"]).is_none())),
             item_url: None,
+            related_projects: None,
             sources: sources.iter().cloned().collect(),
             baseline,
             read_only_reason: reason.map(str::to_owned),
@@ -3275,7 +3308,7 @@ mod tests {
         let mut view = LoadResult {
             session_id: "s".into(), connection: "c".into(),
             recent_range: Some(Dates { start: "2026-11-23".into(), end: "2026-12-06".into() }),
-            history_scopes: Vec::new(), defect_projects: Vec::new(), current_user: "me".into(),
+            history_scopes: Vec::new(), defect_projects: Vec::new(), space_names: BTreeMap::new(), current_user: "me".into(),
             current_user_name: String::new(), current_user_avatar: None, people_loaded: false, people: Vec::new(),
             account_error: None, read_at_ms: 0, sources: Vec::new(), targets,
             failed_items: 0, item_errors: Vec::new(), read_requests: 0,
@@ -4626,7 +4659,7 @@ mod tests {
                 "search_user_info" => json!([{"user_key":"me","name_cn":"测试账号"}]),
                 "list_todo" => json!({"list":null,"total":0}),
                 "search_project_info" if args["page_num"] == 1 => json!({
-                    "projects":[{"project_key":"first","name":"测试空间一"}],"pagination":{"has_more":true}
+                    "projects":[{"project_key":"first","name":"测试空间一","simple_name":"first-alias"}],"pagination":{"has_more":true}
                 }),
                 "search_project_info" => json!({"projects":[
                     {"project_key":"second","name":"测试空间二"},{"project_key":"issues","name":"测试缺陷空间"},
@@ -4659,7 +4692,10 @@ mod tests {
                         "owned_project":{"key":project},"work_item_type":{"key":"story"},
                         "work_item_mod":if state_flow {"状态流"} else {"节点流"},"finish_status":done},
                     "work_item_fields":if project == "state" {json!([
-                        {"key":"schedule","value":{"start_time":"2026-11-16","end_time":"2026-11-17"}}
+                        {"key":"schedule","value":{"start_time":"2026-11-16","end_time":"2026-11-17"}},
+                        {"key":"field_project","name":"所属合集","value":[{"id":12,"name":"状态流项目"}]}
+                    ])} else if project == "first" {json!([
+                        {"key":"field_project","name":"所属项目","value":{"id":11,"name":"关联项目"}}
                     ])} else {json!([])},
                     "pagination":{"has_more":false}
                 }),
@@ -4694,6 +4730,12 @@ mod tests {
             let eager = ScheduleSession::load_recent(&session, true).unwrap();
             for schedule in [&lazy, &eager] {
                 let pending = schedule.view.targets.iter().find(|target| target.identity.project == "first").unwrap();
+                assert_eq!(schedule.view.space_names["first"], "测试空间一");
+                assert_eq!(schedule.view.space_names["first-alias"], "测试空间一");
+                assert_eq!(schedule.view.space_names["second"], "测试空间二");
+                assert_eq!(pending.related_projects.as_ref().unwrap()[0].name, "关联项目");
+                assert!(schedule.view.sources.iter().any(|source|
+                    source.id == people::ASSOCIATED_SOURCE_ID && source.name == "人员排期关联需求"));
                 assert!(pending.owners.iter().any(|owner| owner.id == "peer"));
                 assert!(pending.baseline.start.is_empty() && pending.schedule_required);
                 assert!(pending.people_only && pending.read_only_reason.is_some());
@@ -4707,9 +4749,11 @@ mod tests {
                     assert_eq!(completed.item_closed, Some(true));
                 }
                 let state = schedule.view.targets.iter().find(|target| target.identity.project == "state").unwrap();
+                assert_eq!(state.related_projects.as_ref().unwrap()[0].name, "状态流项目");
                 assert_eq!(state.baseline.start, "2026-11-16");
                 assert!(state.identity.node.is_empty() && state.source_aggregate && state.read_only_reason.is_some());
                 let unscheduled = schedule.view.targets.iter().find(|target| target.identity.project == "state_without_dates").unwrap();
+                assert_eq!(unscheduled.related_projects.as_deref(), Some(&[][..]));
                 assert!(unscheduled.baseline.start.is_empty() && !unscheduled.schedule_required);
                 assert_eq!(unscheduled.item_closed, Some(false));
                 assert_eq!(schedule.view.sources.iter().all(|source| source.complete), !fail_secondary_space);
