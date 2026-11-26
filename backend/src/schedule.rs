@@ -82,6 +82,9 @@ pub struct Target {
     pub title: String,
     pub node_name: String,
     pub node_status: String,
+    /// 事项终态独立于节点状态，供人员排期判断能否补显事项。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_closed: Option<bool>,
     pub node_started_at_ms: Option<i64>,
     pub node_order: usize,
     pub schedule_required: bool,
@@ -369,6 +372,7 @@ fn build_aggregate_targets(
             },
             node_name,
             node_status: String::new(),
+            item_closed: None,
             node_started_at_ms: None,
             node_order: 0,
             schedule_required: true,
@@ -1246,6 +1250,7 @@ async fn read_todo_nodes(
                 }
                 for target in &mut view.targets[first..] {
                     target.item_url = item_url.clone();
+                    target.item_closed = detail.as_ref().map(|_| false);
                     target.node_started_at_ms = detail.as_ref().and_then(|d| current_node_started_at(&d.data, &target.identity.node));
                     if target.read_only_reason.is_none() && !matches!(config, Ok(true)) {
                         target.read_only_reason = Some(if config.is_err() { "节点排期配置读取失败，仅供查看" } else { "未找到节点排期字段配置，仅供查看" }.into());
@@ -1516,7 +1521,8 @@ fn associated_item_target(
         end: schedule.get("end_time").and_then(date).unwrap_or_default(),
     };
     let scheduled = !baseline.start.is_empty() || !baseline.end.is_empty();
-    let node_status = if is_completed_or_aborted_detail(&item.data) { "finished" } else { "" };
+    let closed = is_completed_or_aborted_detail(&item.data);
+    let node_status = if closed { "finished" } else { "" };
     Target {
         id: String::new(), node_id: String::new(),
         identity: Identity {
@@ -1528,6 +1534,7 @@ fn associated_item_target(
             detail::text(&item.data["work_item_attribute"]["work_item_name"]).unwrap_or_else(|| id.work_item_id.clone())
         } else { title.into() },
         node_name: String::new(), node_status: node_status.into(), node_started_at_ms: None, node_order: 0,
+        item_closed: Some(closed),
         schedule_required: false, owner_name: String::new(), owners: Vec::new(), unknown_owner: true,
         item_url: crate::workflow::item_url(&session.config.endpoint, id, &item.data),
         sources: sources.iter().cloned().collect(), baseline,
@@ -1684,6 +1691,7 @@ async fn read_extra_items(
         }
         for mut target in temp {
             target.item_url = item_url.clone();
+            target.item_closed = detail.as_ref().map(|_| completed);
             target.node_started_at_ms = detail.as_ref().and_then(|d| current_node_started_at(&d.data, &target.identity.node));
             if team_only || associated {
                 target.people_only = true;
@@ -2785,6 +2793,7 @@ fn build_targets_with_order(
             title: title.into(),
             node_name: txt(&node["basic"]["name"]),
             node_status: status.clone(),
+            item_closed: None,
             node_started_at_ms: None,
             node_order,
             schedule_required: status == "doing",
@@ -4688,18 +4697,21 @@ mod tests {
                 assert!(pending.owners.iter().any(|owner| owner.id == "peer"));
                 assert!(pending.baseline.start.is_empty() && pending.schedule_required);
                 assert!(pending.people_only && pending.read_only_reason.is_some());
+                assert_eq!(pending.item_closed, Some(false));
                 let completed = schedule.view.targets.iter().find(|target| target.identity.project == "second");
                 assert_eq!(completed.is_some(), !fail_secondary_space);
                 if let Some(completed) = completed {
                     assert_eq!(completed.identity.item, pending.identity.item);
                     assert!(has_complete_schedule_dates(&completed.baseline));
                     assert!(completed.read_only_reason.is_some());
+                    assert_eq!(completed.item_closed, Some(true));
                 }
                 let state = schedule.view.targets.iter().find(|target| target.identity.project == "state").unwrap();
                 assert_eq!(state.baseline.start, "2026-11-16");
                 assert!(state.identity.node.is_empty() && state.source_aggregate && state.read_only_reason.is_some());
                 let unscheduled = schedule.view.targets.iter().find(|target| target.identity.project == "state_without_dates").unwrap();
                 assert!(unscheduled.baseline.start.is_empty() && !unscheduled.schedule_required);
+                assert_eq!(unscheduled.item_closed, Some(false));
                 assert_eq!(schedule.view.sources.iter().all(|source| source.complete), !fail_secondary_space);
             }
             let calls = fake.calls.lock().unwrap();

@@ -3258,7 +3258,7 @@ it("人员排期展示事项的全部当前节点及负责人，排期条和详�
   fireEvent.blur(backendNode);
 });
 
-it.each([7, 14] as const)("人员 %s 天本周视图补齐未上线事项，切周后只显示真实排期且我的排期保持原范围", async (span) => {
+it.each([7, 14] as const)("人员 %s 天视图覆盖本周时补齐未上线事项，离开本周只显示真实排期", async (span) => {
   const read = data();
   const base = read.targets[0];
   read.targets = [
@@ -3269,8 +3269,12 @@ it.each([7, 14] as const)("人员 %s 天本周视图补齐未上线事项，切�
       nodeStatus: "not_started", dates: { start: currentWeekDay(28), end: currentWeekDay(29) } },
     { ...base, id: "released", title: "已经上线", identity: { ...identity, item: "released" }, nodeStatus: "finished" },
     { ...base, id: "same-item", identity: { ...identity, node: "second" }, nodeStatus: "not_started" },
+    { ...base, id: "released-outside", title: "未进入清单的已上线需求", identity: { ...identity, item: "released-outside" },
+      itemClosed: true, nodeStatus: "finished", peopleOnly: true, dates: { start: currentWeekDay(-7), end: currentWeekDay(-7) } },
+    { ...base, id: "released-undated", title: "旧缓存的无日期已上线需求", identity: { ...identity, item: "released-undated", node: "", owner: undefined },
+      cacheKind: "associated_item", nodeStatus: "finished", sourceAggregate: true, ownerId: null, ownerIds: [], peopleOnly: true },
   ];
-  const snapshot = projectSnapshot(read);
+  const snapshot = projectSnapshot({ ...read, targets: read.targets.slice(0, 5) });
   snapshot.items.find((item) => item.id.work_item_id === "released")!.is_completed = true;
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   render(<SchedulePage snapshot={snapshot} onGuardChange={vi.fn()} requestReload={(reload) => reload()} />);
@@ -3283,6 +3287,8 @@ it.each([7, 14] as const)("人员 %s 天本周视图补齐未上线事项，切�
   expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(3);
   expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(0);
   expect(within(calendar).queryByText("已经上线")).toBeNull();
+  expect(within(calendar).queryByText("未进入清单的已上线需求")).toBeNull();
+  expect(within(calendar).queryByText("旧缓存的无日期已上线需求")).toBeNull();
   expect(screen.getByRole("button", { name: "收起本人的日历安排，共3项" })).toBeTruthy();
   expect(screen.getByRole("group", { name: "当前日期范围排期统计" }).textContent).toContain("已排 0");
   fireEvent.click(within(calendar).getByText("未来才排期"));
@@ -3293,14 +3299,38 @@ it.each([7, 14] as const)("人员 %s 天本周视图补齐未上线事项，切�
   fireEvent.click(screen.getByRole("button", { name: "本周" }));
   expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(3);
   fireEvent.click(screen.getByRole("button", { name: "上一周" }));
-  expect([...calendar.querySelectorAll(".schedule-row-label strong")].map((node) => node.textContent)).toEqual(["已过期未上线"]);
-  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
+  if (span === 14) {
+    expect(within(calendar).getByText("未来才排期")).toBeTruthy();
+    expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "上一周" }));
+  }
+  expect([...calendar.querySelectorAll(".schedule-row-label strong")].map((node) => node.textContent))
+    .toEqual(["已过期未上线", "未进入清单的已上线需求"]);
+  expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(2);
   fireEvent.click(screen.getByRole("button", { name: "本周" }));
   fireEvent.click(screen.getByRole("button", { name: "我的排期" }));
   expect(calendar.querySelectorAll(".schedule-row")).toHaveLength(0);
   fireEvent.click(screen.getByRole("tab", { name: /已排期/ }));
   expect(document.querySelector(".schedule-pending")?.textContent).not.toContain("未来才排期");
   expect(submitScheduleTargets).not.toHaveBeenCalled();
+});
+
+it.each(["finished", "doing"])("旧节点为 %s 且缺少事项终态时，按详情移除已上线的补显行", async (nodeStatus) => {
+  const read = data();
+  read.targets = [{ ...read.targets[0], nodeStatus, peopleOnly: true,
+    dates: { start: currentWeekDay(-7), end: currentWeekDay(-7) } }];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  vi.mocked(refreshItemDetail).mockResolvedValue({
+    id: { project_key: "p", work_item_type_key: "t", work_item_id: "i" }, fetched_at_ms: 1, pages: [],
+    data: { work_item_attribute: { finish_status: true, work_item_status: { name: "需求上线" } }, work_item_fields: [] },
+  });
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const calendar = document.querySelector(".schedule-calendar") as HTMLElement;
+  expect(within(calendar).getByText("任务一")).toBeTruthy();
+  await waitFor(() => expect(within(calendar).queryByText("任务一")).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "上一周" }));
+  expect(within(calendar).getByRole("button", { name: "任务一 开发" })).toBeTruthy();
 });
 
 it("节点身份缺失时不把多条进行中记录合并成一个当前节点", async () => {

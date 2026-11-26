@@ -80,14 +80,14 @@ it("包含今天的自定义人员视图保留待排需求行，只有真实日�
   vi.mocked(loadScheduleSession).mockResolvedValue(data);
   await mount();
   const dialog = editor();
-  dates();
+  dates("2026-11-20", "2026-11-26");
   fireEvent.click(dialog.getByRole("button", { name: "应用" }));
   const calendar = screen.getByText("已排技术方案", { selector: ".schedule-row-label strong" }).closest(".schedule-calendar")!;
   expect(within(document.querySelector(".schedule-pending") as HTMLElement).getByText("待排技术方案")).toBeTruthy();
   const row = within(calendar as HTMLElement).getByText("待排技术方案").closest(".schedule-row")!;
   expect(row.querySelector(".schedule-bar")).toBeNull();
   expect(calendar.querySelectorAll(".schedule-bar")).toHaveLength(1);
-  fireEvent.click(screen.getByRole("button", { name: "下一周" }));
+  fireEvent.click(screen.getByRole("button", { name: "上一周" }));
   expect(within(calendar as HTMLElement).queryByText("待排技术方案")).toBeNull();
   expect(within(document.querySelector(".schedule-pending") as HTMLElement).getByText("待排技术方案")).toBeTruthy();
 });

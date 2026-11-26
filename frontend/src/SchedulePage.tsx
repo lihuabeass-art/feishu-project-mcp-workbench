@@ -1108,12 +1108,16 @@ export function SchedulePage({
     nodes.set(node, current);
     currentNodesByItem.set(key, nodes);
   }
-  const supplementPeopleItems = view === "people" && monday(windowStart) === monday(currentToday);
+  const currentWeekStart = monday(currentToday);
+  const supplementPeopleItems = view === "people" && windowEnd >= currentWeekStart && windowStart <= addDays(currentWeekStart, 6);
+  const closedScheduleItems = new Set(displayEntries.filter(({ record }) => record.itemClosed === true ||
+    (record.itemClosed === undefined && record.cacheKind === "associated_item" && normalizeNodeStatus(record.nodeStatus) === "finished"))
+    .map((entry) => scheduleItemKey(entry.identity)));
   const peopleCalendarEntries = supplementPeopleItems
     ? [...scheduled, ...visible.filter((entry) =>
-        !inWindow(entry) && (entry.record.cacheKind === "associated_item" && !validSchedule(entry.dates) ||
-          !entry.record.sourceAggregate && !!entry.identity.node && entry.record.ownerIds.some(Boolean) &&
-          cachedItemFor(entry)?.is_completed !== true))]
+        !inWindow(entry) && !closedScheduleItems.has(scheduleItemKey(entry.identity)) && cachedItemFor(entry)?.is_completed !== true &&
+        (entry.record.cacheKind === "associated_item" && !validSchedule(entry.dates) ||
+          !entry.record.sourceAggregate && !!entry.identity.node && entry.record.ownerIds.some(Boolean)))]
     : scheduled;
   const rawScheduledRows =
     view === "people"
@@ -1140,7 +1144,7 @@ export function SchedulePage({
     }
   }
 
-  const rows = Array.from(groupedRowMap.values()).map(({ key, owner, entries: groupEntries }) => {
+  const candidateRows = Array.from(groupedRowMap.values()).map(({ key, owner, entries: groupEntries }) => {
     const sorted = [...groupEntries].sort(
       (a, b) =>
         (a.record.nodeOrder ?? 0) - (b.record.nodeOrder ?? 0) ||
@@ -1190,19 +1194,26 @@ export function SchedulePage({
   });
   const historyKeys = new Set(historicalEntries.map((entry) => scheduleItemKey(entry.identity)));
   const displayedHistoryKeys = new Set<string>();
-  for (const { primaryEntry } of rows) {
+  for (const { primaryEntry } of candidateRows) {
     const key = scheduleItemKey(primaryEntry.identity);
     if (calendarKey && historyKeys.has(key)) displayedHistoryKeys.add(key);
   }
   const contextKeys = new Set(displayedHistoryKeys);
-  for (const { primaryEntry } of rows) {
+  for (const { primaryEntry, bars } of candidateRows) {
     const key = scheduleItemKey(primaryEntry.identity);
-    if (!primaryEntry.record.sourceAggregate && primaryEntry.identity.project && primaryEntry.identity.type &&
-      primaryEntry.identity.item && (!currentNodesByItem.has(key) || (view === "mine" && read?.peopleLoaded === false))) contextKeys.add(key);
+    const supplementNeedsStatus = view === "people" && bars.length === 0 && primaryEntry.record.itemClosed === undefined;
+    const needsNodeContext = !primaryEntry.record.sourceAggregate &&
+      (!currentNodesByItem.has(key) || (view === "mine" && read?.peopleLoaded === false));
+    if (primaryEntry.identity.project && primaryEntry.identity.type && primaryEntry.identity.item &&
+      (supplementNeedsStatus || needsNodeContext)) contextKeys.add(key);
   }
   const contextRevision = useMemo(() => [displayRead?.targets, currentHistory?.targets, workflowRefreshRevision],
     [displayRead?.targets, currentHistory?.targets, workflowRefreshRevision]);
   const itemContexts = useScheduleItemContexts(calendarContext, contextKeys, contextRevision);
+  const rows = candidateRows.filter(({ primaryEntry, bars }) => {
+    if (view !== "people" || bars.length > 0 || primaryEntry.record.itemClosed === false) return true;
+    return !itemContexts?.get(scheduleItemKey(primaryEntry.identity))?.completedStatus;
+  });
 
   const pending = visible.filter(
     (entry) => isCurrentSchedulablePoolNode(entry) && !validSchedule(entry.dates),

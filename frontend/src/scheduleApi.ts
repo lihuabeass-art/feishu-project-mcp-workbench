@@ -6,7 +6,7 @@ export interface SchedulePerson { id: string; name: string; avatar?: string | nu
 export interface ScheduleSource { id: string; name: string; complete: boolean; error?: string | null }
 export interface ScheduleRecord {
   id: string; identity: ScheduleIdentity; title: string; nodeName: string;
-  nodeStatus?: string; nodeOrder?: number; scheduleRequired?: boolean;
+  nodeStatus?: string; nodeOrder?: number; scheduleRequired?: boolean; itemClosed?: boolean;
   nodeStartedAtMs?: number | null;
   ownerId?: string | null; sourceIds: string[]; projectName: string; typeName: string;
   dates: ScheduleDates; mine: boolean; readOnlyReason?: string | null; itemUrl?: string | null;
@@ -37,7 +37,7 @@ export interface ScheduleWriteResult {
   writeRequests: number;
 }
 
-interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; node_status?: string; node_started_at_ms?: number | null; node_order?: number; schedule_required?: boolean; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; people_only?: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
+interface WireTarget { id: string; identity: ScheduleIdentity; title: string; node_name: string; node_status?: string; item_closed?: boolean; node_started_at_ms?: number | null; node_order?: number; schedule_required?: boolean; owners: SchedulePerson[]; unknown_owner: boolean; item_url?: string | null; sources: string[]; baseline: ScheduleDates; read_only_reason?: string | null; source_aggregate: boolean; people_only?: boolean; cache_kind?: string; start_state?: string; end_state?: string; fetched_at_ms?: number | null }
 interface WireRead { session_id: string; connection?: string; recent_range?: ScheduleDates | null; history_scopes?: ScheduleHistoryScope[]; defect_projects?: string[]; current_user: string; current_user_name: string; current_user_avatar?: string | null; people_loaded?: boolean; people?: SchedulePerson[]; account_error?: string | null; read_at_ms: number; sources: ScheduleSource[]; targets: WireTarget[]; failed_items: number; item_errors?: ScheduleRead["itemErrors"]; read_requests?: number }
 interface WireResult { targets: ScheduleWriteResult["results"]; write_requests: number }
 let lifecycle: Promise<unknown> = Promise.resolve();
@@ -107,6 +107,7 @@ function mapScheduleRecords(result: Pick<WireRead, "targets" | "current_user" | 
     targets: result.targets.map((target): ScheduleRecord => ({
       id: target.id, identity: target.identity, title: target.title, nodeName: target.node_name,
       nodeStatus: target.node_status ?? "", nodeOrder: target.node_order ?? 0, scheduleRequired: target.schedule_required !== false,
+      itemClosed: target.item_closed,
       nodeStartedAtMs: target.node_started_at_ms,
       ownerId: target.identity.owner || (target.owners.length === 1 ? target.owners[0].id : null),
       ownerIds: target.owners.map((owner) => owner.id), unknownOwner: target.unknown_owner, sourceIds: target.sources,

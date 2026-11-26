@@ -475,6 +475,7 @@ fn history_target(
         title: title.to_owned(),
         node_name,
         node_status: String::new(),
+        item_closed: None,
         node_started_at_ms: None,
         node_order: 0,
         schedule_required: false,
