@@ -1,7 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { ScheduleProgressFeed, type ScheduleRequest } from "./scheduleProgress";
 import type { ScheduleDates, ScheduleIdentity, ScheduleResult } from "./scheduleSession";
-import type { RelatedProject } from "./types";
+import type { CachedItem, RelatedProject } from "./types";
 
 /** 排期专用 IPC 契约；不使用工作流提交或共享缓存刷新。 */
 export interface SchedulePerson { id: string; name: string; avatar?: string | null; position?: string | null; connection?: string; project?: string }
@@ -35,6 +35,7 @@ export interface ScheduleRead {
 export interface ScheduleHistoryScope { project: string; work_item_type: string; users: string[] }
 export interface ScheduleHistoryRequest { connection?: string; range: ScheduleDates; scopes: ScheduleHistoryScope[]; currentUser?: string; cachePeople?: boolean }
 export interface ScheduleHistory { people: SchedulePerson[]; targets: ScheduleRecord[]; complete: boolean; connection?: string }
+export interface SchedulePeopleItem { id: CachedItem["id"]; sources: string[] }
 export interface ScheduleWriteTarget { id: string; identity: ScheduleIdentity; dates: ScheduleDates; cancel: boolean }
 export interface ScheduleWriteResult {
   results: Array<{ id: string; result: ScheduleResult; message?: string | null; warning?: string | null }>;
@@ -164,6 +165,17 @@ export async function readCachedScheduleHistory({ cachePeople: _cachePeople, ...
 export async function readCachedSchedulePeople(): Promise<ScheduleRead | null> {
   const result = await invoke<WireRead | null>("read_cached_schedule_people");
   return result ? mapWireRead(result) : null;
+}
+
+export function discoverSchedulePeopleItems(connection: string, currentUser: string, scopes: ScheduleHistoryScope[]) {
+  return invoke<{ items: SchedulePeopleItem[]; complete: boolean; error_kind?: string }>("discover_schedule_people_items", { connection, currentUser, scopes });
+}
+
+export async function refreshSchedulePeopleItem(connection: string, currentUser: string, item: SchedulePeopleItem) {
+  const result = await invoke<Pick<WireRead, "targets" | "current_user"> & { closed: boolean; complete: boolean }>(
+    "refresh_schedule_people_item", { connection, currentUser, item });
+  const { targets, people } = mapScheduleRecords({ ...result, current_user_name: "" });
+  return { targets, people: people.filter((person) => person.project), closed: result.closed, complete: result.complete };
 }
 // 候选读取不占编辑会话的串行队列；当前会话的提交无需等待后台网络读取。
 function streamRead<Wire, T>(command: string, args: Record<string, unknown> | undefined, map: (wire: Wire) => T, ready?: Promise<void>): Promise<T> & { progress?: ScheduleProgressFeed } {

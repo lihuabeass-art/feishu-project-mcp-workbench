@@ -73,7 +73,7 @@ pub(super) async fn associated_stories(
     client: &dyn TodoSource,
     spaces: &[crate::catalog::SpaceCatalog],
     max_pages: u32,
-) -> (Vec<Story>, bool) {
+) -> (Vec<Story>, bool, Option<crate::error::ErrorKind>) {
     let mut reads = stream::iter(spaces).map(|space| async move {
         let project = &space.project_key;
         let tool = crate::mcp::feishu::TOOL_LIST_WORKITEM_TYPES;
@@ -93,13 +93,17 @@ pub(super) async fn associated_stories(
     }).buffered(3);
     let mut items = Vec::new();
     let mut complete = true;
+    let mut issue = None;
     while let Some(read) = reads.next().await {
         match read {
             Ok(rows) => items.extend(rows),
-            Err(_) => complete = false,
+            Err(error) => {
+                complete = false;
+                issue = super::people_refresh::discovery_issue(&error).or(issue);
+            }
         }
     }
-    (items, complete)
+    (items, complete, issue)
 }
 
 /// `list_schedule` 只返回有日期的记录。按已知人员读取当前需求，再用节点详情确认归属和日期。

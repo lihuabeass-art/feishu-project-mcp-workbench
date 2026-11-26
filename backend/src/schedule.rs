@@ -25,6 +25,8 @@ pub use avatars::load_avatar;
 mod history;
 pub use history::{load_calendar, load_people_calendar, load_calendar_with_progress, read_cached_people_calendar, CalendarResult, HistoryScope};
 mod people;
+mod people_refresh;
+pub use people_refresh::{discover_people_items, refresh_people_item, PeopleItem, PeopleItemDiscovery, PeopleItemRefresh};
 mod progress;
 mod recovery;
 use recovery::RepairRound;
@@ -507,13 +509,7 @@ impl ScheduleSession {
             }
         };
         let sid = format!("{}-{}", crate::sync::now_ms(), NEXT.fetch_add(1, Ordering::Relaxed));
-        let tables = session.config.source_tables()?;
-        let mut sources: Vec<SourceStatus> = session.config.sources.iter()
-            .filter(|source| source.enabled && matches!(source.kind, crate::model::source::SourceKind::PersonalTodo))
-            .map(|source| SourceStatus { id: source.id.clone(),
-                name: tables.iter().find(|table| table.id == source.id)
-                    .and_then(|table| table.display_name.clone()).unwrap_or_else(|| source.id.clone()),
-                complete: false, error: None, pages: 0 }).collect();
+        let mut sources = personal_todo_statuses(session)?;
         let mut view = LoadResult {
             session_id: sid,
             connection: fingerprint.clone(),
@@ -1027,6 +1023,16 @@ async fn read_schedule_account(client: &dyn TodoSource) -> Result<Value, Backend
 
 type TodoIndex = BTreeMap<(String, String, String), (WorkItemId, String, BTreeSet<String>, Vec<(String, Value)>)>;
 
+fn personal_todo_statuses(session: &Session) -> Result<Vec<SourceStatus>, BackendError> {
+    let tables = session.config.source_tables()?;
+    Ok(session.config.sources.iter()
+        .filter(|source| source.enabled && matches!(source.kind, crate::model::source::SourceKind::PersonalTodo))
+        .map(|source| SourceStatus { id: source.id.clone(),
+            name: tables.iter().find(|table| table.id == source.id)
+                .and_then(|table| table.display_name.clone()).unwrap_or_else(|| source.id.clone()),
+            complete: false, error: None, pages: 0 }).collect())
+}
+
 async fn read_todo_index(session: &Session, client: &dyn TodoSource, statuses: &mut [SourceStatus]) -> Result<TodoIndex, BackendError> {
     let mut items = TodoIndex::new();
     let mut reads = stream::iter(statuses)
@@ -1522,7 +1528,8 @@ async fn expand_cached_non_todo_items(
                         }
                     }
                 }
-                people::associated_stories(client.as_ref(), &discovery.spaces, max_pages).await
+                let (stories, complete, _) = people::associated_stories(client.as_ref(), &discovery.spaces, max_pages).await;
+                (stories, complete)
             }
             Err(_) => (Vec::new(), false),
         };
@@ -1659,7 +1666,7 @@ async fn read_extra_items(
         types.extend(schedule_config_keys(fetched_extra.iter().map(|(id, _, _, detail, nodes)| (id, detail.as_ref(), nodes))));
         let start = out_targets.len();
         append_extra_targets(session, fingerprint, session_id, current_user, team_members,
-            detail_names, detail_avatars, item_errors, out_targets, fetched_extra);
+            detail_names, detail_avatars, item_errors, out_targets, fetched_extra, false);
         publish(progress, fingerprint, current_user, &out_targets[start..]);
     }
     read_schedule_configs(client, max_pages, schedule_configs, types).await;
@@ -1672,7 +1679,7 @@ fn append_extra_targets(session: &Session, fingerprint: &str, session_id: &str, 
     team_members: Option<&BTreeMap<String, BTreeSet<String>>>,
     detail_names: &mut BTreeMap<(String, String), String>, detail_avatars: &mut BTreeMap<(String, String), String>,
     item_errors: &mut Vec<FailedItem>,
-    out_targets: &mut Vec<Target>, fetched_extra: Vec<ExtraRead>) {
+    out_targets: &mut Vec<Target>, fetched_extra: Vec<ExtraRead>, keep_closed: bool) {
     for (id, mut title, sources, cached_detail, nodes_result) in fetched_extra {
         let associated = sources.contains(people::ASSOCIATED_SOURCE_ID);
         let completed = cached_detail.as_ref().is_some_and(|d| is_completed_or_aborted_detail(&d.data));
@@ -1714,7 +1721,7 @@ fn append_extra_targets(session: &Session, fingerprint: &str, session_id: &str, 
             }
         };
         let detail = cached_detail;
-        if state_flow || (completed && !associated) {
+        if state_flow || (completed && !associated && !keep_closed) {
             continue;
         }
         let project = id.project_key.as_deref().unwrap_or_default();
@@ -3152,6 +3159,36 @@ mod tests {
             "assignee_schedule_list":[{"assignee":{"user_key":"me","name":"本人"},"schedule_info":{"estimate_start_time":null,"estimate_finish_time":null}}]});
         build_targets(&mut plan.view.targets, &plan.view.session_id, "connection", "me", &id, "测试事项", &BTreeSet::from(["a".into()]), &node);
         plan
+    }
+
+    #[test]
+    fn team_discovery_includes_personal_todos_and_reports_partial_pages() {
+        struct PersonalTodos(Arc<Fake>);
+        #[async_trait]
+        impl TodoSource for PersonalTodos {
+            async fn describe(&self) -> Result<ConnectionInfo, BackendError> { unreachable!() }
+            async fn close(&mut self) {}
+            async fn call_tool(&self, tool: &str, args: &Map<String, Value>) -> Result<ToolResultPayload, BackendError> {
+                if tool == "list_workitem_types" {
+                    return Ok(ToolResultPayload::from_json(json!({"list":[{"type_key":"issue"}]})));
+                }
+                self.0.call_tool(tool, args).await
+            }
+        }
+        let (session, dir) = fixture();
+        let fake = Arc::new(Fake { calls: Mutex::new(vec![]), fail_detail: AtomicBool::new(false), partial_page: AtomicBool::new(false), receipts: Mutex::new(vec![]) });
+        let installed = crate::remote::install_test_client(&session.config, &session.credential().unwrap(), Box::new(PersonalTodos(fake.clone())));
+        let connection = fingerprint(&session).unwrap();
+        let discovered = discover_people_items(&session, &connection, "me", vec![]).unwrap();
+        assert!(discovered.complete);
+        assert_eq!(discovered.items.len(), 1);
+        assert_eq!(discovered.items[0].id.key_tuple(), ("p".into(), "story".into(), "1".into()));
+        assert_eq!(discovered.items[0].sources, ["a"]);
+        fake.partial_page.store(true, Ordering::SeqCst);
+        let partial = discover_people_items(&session, &connection, "me", vec![]).unwrap();
+        assert!(!partial.complete);
+        assert_eq!(partial.items.len(), 1);
+        drop(installed); drop(session); std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

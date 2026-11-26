@@ -180,6 +180,16 @@ async fn load_schedule_people(webview: tauri::Webview, session_id: String, on_pr
 }
 
 #[tauri::command]
+async fn discover_schedule_people_items(connection: String, current_user: String, scopes: Vec<fstodo_backend::schedule::HistoryScope>) -> Result<fstodo_backend::schedule::PeopleItemDiscovery, UiError> {
+    blocking(move || fstodo_backend::schedule::discover_people_items(&open_session()?, &connection, &current_user, scopes)).await
+}
+
+#[tauri::command]
+async fn refresh_schedule_people_item(connection: String, current_user: String, item: fstodo_backend::schedule::PeopleItem) -> Result<fstodo_backend::schedule::PeopleItemRefresh, UiError> {
+    blocking(move || fstodo_backend::schedule::refresh_people_item(&open_session()?, &connection, &current_user, item)).await
+}
+
+#[tauri::command]
 async fn sync_schedule_session(session_id: String, changes: Vec<fstodo_backend::schedule::Change>) -> Result<fstodo_backend::schedule::SyncResult, UiError> {
     blocking_schedule_sync(move || {
         let mut guard = lock_schedule(&SCHEDULE_SESSION)?;
@@ -915,6 +925,8 @@ fn main() {
             load_schedule_profiles,
             load_schedule_avatar,
             load_schedule_people,
+            discover_schedule_people_items,
+            refresh_schedule_people_item,
             load_schedule_defects,
             sync_schedule_session,
             close_schedule_session,
