@@ -86,7 +86,7 @@ function useAnchoredTooltip(deps: unknown[], interactive = false) {
     },
   };
 
-  const renderTooltip = (content: ReactNode, extraClassName = "") =>
+  const renderTooltip = (renderContent: () => ReactNode, extraClassName = "") =>
     open && createPortal(
       <span
         ref={tooltipBoundary}
@@ -101,7 +101,7 @@ function useAnchoredTooltip(deps: unknown[], interactive = false) {
         onKeyDown={interactive ? triggerProps.onKeyDown : undefined}
         style={{ left: position?.left ?? 0, top: position?.top ?? 0, visibility: position ? "visible" : "hidden" }}
       >
-        {content}
+        {renderContent()}
       </span>,
       document.body,
     );
@@ -121,7 +121,7 @@ export function ScheduleNodeOwners({ name, owners, style, isCurrentOwner = false
     <span {...triggerProps} className={`schedule-current-node${isCurrentOwner ? " is-mine" : ""}`} style={style}>
       {name}
     </span>
-    {renderTooltip(
+    {renderTooltip(() =>
       owners.map((person) => (
         <span key={person.id || person.name} className="schedule-node-owner">
           <ScheduleAvatar person={person.id ? person : undefined} />
@@ -151,7 +151,7 @@ export function ScheduleParallelNodesSummary({ nodes, hiddenNodes }: {
       </span>
       <span>+{hiddenNodes.length} 并行</span>
     </span>
-    {renderTooltip(
+    {renderTooltip(() =>
       nodes.map((node) => (
         <span
           key={node.id}

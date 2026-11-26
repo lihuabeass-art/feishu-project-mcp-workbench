@@ -556,9 +556,11 @@
   transition: border-color 140ms ease, background 140ms ease;
 }
 
-.schedule-pending-card.selected {
+.schedule-pending-card.selected,
+.schedule-pending-card:has(> :is(.schedule-pending-item, .schedule-outside-item):active) {
   border-color: var(--border-strong);
   background: var(--surface-selected);
+  transition: none;
 }
 
 .schedule-pending-item {

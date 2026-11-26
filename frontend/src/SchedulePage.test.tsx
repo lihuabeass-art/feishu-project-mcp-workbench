@@ -1316,7 +1316,7 @@ it("人员有待安排事项但本周无排期时仍补齐事项行", async () =
   expect(screen.queryByText("当前范围未包含该人员的安排")).toBeNull();
 });
 
-it("点击待排卡片会展开对应负责人的甘特图分组，并仅滚动甘特图", async () => {
+it("点击待排卡片立即高亮并显示检查器，下一次绘制后平滑居中", async () => {
   const read = { ...data(), peopleLoaded: true };
   read.targets[0].ownerIds = ["me", "peer"];
   read.people.push({ id: "peer", name: "同事" });
@@ -1328,24 +1328,58 @@ it("点击待排卡片会展开对应负责人的甘特图分组，并仅滚动�
   const target = screen.getByRole("button", { name: "收起同事的日历安排，共1项" }).nextElementSibling as HTMLDivElement;
   const other = screen.getByRole("button", { name: "收起本人的日历安排，共1项" }).nextElementSibling!;
   const left = document.querySelector<HTMLDivElement>(".schedule-pending")!;
-  Object.defineProperty(client, "clientHeight", { value: 300 });
+  const scrollTo = vi.fn(({ top }: ScrollToOptions) => { client.scrollTop = top ?? 0; });
+  Object.defineProperties(client, { clientHeight: { value: 300 }, scrollHeight: { value: 1000 }, scrollTo: { value: scrollTo } });
+  let rowTop = 420;
   vi.spyOn(header, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 50));
-  vi.spyOn(target, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, 420 - client.scrollTop, 600, 40));
+  vi.spyOn(target, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, rowTop - client.scrollTop, 600, 40));
   fireEvent.click(screen.getByRole("button", { name: "收起同事的日历安排，共1项" }));
   const card = screen.getByRole("button", { name: "收起同事的待排期，共1项" }).nextElementSibling as HTMLElement;
+  const button = within(card).getByRole("button", { name: /任务一/ });
   left.scrollTop = 17;
   client.scrollLeft = 23;
-  fireEvent.click(within(card).getByRole("button", { name: /任务一/ }));
-  expect(target.hidden).toBe(false);
-  expect(target.classList.contains("selected")).toBe(true);
-  expect(other.classList.contains("selected")).toBe(false);
-  expect(client.scrollTop).toBe(370);
-  expect(client.scrollLeft).toBe(23);
-  expect(left.scrollTop).toBe(17);
-  expect(document.querySelector(".schedule-editor")?.textContent).toContain("任务一");
-  client.scrollTop = 500;
-  fireEvent.click(within(card).getByRole("button", { name: /任务一/ }));
-  expect(client.scrollTop).toBe(370);
+  client.scrollTop = 160;
+  vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+  const matchMedia = vi.fn().mockReturnValue({ matches: true });
+  try {
+    fireEvent.click(button);
+    expect(card.classList.contains("selected")).toBe(true);
+    expect(target.hidden).toBe(false);
+    expect(target.classList.contains("selected")).toBe(true);
+    expect(other.classList.contains("selected")).toBe(false);
+    expect(document.querySelector(".schedule-editor")?.textContent).toContain("任务一");
+    expect(client.scrollTop).toBe(160);
+    expect(scrollTo).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersToNextFrame());
+    expect(scrollTo).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersToNextFrame());
+    expect(scrollTo).toHaveBeenCalledWith({ top: 265, behavior: "smooth" });
+    expect(client.scrollLeft).toBe(23);
+    expect(left.scrollTop).toBe(17);
+
+    client.scrollTop = 500;
+    fireEvent.click(button);
+    act(() => vi.advanceTimersToNextFrame());
+    fireEvent.click(button);
+    act(() => vi.advanceTimersToNextFrame());
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    act(() => vi.advanceTimersToNextFrame());
+    expect(client.scrollTop).toBe(265);
+    expect(scrollTo).toHaveBeenCalledTimes(2);
+
+    vi.stubGlobal("matchMedia", matchMedia);
+    rowTop = 940;
+    fireEvent.click(button);
+    expect(client.scrollTop).toBe(700);
+    rowTop = 70;
+    fireEvent.click(button);
+    expect(client.scrollTop).toBe(0);
+    expect(scrollTo).toHaveBeenCalledTimes(2);
+    expect(matchMedia).toHaveBeenCalledWith("(prefers-reduced-motion: reduce)");
+  } finally {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  }
 });
 
 it("我的排期定位到同一事项的已有行，也能定位没有排期条的事项", async () => {
