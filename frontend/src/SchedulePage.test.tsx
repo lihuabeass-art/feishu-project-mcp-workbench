@@ -3457,7 +3457,7 @@ it("人员排期展示事项的全部当前节点及负责人，排期条和详�
   for (const [mine, other] of [["前端研发", "后端研发"], ["后端研发", "前端研发"]]) {
     const row = screen.getByRole("button", { name: `任务一 ${mine}` }).closest(".schedule-row") as HTMLElement;
     expect([...row.querySelectorAll(".schedule-row-current .schedule-current-node")].map((node) => node.textContent))
-      .toEqual(["前端研发", "后端研发"]);
+      .toEqual([mine, other]);
     for (const [nodeName, ownerName] of [["前端研发", "前端同事"], ["后端研发", "后端同事"]]) {
       const node = within(row).getByText(nodeName, { selector: ".schedule-current-node" });
       expect(node.hasAttribute("title")).toBe(false);
@@ -3647,6 +3647,30 @@ it("缓存确认事项已完成后，仍在当前排期会话中的行展示终�
   expect(row?.querySelector(".schedule-current-node")).toBeNull();
 });
 
+it.each(["mine", "people"])("%s 多个所属节点优先且组内保持流程顺序", async (view) => {
+  const read = data();
+  const base = read.targets[0];
+  const dates = { start: currentWeekDay(0), end: currentWeekDay(1) };
+  read.people = [{ id: "me", name: "本人" }, { id: "peer", name: "同事" }];
+  read.targets = [
+    { ...base, id: "peer", identity: { ...identity, node: "peer", owner: "peer" }, nodeName: "同事节点", nodeOrder: 1,
+      nodeStatus: "doing", ownerId: "peer", ownerIds: ["peer"], mine: false, dates },
+    { ...base, id: "mine-later", identity: { ...identity, node: "mine-later" }, nodeName: "本人后续节点", nodeOrder: 3,
+      nodeStatus: "doing", dates },
+    { ...base, id: "mine-first", identity: { ...identity, node: "mine-first" }, nodeName: "本人前序节点", nodeOrder: 2,
+      nodeStatus: "doing", dates },
+  ];
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  if (view === "people") fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const row = screen.getByRole("button", { name: "任务一 本人前序节点" }).closest(".schedule-row") as HTMLElement;
+  expect(row.querySelector(".schedule-current-node")?.textContent).toBe("本人前序节点");
+  const badge = within(row).getByText("+2 并行").closest(".schedule-current-nodes-more") as HTMLElement;
+  fireEvent.mouseEnter(badge);
+  expect([...screen.getByRole("tooltip").querySelectorAll(".schedule-parallel-node-name")].map((el) => el.textContent))
+    .toEqual(["本人前序节点", "本人后续节点", "同事节点"]);
+});
+
 it("我的排期省去行内重复本人头像，优先点亮本人当前节点并将 3 个以上并行节点聚合为 +N 浮层", async () => {
   const read = data();
   const base = read.targets[0];
@@ -3793,15 +3817,15 @@ it("我的排期省去行内重复本人头像，优先点亮本人当前节点�
   fireEvent.mouseEnter(moreBadge);
   const tooltip = screen.getByRole("tooltip");
   expect([...tooltip.querySelectorAll(".schedule-parallel-node-name")].map((el) => el.textContent))
-    .toEqual(["测试用例设计", "后端代码研发", "前端代码研发"]);
+    .toEqual(["后端代码研发", "测试用例设计", "前端代码研发"]);
   expect(tooltip.querySelector(".schedule-parallel-node-row.is-mine .schedule-parallel-node-name")?.textContent).toBe("后端代码研发");
   fireEvent.mouseLeave(moreBadge);
 
   const row2 = screen.getByRole("button", { name: "模型输出达到长度上限后的内容截断优化 前端代码研发" }).closest(".schedule-row") as HTMLElement;
   const row2InlineNodes = [...row2.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")];
-  expect(row2InlineNodes.map((el) => el.textContent)).toEqual(["测试用例设计", "前端代码研发"]);
-  expect(row2InlineNodes[0].classList.contains("is-mine")).toBe(false);
-  expect(row2InlineNodes[1].classList.contains("is-mine")).toBe(true);
+  expect(row2InlineNodes.map((el) => el.textContent)).toEqual(["前端代码研发", "测试用例设计"]);
+  expect(row2InlineNodes[0].classList.contains("is-mine")).toBe(true);
+  expect(row2InlineNodes[1].classList.contains("is-mine")).toBe(false);
   expect(row2.querySelector(".schedule-current-node-sep")?.textContent).toBe("·");
   expect(row2.querySelector(".schedule-current-nodes-more")).toBeNull();
 
@@ -3819,11 +3843,19 @@ it("我的排期省去行内重复本人头像，优先点亮本人当前节点�
   const peerInline = [...peerFeRow.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")];
   expect(peerInline.map((el) => el.textContent)).toEqual(["前端代码研发"]);
   expect(peerInline[0].classList.contains("is-mine")).toBe(true);
+  fireEvent.mouseEnter(within(peerFeRow).getByText("+2 并行").closest(".schedule-current-nodes-more") as HTMLElement);
+  expect([...screen.getByRole("tooltip").querySelectorAll(".schedule-parallel-node-name")].map((el) => el.textContent))
+    .toEqual(["前端代码研发", "测试用例设计", "后端代码研发"]);
+  fireEvent.mouseLeave(within(peerFeRow).getByText("+2 并行").closest(".schedule-current-nodes-more") as HTMLElement);
+  const mineTwoNodeRow = screen.getByRole("button", { name: "模型输出达到长度上限后的内容截断优化 前端代码研发" }).closest(".schedule-row") as HTMLElement;
+  expect([...mineTwoNodeRow.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")].map((el) => el.textContent))
+    .toEqual(["前端代码研发", "测试用例设计"]);
   const peerTwoNodeRow = screen.getAllByText("模型输出达到长度上限后的内容截断优化")
     .map((el) => el.closest(".schedule-row") as HTMLElement)
     .find((row) => row && !within(row).queryByRole("button", { name: /前端代码研发/ }));
   expect(peerTwoNodeRow).toBeTruthy();
   const qaNodes = [...peerTwoNodeRow!.querySelectorAll(".schedule-row-current-nodes .schedule-current-node")];
+  expect(qaNodes.map((el) => el.textContent)).toEqual(["测试用例设计", "前端代码研发"]);
   expect(qaNodes.find((el) => el.textContent === "测试用例设计")?.classList.contains("is-mine")).toBe(true);
   expect(qaNodes.find((el) => el.textContent === "前端代码研发")?.classList.contains("is-mine")).toBe(false);
   const css = await loadCss("./schedule.css");

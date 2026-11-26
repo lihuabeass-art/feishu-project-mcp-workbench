@@ -341,10 +341,10 @@ const ScheduleRowNodeSummary = memo(function ScheduleRowNodeSummary({
       (highlightMine && liveNode?.mine),
     );
     return { id, name, owners: nodeOwners, style: nodeColorStyle({ ...entry.record, nodeName: name }), isCurrentOwner };
-  });
+  }).sort((a, b) => Number(b.isCurrentOwner) - Number(a.isCurrentOwner));
 
   if (!resolvedNodes.length && !contextMessage) return null;
-  const primaryNode = resolvedNodes.length > 2 ? resolvedNodes.find((node) => node.isCurrentOwner) ?? resolvedNodes[0] : undefined;
+  const primaryNode = resolvedNodes.length > 2 ? resolvedNodes[0] : undefined;
   const visibleNodes = primaryNode ? [primaryNode] : resolvedNodes;
   const hiddenNodes = primaryNode ? resolvedNodes.filter((node) => node !== primaryNode) : [];
   return (
