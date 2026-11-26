@@ -85,6 +85,18 @@
   padding-top: 0;
 }
 
+.schedule-check-status {
+  display: grid;
+  gap: 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.schedule-check-status time {
+  font-variant-numeric: tabular-nums;
+}
+
 .schedule-greeting {
   display: flex;
   align-items: center;

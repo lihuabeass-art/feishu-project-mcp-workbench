@@ -153,13 +153,11 @@ it("启动预加载后五分钟才后台补读，聚焦与进入页面复用在�
   desktopState.value = true;
   let now = 1_000_000;
   vi.spyOn(Date, "now").mockImplementation(() => now);
-  const interval = vi.spyOn(window, "setInterval");
   vi.mocked(loadSnapshot).mockResolvedValueOnce({ items: [], total: 0, last_success: null, runs: [], sources: [], config_path: "cfg", db_path: "db", credential_ready: true, credential_description: "已配置" });
   const read: ScheduleRead = { sessionId: "fresh", currentUserId: "me", peopleLoaded: false, readAt: "刚刚", complete: true, sources: [], people: [], targets: [] };
   vi.mocked(loadScheduleSession).mockResolvedValue(read);
   render(<App />);
   await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(interval.mock.calls.some(([, delay]) => delay === 300_000)).toBe(true));
   now += 60_000;
   fireEvent(window, new Event("focus"));
   expect(loadScheduleSession).toHaveBeenCalledTimes(1);

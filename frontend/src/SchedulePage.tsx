@@ -40,7 +40,8 @@ import {
   type ScheduleRecord,
 } from "./scheduleApi";
 import { patchScheduleData } from "./scheduleReadPatch";
-import { scheduleHistoryRequest, scheduleItemKey, useScheduleCalendar, useScheduleItemContexts, type ScheduleCurrentNode } from "./scheduleHistory";
+import { scheduleHistoryRequest, scheduleItemKey, useScheduleCalendar, useScheduleItemContexts, type ScheduleCalendarCache, type ScheduleCurrentNode } from "./scheduleHistory";
+import { HISTORICAL_SCHEDULE_INTERVAL, RECENT_SCHEDULE_INTERVAL } from "./useScheduleRevalidation";
 import {
   applyQuickSchedulePreset,
   classifyScheduleReview,
@@ -83,11 +84,17 @@ function nodeWorkflowNeedsVerification(entry: Entry) {
   });
 }
 
+export type ScheduleMode = "mine" | "people";
+
 export interface ScheduleSessionController {
   read: ScheduleRead | null;
   pending: Promise<ScheduleRead> | null;
   refreshing?: boolean;
   refreshError?: string;
+  checkedAt?: number;
+  calendarRefreshEnabled?: boolean;
+  onPeopleChecking?: (sessionId: string) => void;
+  onPeopleChecked?: (read?: ScheduleRead) => void;
   onInteraction?: () => void;
   endInteraction?: () => void;
   candidate?: ScheduleRead | null;
@@ -147,13 +154,13 @@ const addDays = (value: string, days: number) => {
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 };
-const today = () => {
+const today = (date = new Date()) => {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Shanghai",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date());
+  }).formatToParts(date);
   const part = (type: string) => parts.find((entry) => entry.type === type)!.value;
   return `${part("year")}-${part("month")}-${part("day")}`;
 };
@@ -287,6 +294,9 @@ export function SchedulePage({
   waitingForSnapshot = false,
   calendarContext = "",
   peopleCacheContext = "",
+  calendarCache,
+  viewMode,
+  onViewModeChange,
   preloadedSession,
   workflow,
   defectRevision = 0,
@@ -298,6 +308,9 @@ export function SchedulePage({
   waitingForSnapshot?: boolean;
   calendarContext?: string;
   peopleCacheContext?: string;
+  calendarCache?: ScheduleCalendarCache;
+  viewMode?: ScheduleMode;
+  onViewModeChange?: (view: ScheduleMode) => void;
   preloadedSession?: ScheduleSessionController;
   workflow?: { context: string; busy: boolean; submit: WorkflowSubmit };
   defectRevision?: number;
@@ -320,6 +333,7 @@ export function SchedulePage({
   const [peopleLoading, setPeopleLoading] = useState(false);
   const [peopleError, setPeopleError] = useState("");
   const peopleLoadingRef = useRef(false);
+  const peopleRequestRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
   const currentSessionIdRef = useRef(initialRead?.sessionId || "");
   const forceResetRef = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -339,7 +353,9 @@ export function SchedulePage({
   const workflowPanelId = useId();
   const workflowTrigger = useRef<HTMLButtonElement>(null);
   useWorkflowSubmissions();
-  const [view, setView] = useState<"mine" | "people">("mine");
+  const [localView, setLocalView] = useState<ScheduleMode>("mine");
+  const view = viewMode ?? localView;
+  const setView = onViewModeChange ?? setLocalView;
   const [cachedPeople, setCachedPeople] = useState<{ context: string; read: ScheduleRead }>();
   useEffect(() => {
     if (!peopleCacheContext) return;
@@ -406,9 +422,9 @@ export function SchedulePage({
   const windowEnd = days[days.length - 1];
   const thisWeek = read?.recentRange?.start ?? monday(currentToday);
   const viewingHistory = windowStart < thisWeek;
-  const [calendarKey, preloadCalendarKeys] = useMemo((): [string, string[]] => {
+  const [calendarKey, preloadCalendarKeys, calendarReady] = useMemo((): [string, string[], boolean] => {
     const request = scheduleHistoryRequest(displayRead, snapshot, view, { start: windowStart, end: windowEnd });
-    if (!request) return ["", []];
+    if (!request) return ["", [], false];
     if (view === "people" && peopleCacheContext && request.connection && request.currentUser) request.cachePeople = true;
     const keyForWeek = (offset: number) => {
       const start = addDays(windowStart, offset);
@@ -417,20 +433,35 @@ export function SchedulePage({
       return JSON.stringify([calendarContext, { ...request, range: { start, end } }]);
     };
     const visibleKey = keyForWeek(0);
-    const scopeReady = request.connection && request.currentUser && request.scopes.length &&
-      !displayRead?.accountError && (view !== "people" || displayRead?.peopleLoaded !== false);
-    return [visibleKey, scopeReady ? [-7, 7, -14, 14].map(keyForWeek).filter(Boolean) : []];
+    const scopeReady = Boolean(request.connection && request.currentUser && request.scopes.length &&
+      !displayRead?.accountError && (view !== "people" || displayRead?.peopleLoaded !== false));
+    return [visibleKey, scopeReady ? [-7, 7, -14, 14].map(keyForWeek).filter(Boolean) : [], scopeReady];
   }, [displayRead, snapshot, view, calendarContext, peopleCacheContext, windowStart, windowEnd]);
-  const { data: currentHistory, loading: calendarLoading, failed: calendarFailed, retry: retryCalendar } =
-    useScheduleCalendar(calendarKey, preloadCalendarKeys);
-  const historicalEntries = useMemo(
-    () => currentHistory?.targets.map(createScheduleEntry) || [],
-    [currentHistory],
-  );
   const defectWorkflowInteraction = Boolean(defectWorkflowLoading || defectWorkflow?.editing || defectWorkflow?.busy || defectWorkflow?.uncertain);
   const workflowInteraction = workflowEditorOpen || workflowLoading || defectWorkflowInteraction || viewSettingsOpen;
   const dirty = entries.some(scheduleChanged);
   const uncertain = entries.some((entry) => entry.result === "uncertain");
+  const interacting = reviewOpen || dragging || peopleLoading || datePickerOpen || workflowInteraction;
+  const managedCalendar = preloadedSession?.calendarRefreshEnabled !== undefined && calendarReady;
+  const {
+    data: currentHistory, loading: calendarLoading, failed: calendarFailed, checkedAt: calendarCheckedAt, retry: retryCalendar,
+  } = useScheduleCalendar(
+    calendarKey,
+    preloadCalendarKeys,
+    managedCalendar ? (viewingHistory ? HISTORICAL_SCHEDULE_INTERVAL : RECENT_SCHEDULE_INTERVAL) : undefined,
+    managedCalendar && (!preloadedSession?.calendarRefreshEnabled || dirty || busy || uncertain || interacting),
+    calendarCache,
+  );
+  const historicalEntries = useMemo(
+    () => currentHistory?.targets.map(createScheduleEntry) || [],
+    [currentHistory],
+  );
+  const recentCheckedAt = cachedPeopleRead?.readAtMs ?? preloadedSession?.checkedAt;
+  const lastCheckedAt = managedCalendar
+    ? viewingHistory ? calendarCheckedAt
+      : recentCheckedAt !== undefined && calendarCheckedAt !== undefined ? Math.min(recentCheckedAt, calendarCheckedAt) : undefined
+    : recentCheckedAt;
+  const lastCheckFailed = Boolean(preloadedSession?.refreshError || (managedCalendar && calendarFailed));
   const persistentWarnings = Array.from(new Set(entries.flatMap((entry) =>
     entry.resultWarning ? entry.resultWarning.split("\n") : [],
   )));
@@ -445,9 +476,9 @@ export function SchedulePage({
   const frozenNodes = new Set(entries.filter((entry) => entry.result === "uncertain").map(nodeKey));
 
   useLayoutEffect(() => {
-    onGuardChange({ dirty, busy, uncertain, ...(reviewOpen || dragging || peopleLoading || datePickerOpen || workflowInteraction ? { interacting: true } : {}),
+    onGuardChange({ dirty, busy, uncertain, ...(interacting ? { interacting: true } : {}),
       ...(defectWorkflow && (defectWorkflow.dirty || defectWorkflow.busy || defectWorkflow.uncertain) ? { defectWorkflow } : {}) });
-  }, [dirty, busy, uncertain, reviewOpen, dragging, peopleLoading, datePickerOpen, workflowInteraction, defectWorkflow, onGuardChange]);
+  }, [dirty, busy, uncertain, interacting, defectWorkflow, onGuardChange]);
   useLayoutEffect(() => () => preloadedSession?.endInteraction?.(), []);
 
   useEffect(() => {
@@ -553,11 +584,12 @@ export function SchedulePage({
     if (currentRead.peopleLoaded !== false || peopleLoadingRef.current) return;
     preloadedSession?.onInteraction?.();
     const targetSessionId = currentRead.sessionId;
+    preloadedSession?.onPeopleChecking?.(targetSessionId);
     currentSessionIdRef.current = targetSessionId;
     peopleLoadingRef.current = true;
     setPeopleLoading(true);
     setPeopleError("");
-    loadSchedulePeople(targetSessionId)
+    const promise = loadSchedulePeople(targetSessionId)
       .then((nextRead) => {
         if (currentSessionIdRef.current !== targetSessionId) return;
         const latest = readRef.current ?? currentRead;
@@ -596,17 +628,25 @@ export function SchedulePage({
           return merged;
         });
         preloadedSession?.updateRead(compatible);
+        preloadedSession?.onPeopleChecked?.(compatible);
+        if (compatible.peopleLoaded === true && !compatible.accountError && !compatible.itemErrors?.length &&
+          (compatible.complete || !compatible.sources.length)) {
+          setCachedPeople({ context: peopleCacheContext, read: compatible });
+        }
       })
       .catch((failure: unknown) => {
         if (currentSessionIdRef.current !== targetSessionId) return;
         setPeopleError(`读取团队成员排期失败：${readFailureMessage(asError(failure).kind)}`);
+        preloadedSession?.onPeopleChecked?.();
       })
       .finally(() => {
+        if (peopleRequestRef.current?.promise === promise) peopleRequestRef.current = null;
         if (currentSessionIdRef.current === targetSessionId) {
           peopleLoadingRef.current = false;
           setPeopleLoading(false);
         }
       });
+    peopleRequestRef.current = { sessionId: targetSessionId, promise };
   };
 
   const peopleSessionId = view === "people" && read?.peopleLoaded === false ? read.sessionId : "";
@@ -856,7 +896,6 @@ export function SchedulePage({
     !isPastTransitionedNode(entry) &&
     normalizeNodeStatus(entry.record.nodeStatus) !== "not_started" &&
     !frozenNodes.has(nodeKey(entry));
-  const readRefreshing = Boolean(loading || preloadedSession?.refreshing || preloadedSession?.pending);
   const readUnavailable = !read;
   const canEdit = (entry: Entry) => view === "mine" && isEditableTarget(entry) && !busy && !readUnavailable;
 
@@ -1049,7 +1088,7 @@ export function SchedulePage({
     nodes.set(node, current);
     currentNodesByItem.set(key, nodes);
   }
-  const supplementPeopleItems = view === "people" && (daySpan === 7 || daySpan === 14) && monday(windowStart) === monday(currentToday);
+  const supplementPeopleItems = view === "people" && monday(windowStart) === monday(currentToday);
   const peopleCalendarEntries = supplementPeopleItems
     ? [...scheduled, ...visible.filter((entry) =>
         !inWindow(entry) && !entry.record.sourceAggregate && !!entry.identity.node &&
@@ -1750,11 +1789,16 @@ export function SchedulePage({
   const refreshSchedule = (afterWorkflow = false) => {
     setManualRefreshing(true);
     setError("");
-    retryCalendar();
-    if (afterWorkflow && preloadedSession?.read) {
+    const calendarRequest = retryCalendar(afterWorkflow);
+    if (preloadedSession?.read && (afterWorkflow || (preloadedSession.consumeCandidate && !dirty && !uncertain))) {
       // 候选读取保留当前编辑会话；由控制器按最新交互状态决定是否采用。
-      void preloadedSession.reload({ includePeople: viewModeRef.current === "people", ...(afterWorkflow ? { afterWorkflow: true } : {}) })
-        .catch((failure: unknown) => setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`))
+      const includePeople = viewModeRef.current === "people";
+      const peopleRequest = peopleRequestRef.current;
+      const pendingPeople = includePeople && peopleRequest?.sessionId === preloadedSession.read.sessionId ? peopleRequest.promise : null;
+      const reload = () => preloadedSession.reload({ includePeople, ...(afterWorkflow ? { afterWorkflow: true } : {}) });
+      const scheduleRequest = (afterWorkflow && pendingPeople ? pendingPeople.then(reload) : pendingPeople ?? reload())
+        .catch((failure: unknown) => setError(`读取事项安排失败：${readFailureMessage(asError(failure).kind)}`));
+      void Promise.allSettled([calendarRequest, scheduleRequest])
         .finally(() => setManualRefreshing(false));
     } else {
       if (!read) forceResetRef.current = true;
@@ -1773,21 +1817,33 @@ export function SchedulePage({
   const avatarScope = !displayRead?.accountError && avatarConnection && displayRead?.currentUserId
     ? JSON.stringify([calendarContext, avatarConnection, displayRead.currentUserId]) : null;
   const avatarPeople = useMemo(() => [...currentHistory?.people || [], ...displayRead?.people || []], [displayRead?.people, currentHistory?.people]);
+  const notifyInteraction = (event: React.SyntheticEvent) => {
+    if (event.target instanceof Element && !event.target.closest("[data-schedule-refresh]")) preloadedSession?.onInteraction?.();
+  };
+  const checkedDate = lastCheckedAt === undefined ? undefined : new Date(lastCheckedAt);
   return (
     <ScheduleAvatarCacheProvider scope={avatarScope} connection={peopleCacheContext && avatarScope ? avatarConnection : undefined} people={avatarPeople}>
-    <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={() => preloadedSession?.onInteraction?.()} onFocusCapture={() => preloadedSession?.onInteraction?.()}>
+    <section className="schedule-page" aria-label="事项安排" onPointerDownCapture={notifyInteraction} onFocusCapture={notifyInteraction}>
           <>
             <div className="overview schedule-overview">
               <ScheduleGreeting person={currentUserPerson} name={displayUserId ? currentUserDisplayName : undefined} />
               <div className="overview-actions schedule-overview-actions">
+                {(checkedDate || lastCheckFailed) && <div className="schedule-check-status" role="status">
+                  {checkedDate && <span>上次检查 <time dateTime={checkedDate.toISOString()} title={checkedDate.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}>
+                    {today(checkedDate) !== currentToday && `${checkedDate.toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric" })} `}
+                    {checkedDate.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false })}
+                  </time></span>}
+                  {lastCheckFailed && <span>暂未取得最新排期{displayRead || currentHistory ? "，已保留上次内容" : ""}</span>}
+                </div>}
                 <button
                   type="button"
                   className="secondary"
-                  disabled={busy || readRefreshing}
+                  data-schedule-refresh
+                  disabled={busy || manualRefreshing || (loading && !read)}
                   onClick={() => requestReload(() => refreshSchedule())}
                 >
                   <RefreshCw size={14} aria-hidden="true" />
-                  {readRefreshing ? "正在刷新…" : "重新读取"}
+                  {manualRefreshing || (loading && !read) ? "正在刷新…" : "重新读取"}
                 </button>
                 {changedEntries.length > 0 && (
                   <button
@@ -1817,7 +1873,6 @@ export function SchedulePage({
             </div>
 
             <ScheduleRefreshNotice refreshing={manualRefreshing} />
-            {preloadedSession?.refreshError && <p className="banner warning" role="alert">{preloadedSession.refreshError}</p>}
             {read && error && !preloadedSession?.refreshError && <p className="banner warning" role="alert">{error}；已保留上次内容，可继续编辑，稍后重试。</p>}
             {scopeSources.filter((item) => item.error).map((item) => (
               <p key={item.id} className="banner warning">
@@ -2264,11 +2319,11 @@ export function SchedulePage({
                 )}
 
                 <div className="schedule-main">
-                  {calendarLoading && <div className="banner" role="status">{viewingHistory ? "正在读取历史排期…" : "正在读取日历排期…"}</div>}
-                  {calendarFailed && (
+                  {calendarLoading && !currentHistory && <div className="banner" role="status">{viewingHistory ? "正在读取历史排期…" : "正在读取日历排期…"}</div>}
+                  {calendarFailed && (!managedCalendar || !currentHistory) && (
                     <div className="banner" role="status">
                       <span>{viewingHistory ? "暂时无法完整读取历史排期。" : "暂时无法完整读取日历排期。"}</span>
-                      <button type="button" className="secondary" onClick={retryCalendar}>{viewingHistory ? "重试历史排期" : "重试日历排期"}</button>
+                      <button type="button" className="secondary" onClick={() => void retryCalendar()}>{viewingHistory ? "重试历史排期" : "重试日历排期"}</button>
                     </div>
                   )}
                   <div

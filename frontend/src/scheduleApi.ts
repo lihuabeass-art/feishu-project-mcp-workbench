@@ -25,7 +25,7 @@ export interface ScheduleRead {
   defectProjects?: string[];
   sources: ScheduleSource[]; people: SchedulePerson[]; targets: ScheduleRecord[];
   currentUserId?: string | null; currentUserAvatar?: string | null; peopleLoaded?: boolean;
-  accountError?: string | null; readAt: string; complete: boolean; readRequests?: number;
+  accountError?: string | null; readAt: string; readAtMs?: number; complete: boolean; readRequests?: number;
   itemErrors?: Array<{ project: string; type: string; item: string; title?: string; sources: string[]; message: string }>;
 }
 export interface ScheduleHistoryScope { project: string; work_item_type: string; users: string[] }
@@ -130,6 +130,7 @@ function mapWireRead(result: WireRead): ScheduleRead {
     peopleLoaded: result.people_loaded ?? true,
     accountError: result.account_error,
     readAt: new Date(result.read_at_ms).toLocaleString(),
+    readAtMs: result.read_at_ms,
     sources: result.sources,
     readRequests: result.read_requests,
     itemErrors: result.item_errors,

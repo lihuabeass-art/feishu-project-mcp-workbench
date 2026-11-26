@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import { executeWorkflowAction, getWorkflowActions, loadSnapshot } from "./api";
-import { closeScheduleSession, loadScheduleSession, readCachedScheduleHistory, readCachedSchedulePeople, submitScheduleTargets, type ScheduleRead, type ScheduleWriteResult } from "./scheduleApi";
+import { closeScheduleSession, loadSchedulePeople, loadScheduleSession, readCachedScheduleHistory, readCachedSchedulePeople, submitScheduleTargets, type ScheduleRead, type ScheduleWriteResult } from "./scheduleApi";
 
 vi.mock("./api", async (original) => ({
   ...await original<typeof import("./api")>(),
@@ -20,7 +20,7 @@ vi.mock("./scheduleApi", () => ({
   closeScheduleSession: vi.fn().mockResolvedValue(undefined),
   resetScheduleSession: vi.fn().mockResolvedValue(undefined), submitScheduleTargets: vi.fn(),
 }));
-afterEach(() => { cleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.clearAllMocks(); vi.restoreAllMocks(); });
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(loadSnapshot).mockResolvedValue({ items: [], total: 0, last_success: null, runs: [], sources: [], config_path: "cfg", db_path: "db", credential_ready: true, credential_description: "已配置" });
@@ -109,7 +109,7 @@ it.each([
   expect(closeScheduleSession).not.toHaveBeenCalled();
   if (refreshOutcome === "failure") {
     await act(async () => failRead(new Error("offline")));
-    expect(screen.getByRole("alert").textContent).toContain("已保留上次内容");
+    expect(screen.getByText("暂未取得最新排期，已保留上次内容")).toBeTruthy();
     expect(inspector.getByText("待处理事项")).toBeTruthy();
     expect(screen.getAllByText("流程结果 verified").length).toBeGreaterThan(0);
     return;
@@ -165,11 +165,13 @@ it.each(["success", "partial", "rejected"])("真实页面在后台%s期间编辑
     await waitFor(() => expect(closeScheduleSession).toHaveBeenCalledTimes(1));
     expect((await vi.mocked(closeScheduleSession).mock.calls[0][0]).sessionId).toBe("candidate");
   } else expect(closeScheduleSession).not.toHaveBeenCalled();
+  vi.mocked(loadScheduleSession).mockResolvedValueOnce({ ...read, sessionId: "fresh", targets: [{ ...read.targets[0], id: "fresh-target", title: "后续刷新内容", dates: { start: "2026-11-16", end: "2026-11-17" } }] });
   await act(async () => finishWrite({ results: [{ id: "one", result: "accepted" }], writeRequests: 1 }));
   expect((screen.getByLabelText("结束日期") as HTMLInputElement).value).toBe("2026-11-17");
-  vi.mocked(loadScheduleSession).mockResolvedValueOnce({ ...read, sessionId: "fresh", targets: [{ ...read.targets[0], id: "fresh-target", title: "后续刷新内容", dates: { start: "2026-11-16", end: "2026-11-17" } }] });
-  now += 300_000;
-  fireEvent(window, new Event("focus"));
+  if (outcome !== "success") {
+    now += 300_000;
+    fireEvent(window, new Event("focus"));
+  }
   await screen.findAllByText("后续刷新内容");
   const closed = await Promise.all(vi.mocked(closeScheduleSession).mock.calls.map(([request]) => request));
   expect(closed.map((value) => value.sessionId)).toContain("editing");
@@ -189,5 +191,61 @@ it.each(["success", "partial", "rejected"])("真实页面在后台%s期间编辑
   vi.mocked(loadScheduleSession).mockResolvedValueOnce({ ...read, sessionId: "after-shortcut" });
   now += 300_000;
   fireEvent(window, new Event("focus"));
+  expect(loadScheduleSession).toHaveBeenCalledTimes(4);
+  fireEvent.click(screen.getByRole("button", { name: "事项安排" }));
   await waitFor(() => expect(loadScheduleSession).toHaveBeenCalledTimes(5));
+});
+
+it("人员排期从成功读取起算，合并手动刷新，离开、最小化、断网时暂停并按原视角补查", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  vi.setSystemTime(new Date("2026-11-26T10:00:00+08:00"));
+  const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const online = vi.spyOn(navigator, "onLine", "get").mockReturnValue(true);
+  const initial: ScheduleRead = { sessionId: "mine", currentUserId: "me", peopleLoaded: false,
+    complete: true, readAt: "", sources: [], people: [], targets: [] };
+  const team = { ...initial, peopleLoaded: true };
+  let finish!: (value: ScheduleRead) => void;
+  vi.mocked(loadSchedulePeople).mockResolvedValueOnce(team);
+  vi.mocked(loadScheduleSession).mockResolvedValueOnce(initial)
+    .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
+    .mockImplementation(async () => ({ ...team, sessionId: String(Date.now()), readAtMs: Date.now() }));
+
+  await act(async () => { render(<App />); });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "人员排期" })); });
+  expect(loadSchedulePeople).toHaveBeenCalledOnce();
+  const time = () => document.querySelector(".schedule-check-status time")?.getAttribute("datetime");
+  expect(time()).toBe("2026-11-26T02:00:00.000Z");
+  await act(async () => { await vi.advanceTimersByTimeAsync(299_999); });
+  expect(loadScheduleSession).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(loadScheduleSession).toHaveBeenLastCalledWith({ includePeople: true });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重新读取" })); });
+  expect(loadScheduleSession).toHaveBeenCalledTimes(2);
+  await act(async () => { finish({ ...team, sessionId: "updated", readAtMs: Date.now() }); });
+  expect(time()).toBe("2026-11-26T02:05:00.000Z");
+
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: /我的工作/ })); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+  expect(loadScheduleSession).toHaveBeenCalledTimes(2);
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "事项安排" })); });
+  expect(screen.getByRole("button", { name: "人员排期" }).classList.contains("active")).toBe(true);
+  expect(loadScheduleSession).toHaveBeenCalledTimes(3);
+  expect(loadScheduleSession).toHaveBeenLastCalledWith({ includePeople: true });
+
+  visible.mockReturnValue("hidden");
+  await act(async () => { fireEvent(document, new Event("visibilitychange")); await vi.advanceTimersByTimeAsync(300_000); });
+  expect(loadScheduleSession).toHaveBeenCalledTimes(3);
+  visible.mockReturnValue("visible");
+  online.mockReturnValue(false);
+  await act(async () => { fireEvent(document, new Event("visibilitychange")); });
+  expect(loadScheduleSession).toHaveBeenCalledTimes(3);
+  online.mockReturnValue(true);
+  await act(async () => { fireEvent(window, new Event("online")); fireEvent(window, new Event("focus")); });
+  expect(loadScheduleSession).toHaveBeenCalledTimes(4);
+  expect(time()).toBe("2026-11-26T02:15:00.000Z");
+
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "我的排期" })); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+  expect(loadScheduleSession).toHaveBeenCalledTimes(5);
+  expect(loadScheduleSession).toHaveBeenLastCalledWith({ includePeople: false });
 });

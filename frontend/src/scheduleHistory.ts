@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
 import { loadScheduleHistory, readCachedScheduleHistory, type ScheduleHistory, type ScheduleHistoryRequest, type SchedulePerson, type ScheduleRead } from "./scheduleApi";
 import { patchScheduleData } from "./scheduleReadPatch";
 import type { ScheduleDates, ScheduleIdentity } from "./scheduleSession";
 import type { ItemDetail, Snapshot } from "./types";
+import { SCHEDULE_RETRY_DELAY, scheduleReadAvailable, useScheduleRevalidation } from "./useScheduleRevalidation";
 
 export function scheduleHistoryRequest(
   read: ScheduleRead | null,
@@ -57,7 +58,14 @@ export function scheduleHistoryRequest(
   return { connection, range, scopes, currentUser };
 }
 
-type HistoryPage = { data?: ScheduleHistory; loading: boolean; preloaded: boolean };
+type HistoryPage = {
+  data?: ScheduleHistory;
+  loading: boolean;
+  preloaded: boolean;
+  checkedAt?: number;
+  attemptedAt?: number;
+  failed?: boolean;
+};
 
 function preserveHistory(previous?: ScheduleHistory, incoming?: ScheduleHistory): ScheduleHistory | undefined {
   if (incoming) return patchScheduleData(previous, incoming, !incoming.complete);
@@ -67,6 +75,37 @@ function preserveHistory(previous?: ScheduleHistory, incoming?: ScheduleHistory)
 const MAX_CACHED_PAGES = 12;
 const MAX_PRELOADS = 2;
 const NAVIGATION_SETTLE_MS = 75;
+
+export type ScheduleCalendarCache = ReturnType<typeof createScheduleCalendarCache>;
+
+export function createScheduleCalendarCache() {
+  let pages = new Map<string, HistoryPage>();
+  const listeners = new Set<() => void>();
+  const cache = {
+    pending: new Map<string, Promise<void>>(),
+    preloading: new Set<string>(),
+    visibleKey: "",
+    protectedKeys: [] as string[],
+    paused: false,
+    getPages: () => pages,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    updatePage: (key: string, update: (prior?: HistoryPage) => HistoryPage) => {
+      const next = new Map(pages);
+      next.delete(key);
+      next.set(key, update(pages.get(key)));
+      for (const [candidate, page] of next) {
+        if (next.size <= MAX_CACHED_PAGES) break;
+        if (candidate !== key && !page.loading && !cache.protectedKeys.includes(candidate)) next.delete(candidate);
+      }
+      pages = next;
+      for (const listener of listeners) listener();
+    },
+  };
+  return cache;
+}
 
 export function scheduleItemKey({ connection, project, type, item }: ScheduleIdentity) {
   return JSON.stringify([connection, project, type, item]);
@@ -160,12 +199,19 @@ export function useScheduleItemContexts(context: string, itemKeys: Set<string>, 
   return contexts?.context === context ? contexts.values : undefined;
 }
 
-export function useScheduleCalendar(visibleKey: string, preloadKeys: string[]) {
-  const [pages, setPages] = useState(() => new Map<string, HistoryPage>());
-  const pending = useRef(new Set<string>());
-  const preloading = useRef(new Set<string>());
-  const protectedKeys = useRef([visibleKey, ...preloadKeys]);
-  useLayoutEffect(() => { protectedKeys.current = [visibleKey, ...preloadKeys]; }, [visibleKey, preloadKeys]);
+export function useScheduleCalendar(visibleKey: string, preloadKeys: string[], interval?: number, paused = false, sharedCache?: ScheduleCalendarCache) {
+  const [cache] = useState(() => sharedCache ?? createScheduleCalendarCache());
+  const pages = useSyncExternalStore(cache.subscribe, cache.getPages);
+  useLayoutEffect(() => {
+    cache.visibleKey = visibleKey;
+    cache.protectedKeys = [visibleKey, ...preloadKeys];
+    cache.paused = paused;
+    return () => {
+      cache.visibleKey = "";
+      cache.protectedKeys = [];
+      cache.paused = false;
+    };
+  }, [cache, visibleKey, preloadKeys, paused]);
   const [settledKey, setSettledKey] = useState(visibleKey);
   const navigationSettled = settledKey === visibleKey;
   useEffect(() => {
@@ -174,43 +220,47 @@ export function useScheduleCalendar(visibleKey: string, preloadKeys: string[]) {
     return () => window.clearTimeout(timeout);
   }, [visibleKey, navigationSettled]);
 
-  const updatePage = useCallback((key: string, update: (prior?: HistoryPage) => HistoryPage) => {
-    setPages((current) => {
-      const next = new Map(current);
-      next.delete(key);
-      next.set(key, update(current.get(key)));
-      for (const [candidate, page] of next) {
-        if (next.size <= MAX_CACHED_PAGES) break;
-        if (candidate !== key && !page.loading && !protectedKeys.current.includes(candidate)) next.delete(candidate);
-      }
-      return next;
-    });
-  }, []);
-
   const load = useCallback((key: string, preloaded = false) => {
-    if (!key || pending.current.has(key)) return;
-    pending.current.add(key);
-    if (preloaded) preloading.current.add(key);
-    updatePage(key, (prior) => ({ data: prior?.data, loading: true, preloaded }));
+    if (!key) return Promise.resolve();
+    const existing = cache.pending.get(key);
+    if (existing) return existing;
+    if (preloaded) cache.preloading.add(key);
+    const attemptedAt = Date.now();
+    cache.updatePage(key, (prior) => ({ ...prior, loading: true, preloaded, attemptedAt }));
     let finished = false;
     const finish = (data?: ScheduleHistory) => {
       finished = true;
-      pending.current.delete(key);
-      preloading.current.delete(key);
-      updatePage(key, (prior) => ({ data: preserveHistory(prior?.data, data), loading: false, preloaded }));
+      cache.pending.delete(key);
+      cache.preloading.delete(key);
+      const checkedAt = Date.now();
+      const protectedView = cache.paused && cache.visibleKey === key;
+      cache.updatePage(key, (prior) => {
+        if (protectedView) return { ...prior, loading: false, preloaded, attemptedAt: undefined };
+        return {
+          ...prior,
+          data: !data?.complete && prior?.data?.complete ? prior.data : preserveHistory(prior?.data, data),
+          loading: false,
+          preloaded,
+          ...(data?.complete ? { checkedAt, failed: false } : { attemptedAt: checkedAt, failed: true }),
+        };
+      });
     };
     const request: ScheduleHistoryRequest = JSON.parse(key)[1];
     let cached: Promise<void> | undefined;
-    if (request.cachePeople) {
+    if (request.cachePeople && !cache.getPages().get(key)?.data) {
       cached = readCachedScheduleHistory(request).then((data) => {
-        if (data && !finished) updatePage(key, (prior) => ({ data: prior?.data ?? data, loading: true, preloaded }));
+        if (data && !finished && !(cache.paused && cache.visibleKey === key)) {
+          cache.updatePage(key, (prior) => ({ ...prior, data: prior?.data ?? data, loading: true, preloaded }));
+        }
       }, () => {});
     }
-    Promise.resolve().then(() => loadScheduleHistory(request)).then(
+    const result = Promise.resolve().then(() => loadScheduleHistory(request)).then(
       async (data) => { if (!data?.complete) await cached; finish(data); },
       async () => { await cached; finish(); },
     );
-  }, [updatePage]);
+    cache.pending.set(key, result);
+    return result;
+  }, [cache]);
 
   const [context, request]: [string?, ScheduleHistoryRequest?] = visibleKey ? JSON.parse(visibleKey) : [];
   const compatible = request?.connection ? Array.from(pages).reverse().find(([key, page]) => {
@@ -221,23 +271,33 @@ export function useScheduleCalendar(visibleKey: string, preloadKeys: string[]) {
   const exactBootstrap = compatible && request?.scopes.length && compatible[1].data?.complete &&
     JSON.stringify(JSON.parse(compatible[0])[1].scopes) === JSON.stringify(request.scopes);
   const visible = pages.get(visibleKey) ?? (exactBootstrap ? compatible?.[1] : undefined);
-  const needsVisibleRead = Boolean(visibleKey && (!visible || (visible.preloaded && !visible.loading && !visible.data?.complete)));
+  const needsVisibleRead = Boolean(visibleKey && (!visible || (visible.preloaded && !visible.loading && !visible.checkedAt)));
   useEffect(() => {
-    if (navigationSettled && needsVisibleRead) load(visibleKey);
-  }, [visibleKey, needsVisibleRead, navigationSettled, load]);
+    if (interval === undefined && navigationSettled && needsVisibleRead) void load(visibleKey);
+  }, [visibleKey, needsVisibleRead, navigationSettled, load, interval]);
 
+  const freshUntil = visible?.checkedAt === undefined || interval === undefined ? 0 : visible.checkedAt + interval;
+  const dueAt = interval === undefined || paused || !navigationSettled || visible?.loading ? null : Math.max(
+    visible?.attemptedAt === undefined ? 0 : visible.attemptedAt + SCHEDULE_RETRY_DELAY,
+    freshUntil,
+  );
+  useScheduleRevalidation(navigationSettled ? visibleKey : "", dueAt, freshUntil, () => { void load(visibleKey); });
   useEffect(() => {
-    if (!navigationSettled) return;
+    if (!navigationSettled || (interval !== undefined && (paused || !scheduleReadAvailable()))) return;
     for (const key of preloadKeys) {
-      if (preloading.current.size >= MAX_PRELOADS) break;
-      if (!pages.has(key)) load(key, true);
+      if (cache.preloading.size >= MAX_PRELOADS) break;
+      if (!pages.has(key)) void load(key, true);
     }
-  }, [preloadKeys, pages, navigationSettled, load]);
+  }, [cache, preloadKeys, pages, navigationSettled, load, interval, paused]);
 
   return {
     data: visible?.data ?? compatible?.[1].data,
     loading: needsVisibleRead || Boolean(visible?.loading),
-    failed: Boolean(visible && !visible.preloaded && !visible.loading && !visible.data?.complete),
-    retry: () => load(visibleKey),
+    checkedAt: visible?.checkedAt,
+    failed: Boolean(visible?.failed && !visible.preloaded),
+    retry: (afterWrite = false) => {
+      const pending = cache.pending.get(visibleKey);
+      return afterWrite && pending ? pending.then(() => load(visibleKey)) : load(visibleKey);
+    },
   };
 }

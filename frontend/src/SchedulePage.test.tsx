@@ -295,7 +295,7 @@ it.each(["refreshing", "failed"])("后台%s保留有效会话，持续允许编�
   expect(screen.getAllByText("任务一").length).toBeGreaterThan(0);
   expect(screen.queryByText("正在刷新最新排期")).toBeNull();
   expect((screen.getByLabelText("开始日期") as HTMLInputElement).disabled).toBe(false);
-  expect((screen.getByRole("button", { name: "正在刷新…" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "重新读取" }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: "2026-11-16" } });
   fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "2026-11-17" } });
   fireEvent.click(screen.getByRole("button", { name: /核对并同步|同步排期/ }));
@@ -303,7 +303,7 @@ it.each(["refreshing", "failed"])("后台%s保留有效会话，持续允许编�
   controller.refreshing = phase === "refreshing";
   controller.refreshError = phase === "failed" ? "最新排期读取未完成，已保留上次内容，可继续编辑，稍后重试。" : "";
   page.rerender(<SchedulePage {...props} preloadedSession={{ ...controller }} />);
-  if (controller.refreshError) expect(screen.getByText(controller.refreshError)).toBeTruthy();
+  if (controller.refreshError) expect(screen.getByText("暂未取得最新排期，已保留上次内容")).toBeTruthy();
   expect(screen.getAllByText("任务一").length).toBeGreaterThan(0);
   vi.mocked(submitScheduleTargets).mockResolvedValueOnce({ results: [{ id: "one", result: "accepted" }], writeRequests: 1 });
   fireEvent.click(within(screen.getByRole("dialog", { name: "核对排期变更并同步" })).getByRole("button", { name: /确认同步/ }));

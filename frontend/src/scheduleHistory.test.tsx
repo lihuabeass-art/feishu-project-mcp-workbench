@@ -2,14 +2,15 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { cachedItemDetail, refreshItemDetail } from "./api";
-import { scheduleItemKey, useScheduleCalendar, useScheduleItemContexts } from "./scheduleHistory";
+import { createScheduleCalendarCache, scheduleItemKey, useScheduleCalendar, useScheduleItemContexts } from "./scheduleHistory";
 import { loadScheduleHistory, readCachedScheduleHistory, type ScheduleHistory } from "./scheduleApi";
 import { sortScheduleCurrentNodes } from "./scheduleNodeOrder";
+import { HISTORICAL_SCHEDULE_INTERVAL } from "./useScheduleRevalidation";
 import type { ItemDetail } from "./types";
 
 vi.mock("./api", () => ({ cachedItemDetail: vi.fn(), refreshItemDetail: vi.fn() }));
 vi.mock("./scheduleApi", () => ({ loadScheduleHistory: vi.fn(), readCachedScheduleHistory: vi.fn() }));
-afterEach(() => { cleanup(); vi.resetAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); });
 const keyFor = (item: string) => scheduleItemKey({ connection: "c", project: "p", type: "story", item, node: "n", scope: "node" });
 const detail = (item: string, name?: string): ItemDetail => ({
   id: { project_key: "p", work_item_type_key: "story", work_item_id: item }, fetched_at_ms: 1, pages: [], data: {
@@ -36,6 +37,92 @@ it("日历本机页与网络读取并发，离线时保留最近一次确认的�
   await act(async () => fail(new Error("offline")));
   expect(hook.result.current.failed).toBe(true);
   expect(hook.result.current.data?.people).toBe(cached.people);
+});
+
+it("只补查当前历史周，同范围复用请求，部分失败保留已确认内容和时间", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  vi.setSystemTime(new Date("2026-11-26T02:00:00Z"));
+  const base = { connection: "c", currentUser: "me", scopes: [] };
+  const key = (start: string, end: string) => JSON.stringify(["account", { ...base, range: { start, end } }]);
+  const first = key("2026-11-09", "2026-11-15");
+  const second = key("2026-11-16", "2026-11-22");
+  const complete: ScheduleHistory = { connection: "c", complete: true, targets: [], people: [{ id: "peer", name: "已确认人员" }] };
+  let finish!: (value: ScheduleHistory) => void;
+  vi.mocked(loadScheduleHistory).mockResolvedValueOnce(complete).mockResolvedValueOnce(complete)
+    .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; })).mockResolvedValue(complete);
+  const hook = renderHook(({ page, paused }) => useScheduleCalendar(page, [], HISTORICAL_SCHEDULE_INTERVAL, paused), {
+    initialProps: { page: first, paused: false },
+  });
+  await act(async () => {});
+  const original = hook.result.current.checkedAt;
+  expect(original).toBe(Date.now());
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  hook.rerender({ page: second, paused: false });
+  await act(async () => { await vi.advanceTimersByTimeAsync(75); });
+  expect(loadScheduleHistory).toHaveBeenCalledTimes(2);
+  await act(async () => { await vi.advanceTimersByTimeAsync(HISTORICAL_SCHEDULE_INTERVAL - 60_075); });
+  expect(loadScheduleHistory).toHaveBeenCalledTimes(2);
+  hook.rerender({ page: first, paused: false });
+  expect(hook.result.current.checkedAt).toBe(original);
+  await act(async () => { await vi.advanceTimersByTimeAsync(75); });
+  expect(loadScheduleHistory).toHaveBeenCalledTimes(3);
+  const manual = hook.result.current.retry();
+  await act(async () => { finish({ ...complete, complete: false, people: [{ id: "other", name: "未完整确认" }] }); await manual; });
+  expect(loadScheduleHistory).toHaveBeenCalledTimes(3);
+  expect(hook.result.current.data?.people).toEqual(complete.people);
+  expect(hook.result.current.checkedAt).toBe(original);
+  expect(hook.result.current.failed).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(loadScheduleHistory).toHaveBeenCalledTimes(3);
+  await act(async () => { window.dispatchEvent(new Event("online")); });
+  expect(loadScheduleHistory).toHaveBeenCalledTimes(4);
+  expect(hook.result.current.failed).toBe(false);
+  expect(hook.result.current.checkedAt).toBe(Date.now());
+});
+
+it("历史周读取返回时若已开始交互，保留当前快照并在交互结束后补查", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  vi.setSystemTime(new Date("2026-11-26T02:00:00Z"));
+  const request = { connection: "c", currentUser: "me", scopes: [], range: { start: "2026-11-09", end: "2026-11-15" } };
+  const key = JSON.stringify(["account", request]);
+  const initial = { connection: "c", complete: true, targets: [], people: [{ id: "peer", name: "编辑前" }] };
+  const changed = { ...initial, people: [{ id: "peer", name: "更新后" }] };
+  let finish!: (value: ScheduleHistory) => void;
+  vi.mocked(loadScheduleHistory).mockResolvedValueOnce(initial)
+    .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; })).mockResolvedValue(changed);
+  const hook = renderHook(({ paused }) => useScheduleCalendar(key, [], HISTORICAL_SCHEDULE_INTERVAL, paused), {
+    initialProps: { paused: false },
+  });
+  await act(async () => {});
+  await act(async () => { await vi.advanceTimersByTimeAsync(HISTORICAL_SCHEDULE_INTERVAL); });
+  hook.rerender({ paused: true });
+  await act(async () => { finish(changed); });
+  expect(hook.result.current.data?.people).toEqual(initial.people);
+  expect(loadScheduleHistory).toHaveBeenCalledTimes(2);
+  hook.rerender({ paused: false });
+  await act(async () => {});
+  expect(loadScheduleHistory).toHaveBeenCalledTimes(3);
+  expect(hook.result.current.data?.people).toEqual(changed.people);
+});
+
+it("离开事项安排再进入时复用未完成的日历读取与仍新鲜的缓存", async () => {
+  const cache = createScheduleCalendarCache();
+  const key = JSON.stringify(["account", { range: { start: "2026-11-09", end: "2026-11-15" }, scopes: [] }]);
+  const read: ScheduleHistory = { connection: "c", complete: true, targets: [], people: [] };
+  let finish!: (value: ScheduleHistory) => void;
+  vi.mocked(loadScheduleHistory).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  const mount = () => renderHook(() => useScheduleCalendar(key, [], HISTORICAL_SCHEDULE_INTERVAL, false, cache));
+  const first = mount();
+  await waitFor(() => expect(loadScheduleHistory).toHaveBeenCalledOnce());
+  first.unmount();
+  const second = mount();
+  await act(async () => { finish(read); });
+  expect(second.result.current.data).toBe(read);
+  second.unmount();
+  const third = mount();
+  expect(third.result.current.data).toBe(read);
+  await act(async () => {});
+  expect(loadScheduleHistory).toHaveBeenCalledOnce();
 });
 
 it("历史独有事项重新补读失败时，旧缓存不能覆盖已由远端确认的节点和完成状态", async () => {

@@ -3,9 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { AppVersion } from "./AppVersion";
 import { AppUpdateDialog, AppUpdateSettings } from "./AppUpdater";
 import { useAppUpdater } from "./useAppUpdater";
-import { SchedulePage, type ScheduleGuard, type ScheduleSessionController } from "./SchedulePage";
+import { SchedulePage, type ScheduleGuard, type ScheduleMode, type ScheduleSessionController } from "./SchedulePage";
 import { closeScheduleSession, loadScheduleSession, resetScheduleSession, type ScheduleRead } from "./scheduleApi";
 import { patchScheduleData } from "./scheduleReadPatch";
+import { createScheduleCalendarCache } from "./scheduleHistory";
+import { RECENT_SCHEDULE_INTERVAL, SCHEDULE_RETRY_DELAY, scheduleReadAvailable, useScheduleRevalidation } from "./useScheduleRevalidation";
 import { useScrollIsolation } from "./useScrollIsolation";
 import { prepareUpdateInstallation } from "./appUpdateSafety";
 import { workspaceActionBlocked, type WorkspaceActivity } from "./operationPolicy";
@@ -115,6 +117,11 @@ import {
 } from "./syncPolicy";
 
 type View = "work" | "sources" | "schedule" | "settings";
+type ScheduleCheck = { checkedAt?: number; attemptedAt?: number; error?: string };
+
+function isCompleteScheduleRead(read: ScheduleRead) {
+  return !read.accountError && !read.itemErrors?.length && (read.complete || !read.sources.length);
+}
 type Notice = { tone: "success" | "warning"; text: string };
 type WorkflowReport = { item: string; action: string; message: string; error?: AppError };
 function WorkflowSuccessToast({ id, report, dismiss }: { id: string; report: WorkflowReport; dismiss: (id: string, report: WorkflowReport) => void }) {
@@ -300,13 +307,16 @@ function Workspace() {
   const desktopSettings = useDesktopSettings();
   const [data, setData] = useState<Snapshot | null>(null);
   const [view, setView] = useState<View>("schedule");
+  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>("mine");
+  const [scheduleCalendarCache] = useState(createScheduleCalendarCache);
   const viewRef = useRef(view);
   viewRef.current = view;
   const [scheduleGuard, setScheduleGuard] = useState<ScheduleGuard>({ dirty: false, busy: false, uncertain: false });
   const scheduleGuardRef = useRef(scheduleGuard);
   const scheduleInteractionRevision = useRef(0);
+  const schedulePeopleChecking = useRef("");
   const [scheduleCandidate, setScheduleCandidate] = useState<ScheduleRead | null>(null);
-  const scheduleCandidateRef = useRef<{ read: ScheduleRead; revision: number } | null>(null);
+  const scheduleCandidateRef = useRef<{ read: ScheduleRead; revision: number; includePeople: boolean } | null>(null);
   const [scheduleExit, setScheduleExit] = useState<{ action?: () => void; defectBusy?: boolean } | null>(null);
   const scheduleExitScrollRef = useScrollIsolation();
   const updateScheduleGuard = useCallback((guard: typeof scheduleGuard) => { scheduleGuardRef.current = guard; setScheduleGuard(guard); }, []);
@@ -468,13 +478,12 @@ function Workspace() {
   const [credentialRevision, setCredentialRevision] = useState(0);
   const [preloadedSchedule, setPreloadedSchedule] = useState<ScheduleRead | null>(null);
   const [scheduleRefreshing, setScheduleRefreshing] = useState(false);
-  const [scheduleRefreshError, setScheduleRefreshError] = useState("");
-  const scheduleLastAttemptRef = useRef(0);
-  const scheduleLastSuccessRef = useRef(0);
+  const [scheduleChecks, setScheduleChecks] = useState<{ connectionKey: string; mine: ScheduleCheck; people: ScheduleCheck }>();
   const scheduleSessionRef = useRef<{
     fingerprint: string;
     connectionKey: string;
     pending: Promise<ScheduleRead> | null;
+    includePeople?: boolean;
     read: ScheduleRead | null;
   }>({ fingerprint: "", connectionKey: "", pending: null, read: null });
   const scheduleConnectionKey =
@@ -504,6 +513,21 @@ function Workspace() {
   scheduleConnectionKeyRef.current = scheduleConnectionKey;
   const scheduleFingerprintRef = useRef(schedulePreloadFingerprint);
   scheduleFingerprintRef.current = schedulePreloadFingerprint;
+  const recordScheduleCheck = useCallback((connectionKey: string, includePeople: boolean, check: ScheduleCheck, both = false) => {
+    setScheduleChecks((previous) => {
+      const current = previous?.connectionKey === connectionKey ? previous : { connectionKey, mine: {}, people: {} };
+      return {
+        connectionKey,
+        mine: !includePeople || both ? { ...current.mine, ...check } : current.mine,
+        people: includePeople ? { ...current.people, ...check } : current.people,
+      };
+    });
+  }, []);
+  const confirmScheduleCheck = useCallback((read: ScheduleRead, includePeople: boolean) => {
+    recordScheduleCheck(scheduleSessionRef.current.connectionKey, includePeople, {
+      checkedAt: read.readAtMs ?? Date.now(), error: "",
+    }, includePeople);
+  }, [recordScheduleCheck]);
   const openOrRecoverScheduleSession = useCallback(
     async (
       options: { includePeople: boolean; forceReset?: boolean },
@@ -522,16 +546,19 @@ function Workspace() {
       options: { includePeople: boolean; forceReset?: boolean; afterWorkflow?: boolean },
     ): Promise<ScheduleRead> => {
       // 写后刷新只复用包含本次流程成功版本的读取，写前旧请求结束后自行释放。
-      if (scheduleSessionRef.current.pending && scheduleSessionRef.current.connectionKey === connectionKey &&
-        (!options.afterWorkflow || scheduleSessionRef.current.fingerprint === fingerprint)) {
-        return scheduleSessionRef.current.pending;
+      const current = scheduleSessionRef.current;
+      if (current.pending && current.connectionKey === connectionKey &&
+        (!options.afterWorkflow || current.fingerprint === fingerprint)) {
+        if (!options.includePeople || current.includePeople) return current.pending;
+        return current.pending.catch(() => {}).then(() => {
+          if (scheduleConnectionKeyRef.current !== connectionKey) throw new Error("排期连接已变化");
+          return beginScheduleLoad(scheduleFingerprintRef.current, connectionKey, options);
+        });
       }
-      scheduleLastAttemptRef.current = Date.now();
+      recordScheduleCheck(connectionKey, options.includePeople, { attemptedAt: Date.now() });
       setScheduleRefreshing(true);
-      setScheduleRefreshError("");
-      const previousRead = scheduleSessionRef.current.connectionKey === connectionKey
-        ? preloadedSchedule ?? scheduleSessionRef.current.read : null;
-      const previousSession = scheduleSessionRef.current.read;
+      const previousRead = current.connectionKey === connectionKey ? current.read : null;
+      const previousSession = current.read;
       if (scheduleCandidateRef.current) {
         void closeScheduleSession(Promise.resolve(scheduleCandidateRef.current.read)).catch(() => {});
         scheduleCandidateRef.current = null;
@@ -544,6 +571,7 @@ function Workspace() {
         fingerprint,
         connectionKey,
         pending: req,
+        includePeople: options.includePeople,
         read: previousRead,
       };
       if (!previousRead) setPreloadedSchedule(null);
@@ -556,19 +584,27 @@ function Workspace() {
           scheduleSessionRef.current.pending = null;
           setScheduleRefreshing(false);
           // 候选结果不完整时只释放候选会话，原编辑基线仍有效。
-          if (previousRead && (res.accountError || (res.sources.length > 0 && !res.complete) || res.itemErrors?.length)) {
+          const complete = isCompleteScheduleRead(res) && (!options.includePeople || res.peopleLoaded !== false);
+          if (!complete) {
+            recordScheduleCheck(scheduleSessionRef.current.connectionKey, options.includePeople, {
+              attemptedAt: Date.now(),
+              error: "最新排期仅部分读取完成，已保留上次内容，可继续编辑，稍后重试。",
+            });
+          }
+          if (previousRead && !complete) {
             void closeScheduleSession(Promise.resolve(res)).catch(() => {});
-            setScheduleRefreshError("最新排期仅部分读取完成，已保留上次内容，可继续编辑，稍后重试。");
             return previousRead;
           }
           const guard = scheduleGuardRef.current;
-          if (previousRead && (guard.dirty || guard.busy || guard.uncertain || guard.interacting || interactionRevision !== scheduleInteractionRevision.current)) {
+          const editing = guard.dirty || guard.busy || guard.uncertain || guard.interacting;
+          if (previousRead && (editing || interactionRevision !== scheduleInteractionRevision.current)) {
             void closeScheduleSession(Promise.resolve(res)).catch(() => {});
+            if (editing) recordScheduleCheck(scheduleSessionRef.current.connectionKey, options.includePeople, { attemptedAt: undefined });
             return scheduleSessionRef.current.read ?? previousRead;
           }
           const next = patchScheduleData(previousRead, res);
           if (previousRead && viewRef.current === "schedule") {
-            scheduleCandidateRef.current = { read: next, revision: interactionRevision };
+            scheduleCandidateRef.current = { read: next, revision: interactionRevision, includePeople: options.includePeople };
             setScheduleCandidate(next);
             return previousRead;
           }
@@ -576,9 +612,7 @@ function Workspace() {
           if (previousSession && previousSession.sessionId !== res.sessionId) {
             void closeScheduleSession(Promise.resolve(previousSession)).catch(() => {});
           }
-          if (!res.accountError && (res.complete || (res.sources.length === 0 && !res.itemErrors?.length))) {
-            scheduleLastSuccessRef.current = Date.now();
-          }
+          if (complete) confirmScheduleCheck(res, options.includePeople);
           setPreloadedSchedule(next);
           return next;
         },
@@ -586,13 +620,16 @@ function Workspace() {
           if (scheduleSessionRef.current.pending === req) {
             scheduleSessionRef.current.pending = null;
             setScheduleRefreshing(false);
-            setScheduleRefreshError("最新排期读取未完成，已保留上次内容，可继续编辑，稍后重试。");
+            recordScheduleCheck(scheduleSessionRef.current.connectionKey, options.includePeople, {
+              attemptedAt: Date.now(),
+              error: "最新排期读取未完成，已保留上次内容，可继续编辑，稍后重试。",
+            });
           }
           throw err;
         },
       );
     },
-    [openOrRecoverScheduleSession, preloadedSchedule],
+    [openOrRecoverScheduleSession, confirmScheduleCheck, recordScheduleCheck],
   );
   useEffect(() => {
     if (!schedulePreloadFingerprint) {
@@ -607,7 +644,7 @@ function Workspace() {
         scheduleSessionRef.current = { fingerprint: "", connectionKey: "", pending: null, read: null };
         setPreloadedSchedule(null);
         setScheduleRefreshing(false);
-        setScheduleRefreshError("");
+        setScheduleChecks(undefined);
         if (prev) void closeScheduleSession(prev).catch(() => {});
       }
       return;
@@ -624,38 +661,33 @@ function Workspace() {
       scheduleSessionRef.current.connectionKey = scheduleConnectionKey;
       return;
     }
-    // 停留在事项安排且存在未保存编辑或不确定结果时，不在后台强关当前会话
-    if (
-      viewRef.current === "schedule" &&
-      (scheduleGuardRef.current.dirty || scheduleGuardRef.current.busy || scheduleGuardRef.current.uncertain || scheduleGuardRef.current.interacting)
-    ) {
-      return;
-    }
-    void beginScheduleLoad(schedulePreloadFingerprint, scheduleConnectionKey, {
-      includePeople: scheduleSessionRef.current.read?.peopleLoaded === true,
-    }).catch(() => {});
-  }, [schedulePreloadFingerprint, scheduleConnectionKey, data?.credential_ready, loading, beginScheduleLoad, preloadedSchedule, scheduleGuard, scheduleRefreshing]);
-  useEffect(() => {
-    if (!schedulePreloadFingerprint) return;
-    const refreshIfStale = () => {
-      const guard = scheduleGuardRef.current;
-      if (document.visibilityState === "hidden" || contextRef.current || guard.dirty || guard.busy || guard.uncertain || guard.interacting
-        || scheduleSessionRef.current.pending || Date.now() - scheduleLastSuccessRef.current < 5 * 60_000
-        || Date.now() - scheduleLastAttemptRef.current < 60_000) return;
-      void beginScheduleLoad(scheduleFingerprintRef.current, scheduleConnectionKeyRef.current, {
-        includePeople: scheduleSessionRef.current.read?.peopleLoaded === true,
+    if (!scheduleSessionRef.current.read && !scheduleSessionRef.current.pending && scheduleReadAvailable() && !contextRef.current) {
+      void beginScheduleLoad(schedulePreloadFingerprint, scheduleConnectionKey, {
+        includePeople: view === "schedule" && scheduleMode === "people",
       }).catch(() => {});
-    };
-    refreshIfStale();
-    const timer = window.setInterval(refreshIfStale, 5 * 60_000);
-    window.addEventListener("focus", refreshIfStale);
-    document.addEventListener("visibilitychange", refreshIfStale);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refreshIfStale);
-      document.removeEventListener("visibilitychange", refreshIfStale);
-    };
-  }, [Boolean(schedulePreloadFingerprint), view, beginScheduleLoad]);
+    }
+  }, [schedulePreloadFingerprint, scheduleConnectionKey, data?.credential_ready, loading, beginScheduleLoad, view, scheduleMode]);
+  const currentScheduleCheck = scheduleChecks?.connectionKey === scheduleConnectionKey ? scheduleChecks[scheduleMode] : undefined;
+  const scheduleReadPaused = Boolean(contextOperation || scheduleExit || scheduleGuard.dirty || scheduleGuard.busy ||
+    scheduleGuard.uncertain || scheduleGuard.interacting || scheduleRefreshing || scheduleCandidate);
+  // 首屏由页面抢先读取时，已有会话会在上面的 effect 对齐空指纹。
+  const loadedScheduleFingerprint = scheduleSessionRef.current.fingerprint;
+  const scheduleNeedsRefresh = Boolean(loadedScheduleFingerprint) && loadedScheduleFingerprint !== schedulePreloadFingerprint;
+  const scheduleFreshUntil = scheduleNeedsRefresh || currentScheduleCheck?.checkedAt === undefined
+    ? 0 : currentScheduleCheck.checkedAt + RECENT_SCHEDULE_INTERVAL;
+  const scheduleDueAt = scheduleReadPaused ? null : Math.max(
+    currentScheduleCheck?.attemptedAt === undefined ? 0 : currentScheduleCheck.attemptedAt + SCHEDULE_RETRY_DELAY,
+    scheduleFreshUntil,
+  );
+  useScheduleRevalidation(view === "schedule" && schedulePreloadFingerprint ? scheduleMode : "", scheduleDueAt, scheduleFreshUntil, () => {
+    const guard = scheduleGuardRef.current;
+    if (contextRef.current || guard.dirty || guard.busy || guard.uncertain || guard.interacting ||
+      scheduleSessionRef.current.pending || scheduleCandidateRef.current ||
+      (scheduleMode === "people" && scheduleSessionRef.current.read?.sessionId === schedulePeopleChecking.current)) return;
+    void beginScheduleLoad(scheduleFingerprintRef.current, scheduleConnectionKeyRef.current, {
+      includePeople: scheduleMode === "people",
+    }).catch(() => {});
+  });
   useEffect(
     () => () => {
       if (scheduleCandidateRef.current) void closeScheduleSession(Promise.resolve(scheduleCandidateRef.current.read)).catch(() => {});
@@ -686,7 +718,7 @@ function Workspace() {
     scheduleSessionRef.current.read = null;
     setPreloadedSchedule(null);
     setScheduleRefreshing(false);
-    setScheduleRefreshError("");
+    setScheduleChecks(undefined);
     if (prev) {
       void closeScheduleSession(prev).catch(() => {});
     } else {
@@ -711,7 +743,19 @@ function Workspace() {
         return scheduleSessionRef.current.pending;
       },
       refreshing: scheduleRefreshing,
-      refreshError: scheduleRefreshError,
+      refreshError: currentScheduleCheck?.error,
+      checkedAt: currentScheduleCheck?.checkedAt,
+      calendarRefreshEnabled: Boolean(schedulePreloadFingerprint) && !contextOperation,
+      onPeopleChecking: (sessionId) => { schedulePeopleChecking.current = sessionId; },
+      onPeopleChecked: (read) => {
+        schedulePeopleChecking.current = "";
+        const connectionKey = scheduleSessionRef.current.connectionKey;
+        recordScheduleCheck(connectionKey, true, read && isCompleteScheduleRead(read) && read.peopleLoaded !== false ? {
+          checkedAt: Math.min(scheduleChecks?.connectionKey === connectionKey
+            ? scheduleChecks.mine.checkedAt ?? Infinity : Infinity, read.readAtMs ?? Date.now()),
+          error: "",
+        } : { attemptedAt: Date.now(), error: "团队排期读取未完成，已保留上次内容，可稍后重试。" });
+      },
       candidate: scheduleCandidate,
       consumeCandidate: (next, adopt) => {
         const candidate = scheduleCandidateRef.current;
@@ -722,23 +766,28 @@ function Workspace() {
         setScheduleCandidate(null);
         if (!allowed) {
           void closeScheduleSession(Promise.resolve(next)).catch(() => {});
+          if (guard.dirty || guard.busy || guard.uncertain || guard.interacting) {
+            recordScheduleCheck(scheduleSessionRef.current.connectionKey, candidate.includePeople, { attemptedAt: undefined });
+          }
           return false;
         }
         const previous = scheduleSessionRef.current.read;
         scheduleSessionRef.current.read = next;
-        scheduleLastSuccessRef.current = Date.now();
+        confirmScheduleCheck(next, candidate.includePeople);
         setPreloadedSchedule(next);
         if (previous && previous.sessionId !== next.sessionId) void closeScheduleSession(Promise.resolve(previous)).catch(() => {});
         return true;
       },
       onInteraction: () => { scheduleInteractionRevision.current += 1; },
       endInteraction: () => {
+        schedulePeopleChecking.current = "";
         if (scheduleGuardRef.current.interacting) updateScheduleGuard({ ...scheduleGuardRef.current, interacting: false });
       },
       updateRead: updateScheduleRead,
       reload: reloadScheduleSession,
     }),
-    [preloadedSchedule, scheduleCandidate, scheduleRefreshing, scheduleRefreshError, updateScheduleRead, reloadScheduleSession],
+    [preloadedSchedule, scheduleCandidate, scheduleRefreshing, currentScheduleCheck, scheduleChecks, schedulePreloadFingerprint,
+      contextOperation, confirmScheduleCheck, recordScheduleCheck, updateScheduleRead, reloadScheduleSession, updateScheduleGuard],
   );
   useEffect(() => {
     if (view !== "schedule" && scheduleCandidate) scheduleController.consumeCandidate?.(scheduleCandidate, true);
@@ -2037,6 +2086,9 @@ function Workspace() {
             waitingForSnapshot={desktop && loading && !data}
             calendarContext={scheduleConnectionKey}
             peopleCacheContext={scheduleConnectionKey ? JSON.stringify([scheduleConnectionKey, scheduleSourcesSignature]) : ""}
+            calendarCache={scheduleCalendarCache}
+            viewMode={scheduleMode}
+            onViewModeChange={setScheduleMode}
             preloadedSession={desktop ? scheduleController : undefined}
             onGuardChange={updateScheduleGuard}
             requestReload={requestScheduleExit}
