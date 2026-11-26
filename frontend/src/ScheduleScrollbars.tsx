@@ -1,9 +1,17 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
 const inset = 4;
 const hitSize = 12;
 const revealDistance = 24;
 const hideDelay = 800;
+
+export function SchedulePoolList({ children, label }: { children: ReactNode; label?: string }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  return <div className="schedule-pool-list" ref={scrollRef} aria-label={label}>
+    <ScheduleScrollbars scrollRef={scrollRef} verticalOnly />
+    {children}
+  </div>;
+}
 
 type Axis = "vertical" | "horizontal";
 
@@ -36,10 +44,11 @@ function positionThumb(element: HTMLSpanElement, axis: Axis, thumb: Thumb | null
   if (element.style.transform !== transform) element.style.transform = transform;
 }
 
-export function ScheduleScrollbars({ scrollRef, calendarRef, headerRef }: {
+export function ScheduleScrollbars({ scrollRef, calendarRef, headerRef, verticalOnly = false }: {
   scrollRef: RefObject<HTMLDivElement | null>;
-  calendarRef: RefObject<HTMLDivElement | null>;
-  headerRef: RefObject<HTMLDivElement | null>;
+  calendarRef?: RefObject<HTMLDivElement | null>;
+  headerRef?: RefObject<HTMLDivElement | null>;
+  verticalOnly?: boolean;
 }) {
   const verticalRef = useRef<HTMLSpanElement>(null);
   const horizontalRef = useRef<HTMLSpanElement>(null);
@@ -69,26 +78,26 @@ export function ScheduleScrollbars({ scrollRef, calendarRef, headerRef }: {
 
   const onPointerPosition = useCallback((event: Pick<PointerEvent, "pointerType" | "clientX" | "clientY">) => {
     const viewport = scrollRef.current;
-    const header = headerRef.current;
-    if (!viewport || !header || event.pointerType !== "mouse" || drag.current) return;
+    const header = headerRef?.current;
+    if (!viewport || (!verticalOnly && !header) || event.pointerType !== "mouse" || drag.current) return;
     const bounds = viewport.getBoundingClientRect();
     const x = event.clientX - bounds.left - viewport.clientLeft;
     const y = event.clientY - bounds.top - viewport.clientTop;
     const right = viewport.clientWidth - x;
     const bottom = viewport.clientHeight - y;
     const insideBody = x >= 0 && y >= 0 && right >= 0 && bottom >= 0 &&
-      event.clientY >= header.getBoundingClientRect().bottom;
+      (!header || event.clientY >= header.getBoundingClientRect().bottom);
     setNearVertical(insideBody && right <= revealDistance && bottom >= inset + hitSize);
     setNearHorizontal(insideBody && bottom <= revealDistance && x >= inset && right >= inset + hitSize);
-  }, [headerRef, scrollRef]);
+  }, [headerRef, scrollRef, verticalOnly]);
 
   useEffect(() => {
     const viewport = scrollRef.current;
-    const calendar = calendarRef.current;
-    const header = headerRef.current;
+    const calendar = calendarRef?.current;
+    const header = headerRef?.current;
     const vertical = verticalRef.current;
     const horizontal = horizontalRef.current;
-    if (!viewport || !calendar || !header || !vertical || !horizontal) return;
+    if (!viewport || (!verticalOnly && (!calendar || !header)) || !vertical || !horizontal) return;
 
     let dimensions = { width: 0, height: 0, scrollWidth: 0, scrollHeight: 0, headerOffset: 0, headerHeight: 0 };
     let previousTop: number | undefined;
@@ -100,9 +109,9 @@ export function ScheduleScrollbars({ scrollRef, calendarRef, headerRef }: {
       previousLeft = scrollLeft;
       const { width, height, scrollWidth, scrollHeight, headerOffset, headerHeight } = dimensions;
       // 读取提示在表头上方时，表头先随内容滚动，再吸附到视口顶部。
-      const headerBottom = Math.max(0, headerOffset - scrollTop) + headerHeight;
+      const headerBottom = verticalOnly ? undefined : Math.max(0, headerOffset - scrollTop) + headerHeight;
       thumbs.current.vertical = thumbMetrics(height, scrollHeight, scrollTop, headerBottom);
-      thumbs.current.horizontal = thumbMetrics(width, scrollWidth, scrollLeft);
+      thumbs.current.horizontal = verticalOnly ? null : thumbMetrics(width, scrollWidth, scrollLeft);
       positionThumb(vertical, "vertical", thumbs.current.vertical, width - hitSize);
       positionThumb(horizontal, "horizontal", thumbs.current.horizontal, height - hitSize);
     };
@@ -114,8 +123,8 @@ export function ScheduleScrollbars({ scrollRef, calendarRef, headerRef }: {
         height: clientHeight,
         scrollWidth,
         scrollHeight,
-        headerOffset: calendar.getBoundingClientRect().top - viewportTop + scrollTop,
-        headerHeight: header.getBoundingClientRect().height,
+        headerOffset: calendar ? calendar.getBoundingClientRect().top - viewportTop + scrollTop : 0,
+        headerHeight: header?.getBoundingClientRect().height ?? 0,
       };
       paint(true);
       const active = drag.current;
@@ -136,16 +145,20 @@ export function ScheduleScrollbars({ scrollRef, calendarRef, headerRef }: {
     };
     const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
     observer?.observe(viewport);
-    observer?.observe(calendar);
-    observer?.observe(header);
-    const banners = new MutationObserver(measure);
-    banners.observe(viewport, { childList: true });
+    if (calendar) observer?.observe(calendar);
+    if (header) observer?.observe(header);
+    const observeChildren = () => {
+      if (verticalOnly) Array.from(viewport.children).forEach((child) => observer?.observe(child));
+      measure();
+    };
+    const banners = new MutationObserver(observeChildren);
+    banners.observe(viewport, { childList: true, subtree: verticalOnly });
     repaint.current = paint;
     viewport.addEventListener("scroll", onScroll, { passive: true });
     viewport.addEventListener("pointerenter", onPointerPosition, { passive: true });
     viewport.addEventListener("pointermove", onPointerPosition, { passive: true });
     viewport.addEventListener("pointerleave", clearProximity);
-    measure();
+    observeChildren();
     return () => {
       observer?.disconnect();
       banners.disconnect();
@@ -160,7 +173,7 @@ export function ScheduleScrollbars({ scrollRef, calendarRef, headerRef }: {
       drag.current = null;
       repaint.current = null;
     };
-  }, [calendarRef, headerRef, onPointerPosition, scrollRef, show]);
+  }, [calendarRef, headerRef, onPointerPosition, scrollRef, show, verticalOnly]);
 
   function beginDrag(event: ReactPointerEvent<HTMLSpanElement>, axis: Axis) {
     const viewport = scrollRef.current;

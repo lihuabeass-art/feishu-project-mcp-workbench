@@ -530,10 +530,16 @@
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  margin-right: -12px;
+  padding-right: 12px;
 }
 
 .schedule-pool-list > * {
   flex-shrink: 0;
+}
+
+.schedule-pool-list > .schedule-scrollbars {
+  margin-bottom: -8px;
 }
 
 .schedule-pool-empty {

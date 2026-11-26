@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { DateRangePicker } from "./DateRangePicker";
 import { ScheduleDateControls, ScheduleViewControls } from "./ScheduleViewControls";
-import { ScheduleScrollbars } from "./ScheduleScrollbars";
+import { SchedulePoolList, ScheduleScrollbars } from "./ScheduleScrollbars";
 import { fitScheduleView, scheduleViewsKey, validViewDate, type ScheduleViewSettings } from "./scheduleViews";
 import { Select } from "./Select";
 import { ScheduleDescription } from "./ScheduleDescription";
@@ -2491,7 +2491,7 @@ export function SchedulePage({
                         {editablePendingCount !== null && editablePendingCount < pendingRows.length && (
                           <p className="schedule-pool-editable-count">其中 {editablePendingCount} 项可排期</p>
                         )}
-                        <div className="schedule-pool-list">
+                        <SchedulePoolList>
                           {pendingRows.map(({ entry, owner }, index) => (
                             <Fragment key={`${entry.id}:${owner}`}>
                               {view === "people" &&
@@ -2576,11 +2576,11 @@ export function SchedulePage({
                               当前筛选下暂无待排期事项
                             </p>
                           )}
-                        </div>
+                        </SchedulePoolList>
                       </>
                     ) : (
                       <>
-                        <div className="schedule-pool-list">
+                        <SchedulePoolList>
                           {outsideRows.map(({ entry, owner }, index) => (
                             <Fragment key={`${entry.id}:${owner}`}>
                               {view === "people" &&
@@ -2665,7 +2665,7 @@ export function SchedulePage({
                           {outsideRows.length === 0 && (
                             !teamReadMessage && <p className="schedule-pool-empty">当前筛选下暂无已排期节点</p>
                           )}
-                        </div>
+                        </SchedulePoolList>
                       </>
                     )}
                   </aside>

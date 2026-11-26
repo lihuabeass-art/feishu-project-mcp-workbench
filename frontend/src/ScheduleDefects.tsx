@@ -3,6 +3,7 @@ import { ChevronDown, GitBranch, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { ScheduleDescription } from "./ScheduleDescription";
 import { ScheduleAvatar } from "./ScheduleAvatar";
+import { SchedulePoolList } from "./ScheduleScrollbars";
 import type { SchedulePerson, ScheduleRead } from "./scheduleApi";
 import type { Snapshot } from "./types";
 import { Workflow, type WorkflowNavigationState, type WorkflowSubmit } from "./Workflow";
@@ -169,7 +170,7 @@ export function ScheduleDefectList({ defects, currentUser, team, knownPeople, se
         })}
       </div>
     )}
-    <div className="schedule-pool-list" aria-label="未解决缺陷清单">
+    <SchedulePoolList label="未解决缺陷清单">
       {failed && <p className="schedule-pool-empty" role="status">
         {defects.length ? "部分缺陷暂未更新，已保留可用清单。" : "暂时无法读取全部缺陷。"}{" "}
         <button type="button" className="schedule-quick-chip" disabled={loading} onClick={retry}>重试</button>
@@ -191,7 +192,7 @@ export function ScheduleDefectList({ defects, currentUser, team, knownPeople, se
           {expanded && group.defects.map(renderRow)}
         </div>;
       }) : sorted.map(renderRow)}
-    </div>
+    </SchedulePoolList>
   </>;
 }
 

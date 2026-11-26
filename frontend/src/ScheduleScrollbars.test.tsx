@@ -2,13 +2,46 @@
 import { useRef } from "react";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { ScheduleScrollbars } from "./ScheduleScrollbars";
+import { SchedulePoolList, ScheduleScrollbars } from "./ScheduleScrollbars";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+it("清单滚动条随滚动和靠近边缘显示，并随内容变化隐藏", () => {
+  vi.useFakeTimers();
+  let measure!: () => void;
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { measure = callback; }
+    observe() {}
+    disconnect() {}
+  });
+  const { container } = render(<SchedulePoolList><div>事项</div></SchedulePoolList>);
+  const viewport = container.querySelector<HTMLElement>(".schedule-pool-list")!;
+  let height = 640;
+  Object.defineProperties(viewport, {
+    clientWidth: { value: 320 }, clientHeight: { value: 240 },
+    scrollWidth: { value: 320 }, scrollHeight: { get: () => height },
+  });
+  vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 90, 320, 240));
+  measure();
+  const vertical = viewport.querySelector<HTMLElement>(".is-vertical")!;
+  const horizontal = viewport.querySelector<HTMLElement>(".is-horizontal")!;
+  expect(vertical.hidden).toBe(false);
+  expect(horizontal.hidden).toBe(true);
+  fireEvent.scroll(viewport);
+  expect(vertical.classList.contains("is-visible")).toBe(true);
+  act(() => vi.advanceTimersByTime(800));
+  expect(vertical.classList.contains("is-visible")).toBe(false);
+  fireEvent.pointerEnter(viewport, { clientX: 415, clientY: 190, pointerType: "mouse" });
+  expect(vertical.classList.contains("is-visible")).toBe(true);
+  fireEvent.pointerLeave(viewport);
+  height = 240;
+  measure();
+  expect(vertical.hidden).toBe(true);
 });
 
 function renderCalendar() {
