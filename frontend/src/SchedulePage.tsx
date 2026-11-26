@@ -1195,7 +1195,7 @@ export function SchedulePage({
     ? [...scheduled, ...visible.filter((entry) =>
         !inWindow(entry) && !closedScheduleItems.has(scheduleItemKey(entry.identity)) && cachedItemFor(entry)?.is_completed !== true &&
         (entry.record.cacheKind === "associated_item" && !validSchedule(entry.dates) ||
-          !entry.record.sourceAggregate && !!entry.identity.node && entry.record.ownerIds.some(Boolean)))]
+          !entry.record.sourceAggregate && !!entry.identity.node))]
     : scheduled;
   const rawScheduledRows =
     view === "people"

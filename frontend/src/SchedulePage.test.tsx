@@ -2198,7 +2198,7 @@ it("默认单周 7 天，支持切换双周 14 天（含双周跨界裁切与第
   expect(document.querySelector(".schedule-calendar .schedule-row.selected strong")?.textContent).toBe("三周后专项");
 
   // 2. 将已排期事项直接拖入当前周日历第 2 列（索引 1），保留其原本 3 天跨度
-  fireEvent.click(screen.getByRole("button", { name: "本周", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "本周" }));
   const singleWeekHeaders = document.querySelectorAll(".schedule-days > div");
   fireEvent.dragStart(outsideCard, { dataTransfer: transfer });
   fireEvent.drop(singleWeekHeaders[1], { dataTransfer: transfer });
@@ -3398,6 +3398,43 @@ it("人员排期展示事项的全部当前节点及负责人，排期条和详�
   fireEvent.focus(backendNode);
   expect(screen.getByRole("tooltip").querySelector(".schedule-node-owner > span:last-child")?.textContent).toBe("后端同事");
   fireEvent.blur(backendNode);
+});
+
+it("人员排期本周无需点击即列出负责人不明的事项，并按事项合并节点", async () => {
+  const read = { ...data(), peopleLoaded: true };
+  const base = read.targets[0];
+  const unassigned = {
+    ...base, ownerId: null, ownerIds: [], mine: false, nodeStatus: "doing",
+    identity: { ...identity, scope: "node" as const, owner: undefined },
+    readOnlyReason: "节点无人负责，排期仅供查看",
+  };
+  read.targets.push(
+    { ...unassigned, id: "unassigned-a", title: "未分配事项甲", identity: { ...unassigned.identity, item: "a" } },
+    { ...unassigned, id: "unassigned-a-extra", title: "未分配事项甲", identity: { ...unassigned.identity, item: "a", node: "extra" } },
+    { ...unassigned, id: "unassigned-b", title: "未分配事项乙", identity: { ...unassigned.identity, item: "b" } },
+    { ...unassigned, id: "unassigned-closed", title: "已完成未分配事项", identity: { ...unassigned.identity, item: "closed" }, itemClosed: true, nodeStatus: "finished" },
+  );
+  vi.mocked(loadScheduleSession).mockResolvedValue(read);
+  await setup();
+  fireEvent.click(screen.getByRole("button", { name: "人员排期" }));
+  const calendar = within(document.querySelector<HTMLElement>(".schedule-calendar")!);
+  expect(calendar.getByRole("button", { name: "收起负责人不明的日历安排，共2项" })).toBeTruthy();
+  expect(calendar.getByText("未分配事项甲")).toBeTruthy();
+  expect(calendar.getByText("未分配事项乙")).toBeTruthy();
+  expect(calendar.queryByText("已完成未分配事项")).toBeNull();
+
+  const pool = within(document.querySelector<HTMLElement>(".schedule-pending")!);
+  fireEvent.click(pool.getByRole("button", { name: /^未分配事项乙/ }));
+  expect(calendar.getByText("未分配事项乙").closest(".schedule-row")?.classList.contains("selected")).toBe(true);
+  expect(calendar.getByText("未分配事项甲")).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "下一周" }));
+  expect(calendar.queryByText("未分配事项甲")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "本周" }));
+  fireEvent.click(screen.getByRole("combobox", { name: "筛选人员" }));
+  fireEvent.click(screen.getByRole("option", { name: "本人（我）" }));
+  expect(calendar.queryByText("未分配事项甲")).toBeNull();
+  expect(calendar.queryByText("未分配事项乙")).toBeNull();
 });
 
 it.each([7, 14] as const)("人员 %s 天视图覆盖本周时补齐未上线事项，离开本周只显示真实排期", async (span) => {
