@@ -2409,7 +2409,7 @@ export function SchedulePage({
                                 >
                                   <span className="schedule-pending-head">
                                     <strong>{entry.record.title}</strong>
-                                    {!canEdit(entry) && (
+                                    {view === "mine" && !canEdit(entry) && (
                                       <span className="schedule-readonly-pill" aria-hidden="true">
                                         只读
                                       </span>
@@ -2496,7 +2496,7 @@ export function SchedulePage({
                                 >
                                   <span className="schedule-pending-head">
                                     <strong>{entry.record.title}</strong>
-                                    {!canEdit(entry) && (
+                                    {view === "mine" && !canEdit(entry) && (
                                       <span className="schedule-readonly-pill" aria-hidden="true">
                                         只读
                                       </span>
@@ -2893,15 +2893,17 @@ export function SchedulePage({
                                           aria-hidden="true"
                                         >
                                           <span className="schedule-bar-popover-card">
-                                            <span
-                                              className={`schedule-popover-badge ${pastNode ? "is-past" : editable ? "is-editable" : "is-readonly"}`}
-                                            >
-                                              {pastNode
-                                                ? "已流转"
-                                                : editable
-                                                  ? "当前可排"
-                                                  : "只读"}
-                                            </span>
+                                            {(view === "mine" || pastNode) && (
+                                              <span
+                                                className={`schedule-popover-badge ${pastNode ? "is-past" : editable ? "is-editable" : "is-readonly"}`}
+                                              >
+                                                {pastNode
+                                                  ? "已流转"
+                                                  : editable
+                                                    ? "当前可排"
+                                                    : "只读"}
+                                              </span>
+                                            )}
                                             <strong className="schedule-popover-title">
                                               {barTitleText}
                                             </strong>
